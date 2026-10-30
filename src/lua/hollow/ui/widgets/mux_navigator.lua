@@ -1,12 +1,14 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.mux_navigator")
+local styles = require("hollow.ui.recipes.mux_navigator")
 local util = require("hollow.util")
 
+---@type Hollow
 local hollow = _G.hollow
+---@type HollowUi
 local ui = hollow.ui
 
 ui.mux_navigator = ui.mux_navigator or {}
@@ -50,10 +52,15 @@ local FILTERS = {
   },
 }
 
+---@param query string
+---@param text string
+---@return boolean
 local function matches(query, text)
   return query == "" or shared.select_item_matches(query, text, true)
 end
 
+---@param pane HollowPane
+---@return string|nil
 local function pane_value(pane)
   if pane.foreground_process and pane.foreground_process ~= "" then
     return pane.foreground_process
@@ -183,14 +190,17 @@ local function row_detail(row)
   return ""
 end
 
+---@param opts HollowUiMuxNavigatorOptions|nil
 function ui.mux_navigator.open(opts)
   opts = opts or {}
   local theme = resolve_theme(opts)
+  local clay_budget, reveal_start = math.min(20, row_budget(opts)), false
   local tree = hollow.term.mux_tree()
   local filter_id, pane_filter = resolve_filter(opts.filter)
   local collapsed = {}
   local nav
   local modal
+  local refresh_after
   local filter = ui.text_input({
     initial = opts.query or "",
     on_change = function()
@@ -255,7 +265,7 @@ function ui.mux_navigator.open(opts)
     id_prefix = "mux-navigator",
     items = current_rows,
     row_budget = function()
-      return row_budget(opts)
+      return clay_budget
     end,
     on_activate = activate,
   })
@@ -293,92 +303,70 @@ function ui.mux_navigator.open(opts)
     end
   end
 
-  local function render_content(_, state)
-    tree = hollow.term.mux_tree()
-    local rows = current_rows()
-    nav.index = math.max(1, math.min(#rows, nav.index or 1))
-    local viewport = selectable.visible_range()
-    local tree_rows = ui.when(#rows > 0, function()
-      return ui.each(
-        hollow.tbl.range(viewport.start_idx, viewport.end_idx),
-        function(index, visible_index)
-          local row = rows[index]
-          local row_id, options = selectable.row(index, row.key, visible_index, viewport)
-          local selected = index == nav.index
-          local hovered = shared.node_state(state, row_id).hovered
-          local active = row.item.is_active or row.item.is_focused
-          local is_workspace = row.kind == "workspace"
-          local branch = row.kind == "pane" and ""
-            or (collapsed[row.key] and icons.collapsed or icons.expanded) .. " "
-          local indent = string.rep("  ", row.depth)
-          local pane_attention = row.kind == "pane" and program_status.pane_has_attention(row.item)
-          local marker = row.kind == "pane"
-              and (pane_attention and icons.bell or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
-            or ""
-          local label = row.kind == "workspace"
-              and (row.item.name or ("Workspace " .. row.item.index))
-            or row.kind == "tab" and ("Tab " .. row.item.index)
-            or ("Pane " .. row.index)
-          local value = row.kind == "workspace" and nil
-            or row.kind == "tab" and (row.item.title ~= "" and row.item.title or nil)
-            or pane_value(row.item)
-          local row_s = row_styles(theme, row, selected, hovered, active, pane_attention)
-          local detail = row_detail(row)
-          local row_nodes = {
-            ui.text("  ", list_row(theme, { selected = selected }).indicator),
-            ui.text(indent),
-            ui.text(branch, row_s.prefix),
-            ui.text(marker, row_s.marker),
-            ui.text(label, row_s.prefix),
-            ui.when(row.status_badge, function()
-              return ui.text(" " .. row.status_badge, row_s.status)
-            end),
-            ui.when(value ~= nil, function()
-              return ui.text(": " .. value, row_s.value)
-            end),
-            ui.when(detail ~= "", function()
-              return {
-                ui.spacer(),
-                ui.text(detail, styles(theme).muted),
-              }
-            end, function()
-              return ui.when(row.kind == "pane" and row.item.cwd ~= "", function()
-                return { ui.spacer(), ui.text(row.item.cwd, styles(theme).subtle) }
-              end)
-            end),
-          }
-
-          local paint = list_row(theme, {
-            variant = is_workspace and "section" or nil,
-            selected = selected,
-            hovered = hovered,
-          }).paint
-          return ui.row(row_nodes, util.merge_tables(options, paint))
-        end
-      )
-    end, function()
-      return ui.row({ ui.text("No matching panes", styles(theme).empty) })
-    end)
-
-    local s = styles(theme)
-    local search_row = ui.row({
-      ui.text("/ ", s.title),
-      ui.when(search_mode, function()
-        return ui.group(filter.render(theme))
-      end, function()
-        return ui.text("search panes", s.muted)
+  local function render_row(row, index, hovered, options)
+    local selected = index == nav.index
+    local active = row.item.is_active or row.item.is_focused
+    local is_workspace = row.kind == "workspace"
+    local branch = row.kind == "pane" and ""
+      or (collapsed[row.key] and icons.collapsed or icons.expanded) .. " "
+    local indent = string.rep("  ", row.depth)
+    local pane_attention = row.kind == "pane" and program_status.pane_has_attention(row.item)
+    local marker = row.kind == "pane"
+        and (pane_attention and icons.bell or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
+      or ""
+    local label = row.kind == "workspace" and (row.item.name or ("Workspace " .. row.item.index))
+      or row.kind == "tab" and ("Tab " .. row.item.index)
+      or ("Pane " .. row.index)
+    local value = row.kind == "workspace" and nil
+      or row.kind == "tab" and (row.item.title ~= "" and row.item.title or nil)
+      or pane_value(row.item)
+    local row_s = row_styles(theme, row, selected, hovered, active, pane_attention)
+    local detail = row_detail(row)
+    local row_nodes = {
+      ui.text("  ", list_row(theme, { selected = selected }).indicator),
+      ui.text(indent),
+      ui.text(branch, row_s.prefix),
+      ui.text(marker, row_s.marker),
+      ui.text(label, row_s.prefix),
+      ui.when(row.status_badge, function()
+        return ui.text(" " .. row.status_badge, row_s.status)
       end),
-      ui.spacer(),
-      ui.text(
-        filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
-        filter_id == "pane_bell" and s.filter_bell or s.filter
-      ),
-      ui.text(pane_filter.label, s.muted),
-    })
-    return ui.column({ search_row, ui.divider(theme.divider), tree_rows })
+      ui.when(value ~= nil, function()
+        return ui.text(": " .. value, row_s.value)
+      end),
+      ui.when(detail ~= "", function()
+        return {
+          ui.spacer(),
+          ui.text(detail, styles(theme).muted),
+        }
+      end, function()
+        return ui.when(row.kind == "pane" and row.item.cwd ~= "", function()
+          return { ui.spacer(), ui.text(row.item.cwd, styles(theme).subtle) }
+        end)
+      end),
+    }
+
+    local paint = list_row(theme, {
+      variant = is_workspace and "section" or nil,
+      selected = selected,
+      hovered = hovered,
+    }).paint
+    return ui.row(row_nodes, util.merge_tables(options, paint))
   end
 
   local handlers = {
+    page_down = function()
+      nav.page_down()
+    end,
+    page_up = function()
+      nav.page_up()
+    end,
+    home = function()
+      nav.index = 1
+    end,
+    ["end"] = function()
+      nav.index = #current_rows()
+    end,
     ["escape|<C-[>"] = function()
       if search_mode then
         search_mode = false
@@ -441,10 +429,150 @@ function ui.mux_navigator.open(opts)
   end
 
   modal = ui.modal({
+    title = opts.title or "Mux Navigator",
     theme = theme,
-    render = render_content,
-    keys = ui.keys(handlers),
-    on_event = selectable.on_event,
+    layout_events = {
+      "term:program_status_changed",
+      "term:bell",
+      "term:pane_focused",
+      "term:pane_created",
+      "term:pane_exited",
+      "term:pane_closed",
+      "term:pane_layout_changed",
+      "term:title_changed",
+      "term:cwd_changed",
+      "term:foreground_process_changed",
+      "term:tab_activated",
+      "term:tab_closed",
+      "workspace:new",
+      "workspace:changed",
+      "workspace:closed",
+      "config:reloaded",
+      "config:changed",
+      "theme:changed",
+      "term:command_started",
+      "term:command_finished",
+    },
+    layout_refresh_after = function()
+      return refresh_after
+    end,
+    render = function(render_theme, state, ctx)
+      local component = require("hollow.ui.components.select")
+      local c = ui.components
+      tree = hollow.term.mux_tree()
+      local rows = current_rows()
+      refresh_after = nil
+      for _, row in ipairs(rows) do
+        if row.status_state == "working" then
+          local now = util.host_now_ms(require("hollow.state").get().host_api)
+          refresh_after = 100 - now % 100
+          break
+        end
+      end
+      nav.index = math.max(1, math.min(#rows, nav.index or 1))
+      local sample = rows[1] and render_row(rows[1], 1, false, {})
+      local line_h = sample and component.row_height(sample, ctx)
+        or component.line_height(render_theme, ctx)
+      local measured = ctx.metrics and ctx.metrics["mux:viewport"]
+      if measured then
+        clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
+      end
+      local viewport = selectable.visible_range()
+      local start = math.max(
+        1,
+        viewport.start_idx - math.floor((24 - (viewport.end_idx - viewport.start_idx + 1)) / 2)
+      )
+      local finish = math.min(#rows, start + 23)
+      start = math.max(1, finish - 23)
+      local nodes = {}
+      for index = start, finish do
+        local row = rows[index]
+        local id = "mux-navigator:item:" .. row.key
+        local row_node = render_row(row, index, state and state.hovered_id == id, { id = id })
+        nodes[#nodes + 1] = component.from_row(
+          row_node,
+          id,
+          shared.nodes_plain_text(row_node.children),
+          render_theme,
+          ctx,
+          function()
+            for current_index, current in ipairs(current_rows()) do
+              if current.key == row.key then
+                nav.index, reveal_start = current_index, false
+                activate(current_index)
+                return
+              end
+            end
+          end
+        )
+      end
+      local s = styles(render_theme)
+      if #rows == 0 then
+        nodes[1] = c.text("No matching panes", s.empty)
+      end
+      local search = ui.row({
+        ui.text("/ ", s.title),
+        search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
+        ui.spacer(),
+        ui.text(
+          filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
+          filter_id == "pane_bell" and s.filter_bell or s.filter
+        ),
+        ui.text(pane_filter.label, s.muted),
+      })
+      local target = rows[reveal_start and viewport.start_idx or nav.index]
+      local scrollbar = viewport.show_scrollbar
+          and shared.serialize_row_paint({ scrollbar_track = true }, render_theme)
+        or {}
+      local cell_h = ctx.cell_h or 19
+      return component.sections({
+        component.inline(
+          search.children,
+          nil,
+          { width = "grow", height = cell_h, scroll_x = true }
+        ),
+        c.column(nodes, {
+          id = "mux:viewport",
+          width = "grow",
+          height = "grow",
+          scroll = true,
+          scroll_x = true,
+          measure = true,
+          reveal = target and ("mux-navigator:item:" .. target.key) or nil,
+          reveal_start = reveal_start,
+          padding = {
+            left = 0,
+            right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0,
+          },
+          scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
+          scrollbar_thumb_ratio = viewport.thumb_ratio,
+          scrollbar_thumb_size = viewport.thumb_size,
+          scrollbar_track_color = scrollbar.scrollbar_track_color,
+          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+        }),
+      }, render_theme, cell_h),
+        2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
+    end,
+    keys = function(key, mods)
+      local consumed = ui.keys(handlers)(key, mods)
+      if consumed then
+        reveal_start = false
+      end
+      return consumed
+    end,
+    on_event = function(name, payload)
+      local consumed = selectable.on_event(name, payload)
+      if
+        consumed
+        and (
+          name == "overlay:scrollbar"
+          or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)
+        )
+      then
+        reveal_start = true
+      end
+      return consumed
+    end,
     width = opts.width or DEFAULT_WIDTH,
     height = opts.height,
     max_height = opts.max_height,

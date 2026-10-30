@@ -190,7 +190,17 @@ fn fileLogFn(
     args: anytype,
 ) void {
     _ = scope;
+    if (g_log_file == null) return;
     const prefix = comptime level.asText();
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    w.print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
+    appendLogBytes(w.buffered());
+}
+
+// Shared by every std.log call site; noinline keeps the locking and file
+// I/O out of each per-format-string instantiation of fileLogFn.
+noinline fn appendLogBytes(bytes: []const u8) void {
     if (g_log_file) |f| {
         const needs_lock = g_log_recursion_depth == 0;
         if (needs_lock) {
@@ -205,13 +215,10 @@ fn fileLogFn(
         }
         const log_lock = if (needs_lock) lockLogFile(f) else .none;
         defer unlockLogFile(f, log_lock);
-        var buf: [1024]u8 = undefined;
-        var w: std.Io.Writer = .fixed(&buf);
-        w.print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
         var file_buf: [1024]u8 = undefined;
         var file_writer = f.writer(io.get(), &file_buf);
         if (!seekLogWriterToEnd(f, &file_writer)) return;
-        file_writer.interface.writeAll(w.buffered()) catch {};
+        file_writer.interface.writeAll(bytes) catch {};
         file_writer.interface.flush() catch {};
     }
 }
@@ -626,7 +633,6 @@ test {
     _ = @import("app/action_queue.zig");
     _ = @import("app/hyperlinks.zig");
     _ = @import("render/sokol_runtime.zig");
-    _ = @import("render/overlay_stack.zig");
     if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");
     _ = @import("platform.zig");

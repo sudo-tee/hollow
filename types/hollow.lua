@@ -205,6 +205,9 @@
 ---| "bottombar:hover"
 ---| "bottombar:leave"
 ---| "bottombar:click"
+---| "sidebar:hover"
+---| "sidebar:leave"
+---| "sidebar:click"
 ---| "overlay:hover"
 ---| "overlay:leave"
 ---| "overlay:click"
@@ -252,6 +255,9 @@
 ---@field ["bottombar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["bottombar:leave"] {}
 ---@field ["bottombar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
+---@field ["sidebar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
+---@field ["sidebar:leave"] {}
+---@field ["sidebar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["overlay:hover"] { id: string, index: integer|nil }
 ---@field ["overlay:leave"] {}
 ---@field ["overlay:click"] { id: string, index: integer|nil }
@@ -934,20 +940,6 @@
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
----@class HollowUiOverlaySerializedRow: HollowUiRowPaint
----@field segments HollowUiSegment[]
----@field hoverable boolean
-
----@class HollowUiOverlaySerializedWidget
----@field stack_context "overlay"|"modal"|"notification"
----@field align string
----@field backdrop HollowUiThemeBackdrop|nil
----@field chrome HollowUiChrome|nil
----@field width integer|nil
----@field height integer|nil
----@field max_height integer|nil
----@field rows HollowUiOverlaySerializedRow[]
-
 ---@class HollowUiSidebarState
 ---@field style? {fg?: HollowColor, bg?: HollowColor, border?: HollowColor, alpha?: number}
 ---@field row_styles? HollowUiRowPaint[] Optional row-paint metadata; rows retain their legacy segment-array shape.
@@ -1102,6 +1094,7 @@
 ---@field widget table
 ---@field close fun()
 ---@field invalidate fun()
+---@field schedule_refresh fun(delay_ms: number) Request a future refresh while mounted; callbacks become inert after close.
 
 ---@class HollowUiDialogButtonOptions
 ---@field id? string
@@ -1148,7 +1141,7 @@
 
 ---@class HollowUiModalSpec
 ---@field theme? HollowUiTheme|string Widget-kind name for a live palette, or an authoritative explicit palette table.
----@field render fun(theme: HollowUiTheme, state?: table): HollowUiRowNode|HollowUiColumnNode
+---@field render fun(theme: HollowUiTheme, state: table, ctx: HollowUiLayoutContext): HollowUiLayoutNode, number? Clay tree and optional preferred content height in pixels.
 ---@field keys? function
 ---@field width? integer
 ---@field height? integer
@@ -1157,6 +1150,12 @@
 ---@field align? string
 ---@field backdrop? any
 ---@field on_event? function
+---@field layout_live? boolean Rebuild on every preparation; use only for providers without explicit invalidation.
+---@field semantic_hover? boolean Invalidate the render snapshot when hover state changes; native background hover needs no rebuild.
+---@field layout_events? string[] Event names that invalidate the native snapshot while mounted.
+---@field layout_refresh_after? fun(): number|nil Delay in milliseconds until the next time-dependent update; nil schedules none.
+---@field on_mount? fun()
+---@field on_unmount? fun()
 
 ---@class HollowUiSelectState
 ---@field index integer
@@ -1173,6 +1172,12 @@
 ---@field score number
 
 ---@class HollowUiSelectOptions
+---@field layout_live? boolean Callable sources default to live rebuilding; false requires explicit layout events or invalidation.
+---@field layout_events? string[] Native snapshot invalidation events while mounted.
+---@field layout_refresh_after? fun(): number|nil Native snapshot refresh delay in milliseconds.
+---@field on_mount? fun()
+---@field on_unmount? fun()
+---@field layout_label? fun(item: any, ctx: HollowUiLayoutContext, view: { id: string, query: string, selected: boolean, hovered: boolean, theme: HollowUiTheme }): HollowUiLayoutNode|nil Optional Clay label tree; nil uses the normal label, which still supplies search/semantics.
 ---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field search_text? fun(item: any): string|nil
@@ -1183,6 +1188,7 @@
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer
+---@field max_height? integer
 ---@field chrome? HollowUiChrome|boolean
 ---@field theme? HollowUiTheme
 ---@field actions HollowUiSelectAction[]
@@ -2039,6 +2045,21 @@ function command_palette.open(opts) end
 
 function command_palette.close() end
 
+---@class HollowUiLuaReplOptions
+---@field width? integer Width in cells (default 80).
+---@field height? integer Fixed height in cells; omitted for automatic content sizing.
+---@field theme? HollowUiTheme
+
+---@class HollowUiLuaReplNamespace
+local lua_repl = {}
+
+---Open the Clay console in the live Lua runtime. Not sandboxed.
+---@param opts? HollowUiLuaReplOptions
+---@return HollowUiModalHandle? handle Nil if another modal is active.
+function lua_repl.open(opts) end
+
+function lua_repl.close() end
+
 ---@class HollowUiMuxNavigatorOptions
 ---@field query? string
 ---@field filter? "all"|"pane_bell"
@@ -2234,7 +2255,96 @@ local workspace = {}
 ---@field badge HollowStyle
 ---@field kbd HollowStyle
 
+--- Hierarchical Clay layout; inline row/column helpers remain for bars and rich labels.
+---@class HollowUiLayoutOptions
+---@field id? string Required for clickable nodes; unique within the surface.
+---@field label? string Automation label for clickable containers.
+---@field role? 'button'|'listitem' Automation role for clickable containers.
+---@field width? number|'fit'|'grow' Pixel count, content size, or remaining space.
+---@field height? number|'fit'|'grow'
+---@field min_width? number Minimum pixel width for fit/grow sizing.
+---@field max_width? number Maximum pixel width for fit/grow sizing.
+---@field min_height? number Minimum pixel height for fit/grow sizing.
+---@field max_height? number Maximum pixel height for fit/grow sizing.
+---@field border_width? number|{left?: number, right?: number, top?: number, bottom?: number, between_children?: number} Pixel border widths; border color comes from style.border.
+---@field padding? HollowUiBoxValue
+---@field gap? number
+---@field style? HollowUiNodeStyle
+---@field scroll? boolean Vertical scrolling.
+---@field scroll_x? boolean Horizontal scrolling; children may exceed the viewport width.
+---@field reveal? string Local ID of a descendant container to keep visible, e.g. a caret.
+---@field reveal_start? boolean Align the reveal target with the viewport start instead of nearest-edge reveal.
+---@field measure? boolean Report scroll viewport dimensions through ctx.metrics; opt-in to avoid per-node feedback.
+---@field scrollbar_id? string Local selectable-list scrollbar ID; enables overlay scrollbar paint and drag routing.
+---@field scrollbar_thumb_ratio? number Full-list scroll position from 0 to 1.
+---@field scrollbar_thumb_size? number Visible fraction of the full logical list.
+---@field scrollbar_track_color? string
+---@field scrollbar_thumb_color? string
+---@field align_y? 'start'|'center'|'end' Vertical alignment of container children.
+---@field on_click? fun(event: { id: string })
+
+---@class HollowUiLayoutTextOptions
+---@field wrap? 'words'|'newlines'|'none'
+---@field text_align? 'left'|'center'|'right'|0|1|2
+
+---@class HollowUiLayoutNode: HollowUiLayoutOptions, HollowUiLayoutTextOptions
+---@field kind integer
+---@field children? table
+---@field text? string
+---@field value? number Progress value.
+
+--- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
+---@class HollowUiLayout
+---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
+---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
+---@field hide fun()
+---@field debug fun(enabled: boolean) Toggle Clay's built-in inspector for the active surface.
+---@field debug_grid fun(enabled: boolean) Toggle Clay's inspector over the window's bars, sidebar and pane layout.
+---@field debug_width fun(width?: number): number? Get, or set in pixels, the inspector panel width (default 400; clamped to the window).
+
+--- Clay node constructors and composed components.
+---@class HollowUiComponents
+---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field text fun(value: any, style?: HollowUiNodeStyle, opts?: HollowUiLayoutTextOptions): HollowUiLayoutNode
+---@field button fun(opts?: HollowUiButtonOptions): HollowUiLayoutNode
+---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
+---@field dialog fun(opts: table, theme: HollowUiTheme, ctx: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
+---@field input fun(input: HollowUiTextInput, theme: HollowUiTheme, ctx: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
+---@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
+---@field demo fun()
+
+---@class HollowUiLayoutContext
+---@field metrics? table<string, { width: number, height: number }> Latest measured overlay viewport dimensions by local ID. Read-only; changes invalidate the surface.
+---@field width? number Host window width in pixels.
+---@field height? number Host window height in pixels.
+---@field cell_w? number Existing renderer cell width.
+---@field cell_h? number Existing renderer cell height.
+
+---@class HollowUiLayoutSurfaceOptions
+---@field render fun(ctx: HollowUiLayoutContext): HollowUiLayoutNode
+---@field theme? HollowUiTheme Token palette for this surface.
+---@field frame? HollowUiLayoutFrame
+
+---@class HollowUiLayoutFrame
+---@field width? number Width in terminal cells.
+---@field height? number Height in terminal rows; omitted uses fit sizing.
+---@field max_height? number Maximum terminal rows, capping fit or fixed height.
+---@field align_x? 0|1|2 Start, center or end alignment.
+---@field align_y? 0|1|2 Start, center or end alignment.
+---@field chrome? HollowUiChrome
+
+---@class HollowUiLayoutSurface
+---@field id integer
+---@field namespace string
+---@field show fun(self: HollowUiLayoutSurface): HollowUiLayoutSurface Show as the standalone surface.
+---@field invalidate fun(self: HollowUiLayoutSurface) Rebuild on the next frame.
+---@field destroy fun(self: HollowUiLayoutSurface) Drop cached nodes and callbacks.
+---@field snapshot fun(self: HollowUiLayoutSurface, ctx?: HollowUiLayoutContext): table[] Validate and serialize only when dirty.
+
 ---@class HollowUi
+---@field layout HollowUiLayout Experimental Clay-backed surface engine.
+---@field components HollowUiComponents Experimental Clay node constructors and components.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
@@ -2311,13 +2421,13 @@ function ui.style(...) end
 ---@return HollowStyle
 function ui.styled(theme, ...) end
 
----@param opts HollowUiButtonOptions
----@return HollowUiSpanNode
-function ui.button(opts) end
-
 ---@param opts HollowUiActionButtonOptions
 ---@return HollowUiSpanNode
 function ui.action_button(opts) end
+
+---@param opts HollowUiButtonOptions
+---@return HollowUiSpanNode
+function ui.button(opts) end
 
 ---@param opts HollowUiTabOptions
 ---@return HollowUiGroupNode
@@ -2359,7 +2469,7 @@ function ui.text_input(opts) end
 ---@field keys fun(key: string, mods: HollowUiKeyMods): boolean
 ---@field on_event fun(name: string, event: table): boolean
 
---- Read-only wrapped text behavior. Width counts Unicode code points, not display cells.
+--- Read-only wrapped text behavior. Width counts terminal display cells.
 ---@param opts? { text?: string, width?: integer, row_budget?: integer, id?: string }
 ---@return HollowUiTextView
 function ui.text_view(opts) end
@@ -2367,11 +2477,6 @@ function ui.text_view(opts) end
 ---@param opts { id_prefix: string, items: fun(): any[], row_budget: fun(): integer, row_count_fn?: fun(item: any): integer, on_activate: fun(index: integer) }
 ---@return table
 function ui.selectable_list(opts) end
-
----@param opts HollowUiDialogOptions
----@param theme table
----@return HollowUiColumnNode
-function ui.dialog(opts, theme) end
 
 ---@param kind string
 ---@param opts HollowUiWidgetOptions
@@ -2404,6 +2509,7 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
+ui.lua_repl = lua_repl
 ui.mux_navigator = mux_navigator
 ---@type HollowUiActivityNamespace
 ui.activity = {}

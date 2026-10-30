@@ -27,15 +27,87 @@ fn addShellIntegrationOptions(b: *std.Build, target: std.Build.ResolvedTarget, o
     }
 }
 
+// Native runtime C sources and libraries shared by the GUI executable and the
+// unit tests that compile the same root module.
+fn addNativeRuntime(b: *std.Build, module: *std.Build.Module, os_tag: std.Target.Os.Tag, fontdeps_dep: *std.Build.Dependency, zluajit_dep: *std.Build.Dependency) void {
+    module.linkLibrary(fontdeps_dep.artifact("freetype"));
+    module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+    module.linkLibrary(zluajit_dep.artifact("lua"));
+    module.addCSourceFile(.{
+        .file = b.path("src/render/sokol_app.c"),
+        .flags = &.{
+            "-Ithird_party/sokol",
+            "-Ithird_party/sokol/util",
+            "-Ithird_party/stb",
+            "-Ithird_party/fontstash",
+        },
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/render/dwrite_resolver.c"),
+        .flags = &.{},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/render/png_decode.c"),
+        .flags = &.{
+            "-Ithird_party/stb",
+            "-DGHOSTTY_STATIC",
+        },
+    });
+    for (platformSystemLibraries(os_tag)) |lib_name| {
+        module.linkSystemLibrary(lib_name, .{});
+    }
+}
+
+// Every Lua file under src/lua/hollow, as paths relative to src/. lua_bridge.zig
+// embeds each one and derives its module name from the path.
+fn luaModulePaths(b: *std.Build) []const []const u8 {
+    const io = b.graph.io;
+    var dir = b.root.openDir(io, "src/lua/hollow", .{ .iterate = true }) catch |err|
+        std.debug.panic("cannot open src/lua/hollow: {s}", .{@errorName(err)});
+    defer dir.close(io);
+    var walker = dir.walk(b.allocator) catch @panic("OOM");
+    defer walker.deinit();
+    var paths: std.ArrayList([]const u8) = .empty;
+    // Configure results are cached; rerun it when a Lua file is added or removed.
+    b.dependOnDirectoryContents(b.path("src/lua/hollow"));
+    while (walker.next(io) catch |err| std.debug.panic("cannot walk src/lua/hollow: {s}", .{@errorName(err)})) |entry| {
+        if (entry.kind == .directory) {
+            b.dependOnDirectoryContents(b.path(b.fmt("src/lua/hollow/{s}", .{entry.path})));
+            continue;
+        }
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".lua")) continue;
+        const path = b.fmt("lua/hollow/{s}", .{entry.path});
+        std.mem.replaceScalar(u8, path, '\\', '/');
+        paths.append(b.allocator, path) catch @panic("OOM");
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, z: []const u8) bool {
+            return std.mem.lessThan(u8, a, z);
+        }
+    }.lessThan);
+    return paths.items;
+}
+
 pub fn build(b: *std.Build) void {
+    const lua_modules = luaModulePaths(b);
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
-    @import("src/cli_build_steps.zig").add(b, target, optimize);
-    addAgentSteps(b, target, optimize);
+    const requested_optimize = b.standardOptimizeOption(.{});
+    // Fast edit loop: app code in Debug (about 3.5x faster to rebuild than
+    // ReleaseFast), while cached C dependencies stay ReleaseFast at runtime.
+    const dev = b.option(bool, "dev", "Build app code in Debug and C dependencies in ReleaseFast") orelse false;
+    const optimize: std.builtin.OptimizeMode = if (dev) .Debug else requested_optimize;
+    const dep_optimize: std.builtin.OptimizeMode = if (dev) .ReleaseFast else optimize;
+    // The CLI and guest agents are installed and deployed, so dev mode keeps
+    // them ReleaseFast with the other dependencies.
+    @import("src/cli_build_steps.zig").add(b, target, dep_optimize);
+    addAgentSteps(b, target, dep_optimize);
     // Skip GUI graph configuration. build-agent.zig also avoids resolving the
     // main package's GUI dependency manifest on a minimal checkout.
     if (b.option(bool, "agent-only", "Configure only the standalone Linux agent") orelse false) return;
     const emit_pdb = b.option(bool, "pdb", "Emit PDB debug symbols (enables profiling ReleaseFast builds)") orelse false;
+    // ReleaseFast otherwise still generates CodeView/PDB information. Avoid
+    // that LLVM work for normal builds without changing optimization settings.
+    const strip: ?bool = if (emit_pdb) false else if (optimize == .fast) true else null;
     const ghostty_optimize = ghosttyOptimizeMode(optimize);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -50,11 +122,11 @@ pub fn build(b: *std.Build) void {
     // missing sub-deps and re-run configure with the full graph available.
     const fontdeps_dep = b.lazyDependency("fontdeps", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = dep_optimize,
     }) orelse return;
     const zluajit_dep = b.dependency("zluajit", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = dep_optimize,
         .system = false,
         .shared = false,
         .@"lua52-compat" = false,
@@ -85,10 +157,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    launcher_build_options.addOption([]const []const u8, "lua_modules", lua_modules);
     addShellIntegrationOptions(b, target, optimize, launcher_build_options, launcher_root_module);
     launcher_build_options.addOption(bool, "launcher_mode", true);
     launcher_build_options.addOption(bool, "headless", false);
@@ -98,17 +172,18 @@ pub fn build(b: *std.Build) void {
     launcher_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     launcher_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     @import("src/c_build.zig").addPosix(b, launcher_root_module, target, optimize);
-    if (emit_pdb) launcher_root_module.strip = false;
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    build_options.addOption([]const []const u8, "lua_modules", lua_modules);
     addShellIntegrationOptions(b, target, optimize, build_options, root_module);
     build_options.addOption(bool, "launcher_mode", false);
     build_options.addOption(bool, "headless", false);
@@ -117,8 +192,8 @@ pub fn build(b: *std.Build) void {
     root_module.addOptions("build_options", build_options);
     root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
-    root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
     @import("src/c_build.zig").addPosix(b, root_module, target, optimize);
+    @import("src/c_build.zig").addClay(b, root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
     const ghostty_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/term/ghostty_bindings.h"),
         .target = target,
@@ -152,7 +227,6 @@ pub fn build(b: *std.Build) void {
     ft_translate.addIncludePath(fontdeps_dep.artifact("freetype").getEmittedIncludeTree());
     ft_translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("ft_c", ft_translate.createModule());
-    if (emit_pdb) root_module.strip = false;
 
     // Isolated renderer benchmark graph. The dummy Sokol backend exposes only
     // sokol_gfx and sokol_gl, so this target never pulls in a window backend.
@@ -164,6 +238,31 @@ pub fn build(b: *std.Build) void {
     });
     headless_translate.addIncludePath(b.path("third_party/sokol"));
     headless_translate.addIncludePath(b.path("third_party/sokol/util"));
+
+    // Generated by scripts/bench-rounded-borders.py from old/current runtime
+    // functions, so the benchmark measures the real Sokol recording paths.
+    if (b.option([]const u8, "border-bench-source", "Generated rounded border benchmark source")) |source| {
+        const border_module = b.createModule(.{
+            .root_source_file = .{ .cwd_relative = source },
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        });
+        border_module.addImport("sokol_c", headless_translate.createModule());
+        border_module.addImport("rounded_border", b.createModule(.{
+            .root_source_file = b.path("src/render/rounded_border.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }));
+        border_module.addCSourceFile(.{
+            .file = b.path("src/render/sokol_headless.c"),
+            .flags = &.{ "-Ithird_party/sokol", "-Ithird_party/sokol/util" },
+        });
+        const border_bench = b.addExecutable(.{ .name = "rounded-border-bench", .root_module = border_module });
+        const run = b.addRunArtifact(border_bench);
+        run.addPassthruArgs();
+        b.step("bench-rounded-borders", "Run generated old/current rounded border CPU benchmark").dependOn(&run.step);
+    }
 
     const bench_root_module = b.createModule(.{
         .root_source_file = b.path("src/renderer_bench.zig"),
@@ -177,8 +276,11 @@ pub fn build(b: *std.Build) void {
     bench_root_module.addOptions("build_options", bench_build_options);
     bench_root_module.addImport("sokol_c", headless_translate.createModule());
     bench_root_module.addImport("ft_c", ft_translate.createModule());
-    bench_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addTextWidth(b, bench_root_module, ghostty_dep.artifact("ghostty-vt-static"));
 
+    // Only the app executables; skips the standalone CLI and guest agent
+    // bundles that the install step also cross-builds.
+    const gui_step = b.step("gui", "Build and install only the app executables (no CLI/agent bundles)");
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
         const res_obj = b.addSystemCommand(&.{
@@ -192,10 +294,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .strip = strip,
         });
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
         gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+        gui_build_options.addOption([]const []const u8, "lua_modules", lua_modules);
         addShellIntegrationOptions(b, target, optimize, gui_build_options, gui_root_module);
         gui_build_options.addOption(bool, "launcher_mode", false);
         gui_build_options.addOption(bool, "headless", false);
@@ -204,10 +308,9 @@ pub fn build(b: *std.Build) void {
         gui_root_module.addOptions("build_options", gui_build_options);
         gui_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
         gui_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
-        gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
-        if (emit_pdb) gui_root_module.strip = false;
+        @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
 
         const gui_exe = b.addExecutable(.{
             .name = "hollow-native",
@@ -216,34 +319,12 @@ pub fn build(b: *std.Build) void {
 
         gui_exe.root_module.addObjectFile(res_file);
         gui_exe.subsystem = .windows;
-        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
-        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
-        gui_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/sokol_app.c"),
-            .flags = &.{
-                "-Ithird_party/sokol",
-                "-Ithird_party/sokol/util",
-                "-Ithird_party/stb",
-                "-Ithird_party/fontstash",
-            },
-        });
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/png_decode.c"),
-            .flags = &.{
-                "-Ithird_party/stb",
-                "-DGHOSTTY_STATIC",
-            },
-        });
-        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
-            gui_exe.root_module.linkSystemLibrary(lib_name, .{});
-        }
+        addNativeRuntime(b, gui_root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
+        // Tests compile root_module, which no Windows executable links.
+        addNativeRuntime(b, root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_gui_exe = b.addInstallArtifact(gui_exe, .{});
         b.getInstallStep().dependOn(&install_gui_exe.step);
+        gui_step.dependOn(&install_gui_exe.step);
 
         const launcher_exe = b.addExecutable(.{
             .name = "hollow",
@@ -260,23 +341,7 @@ pub fn build(b: *std.Build) void {
         launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
         const install_launcher_exe = b.addInstallArtifact(launcher_exe, .{});
         b.getInstallStep().dependOn(&install_launcher_exe.step);
-
-        const gui_launcher_exe = b.addExecutable(.{
-            .name = "hollow-gui",
-            .root_module = launcher_root_module,
-        });
-        gui_launcher_exe.root_module.addObjectFile(res_file);
-        gui_launcher_exe.subsystem = .windows;
-        gui_launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        gui_launcher_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        gui_launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
-        gui_launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
-        gui_launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
-        const install_gui_launcher_exe = b.addInstallArtifact(gui_launcher_exe, .{});
-        b.getInstallStep().dependOn(&install_gui_launcher_exe.step);
+        gui_step.dependOn(&install_launcher_exe.step);
 
         run_artifact = gui_exe;
     } else {
@@ -284,34 +349,10 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = if (target.result.os.tag == .windows) launcher_root_module else root_module,
         });
-        exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
-        exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
-        exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/sokol_app.c"),
-            .flags = &.{
-                "-Ithird_party/sokol",
-                "-Ithird_party/sokol/util",
-                "-Ithird_party/stb",
-                "-Ithird_party/fontstash",
-            },
-        });
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/png_decode.c"),
-            .flags = &.{
-                "-Ithird_party/stb",
-                "-DGHOSTTY_STATIC",
-            },
-        });
-        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
-            exe.root_module.linkSystemLibrary(lib_name, .{});
-        }
+        addNativeRuntime(b, exe.root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_exe = b.addInstallArtifact(exe, .{});
         b.getInstallStep().dependOn(&install_exe.step);
+        gui_step.dependOn(&install_exe.step);
         run_artifact = exe;
     }
 
@@ -356,6 +397,54 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+    const clay_test_module = b.createModule(.{
+        .root_source_file = b.path("src/ui/clay_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    const clay_tests = b.addTest(.{ .root_module = clay_test_module });
+    const clay_test_run = b.addRunArtifact(clay_tests);
+    b.step("test-clay", "Run isolated Clay layout contracts").dependOn(&clay_test_run.step);
+    test_step.dependOn(&clay_test_run.step);
+    const width_test_module = b.createModule(.{
+        .root_source_file = b.path("src/text_width_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, width_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    const width_tests = b.addTest(.{ .root_module = width_test_module });
+    const width_test_run = b.addRunArtifact(width_tests);
+    b.step("test-text-width", "Run shared Ghostty grapheme width contracts").dependOn(&width_test_run.step);
+    test_step.dependOn(&width_test_run.step);
+    const clay_surface_test_module = b.createModule(.{
+        .root_source_file = b.path("src/clay_surface_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_surface_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    clay_surface_test_module.linkLibrary(zluajit_dep.artifact("lua"));
+    const clay_surface_tests = b.addTest(.{
+        .root_module = clay_surface_test_module,
+        .filters = &.{"Clay snapshot parser"},
+    });
+    const clay_surface_test_run = b.addRunArtifact(clay_surface_tests);
+    b.step("test-clay-surface", "Run headless Clay snapshot parser contracts").dependOn(&clay_surface_test_run.step);
+    test_step.dependOn(&clay_surface_test_run.step);
+    const clay_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/clay_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_bench_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    const clay_bench = b.addExecutable(.{ .name = "clay-bench", .root_module = clay_bench_module });
+    const clay_bench_run = b.addRunArtifact(clay_bench);
+    clay_bench_run.addPassthruArgs();
+    b.step("bench-clay", "Run headless native Clay layout benchmark").dependOn(&clay_bench_run.step);
     const luajit_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/luajit_syntax_test.zig"),
         .target = target,
@@ -414,7 +503,7 @@ pub fn build(b: *std.Build) void {
     bench_test_root_module.addOptions("build_options", bench_test_build_options);
     bench_test_root_module.addImport("sokol_c", headless_translate.createModule());
     bench_test_root_module.addImport("ft_c", ft_translate.createModule());
-    bench_test_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addTextWidth(b, bench_test_root_module, ghostty_dep.artifact("ghostty-vt-static"));
     const renderer_bench_tests = b.addTest(.{ .root_module = bench_test_root_module });
     bench_test_root_module.addImport("ghostty_c", ghostty_translate.createModule());
     renderer_bench_tests.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
@@ -433,6 +522,13 @@ pub fn build(b: *std.Build) void {
             "-DGHOSTTY_STATIC",
         },
     });
+    if (target.result.os.tag == .windows) {
+        renderer_bench_tests.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        renderer_bench_tests.root_module.linkSystemLibrary("dwrite", .{});
+    }
     const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);
     test_step.dependOn(&renderer_bench_test_cmd.step);
 

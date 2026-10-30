@@ -12,7 +12,6 @@
 --- })
 --- ```
 local shared = require("hollow.ui.shared")
-local util = require("hollow.util")
 local ui = _G.hollow.ui
 
 ui.confirm = ui.confirm or {}
@@ -79,16 +78,16 @@ function ui.confirm.open(opts)
   end
 
   m = ui.modal({
+    title = opts.title,
     theme = base_theme,
-    render = function(theme, state)
-      local hovered = state and find_hovered_index(state.hovered_id, footer_buttons)
-      return ui.dialog({
+    render = function(theme, state, ctx)
+      return require("hollow.ui.components.dialog")({
         title = opts.title,
-        body = { ui.text(opts.prompt) },
+        prompt = opts.prompt,
         footer = footer_buttons,
         selected = nav.index,
-        hovered = hovered,
-      }, theme)
+        hovered = state and find_hovered_index(state.hovered_id, footer_buttons),
+      }, theme, ctx)
     end,
     width = opts.width or 50,
     height = opts.height,

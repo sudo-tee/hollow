@@ -17,7 +17,6 @@ A release zip contains:
 | File                    | Role                                       |
 | ----------------------- | ------------------------------------------ |
 | `hollow.exe`            | CLI launcher and `hollow cli …` host       |
-| `hollow-gui.exe`        | Console-less GUI shim                      |
 | `hollow-native.exe`     | Actual GUI process                         |
 | `hollow-cli`            | Python HTP client (optional, OSC over tty) |
 | `agents/`               | Static Linux `hollow-agent` + `SHA256SUMS` |
@@ -37,8 +36,10 @@ not blocked.
 ```text
 hollow.exe
   └─ hollow-native.exe  (D3D11 + Sokol renderer)
-       └─ hollow-gui.exe (present for completeness; not used directly)
 ```
+
+For a console-less shortcut, point directly to `hollow-native.exe`. The former
+`hollow-gui.exe` shim performed the same launch as `hollow.exe` and is no longer built.
 
 ## Config paths
 

@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("public UI styling example", function()
@@ -12,27 +13,23 @@ describe("public UI styling example", function()
   it("renders tabs, selectable rows, a themed action and panel using public APIs", function()
     local overlay = ui._overlay_state()[1]
     local palette = hollow.theme.resolve_widget("select")
-    assert.equals(44, overlay.width)
-    assert.equals(palette.panel_bg, overlay.chrome.bg)
-    assert.equals(palette.selection_bg, overlay.rows[3].fill_bg)
-    assert.equals("Hollow", overlay.rows[3].segments[1].text)
-    assert.equals("Plugin", overlay.rows[4].segments[1].text)
-    assert.equals(palette.primary_bg, overlay.rows[5].segments[1].bg)
-    assert.equals("styling:done", overlay.rows[5].segments[1].id)
+    assert.is_true(overlay.clay)
+    assert.equals(palette.panel_bg, clay.find(ui, ":dialog").bg)
+    assert.equals(palette.selection_bg, clay.find(ui, ":styling:choice:Hollow").bg)
+    assert.is_not_nil(clay.text_node(ui, "Hollow"))
+    assert.is_not_nil(clay.text_node(ui, "Plugin"))
+    assert.equals(palette.primary_bg, clay.find(ui, ":styling:done").bg)
   end)
 
   it("keeps selection and tab callbacks working after serialization", function()
-    ui._overlay_state()
-    modal.widget.on_event("overlay:click", { id = "styling:choice:Plugin" })
-    local overlay = ui._overlay_state()[1]
+    modal.widget.on_event("overlay:click", { id = clay.find(ui, ":styling:choice:Plugin").id })
     local palette = hollow.theme.resolve_widget("select")
-    assert.equals(palette.selection_bg, overlay.rows[4].fill_bg)
-    assert.is_nil(overlay.rows[3].fill_bg)
-    modal.widget.on_event("overlay:click", { id = "styling:tab:Recent" })
-    overlay = ui._overlay_state()[1]
-    assert.equals("Notes", overlay.rows[3].segments[1].text)
-    assert.equals(palette.selection_bg, overlay.rows[3].fill_bg)
-    modal.widget.on_event("overlay:click", { id = "styling:done" })
+    assert.equals(palette.selection_bg, clay.find(ui, ":styling:choice:Plugin").bg)
+    assert.is_nil(clay.find(ui, ":styling:choice:Hollow").bg)
+    modal.widget.on_event("overlay:click", { id = clay.find(ui, ":styling:tab:Recent").id })
+    assert.is_not_nil(clay.text_node(ui, "Notes"))
+    assert.equals(palette.selection_bg, clay.find(ui, ":styling:choice:Notes").bg)
+    modal.widget.on_event("overlay:click", { id = clay.find(ui, ":styling:done").id })
     assert.equals(0, ui.overlay.depth())
   end)
 
@@ -52,11 +49,9 @@ describe("public UI styling example", function()
         },
       },
     })
-    local overlay = ui._overlay_state()[1]
-    assert.equals("#112233", overlay.chrome.bg)
-    assert.equals("#223344", overlay.rows[3].fill_bg)
-    assert.equals("#334455", overlay.rows[3].accent_bar)
-    assert.equals("#334455", overlay.rows[5].segments[1].bg)
+    assert.equals("#112233", clay.find(ui, ":dialog").bg)
+    assert.equals("#223344", clay.find(ui, ":styling:choice:Hollow").bg)
+    assert.equals("#334455", clay.find(ui, ":styling:done").bg)
   end)
 
   it("closes through its existing escape key handler", function()

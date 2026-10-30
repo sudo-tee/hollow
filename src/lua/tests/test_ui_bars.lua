@@ -171,56 +171,19 @@ describe("UI bars test suite", function()
       )
     end)
 
-    it("truncates serialized tab text", function()
+    -- Truncation is native (fitTabSegments) so it can use the laid-out width;
+    -- serialized state keeps full text, styles and the clickable suffix.
+    it("leaves long tab labels for native fitting", function()
       _G.host_api.set_tab_title_by_id(201, "this is a very looooong name that should be shorter")
       topbar_with_max_width = hollow.ui._topbar_state()
-      harness.assert_equal(
-        topbar_with_max_width.items[1].tabs[1].text,
-        "prefix this is a ...",
-        "tabs max_width should truncate serialized tab text"
-      )
-    end)
-
-    it("truncates serialized formatted segments", function()
-      harness.assert_true(
-        topbar_with_max_width.items[1].tabs[1].segments ~= nil
-          and topbar_with_max_width.items[1].tabs[1].segments[1].text == "prefix "
-          and topbar_with_max_width.items[1].tabs[1].segments[2].text == "this is a ...",
-        "tabs max_width should truncate serialized formatted segments"
-      )
-    end)
-
-    it("preserves a clickable close suffix while truncating a title", function()
-      hollow.ui.topbar.configure({
-        new_tab = false,
-        workspace = false,
-        separator = false,
-        cwd = false,
-        key_legend = false,
-        time = false,
-        tabs = {
-          fit = "content",
-          max_width = 20,
-          format = function(tab)
-            return {
-              hollow.ui.span(tab.title),
-              hollow.ui.span(" ×", { on_click = function() end }),
-            }
-          end,
-        },
-      })
-      _G.host_api.set_tab_title_by_id(201, "this is a very looooong title")
-      local tab = hollow.ui._topbar_state().items[1].tabs[1]
+      local tab = topbar_with_max_width.items[1].tabs[1]
       harness.assert_equal(
         tab.text,
-        "this is a very ... ×",
-        "tab truncation should retain close control text"
+        "prefix this is a very looooong name that should be shorter",
+        "serialized tab text should stay complete"
       )
-      harness.assert_equal(
-        tab.segments[#tab.segments].text,
-        " ×",
-        "tab truncation should retain close control segment"
-      )
+      harness.assert_equal(tab.segments[1].text, "prefix ", "segments should stay split")
+      harness.assert_equal(20, topbar_with_max_width.items[1].max_width, "cap stays native")
     end)
   end)
 

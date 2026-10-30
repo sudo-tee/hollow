@@ -112,108 +112,31 @@ const RuntimeLuaSources = struct {
     }
 };
 
-const embedded_lua_modules = [_]LuaModule{
-    .{ .name = "hollow.tbl", .source = @embedFile("lua/hollow/tbl.lua") },
-    .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
-    .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
-    .{ .name = "hollow.host", .source = @embedFile("lua/hollow/host.lua") },
-    .{ .name = "hollow.host.podman", .source = @embedFile("lua/hollow/host/podman.lua") },
-    .{ .name = "hollow.host.container", .source = @embedFile("lua/hollow/host/container.lua") },
-    .{ .name = "hollow.host.docker", .source = @embedFile("lua/hollow/host/docker.lua") },
-    .{ .name = "hollow.host.options", .source = @embedFile("lua/hollow/host/options.lua") },
-    .{ .name = "hollow.host.wsl", .source = @embedFile("lua/hollow/host/wsl.lua") },
-    .{ .name = "hollow.host.ssh", .source = @embedFile("lua/hollow/host/ssh.lua") },
-    .{ .name = "hollow.host.pty", .source = @embedFile("lua/hollow/host/pty.lua") },
-    .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
-    .{ .name = "hollow.shape", .source = @embedFile("lua/hollow/shape.lua") },
-    .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
-    .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
-    .{ .name = "hollow.themes.catppuccin-mocha", .source = @embedFile("lua/hollow/themes/catppuccin-mocha.lua") },
-    .{ .name = "hollow.themes.dracula", .source = @embedFile("lua/hollow/themes/dracula.lua") },
-    .{ .name = "hollow.themes.gruvbox-dark", .source = @embedFile("lua/hollow/themes/gruvbox-dark.lua") },
-    .{ .name = "hollow.themes.kanagawa-wave", .source = @embedFile("lua/hollow/themes/kanagawa-wave.lua") },
-    .{ .name = "hollow.themes.nord", .source = @embedFile("lua/hollow/themes/nord.lua") },
-    .{ .name = "hollow.themes.onedark", .source = @embedFile("lua/hollow/themes/onedark.lua") },
-    .{ .name = "hollow.themes.rose-pine", .source = @embedFile("lua/hollow/themes/rose-pine.lua") },
-    .{ .name = "hollow.themes.solarized-dark", .source = @embedFile("lua/hollow/themes/solarized-dark.lua") },
-    .{ .name = "hollow.themes.tokyonight", .source = @embedFile("lua/hollow/themes/tokyonight.lua") },
-    .{ .name = "hollow.themes.hollow", .source = @embedFile("lua/hollow/themes/hollow.lua") },
-    .{ .name = "hollow.json", .source = @embedFile("lua/hollow/json.lua") },
-    .{ .name = "hollow.workspace", .source = @embedFile("lua/hollow/workspace.lua") },
-    .{ .name = "hollow.workspace.hosts", .source = @embedFile("lua/hollow/workspace/hosts.lua") },
-    .{ .name = "hollow.workspace.project", .source = @embedFile("lua/hollow/workspace/project.lua") },
-    .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
-    .{ .name = "hollow.term.jobs", .source = @embedFile("lua/hollow/term/jobs.lua") },
-    .{ .name = "hollow.program_status", .source = @embedFile("lua/hollow/program_status.lua") },
-    .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
-    .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
-    .{ .name = "hollow.route", .source = @embedFile("lua/hollow/route.lua") },
-    .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
-    .{ .name = "hollow.copy_mode", .source = @embedFile("lua/hollow/copy_mode.lua") },
-    .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
-    .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
-    .{ .name = "hollow.plugins", .source = @embedFile("lua/hollow/plugins/init.lua") },
-    .{ .name = "hollow.ui.style.box", .source = @embedFile("lua/hollow/ui/style/box.lua") },
-    .{ .name = "hollow.ui.style.tokens", .source = @embedFile("lua/hollow/ui/style/tokens.lua") },
-    .{ .name = "hollow.ui.style.sheet", .source = @embedFile("lua/hollow/ui/style/sheet.lua") },
-    .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
-    .{ .name = "hollow.ui.styles.common", .source = @embedFile("lua/hollow/ui/styles/common.lua") },
-    .{ .name = "hollow.ui.styles.button", .source = @embedFile("lua/hollow/ui/styles/button.lua") },
-    .{ .name = "hollow.ui.styles.tab", .source = @embedFile("lua/hollow/ui/styles/tab.lua") },
-    .{ .name = "hollow.ui.styles.list_row", .source = @embedFile("lua/hollow/ui/styles/list_row.lua") },
-    .{ .name = "hollow.ui.styles.panel", .source = @embedFile("lua/hollow/ui/styles/panel.lua") },
-    .{ .name = "hollow.ui.icons", .source = @embedFile("lua/hollow/ui/icons.lua") },
-    .{ .name = "hollow.ui.primitives", .source = @embedFile("lua/hollow/ui/primitives.lua") },
-    .{ .name = "hollow.ui.widgets.core", .source = @embedFile("lua/hollow/ui/widgets/core.lua") },
-    .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("lua/hollow/ui/widgets/bars/init.lua") },
-    .{ .name = "hollow.ui.widgets.bars.bar_cache", .source = @embedFile("lua/hollow/ui/widgets/bars/bar_cache.lua") },
-    .{ .name = "hollow.ui.widgets.bars.bar_events", .source = @embedFile("lua/hollow/ui/widgets/bars/bar_events.lua") },
-    .{ .name = "hollow.ui.widgets.bars.bar_serialize", .source = @embedFile("lua/hollow/ui/widgets/bars/bar_serialize.lua") },
-    .{ .name = "hollow.ui.widgets.bars.topbar", .source = @embedFile("lua/hollow/ui/widgets/bars/topbar.lua") },
-    .{ .name = "hollow.ui.widgets.bars.bottombar", .source = @embedFile("lua/hollow/ui/widgets/bars/bottombar.lua") },
-    .{ .name = "hollow.ui.widgets.bars.bar_mount", .source = @embedFile("lua/hollow/ui/widgets/bars/bar_mount.lua") },
-    .{ .name = "hollow.ui.widgets.bars.sidebar", .source = @embedFile("lua/hollow/ui/widgets/bars/sidebar.lua") },
-    .{ .name = "hollow.ui.widgets.bars.init", .source = @embedFile("lua/hollow/ui/widgets/bars/init.lua") },
-    .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("lua/hollow/ui/widgets/overlay.lua") },
-    .{ .name = "hollow.ui.composition", .source = @embedFile("lua/hollow/ui/composition.lua") },
-    .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("lua/hollow/ui/widgets/notify.lua") },
-    .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
-    .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
-    .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
-    .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
-    .{ .name = "hollow.ui.styles.select", .source = @embedFile("lua/hollow/ui/styles/select.lua") },
-    .{ .name = "hollow.ui.styles.palette", .source = @embedFile("lua/hollow/ui/styles/palette.lua") },
-    .{ .name = "hollow.ui.styles.mux_navigator", .source = @embedFile("lua/hollow/ui/styles/mux_navigator.lua") },
-    .{ .name = "hollow.ui.styles.activity", .source = @embedFile("lua/hollow/ui/styles/activity.lua") },
-    .{ .name = "hollow.ui.styles.workspace", .source = @embedFile("lua/hollow/ui/styles/workspace.lua") },
-    .{ .name = "hollow.ui.styles.bottombar", .source = @embedFile("lua/hollow/ui/styles/bottombar.lua") },
-    .{ .name = "hollow.ui.styles.topbar", .source = @embedFile("lua/hollow/ui/styles/topbar.lua") },
-    .{ .name = "hollow.ui.styles.notify", .source = @embedFile("lua/hollow/ui/styles/notify.lua") },
-    .{ .name = "hollow.ui.widgets.attention", .source = @embedFile("lua/hollow/ui/widgets/attention.lua") },
-    .{ .name = "hollow.activity", .source = @embedFile("lua/hollow/activity.lua") },
-    .{ .name = "hollow.activity.store", .source = @embedFile("lua/hollow/activity/store.lua") },
-    .{ .name = "hollow.ui.widgets.activity", .source = @embedFile("lua/hollow/ui/widgets/activity.lua") },
-    .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
-    .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
-    .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
-    .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
-    .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
-    .{ .name = "hollow.ui.workspace.source", .source = @embedFile("lua/hollow/ui/workspace/source.lua") },
-    .{ .name = "hollow.ui.workspace.compat", .source = @embedFile("lua/hollow/ui/workspace/compat.lua") },
-    .{ .name = "hollow.ui.builder.modal", .source = @embedFile("lua/hollow/ui/builder/modal.lua") },
-    .{ .name = "hollow.ui.builder.keys", .source = @embedFile("lua/hollow/ui/builder/keys.lua") },
-    .{ .name = "hollow.ui.builder.fire", .source = @embedFile("lua/hollow/ui/builder/fire.lua") },
-    .{ .name = "hollow.ui.builder.internal.click_registry", .source = @embedFile("lua/hollow/ui/builder/internal/click_registry.lua") },
-    .{ .name = "hollow.ui.builder.behaviors.scroll_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/scroll_nav.lua") },
-    .{ .name = "hollow.ui.builder.behaviors.selectable_list", .source = @embedFile("lua/hollow/ui/builder/behaviors/selectable_list.lua") },
-    .{ .name = "hollow.ui.builder.behaviors.text_view", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_view.lua") },
-    .{ .name = "hollow.ui.builder.behaviors.text_input", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_input.lua") },
-    .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
-    .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
-    .{ .name = "hollow.ui.builder.components.button", .source = @embedFile("lua/hollow/ui/builder/components/button.lua") },
-    .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
-    .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
+// Generated from the files under src/lua/hollow by build.zig, so new modules need
+// no registration. `hollow/a/b.lua` becomes `hollow.a.b`; `hollow/a/init.lua` is
+// registered as both `hollow.a` and `hollow.a.init`.
+const embedded_lua_modules = blk: {
+    @setEvalBranchQuota(100_000);
+    const paths = @import("build_options").lua_modules;
+    var modules: []const LuaModule = &.{};
+    for (paths) |path| {
+        const name = luaModuleName(path);
+        const source = @embedFile(path);
+        modules = modules ++ [_]LuaModule{.{ .name = name, .source = source }};
+        if (std.mem.endsWith(u8, name, ".init")) {
+            modules = modules ++ [_]LuaModule{.{ .name = name[0 .. name.len - ".init".len], .source = source }};
+        }
+    }
+    break :blk modules;
 };
+
+fn luaModuleName(comptime path: []const u8) []const u8 {
+    const stem = path["lua/".len .. path.len - ".lua".len];
+    var name: [stem.len]u8 = stem[0..stem.len].*;
+    std.mem.replaceScalar(u8, &name, '/', '.');
+    const final = name;
+    return &final;
+}
 
 /// Callbacks from Lua into the App layer.
 /// Using function pointers keeps luajit.zig free of App imports.
@@ -298,8 +221,10 @@ pub const AppCallbacks = struct {
     set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
     set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
     request_layout_refresh: *const fn (app: *anyopaque) void,
+    request_redraw: ?*const fn (app: *anyopaque) void = null,
     copy_selection: *const fn (app: *anyopaque) void,
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
+    clipboard_read: ?*const fn (app: *anyopaque) []const u8 = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
@@ -590,6 +515,12 @@ fn luaUpvalueIndex(i: c_int) c_int {
     return LUA_GLOBALSINDEX - i;
 }
 
+pub const BarNode = struct {
+    id: []const u8,
+    mods: u32 = 0,
+    shifted: bool = false,
+};
+
 pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
@@ -643,16 +574,9 @@ pub const BuiltInPayload = union(enum) {
         y: f32,
         text: []const u8,
     },
-    topbar_node: struct {
-        id: []const u8,
-        mods: u32 = 0,
-        shifted: bool = false,
-    },
-    bottombar_node: struct {
-        id: []const u8,
-        mods: u32 = 0,
-        shifted: bool = false,
-    },
+    topbar_node: BarNode,
+    bottombar_node: BarNode,
+    sidebar_node: BarNode,
     overlay_node: struct {
         id: []const u8,
         index: usize = 0,
@@ -838,7 +762,10 @@ fn childRunResultToLua(state: *State, api: Api, result: std.process.RunResult, e
     return 3;
 }
 
+var next_runtime_generation: std.atomic.Value(u64) = .init(1);
+
 pub const Runtime = struct {
+    generation: u64 = 0,
     allocator: std.mem.Allocator,
     state: *State,
     context: *BridgeContext,
@@ -903,6 +830,7 @@ pub const Runtime = struct {
         };
         ctx.lua_sources = lua_sources;
         var runtime = Runtime{
+            .generation = next_runtime_generation.fetchAdd(1, .monotonic),
             .allocator = allocator,
             .state = state,
             .context = ctx,
@@ -2405,6 +2333,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "request_layout_refresh");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_request_redraw, 1);
+        api.set_field(self.state, -2, "request_redraw");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
         api.set_field(self.state, -2, "switch_tab");
 
@@ -2466,6 +2398,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_clipboard_write, 1);
         api.set_field(self.state, -2, "clipboard_write");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_clipboard_read, 1);
+        api.set_field(self.state, -2, "clipboard_read");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_paste_clipboard, 1);
@@ -2639,6 +2575,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_now_ms, 1);
         api.set_field(self.state, -2, "now_ms");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_text_graphemes, 1);
+        api.set_field(self.state, -2, "text_graphemes");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_is_floating, 1);
@@ -3045,16 +2985,7 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .files_dropped => |value| {
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
-        .topbar_node => |value| {
-            api.create_table(state, 0, 3);
-            try pushOwnedString(allocator, api, state, value.id);
-            api.set_field(state, -2, "id");
-            api.push_number(state, @floatFromInt(value.mods));
-            api.set_field(state, -2, "mods");
-            api.push_boolean(state, if (value.shifted) 1 else 0);
-            api.set_field(state, -2, "shifted");
-        },
-        .bottombar_node => |value| {
+        .topbar_node, .bottombar_node, .sidebar_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
@@ -6080,6 +6011,14 @@ fn l_request_layout_refresh(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+/// Wakes the frame loop for a repaint without recomputing pane layout.
+fn l_request_redraw(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    if (cbs.request_redraw) |callback| callback(cbs.app) else cbs.request_layout_refresh(cbs.app);
+    return 0;
+}
+
 /// hollow.set_workspace_name(title)  — override the active workspace name
 fn l_set_workspace_name(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
@@ -6691,6 +6630,31 @@ fn l_window_is_focused(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+// Kept independent of app callbacks so startup/config-time text uses the same widths.
+fn l_text_graphemes(state: *State) callconv(.c) c_int {
+    const api = bridgeContext(state).api;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, 1, &len) orelse {
+        api.create_table(state, 0, 0);
+        return 1;
+    };
+    const text = ptr[0..len];
+    api.create_table(state, 0, 0);
+    var offset: usize = 0;
+    var index: c_int = 1;
+    while (@import("text_width.zig").next(text[offset..])) |cluster| {
+        api.create_table(state, 0, 2);
+        api.push_lstring(state, cluster.text.ptr, cluster.text.len);
+        api.set_field(state, -2, "text");
+        api.push_number(state, @floatFromInt(cluster.width));
+        api.set_field(state, -2, "width");
+        api.rawseti(state, -2, index);
+        index += 1;
+        offset += cluster.len;
+    }
+    return 1;
+}
+
 fn l_now_ms(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -6991,6 +6955,16 @@ fn l_paste_clipboard(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.paste_clipboard(cbs.app);
     return 0;
+}
+
+fn l_clipboard_read(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const text = if (ctx.app_callbacks) |cbs|
+        if (cbs.clipboard_read) |read| read(cbs.app) else ""
+    else
+        "";
+    ctx.api.push_lstring(state, text.ptr, text.len);
+    return 1;
 }
 
 fn l_scroll_active(state: *State) callconv(.c) c_int {
@@ -7712,9 +7686,12 @@ test "activity state crosses Lua reload in memory with IDs and acknowledgement i
     var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
     var saved: std.json.Value = undefined;
+    var previous_generation: u64 = 0;
     {
         var runtime = try Runtime.init(std.testing.allocator, &cfg);
         defer runtime.deinit();
+        previous_generation = runtime.generation;
+        try std.testing.expect(previous_generation != 0);
         try runtime.runString(@embedFile("lua/core.lua"));
         try runtime.runString(
             \\hollow._emit_builtin_event("window:blurred", {})
@@ -7727,6 +7704,8 @@ test "activity state crosses Lua reload in memory with IDs and acknowledgement i
     defer deinitJsonValue(std.testing.allocator, saved);
     var runtime = try Runtime.init(std.testing.allocator, &cfg);
     defer runtime.deinit();
+    // Surface IDs/revisions restart in Lua, but native cache identity must not.
+    try std.testing.expect(runtime.generation > previous_generation);
     try runtime.runString(@embedFile("lua/core.lua"));
     try runtime.restoreActivityState(saved);
     try runtime.runString(
@@ -7773,6 +7752,7 @@ test "clipboard bridge rejects writes without application callbacks" {
         \\assert(type(host_api.clipboard_write) == "function")
         \\assert(host_api.clipboard_write("hello\nworld") == false)
         \\assert(host_api.clipboard_write({}) == false)
+        \\assert(host_api.clipboard_read() == "")
     );
 }
 

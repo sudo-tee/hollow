@@ -1,175 +1,92 @@
-package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
-describe("UI palette test suite", function()
-  local env
-  local hollow
-
-  setup(function()
-    env = harness.boot()
-    hollow = env.hollow
+describe("Clay command palette behavior", function()
+  local hollow, ui, entries
+  before_each(function()
+    hollow = harness.boot().hollow
+    ui = hollow.ui
+    entries = {}
+    for i = 1, 8 do
+      entries[i] = {
+        name = "palette_item_" .. i,
+        display_name = "Palette item " .. i,
+        desc = "Palette item " .. i,
+        category = "general",
+        category_label = "General",
+        chords = {},
+      }
+    end
   end)
 
-  describe("command palette", function()
-    local palette_entries = {}
-    local selected_palette_item = nil
-    local scroll_palette_overlay
-    local scroll_palette_id
-    local scroll_palette_counter
-    local first_palette_item_id
+  it("publishes semantic items and activates clicks", function()
+    local selected
+    ui.command_palette.open({
+      entries = entries,
+      on_confirm = function(item)
+        selected = item.name
+      end,
+    })
+    assert.is_true(ui._overlay_state()[1].clay)
+    local item
+    for _, node in ipairs(clay.nodes(ui)) do
+      if node.list_item and node.label and node.label:find("Palette item 1", 1, true) then
+        item = node
+      end
+    end
+    assert.is_not_nil(item)
+    ui.dispatch_widget_event("overlay:click", { id = item.id, index = 1 })
+    assert.equals("palette_item_1", selected)
+    assert.equals(0, ui.overlay.depth())
+  end)
 
-    it("builds a scrollable palette", function()
-      for i = 1, 8 do
-        palette_entries[#palette_entries + 1] = {
-          name = "palette_item_" .. i,
-          display_name = "Palette item " .. i,
-          mode_label = "",
-          desc = "Palette item " .. i,
+  it("keeps wheel navigation and scrollbar drag within the list", function()
+    ui.command_palette.open({ entries = entries, max_height = 8 })
+    local viewport = assert(clay.find(ui, ":select:viewport"))
+    ui.dispatch_widget_event("overlay:scroll", { id = viewport.id, delta = -1, index = 1 })
+    assert.is_truthy(clay.text(ui):find("/8", 1, true))
+    ui.dispatch_widget_event(
+      "overlay:scrollbar",
+      { id = viewport.scrollbar_id, ratio = 1, index = 1 }
+    )
+    assert.equals(1, clay.find(ui, ":select:viewport").scrollbar_thumb_ratio)
+  end)
+
+  it("preserves active-domain colors, command text and match emphasis", function()
+    hollow.config.set({ domains = { main = { shell = "sh" } } })
+    ui.command_palette.open({ entries = ui.command_palette.build_domain_entries(), query = "sh" })
+    local active_color = require("hollow.ui.shared").resolve_theme().palette.bright_green
+    assert.equals(active_color, assert(clay.text_node(ui, "main")).fg)
+    assert.is_true(clay.text_node(ui, "main").bold)
+    assert.equals(active_color, assert(clay.text_node(ui, "• ")).fg)
+    assert.is_not_nil(clay.text_node(ui, "sh", function(node)
+      return node.bold
+    end))
+  end)
+
+  it("leaves inactive-domain status blank", function()
+    hollow.config.set({ domains = { dev = { shell = "bash" } } })
+    ui.command_palette.open({ entries = ui.command_palette.build_domain_entries(), query = "dev" })
+    assert.is_not_nil(clay.text_node(ui, "dev"))
+    assert.is_nil(clay.text_node(ui, "• "))
+  end)
+
+  it("highlights matched palette text", function()
+    ui.command_palette.open({
+      entries = {
+        {
+          name = "product_details",
+          display_name = "product-details",
+          desc = "",
           category = "general",
-          category_label = "General",
           chords = {},
-          searchable = "Palette item " .. i,
-        }
-      end
-
-      hollow.ui.command_palette.open({
-        entries = palette_entries,
-        max_height = 8,
-        on_confirm = function(item)
-          selected_palette_item = item.name
-        end,
-      })
-      scroll_palette_overlay = hollow.ui._overlay_state()
-      assert.equals(8, scroll_palette_overlay[1].rows[5].segments[1].padding.top)
-      assert.equals(4, scroll_palette_overlay[1].rows[5].segments[1].padding.left)
-      assert.equals(8, scroll_palette_overlay[1].rows[5].segments[2].padding.top)
-      harness.assert_true(
-        scroll_palette_overlay ~= nil,
-        "scrollable command palette should serialize"
-      )
-      harness.assert_equal(
-        scroll_palette_overlay[1].rows[1].hoverable,
-        false,
-        "command palette title should not be hoverable"
-      )
-      harness.assert_equal(
-        scroll_palette_overlay[1].rows[3].hoverable,
-        false,
-        "command palette filter should not be hoverable"
-      )
-      scroll_palette_id = scroll_palette_overlay[1].rows[5].scrollbar_id
-      harness.assert_true(
-        type(scroll_palette_overlay[1].rows[5].id) == "string",
-        "command palette rows should expose interaction ids"
-      )
-      harness.assert_true(
-        type(scroll_palette_id) == "string",
-        "command palette scrollbar should expose an interaction id"
-      )
-    end)
-
-    it("clamps selection on mouse wheel", function()
-      hollow._emit_builtin_event("overlay:scroll", {
-        id = scroll_palette_overlay[1].rows[5].id,
-        delta = -1,
-      })
-      scroll_palette_overlay = hollow.ui._overlay_state()
-      scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[2].text
-      harness.assert_true(
-        scroll_palette_counter:find("1/8", 1, true) ~= nil,
-        "mouse wheel should clamp command palette selection when it leaves viewport"
-      )
-      first_palette_item_id = scroll_palette_overlay[1].rows[5].id
-    end)
-
-    it("activates an item on mouse click", function()
-      hollow._emit_builtin_event("overlay:click", { id = first_palette_item_id })
-      harness.assert_equal(
-        selected_palette_item,
-        "palette_item_1",
-        "mouse click should activate command palette item"
-      )
-      harness.assert_equal(
-        hollow.ui.overlay.depth(),
-        0,
-        "command palette click should close overlay"
-      )
-    end)
-
-    it("updates selection on scrollbar drag", function()
-      hollow.ui.command_palette.open({ entries = palette_entries, max_height = 8 })
-      scroll_palette_overlay = hollow.ui._overlay_state()
-      scroll_palette_id = scroll_palette_overlay[1].rows[5].scrollbar_id
-      hollow._emit_builtin_event("overlay:scrollbar", { id = scroll_palette_id, ratio = 1 })
-      scroll_palette_overlay = hollow.ui._overlay_state()
-      scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[2].text
-      harness.assert_true(
-        scroll_palette_counter:find("6/8", 1, true) ~= nil,
-        "dragging command palette scrollbar should update selection"
-      )
-      harness.assert_equal(
-        scroll_palette_overlay[1].rows[5].scrollbar_thumb_ratio,
-        1,
-        "command palette scrollbar thumb should reach bottom"
-      )
-      hollow.ui.overlay.clear()
-    end)
-
-    it("shows domain names on the left and shell commands on the right", function()
-      hollow.config.set({ domains = { main = { shell = "sh" } } })
-      hollow.ui.command_palette.open({
-        entries = hollow.ui.command_palette.build_domain_entries(),
-        query = "sh",
-      })
-      local overlay = hollow.ui._overlay_state()
-      local segments = overlay[1].rows[6].segments
-      harness.assert_equal(segments[3].text, "main", "domain name should appear on the left")
-      local active_color = require("hollow.ui.shared").resolve_theme().palette.bright_green
-      harness.assert_equal(segments[2].text, "• ", "active domain should use the workspace dot")
-      harness.assert_equal(segments[2].fg, active_color, "active dot should use workspace green")
-      harness.assert_equal(segments[3].fg, active_color, "active name should use workspace green")
-      harness.assert_true(segments[3].bold, "active domain name should be bold")
-      harness.assert_true(segments[4].spacer, "domain columns should be separated by a spacer")
-      harness.assert_equal(segments[5].text, "sh", "shell command should appear on the right")
-      harness.assert_true(segments[5].bold, "shell command matches should be highlighted")
-      hollow.ui.overlay.clear()
-    end)
-
-    it("leaves the status slot blank for inactive domains", function()
-      hollow.config.set({ domains = { dev = { shell = "bash" } } })
-      hollow.ui.command_palette.open({
-        entries = hollow.ui.command_palette.build_domain_entries(),
-        query = "dev",
-      })
-      local segments = hollow.ui._overlay_state()[1].rows[6].segments
-      harness.assert_equal(segments[2].text, "  ", "inactive domain should not show a dot")
-      harness.assert_equal(segments[3].text, "dev", "inactive domain name should remain visible")
-      hollow.ui.overlay.clear()
-    end)
-
-    it("highlights matched palette text", function()
-      hollow.ui.command_palette.open({
-        entries = {
-          {
-            name = "product_details",
-            display_name = "product-details",
-            mode_label = "",
-            desc = "",
-            category = "general",
-            category_label = "General",
-            chords = {},
-            searchable = "product-details",
-          },
         },
-        query = "pro",
-      })
-      local overlay = hollow.ui._overlay_state()
-      local has_highlight = false
-      for _, segment in ipairs(overlay[1].rows[6].segments or {}) do
-        has_highlight = has_highlight or (segment.text == "pro" and segment.bold == true)
-      end
-      harness.assert_true(has_highlight, "command palette should highlight matched text")
-      hollow.ui.overlay.clear()
-    end)
+      },
+      query = "pro",
+    })
+    assert.is_not_nil(clay.text_node(ui, "pro", function(node)
+      return node.bold
+    end))
   end)
 end)

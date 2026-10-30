@@ -11,7 +11,7 @@
 --- })
 --- ```
 local shared = require("hollow.ui.shared")
-local util = require("hollow.util")
+---@type HollowUi
 local ui = _G.hollow.ui
 
 ui.input = ui.input or {}
@@ -26,6 +26,7 @@ function ui.input.open(opts)
     initial = opts.default,
   })
 
+  ---@type HollowUiModalHandle
   local m
 
   local backdrop = opts.backdrop
@@ -34,14 +35,13 @@ function ui.input.open(opts)
   end
 
   m = ui.modal({
+    title = opts.prompt or "Text input",
     theme = base_theme,
-    render = function(theme)
-      return ui.dialog({
+    render = function(theme, _, ctx)
+      return require("hollow.ui.components.dialog")({
         title = opts.prompt,
-        body = {
-          input.render(theme),
-        },
-      }, theme)
+        body = require("hollow.ui.components.input")(input, theme, ctx),
+      }, theme, ctx)
     end,
     width = opts.width,
     height = opts.height,

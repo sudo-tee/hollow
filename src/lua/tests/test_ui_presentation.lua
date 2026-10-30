@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("shared presentation adapters", function()
@@ -81,17 +82,73 @@ describe("shared presentation adapters", function()
       })
     end
     local palette = shared.palette("overlay")
-    ui.overlay.push(ui.overlay.new({ render = row }))
+    ui.overlay.push(ui.overlay.new({
+      render = function()
+        return clay.row(ui, row())
+      end,
+    }))
     ui.sidebar.mount(ui.sidebar.new({ width = 30, render = row }))
-    local overlay = ui._overlay_state()[1].rows[1]
+    local overlay = assert(clay.find(ui, ":choice"))
     local sidebar = ui._sidebar_state()
-    for _, key in ipairs({ "fill_bg", "fill_radius", "accent_bar", "divider" }) do
-      assert.same(overlay[key], sidebar.row_styles[1][key])
-    end
+    assert.equals(overlay.bg, sidebar.row_styles[1].fill_bg)
+    assert.equals(overlay.radius, sidebar.row_styles[1].fill_radius)
     assert.equals(palette.muted, sidebar.rows[1][1].fg)
     assert.equals("choice", sidebar.rows[1][1].text)
     assert.is_nil(sidebar.rows[1].segments)
     assert.is_nil(sidebar.rows[1][1].bg)
+  end)
+
+  it("routes sidebar segment clicks and hover to span handlers", function()
+    local clicks, entered, left = {}, 0, 0
+    ui.sidebar.mount(ui.sidebar.new({
+      render = function()
+        return ui.column({
+          ui.row({
+            ui.text("go", {
+              id = "go",
+              fg = "#00ff00",
+              hover = { fg = "#ff0000" },
+              on_click = function(event)
+                clicks[#clicks + 1] = event.id
+              end,
+              on_mouse_enter = function()
+                entered = entered + 1
+              end,
+              on_mouse_leave = function()
+                left = left + 1
+              end,
+            }),
+          }),
+          ui.row({
+            ui.text("auto", {
+              on_click = function(event)
+                clicks[#clicks + 1] = event.id
+              end,
+            }),
+          }),
+        })
+      end,
+    }))
+    local sidebar = ui._sidebar_state()
+    assert.equals("go", sidebar.rows[1][1].id)
+    assert.equals("#00ff00", sidebar.rows[1][1].fg)
+    local auto_id = sidebar.rows[2][1].id
+    assert.equals("sidebar:auto:1", auto_id)
+
+    hollow._emit_builtin_event("sidebar:hover", { id = "go" })
+    assert.equals(1, entered)
+    assert.equals("#ff0000", ui._sidebar_state().rows[1][1].fg)
+    hollow._emit_builtin_event("sidebar:click", { id = "go" })
+    hollow._emit_builtin_event("sidebar:click", { id = auto_id })
+    assert.same({ "go", auto_id }, clicks)
+    hollow._emit_builtin_event("sidebar:leave", {})
+    assert.equals(1, left)
+    assert.equals("#00ff00", ui._sidebar_state().rows[1][1].fg)
+
+    ui.sidebar.unmount()
+    assert.is_nil(ui._sidebar_state())
+    hollow._emit_builtin_event("sidebar:click", { id = "go" })
+    assert.equals(2, #clicks)
   end)
 
   it("resolves each styled sidebar row once before adapting text and paint", function()
@@ -167,7 +224,10 @@ describe("shared presentation adapters", function()
     }))
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("scroll") }, { scrollbar_track = true })
+        return ui.components.column(
+          { ui.components.text("scroll") },
+          { id = "scroll", height = 20, scroll = true, scrollbar_id = "scroll:bar" }
+        )
       end,
     }))
     ui._topbar_state()
@@ -193,7 +253,7 @@ describe("shared presentation adapters", function()
     assert.equals("#112233", ui._topbar_state().items[1].tabs[1].fallback_style.bg)
     assert.equals("#223344", ui._topbar_state().items[1].tabs[1].fallback_style.selection_accent)
     assert.equals("#334455", ui._sidebar_state().style.bg)
-    local row = ui._overlay_state()[1].rows[1]
+    local row = assert(clay.find(ui, ":scroll"))
     assert.equals("#445566", row.scrollbar_track_color)
     assert.equals("#556677", row.scrollbar_thumb_color)
   end)
@@ -232,7 +292,7 @@ describe("shared presentation adapters", function()
       assert.equals("#161b22", shared.sidebar_surface_style(nil, palette).bg)
       assert.equals("#373a48", shared.tab_fallback_style(true, palette).bg)
       assert.equals("#23252e", shared.tab_fallback_style(false, palette).bg)
-      local list_row = require("hollow.ui.styles.list_row")
+      local list_row = require("hollow.ui.recipes.list_row")
       local row = list_row(palette, { selected = true }).paint
       assert.equals(palette.panel_border, row.accent_bar)
       assert.equals(palette.scrollbar_track, row.scrollbar_track_color)
@@ -245,7 +305,7 @@ describe("shared presentation adapters", function()
   end)
 
   it("shares accent and scrollbar parts with built-in list recipes", function()
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local palette = shared.merge_styles(shared.palette("overlay"), {
       parts = {
         list_row = { accent = "muted" },
@@ -273,7 +333,7 @@ describe("shared presentation adapters", function()
   it(
     "retains semantic list scrollbars and literal raw-track fallback on partial palettes",
     function()
-      local list_row = require("hollow.ui.styles.list_row")
+      local list_row = require("hollow.ui.recipes.list_row")
       local palette = { scrollbar_track = "#123456", scrollbar_thumb = "#234567" }
       local built = list_row(palette).paint
       assert.equals("#123456", built.scrollbar_track_color)
@@ -291,18 +351,17 @@ describe("shared presentation adapters", function()
     local chrome = { bg = false, padding = { right = 2 }, margin = false, border = "muted" }
     local before_style, before_chrome =
       hollow.util.clone_value(style), hollow.util.clone_value(chrome)
-    local expected = shared.overlay_surface_style(style, chrome, palette)
     ui.overlay.push(ui.overlay.new({
       style = style,
       chrome = chrome,
       render = function()
-        return ui.row({})
+        return ui.components.row({})
       end,
     }))
-    assert.same(expected, ui._overlay_state()[1].chrome)
+    local expected = assert(clay.find(ui, ":dialog"))
     assert.is_nil(expected.bg)
-    assert.is_nil(expected.margin)
-    assert.same({ top = 0, right = 2, bottom = 0, left = 2 }, expected.padding)
+    -- Explicit chrome padding replaces style padding; base insets are cell-derived.
+    assert.same({ top = 19, right = 6, bottom = 9, left = 6 }, expected.padding)
     assert.equals(palette.muted, expected.border)
     assert.equals(6, expected.radius)
     assert.same(before_style, style)
@@ -327,7 +386,7 @@ describe("shared presentation adapters", function()
     }))
     local overlay = ui.overlay.new({
       render = function()
-        return ui.row({ close() })
+        return clay.row(ui, ui.row({ close() }))
       end,
     })
     ui.overlay.push(overlay)
@@ -335,14 +394,11 @@ describe("shared presentation adapters", function()
       local id = hovered and "tab:close" or nil
       state.ui[events.hovered_key("topbar")] = id
       require("hollow.ui.widgets.bars.bar_cache").invalidate("topbar")
-      overlay.on_event("overlay:hover", { id = id })
       local bar = ui._topbar_state().items[1].segments[1]
-      local span = ui._overlay_state()[1].rows[1].segments[1]
-      for _, key in ipairs({ "text", "id", "fg", "bg", "padding" }) do
-        assert.same(bar[key], span[key])
-      end
-      assert.equals(" ×", span.text)
-      assert.equals(hovered and shared.palette("overlay").hover_bg or nil, span.bg)
+      local span = assert(clay.label(ui, " ×"))
+      assert.equals(" ×", clay.text_node(ui, " ×").text)
+      assert.equals(shared.palette("overlay").hover_bg, span.hover_bg)
+      assert.equals(hovered and shared.palette("topbar").hover_bg or nil, bar.bg)
     end
   end)
 end)

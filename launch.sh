@@ -8,6 +8,7 @@ BUILD=1
 RUN=1
 INSTALL=0
 OPTIMIZE="ReleaseFast"
+DEV=0
 PDB=0
 SAFE_RENDER=0
 DISABLE_SWAPCHAIN_GLYPHS=0
@@ -29,6 +30,7 @@ for arg in "$@"; do
   --build-only) RUN=0 ;;
   --install) INSTALL=1 ;;
   --debug) OPTIMIZE="Debug" ;;
+  --dev) DEV=1 ;;
   --pdb) PDB=1 ;;
   --safe-render) SAFE_RENDER=1 ;;
   --no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
@@ -39,8 +41,10 @@ for arg in "$@"; do
   --target=*) TARGET="${arg#--target=}" ;;
   --app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
   --help | -h)
-    echo "Usage: $0 [--no-build] [--build-only] [--install] [--debug] [--pdb] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
+    echo "Usage: $0 [--no-build] [--build-only] [--install] [--debug] [--dev] [--pdb] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
     echo "Lua dev loop: after one build, Lua files under src/lua/ are loaded from disk when present, so you can use --no-build for Lua-only changes."
+    echo "ReleaseFast omits debug information by default. Use --pdb to retain symbols for profiling or crash reports."
+    echo "--dev builds app code in Debug with ReleaseFast C dependencies, and only the app executables (no CLI/agent bundles) unless --install is set."
     echo "Windows targets run from zig-out/bin by default. --install copies them to C:\\Applications\\Hollow and runs from there unless --build-only is set."
     exit 0
     ;;
@@ -70,8 +74,6 @@ if [[ "$TARGET" == *"windows"* ]]; then
   LAUNCHER_PDB_NAME="hollow.pdb"
   GUI_NAME="hollow-native.exe"
   GUI_PDB_NAME="hollow-native.pdb"
-  GUI_LAUNCHER_NAME="hollow-gui.exe"
-  GUI_LAUNCHER_PDB_NAME="hollow-gui.pdb"
 else
   EXE_NAME="hollow"
   PDB_NAME=""
@@ -79,25 +81,37 @@ else
   LAUNCHER_PDB_NAME=""
   GUI_NAME=""
   GUI_PDB_NAME=""
-  GUI_LAUNCHER_NAME=""
-  GUI_LAUNCHER_PDB_NAME=""
 fi
 EXE_PATH="$BIN_DIR/$EXE_NAME"
 
 if [[ $BUILD -eq 1 ]]; then
   "$SCRIPT_DIR/scripts/check-zig-version.sh"
   echo "[launch] building $TARGET target"
-  if [[ -n "$OPTIMIZE" ]]; then
+  BUILD_ARGS=()
+  if [[ $DEV -eq 1 ]]; then
+    echo "[launch] optimize mode: dev (Debug app, ReleaseFast dependencies)"
+    # Installation needs the full CLI/agent bundles; plain dev launches do not.
+    if [[ $INSTALL -eq 0 ]]; then
+      BUILD_ARGS+=("gui")
+    fi
+    BUILD_ARGS+=("-Dtarget=$TARGET" "-Ddev")
+    if [[ $PDB -eq 1 ]]; then
+      BUILD_ARGS+=("-Dpdb")
+    fi
+  else
     echo "[launch] optimize mode: $OPTIMIZE"
-  fi
-  BUILD_ARGS=("-Dtarget=$TARGET")
-  if [[ -n "$OPTIMIZE" ]]; then
-    BUILD_ARGS+=("-Doptimize=$OPTIMIZE")
-  fi
-  if [[ $PDB -eq 1 ]]; then
-    BUILD_ARGS+=("-Dpdb")
+    BUILD_ARGS+=("-Dtarget=$TARGET" "-Doptimize=$OPTIMIZE")
+    if [[ $PDB -eq 1 ]]; then
+      BUILD_ARGS+=("-Dpdb")
+    fi
   fi
   zig build "${BUILD_ARGS[@]}"
+  mkdir -p "$SCRIPT_DIR/zig-out"
+  if [[ $DEV -eq 1 ]]; then
+    printf '%s dev\n' "$TARGET" > "$SCRIPT_DIR/zig-out/.launch-build-mode"
+  else
+    printf '%s %s pdb=%s\n' "$TARGET" "$OPTIMIZE" "$PDB" > "$SCRIPT_DIR/zig-out/.launch-build-mode"
+  fi
 fi
 
 mkdir -p "$SCRIPT_DIR"
@@ -121,7 +135,7 @@ copy_if_exists() {
 
 if [[ $INSTALL -eq 1 ]]; then
   WINDOWS_APP_DIR="$(wslpath -u 'C:\Applications\Hollow')"
-  for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" hollow-cli.exe; do
+  for name in "$LAUNCHER_NAME" "$GUI_NAME" hollow-cli.exe; do
     if [[ ! -f "$BIN_DIR/$name" ]]; then
       echo "[launch] missing $BIN_DIR/$name; build before installing" >&2
       exit 1
@@ -141,8 +155,8 @@ if [[ $INSTALL -eq 1 ]]; then
   done
   mkdir -p "$WINDOWS_APP_DIR"
   echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
-  for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" \
-    "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" "$GUI_LAUNCHER_PDB_NAME" \
+  for name in "$LAUNCHER_NAME" "$GUI_NAME" \
+    "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" \
     hollow-cli.exe hollow-cli.py; do
     copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
   done

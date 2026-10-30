@@ -815,7 +815,7 @@ const Runner = struct {
 
     fn executeUi(self: *Runner, args: []const []const u8) !void {
         if (args.len < 2 or !std.mem.eql(u8, args[0], "click")) {
-            return self.fail("usage: cli ui click <id> [--surface topbar|bottombar|overlay] [--generation N]", "invalid_args", 2);
+            return self.fail("usage: cli ui click <id> [--surface topbar|bottombar|sidebar|overlay] [--generation N]", "invalid_args", 2);
         }
 
         var surface: ?[]const u8 = null;
@@ -824,7 +824,7 @@ const Runner = struct {
         while (i < args.len) : (i += 1) {
             if (std.mem.eql(u8, args[i], "--surface")) {
                 i += 1;
-                if (i >= args.len or !isOneOf(args[i], &.{ "topbar", "bottombar", "overlay" })) return self.fail("invalid UI surface", "invalid_args", 2);
+                if (i >= args.len or !isOneOf(args[i], &.{ "topbar", "bottombar", "sidebar", "overlay" })) return self.fail("invalid UI surface", "invalid_args", 2);
                 surface = args[i];
                 continue;
             }

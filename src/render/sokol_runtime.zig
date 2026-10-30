@@ -31,7 +31,430 @@ const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
+const app_profile = @import("app_profile.zig");
 const color_math = @import("color_math.zig");
+const rounded_border = @import("rounded_border.zig");
+const text_width = @import("../text_width.zig");
+const clay = @import("clay_c");
+const ClaySurface = @import("../ui/clay_surface.zig").Surface;
+const clay_paint = @import("../ui/clay_paint.zig");
+var g_clay_surface: ClaySurface = .{};
+// Stable allocations: each lower overlay retains its Clay scroll/layout state
+// and owns all text until the following pre-raster pass.
+var g_clay_overlays: std.ArrayList(*ClaySurface) = .empty;
+const clay_grid_debug = @import("../ui/clay_grid_debug.zig");
+const native_surface = @import("../ui/native_surface.zig");
+var g_native_bars: [2]native_surface.Surface = .{ .{}, .{} };
+var g_native_sidebar: native_surface.Surface = .{};
+var g_native_debug: native_surface.Surface = .{};
+const clay_inspector_input = @import("../ui/clay_inspector_input.zig");
+var g_grid_debug: clay_grid_debug.GridDebug = .{};
+
+fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
+    const ctx = g_widget_pre_raster_ctx orelse return;
+    g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+    prepareLowerClayOverlays(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+    g_grid_debug.sync(runtime);
+    syncInspectorWidth(runtime);
+    // Both inspectors dock on the right edge; the grid one takes precedence.
+    if (g_grid_debug.enabled) g_clay_surface.debug = false;
+    // Inspector labels are produced during the swapchain pass, after the atlas flush.
+    if (g_grid_debug.enabled or (g_clay_surface.active and g_clay_surface.debug))
+        ctx.renderer.preRasterizeLabelFace(&clay_grid_debug.inspector_glyphs, 0);
+}
+
+fn prepareLowerClayOverlays(runtime: *lua_mod.Runtime, renderer: anytype, width: f32, height: f32) void {
+    const count = if (g_clay_surface.active) g_clay_surface.owner_index else 0;
+    const lower_count = count -| 1;
+    // Painted-surface pointers must not outlive retired surfaces.
+    g_overlay_surface_count = 0;
+    while (g_clay_overlays.items.len > lower_count) {
+        const retired = g_clay_overlays.pop().?;
+        retired.deinit();
+        std.heap.page_allocator.destroy(retired);
+    }
+    while (g_clay_overlays.items.len < lower_count) {
+        const surface = std.heap.page_allocator.create(ClaySurface) catch return;
+        surface.* = .{};
+        g_clay_overlays.append(std.heap.page_allocator, surface) catch {
+            std.heap.page_allocator.destroy(surface);
+            return;
+        };
+    }
+    for (g_clay_overlays.items, 1..) |surface, index| {
+        surface.active = false;
+        surface.prepareOverlay(runtime, renderer, width, height, index);
+    }
+    // Restore Lua's active callback target after selecting the lower entries.
+    if (count > 0) {
+        const api = runtime.context.api;
+        const state = runtime.state;
+        const top = api.get_top(state);
+        defer api.set_top(state, top);
+        api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+        api.get_field(state, -1, "ui");
+        api.get_field(state, -1, "_layout_prepare_overlay");
+        api.push_number(state, @floatFromInt(count));
+        api.push_number(state, width);
+        api.push_number(state, height);
+        api.push_number(state, renderer.cell_w);
+        api.push_number(state, renderer.cell_h);
+        if (api.pcall(state, 5, 0, 0) != 0) std.log.err("Clay active overlay restore failed", .{});
+    }
+}
+
+test "stacked Clay overlays retain separate trees and pre-rasterize every surface" {
+    var cfg = @import("../config.zig").Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try lua_mod.Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\local ui = {}
+        \\hollow = {ui = ui}
+        \\local function publish(index)
+        \\  ui._layout_owner = index
+        \\  ui._layout_surface_id = index
+        \\  ui._layout_revision = index
+        \\  ui._layout_tree = {{kind = 2, text = index == 1 and 'modal' or 'toast'}}
+        \\end
+        \\ui._layout_prepare = function() publish(2) end
+        \\ui._layout_prepare_overlay = publish
+    );
+    const MockRenderer = struct {
+        cell_w: f32 = 10,
+        cell_h: f32 = 20,
+        modal: bool = false,
+        toast: bool = false,
+
+        pub fn preRasterizeLabelFace(self: *@This(), text: []const u8, _: u8) void {
+            if (std.mem.eql(u8, text, "modal")) self.modal = true;
+            if (std.mem.eql(u8, text, "toast")) self.toast = true;
+        }
+    };
+    var renderer = MockRenderer{};
+    defer {
+        for (g_clay_overlays.items) |surface| {
+            surface.deinit();
+            std.heap.page_allocator.destroy(surface);
+        }
+        g_clay_overlays.deinit(std.heap.page_allocator);
+        g_clay_overlays = .empty;
+        g_clay_surface.deinit();
+        g_clay_surface = .{};
+    }
+    const top = runtime.context.api.get_top(runtime.state);
+    g_clay_surface.prepare(&runtime, &renderer, 400, 300);
+    prepareLowerClayOverlays(&runtime, &renderer, 400, 300);
+    try std.testing.expect(renderer.modal and renderer.toast);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+    try std.testing.expectEqual(@as(usize, 1), g_clay_overlays.items.len);
+    const lower = g_clay_overlays.items[0];
+    try std.testing.expect(lower.active and g_clay_surface.active);
+    try std.testing.expect(lower.context != g_clay_surface.context);
+    try std.testing.expectEqual(@as(usize, 1), lower.owner_index);
+    try std.testing.expectEqual(@as(usize, 2), g_clay_surface.owner_index);
+    try std.testing.expectEqualStrings("modal", lower.nodes[0].text.chars[0..5]);
+    try std.testing.expectEqualStrings("toast", g_clay_surface.nodes[0].text.chars[0..5]);
+    try std.testing.expect(lower.layout(400, 300, 10, 20, 0).length > 0);
+    try std.testing.expect(g_clay_surface.layout(400, 300, 10, 20, 0).length > 0);
+    try runtime.runString("assert(hollow.ui._layout_owner == 2)");
+}
+
+/// True while the inspector panel's left edge is being dragged.
+var g_inspector_resizing = false;
+/// Set by a drag so the next Lua sync publishes the new width.
+var g_inspector_width_dirty = false;
+
+/// `hollow.ui._layout_debug_width` drives the inspector panel width; drags and
+/// clamping are written back so Lua always reads the applied width.
+fn syncInspectorWidth(runtime: *lua_mod.Runtime) void {
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    api.get_field(state, -1, "ui");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    const ui_idx = lua_mod.absoluteIndex(api, state, -1);
+    var applied = clay_inspector_input.width();
+    if (!g_inspector_width_dirty) {
+        api.get_field(state, ui_idx, "_layout_debug_width");
+        const requested: f32 = if (api.value_type(state, -1) == @backingInt(LuaType.number)) @floatCast(api.to_number(state, -1)) else clay_inspector_input.default_width;
+        applied = clay_inspector_input.setWidth(requested, c.sapp_widthf());
+        if (applied == requested) return;
+    }
+    g_inspector_width_dirty = false;
+    api.push_number(state, applied);
+    api.set_field(state, ui_idx, "_layout_debug_width");
+}
+
+/// Window area of the inspector that currently owns the panel, if any.
+fn activeInspectorArea() ?clay_inspector_input.Rect {
+    if (g_grid_debug.enabled) return .{ .width = c.sapp_widthf(), .height = c.sapp_heightf() };
+    if (g_clay_surface.active and g_clay_surface.debug) return g_clay_surface.area;
+    return null;
+}
+
+/// Dragging the panel's left edge resizes the inspector.
+fn inspectorResizeEvent(app: *App, event: c.sapp_event) bool {
+    const area = activeInspectorArea() orelse {
+        g_inspector_resizing = false;
+        return false;
+    };
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => {
+            if (event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT or !clay_inspector_input.nearEdge(area, event.mouse_x, event.mouse_y)) return false;
+            g_inspector_resizing = true;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            if (g_inspector_resizing) {
+                _ = clay_inspector_input.setWidth(area.x + area.width - event.mouse_x, area.width);
+                g_inspector_width_dirty = true;
+                app.requestRedraw();
+            } else if (!clay_inspector_input.nearEdge(area, event.mouse_x, event.mouse_y)) return false;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_UP => {
+            if (!g_inspector_resizing or event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT) return false;
+            g_inspector_resizing = false;
+        },
+        else => return false,
+    }
+    g_mouse_x = event.mouse_x;
+    g_mouse_y = event.mouse_y;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_RESIZE_EW);
+    c.sapp_consume_event();
+    return true;
+}
+
+/// Clay inspector over the window's bars, sidebar and pane layout.
+fn drawGridDebug(app: *App, renderer: *FtRenderer, width: f32, height: f32) void {
+    if (!g_grid_debug.enabled) return;
+    g_grid_debug.collect(app, width, height, renderer.cell_w);
+    const commands = g_grid_debug.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+    paintClayCommands(renderer, commands, 0, 0, .{ .x = 0, .y = 0, .width = width, .height = height }, null);
+}
+
+fn gridDebugEvent(app: *App, event: c.sapp_event) bool {
+    if (!g_grid_debug.enabled) return false;
+    const area: clay_inspector_input.Rect = .{ .width = c.sapp_widthf(), .height = c.sapp_heightf() };
+    const consumed = switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => g_grid_debug.pointer(.move, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and g_grid_debug.pointer(.down, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_UP => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and g_grid_debug.pointer(.up, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => g_grid_debug.pointer(.scroll, event.mouse_x, event.mouse_y, event.scroll_y, area),
+        else => return false,
+    };
+    app.requestRedraw();
+    if (!consumed) return false;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+    c.sapp_consume_event();
+    return true;
+}
+
+/// Pointer input over the active surface's inspector panel goes to Clay
+/// before the surface or the overlay owning it can claim it.
+fn surfaceInspectorEvent(app: *App, event: c.sapp_event) bool {
+    const surface = &g_clay_surface;
+    if (!surface.active or !surface.debug) return false;
+    const over = clay_inspector_input.inPanel(surface.area, event.mouse_x, event.mouse_y);
+    const left = event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT;
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {},
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => if (over and left) surface.inspector_button.press(),
+        c.SAPP_EVENTTYPE_MOUSE_UP => if (!(left and surface.inspector_button.release()) and !over) return false,
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => if (over) {
+            surface.scroll_y += event.scroll_y;
+        },
+        else => return false,
+    }
+    // Overlay layouts read the window pointer; standalone ones the local one.
+    g_mouse_x = event.mouse_x;
+    g_mouse_y = event.mouse_y;
+    surface.mouse_x = event.mouse_x - surface.area.x;
+    surface.mouse_y = event.mouse_y - surface.area.y;
+    app.requestRedraw();
+    if (!over and event.type != c.SAPP_EVENTTYPE_MOUSE_UP) return false;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+    c.sapp_consume_event();
+    return true;
+}
+
+fn reportClayMeasurements(runtime: *lua_mod.Runtime, ui_idx: c_int, surface: *ClaySurface) void {
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    for (surface.nodes[0..surface.len], 0..) |node, index| {
+        if (!node.measure or (!node.scroll and !node.scroll_x)) continue;
+        const element = clay.hollow_clay_bounds(surface.context, &surface.nodes, @intCast(index));
+        if (!element.found or node.id.length == 0) continue;
+        api.get_field(state, ui_idx, "_layout_measure");
+        if (api.value_type(state, -1) != @backingInt(lua_mod.LuaType.function)) {
+            lua_mod.pop(api, state, 1);
+            return;
+        }
+        api.push_number(state, surface.surface_id);
+        api.push_lstring(state, node.id.chars, @intCast(node.id.length));
+        api.push_number(state, element.boundingBox.width);
+        api.push_number(state, element.boundingBox.height);
+        if (api.pcall(state, 4, 0, 0) != 0) {
+            std.log.err("Clay viewport measurement callback failed", .{});
+            lua_mod.pop(api, state, 1);
+        }
+    }
+}
+
+fn clayChannel(value: f32) u8 {
+    return @intFromFloat(std.math.clamp(value, 0, 255));
+}
+
+/// Framed overlay panel whose paint policy (full-bleed rows, subdued rounded
+/// outline) applies while painting its Clay commands.
+/// Paints one Clay command array translated by the offset and clipped to
+/// `initial_clip`.
+fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArray, offset_x: f32, offset_y: f32, initial_clip: clay.Clay_BoundingBox, panel_node: ?*const clay.HollowClayNode) void {
+    // Failed layouts return a zeroed array with a null buffer.
+    if (commands.length <= 0 or commands.internalArray == null) return;
+    var clips: [34]clay.Clay_BoundingBox = undefined;
+    clips[0] = initial_clip;
+    c.sgl_scissor_rect(@intFromFloat(initial_clip.x), @intFromFloat(initial_clip.y), @intFromFloat(initial_clip.width), @intFromFloat(initial_clip.height), true);
+    defer c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+    var depth: usize = 0;
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        var b = command.boundingBox;
+        b.x += offset_x;
+        b.y += offset_y;
+        switch (command.commandType) {
+            clay.CLAY_RENDER_COMMAND_TYPE_RECTANGLE => {
+                const rect = command.renderData.rectangle;
+                const color = rect.backgroundColor;
+                b = clay_paint.snap(b);
+                drawRoundedRect(b.x, b.y, b.width, b.height, rect.cornerRadius.topLeft, clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_BORDER => {
+                const border = command.renderData.border;
+                const color = border.color;
+                // Rounded legacy overlay chrome deliberately uses a subdued
+                // outline. Preserve that paint policy for the Clay panel only,
+                // not nested component borders or standalone surfaces.
+                const is_panel = if (panel_node) |p| command.userData == @as(?*anyopaque, @ptrCast(@constCast(p))) else false;
+                const alpha: u8 = if (is_panel and border.cornerRadius.topLeft > 0) 72 else clayChannel(color.a);
+                b = clay_paint.snap(b);
+                drawClayBorder(b, border, alpha);
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
+                const text = command.renderData.text;
+                const color = text.textColor;
+                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
+                c.sgl_load_default_pipeline();
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
+                const node: *const clay.HollowClayNode = @ptrCast(@alignCast(command.renderData.custom.customData orelse continue));
+                b = clay_paint.snap(b);
+                drawRoundedRect(b.x, b.y, b.width, b.height, 4, 48, 58, 76, 255);
+                drawRoundedRect(b.x, b.y, @round(b.width * node.value), b.height, 4, 136, 192, 208, 255);
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_START => {
+                if (depth + 1 >= clips.len) return;
+                const previous = clips[depth];
+                depth += 1;
+                clips[depth] = clay_paint.scissorBounds(previous, clay_paint.snap(b), command.renderData.clip);
+                const clip = clips[depth];
+                c.sgl_scissor_rect(@intFromFloat(clip.x), @intFromFloat(clip.y), @intFromFloat(clip.width), @intFromFloat(clip.height), true);
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_END => {
+                depth -|= 1;
+                const clip = clips[depth];
+                c.sgl_scissor_rect(@intFromFloat(clip.x), @intFromFloat(clip.y), @intFromFloat(clip.width), @intFromFloat(clip.height), true);
+            },
+            else => {}, // Images and transitions are intentionally outside this prototype.
+        }
+    }
+}
+
+fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
+    if (!surface.active) return;
+    surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
+    if (surface.owner_index > 0) {
+        surface.mouse_x = g_mouse_x - offset_x;
+        surface.mouse_y = g_mouse_y - offset_y;
+    }
+    const commands = surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+    const context = surface.context;
+    const nodes = &surface.nodes;
+    const framed = surface.frame.enabled;
+    const overlay = surface.owner_index > 0;
+    const panel_node: *const clay.HollowClayNode = &nodes[0];
+    var panel = clay.hollow_clay_bounds(context, nodes, 0).boundingBox;
+    panel.x += offset_x;
+    panel.y += offset_y;
+    var clip = clay_paint.snap(.{ .x = offset_x, .y = offset_y, .width = width, .height = height });
+    // Paint clipping must not enable Clay's horizontal overflow sizing. The
+    // inspector draws beside the panel, so it keeps the whole host clip.
+    if (framed and !surface.debug) {
+        const x = @max(offset_x, panel.x);
+        const y = @max(offset_y, panel.y);
+        clip = clay_paint.snap(.{
+            .x = x,
+            .y = y,
+            .width = @max(0, @min(offset_x + width, panel.x + panel.width) - x),
+            .height = @max(0, @min(offset_y + height, panel.y + panel.height) - y),
+        });
+    }
+    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) panel_node else null);
+    if (overlay) {
+        for (0..surface.len) |index| {
+            if (overlayScrollbar(surface, index)) |scrollbar| drawOverlayScrollbar(scrollbar);
+        }
+        if (g_widget_render_ctx) |ctx| {
+            for (nodes[0..surface.len], 0..) |node, index| {
+                if (index != 0 and !node.clickable) continue;
+                if (node.id.length == 0) continue;
+                const b = surface.visibleBounds(index) orelse continue;
+                const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
+                const role: ui_semantics.Role = if (index == 0) .dialog else if (node.list_item) .listitem else .button;
+                ctx.app.appendUiSemanticNode(.overlay, role, index != 0, surface.nodeId(index), label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
+            }
+        }
+    }
+}
+
+// The experimental surface is modal. Never leak its pointer/keyboard input to PTYs.
+fn claySurfaceEvent(event: c.sapp_event) bool {
+    if (!g_clay_surface.active or g_clay_surface.owner_index > 0) return false;
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_DOWN, c.SAPP_EVENTTYPE_MOUSE_UP => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) g_clay_surface.pointerButton(event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN, event.mouse_x, event.mouse_y);
+        },
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+            g_clay_surface.scroll_y += event.scroll_y;
+        },
+        c.SAPP_EVENTTYPE_KEY_DOWN => {
+            if (event.key_code == c.SAPP_KEYCODE_ESCAPE) g_clay_surface.close = true;
+        },
+        c.SAPP_EVENTTYPE_KEY_UP, c.SAPP_EVENTTYPE_CHAR => {},
+        c.SAPP_EVENTTYPE_UNFOCUSED => {
+            g_clay_surface.pressed_len = 0;
+            return false;
+        },
+        else => return false,
+    }
+    setMouseCursorHidden(false);
+    c.sapp_consume_event();
+    return true;
+}
 
 fn enqueueQuickSelectInput(app: *App, value: quick_select.Input) void {
     if (!app.enqueueMouse(.{ .quick_select_input = value })) quick_select.disarmInput(app);
@@ -41,8 +464,6 @@ const LUA_GLOBALSINDEX: c_int = -10002;
 const Api = lua_mod.Api;
 const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
-
-const OVERLAY_HOVER_BG = ghostty.ColorRgb{ .r = 60, .g = 66, .b = 82 };
 
 fn paneRenderHelpersReady(pane: *const Pane) bool {
     return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
@@ -209,22 +630,27 @@ var g_mouse_x: f32 = 0;
 var g_mouse_y: f32 = 0;
 var g_top_bar_cache: BarCache = .{};
 var g_bottom_bar_cache: BarCache = .{};
-var g_overlay_hit_cache: struct {
-    enabled: bool = false,
-    hit_count: usize = 0,
-    hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = @splat(.{}),
-} = .{};
-var g_overlay_hit_id_pool: [MAX_OVERLAY_HIT_REGIONS][64]u8 = undefined;
-// Segment IDs are parsed into a scratch buffer reused for every row. Hit
-// regions must own their IDs until the next frame's hit cache is rebuilt.
-var g_overlay_cached_ids: [MAX_OVERLAY_HIT_REGIONS][4096]u8 = undefined;
-var g_overlay_hovered_id_buf: [4096]u8 = undefined;
-var g_overlay_hovered_id: ?[]const u8 = null;
-var g_overlay_render_stack_index: usize = 0;
-var g_overlay_scrollbar_cache: struct {
+// Overlay surfaces painted this frame, bottom to top. Input queries their
+// retained layouts instead of copying hit geometry each frame.
+var g_overlay_surfaces: [MAX_OVERLAY_SURFACES]*ClaySurface = undefined;
+var g_overlay_surface_count: usize = 0;
+
+const MAX_SIDEBAR_HIT_REGIONS = 64;
+
+const SidebarHitRegion = struct {
+    bounds: ui_semantics.Bounds = .{},
+    id_buf: [ui_semantics.max_id_len]u8 = undefined,
+    id_len: usize = 0,
+};
+
+// Sidebar segments with an id, from the latest sidebar paint. Ids are copied
+// because the Lua sidebar state is rebuilt every frame.
+var g_sidebar_hits: struct {
+    panel: ?ui_semantics.Bounds = null,
     count: usize = 0,
-    scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = @splat(.{}),
+    regions: [MAX_SIDEBAR_HIT_REGIONS]SidebarHitRegion = undefined,
 } = .{};
+var g_sidebar_hovered = false;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
 var g_overlay_scrollbar_drag_grab_y: f32 = 0;
@@ -568,17 +994,6 @@ fn prunePaneCachesToVisible(leaves: []const LayoutLeaf, single_visible_pane: ?*P
     }
 }
 
-const CustomTabLayout = struct {
-    x: f32,
-    width: f32,
-    title: []const u8,
-    close_x: f32,
-    close_w: f32,
-    fg: ?ghostty.ColorRgb = null,
-    bg: ?ghostty.ColorRgb = null,
-    bold: bool = false,
-};
-
 const BarSurface = enum {
     top,
     bottom,
@@ -596,37 +1011,28 @@ const BarHit = struct {
 };
 
 const MAX_BAR_HIT_REGIONS = 256;
-const MAX_OVERLAY_HIT_REGIONS = 128;
-const MAX_OVERLAY_SCROLLBARS = 16;
-
-const CachedOverlayHitRegion = struct {
-    x: f32 = 0,
-    width: f32 = 0,
-    y: f32 = 0,
-    height: f32 = 0,
-    node_id: ?[]const u8 = null,
-    stack_index: usize = 0,
-};
+const MAX_OVERLAY_SURFACES = 32;
 
 const OverlayHit = struct {
     id: []const u8,
     stack_index: usize,
 };
 
-const CachedOverlayScrollbar = struct {
-    id: ?[]const u8 = null,
-    x: f32 = 0,
-    width: f32 = 0,
-    y: f32 = 0,
-    height: f32 = 0,
-    thumb_y: f32 = 0,
-    thumb_height: f32 = 0,
-    has_thumb: bool = false,
-    stack_index: usize = 0,
-    thumb_ratio: ?f32 = null,
-    thumb_size: ?f32 = null,
-    track_color: ghostty.ColorRgb = .{ .r = 90, .g = 99, .b = 117 },
-    thumb_color: ghostty.ColorRgb = .{ .r = 160, .g = 170, .b = 190 },
+/// Window-space scrollbar derived from a node's latest layout. The hit strip
+/// is `x..x+width` by the track (`y..y+height`); paint uses `bar_x/bar_width`.
+const OverlayScrollbar = struct {
+    id: []const u8,
+    stack_index: usize,
+    x: f32,
+    width: f32,
+    y: f32,
+    height: f32,
+    bar_x: f32,
+    bar_width: f32,
+    thumb_y: f32,
+    thumb_height: f32,
+    track_color: ghostty.ColorRgb,
+    thumb_color: ghostty.ColorRgb,
 };
 
 const CachedBarHitRegion = struct {
@@ -1110,50 +1516,34 @@ const BarCache = struct {
     hits: [MAX_BAR_HIT_REGIONS]CachedBarHitRegion = @splat(.{}),
 };
 
-fn utf8CodepointLen(first_byte: u8) usize {
-    if (first_byte < 0x80) return 1;
-    if (first_byte < 0xE0) return 2;
-    if (first_byte < 0xF0) return 3;
-    return 4;
-}
-
+// Historical helper names retained at paint/cache call sites. Counts are
+// display columns, and truncation never splits a Ghostty grapheme cluster.
 fn takeCodepoints(text: []const u8, count: usize) []const u8 {
+    if (count == 0) return "";
     var used_bytes: usize = 0;
-    var used_codepoints: usize = 0;
-    while (used_bytes < text.len and used_codepoints < count) {
-        const cp_len = utf8CodepointLen(text[used_bytes]);
-        if (used_bytes + cp_len > text.len) break;
-        used_bytes += cp_len;
-        used_codepoints += 1;
+    var columns: usize = 0;
+    while (text_width.next(text[used_bytes..])) |cluster| {
+        if (cluster.width > count - columns) break;
+        used_bytes += cluster.len;
+        columns += cluster.width;
     }
     return text[0..used_bytes];
 }
 
 fn takeTrailingCodepoints(text: []const u8, count: usize) []const u8 {
-    const total = countCodepoints(text);
-    if (count >= total) return text;
-    const skip = total - count;
+    if (count == 0) return "";
+    var remaining = text_width.width(text);
     var used_bytes: usize = 0;
-    var used_codepoints: usize = 0;
-    while (used_bytes < text.len and used_codepoints < skip) {
-        const cp_len = utf8CodepointLen(text[used_bytes]);
-        if (used_bytes + cp_len > text.len) break;
-        used_bytes += cp_len;
-        used_codepoints += 1;
+    while (remaining > count) {
+        const cluster = text_width.next(text[used_bytes..]) orelse break;
+        used_bytes += cluster.len;
+        remaining -= cluster.width;
     }
     return text[used_bytes..];
 }
 
 fn countCodepoints(text: []const u8) usize {
-    var used_bytes: usize = 0;
-    var used_codepoints: usize = 0;
-    while (used_bytes < text.len) {
-        const cp_len = utf8CodepointLen(text[used_bytes]);
-        if (used_bytes + cp_len > text.len) break;
-        used_bytes += cp_len;
-        used_codepoints += 1;
-    }
-    return used_codepoints;
+    return text_width.width(text);
 }
 
 fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
@@ -1180,6 +1570,21 @@ fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
     return out_buf[0..total];
 }
 
+test "native label fitting uses shared columns without splitting graphemes" {
+    try std.testing.expectEqual(@as(usize, 4), countCodepoints("中文"));
+    try std.testing.expectEqual(@as(usize, 1), countCodepoints("e\u{301}"));
+    try std.testing.expectEqualStrings("e\u{301}", takeCodepoints("e\u{301}中x", 2));
+    try std.testing.expectEqualStrings("中", takeTrailingCodepoints("A中", 2));
+    try std.testing.expectEqualStrings("B", takeTrailingCodepoints("A中B", 2));
+    const family = "👨\u{200D}👩\u{200D}👧";
+    try std.testing.expectEqualStrings("", takeCodepoints(family, 1));
+    try std.testing.expectEqualStrings(family, takeCodepoints(family, 2));
+    var buffer: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("中...", fitTabLabel("中文abc", 5, &buffer));
+    try std.testing.expectEqualStrings("e\u{301}...", fitTabLabel("e\u{301}abcd", 4, &buffer));
+    try std.testing.expectEqualStrings("中文", fitTabLabel("中文", 4, &buffer));
+}
+
 fn absoluteIndex(api: lua_mod.Api, state: *lua_mod.State, idx: c_int) c_int {
     if (idx > 0 or idx <= LUA_GLOBALSINDEX) return idx;
     return api.get_top(state) + idx + 1;
@@ -1197,15 +1602,6 @@ fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {
     return .{ .r = r, .g = g, .b = b };
 }
 
-fn overlayRowSegmentsIndex(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int) c_int {
-    api.get_field(state, row_idx, "segments");
-    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-        return absoluteIndex(api, state, -1);
-    }
-    pop(api, state, 1);
-    return row_idx;
-}
-
 fn overlayRowColorField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
@@ -1215,12 +1611,6 @@ fn overlayRowColorField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int,
     return parseHexColor(ptr[0..len]);
 }
 
-fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) bool {
-    api.get_field(state, row_idx, field);
-    defer pop(api, state, 1);
-    return api.to_boolean(state, -1) != 0;
-}
-
 fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?f32 {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
@@ -1228,144 +1618,249 @@ fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int
     return @floatCast(api.to_number(state, -1));
 }
 
-fn overlayRowStringField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?[]const u8 {
-    api.get_field(state, row_idx, field);
-    defer pop(api, state, 1);
-    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
-    var len: usize = 0;
-    const ptr = api.to_lstring(state, -1, &len) orelse return null;
-    return ptr[0..len];
-}
-
-fn overlaySegmentsLabel(segments: []const bar.Segment, out: []u8) []const u8 {
-    var len: usize = 0;
-    for (segments) |segment| {
-        if (segment.spacer or segment.text.len == 0 or len == out.len) continue;
-        const copy_len = @min(segment.text.len, out.len - len);
-        fastmem.copy(u8, out[len .. len + copy_len], segment.text[0..copy_len]);
-        len += copy_len;
-    }
-    return out[0..len];
-}
-
-fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32) void {
-    if (!g_overlay_hit_cache.enabled or id.len == 0 or width <= 0 or height <= 0) return;
-    if (g_overlay_hit_cache.hit_count >= g_overlay_hit_cache.hits.len) return;
-    if (id.len > g_overlay_cached_ids[0].len) return;
-    const owned_id = g_overlay_cached_ids[g_overlay_hit_cache.hit_count][0..id.len];
-    fastmem.copy(u8, owned_id, id);
-    g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
+fn overlayScrollbar(surface: *ClaySurface, index: usize) ?OverlayScrollbar {
+    const node = &surface.nodes[index];
+    if (node.scrollbar_id.length <= 0) return null;
+    const b = surface.visibleBounds(index) orelse return null;
+    const hit_width = @min(b.width, @max(@as(f32, 8), surface.cell_w));
+    const bar_width = @min(@as(f32, 5), @max(@as(f32, 3), hit_width - 2));
+    const x = b.x + b.width - hit_width;
+    const track_y = b.y + 2;
+    const track_height = @max(@as(f32, 1), b.height - 4);
+    const ratio = std.math.clamp(node.scrollbar_thumb_ratio, 0, 1);
+    const size = std.math.clamp(node.scrollbar_thumb_size, 0, 1);
+    const thumb_height = @min(track_height, @max(@as(f32, 12), track_height * size));
+    const track = node.scrollbar_track_color;
+    const thumb = node.scrollbar_thumb_color;
+    const fallback: ghostty.ColorRgb = .{ .r = 90, .g = 99, .b = 117 };
+    return .{
+        .id = node.scrollbar_id.chars[0..@intCast(node.scrollbar_id.length)],
+        .stack_index = surface.owner_index,
         .x = x,
-        .width = width,
+        .width = hit_width,
+        .y = track_y,
+        .height = track_height,
+        .bar_x = x + hit_width - bar_width - 1,
+        .bar_width = bar_width,
+        .thumb_y = track_y + ratio * (track_height - thumb_height),
+        .thumb_height = thumb_height,
+        .track_color = if (track.a > 0) .{ .r = clayChannel(track.r), .g = clayChannel(track.g), .b = clayChannel(track.b) } else fallback,
+        .thumb_color = if (thumb.a > 0) .{ .r = clayChannel(thumb.r), .g = clayChannel(thumb.g), .b = clayChannel(thumb.b) } else fallback,
+    };
+}
+
+fn drawOverlayScrollbar(scrollbar: OverlayScrollbar) void {
+    const radius = scrollbar.bar_width * 0.5;
+    const track = scrollbar.track_color;
+    const thumb = scrollbar.thumb_color;
+    drawRoundedRect(scrollbar.bar_x, scrollbar.y, scrollbar.bar_width, scrollbar.height, radius, track.r, track.g, track.b, 100);
+    drawRoundedRect(scrollbar.bar_x, scrollbar.thumb_y, scrollbar.bar_width, scrollbar.thumb_height, radius, thumb.r, thumb.g, thumb.b, 255);
+}
+
+fn overlayHit(surface: *ClaySurface, target: ClaySurface.Target, mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    const index = surface.hitTest(target, mouse_x, mouse_y) orelse return null;
+    return .{ .id = surface.nodeId(index), .stack_index = surface.owner_index };
+}
+
+fn overlayScrollbarAt(surface: *ClaySurface, mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
+    var index = surface.len;
+    while (index > 0) {
+        index -= 1;
+        const scrollbar = overlayScrollbar(surface, index) orelse continue;
+        if (mouse_x < scrollbar.x or mouse_x >= scrollbar.x + scrollbar.width) continue;
+        if (mouse_y < scrollbar.y or mouse_y >= scrollbar.y + scrollbar.height) continue;
+        return scrollbar;
+    }
+    return null;
+}
+
+/// Topmost clickable overlay node under the pointer.
+fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        if (overlayHit(g_overlay_surfaces[i], .clickable, mouse_x, mouse_y)) |hit| return hit;
+    }
+    return null;
+}
+
+/// Clickable rows are the most specific wheel target within an overlay, then
+/// its scroll viewports and panel. A higher overlay wins over lower rows.
+fn hitTestOverlayWheel(mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        const surface = g_overlay_surfaces[i];
+        if (overlayHit(surface, .clickable, mouse_x, mouse_y)) |hit| return hit;
+        if (overlayHit(surface, .scroll, mouse_x, mouse_y)) |hit| return hit;
+    }
+    return null;
+}
+
+/// Topmost scrollbar under the pointer, unless a higher overlay's clickable
+/// node covers it.
+fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        const surface = g_overlay_surfaces[i];
+        if (overlayScrollbarAt(surface, mouse_x, mouse_y)) |scrollbar| return scrollbar;
+        if (surface.hitTest(.clickable, mouse_x, mouse_y) != null) return null;
+    }
+    return null;
+}
+
+fn findOverlayScrollbar(id: []const u8, stack_index: usize) ?OverlayScrollbar {
+    for (g_overlay_surfaces[0..g_overlay_surface_count]) |surface| {
+        if (surface.owner_index != stack_index) continue;
+        for (0..surface.len) |index| {
+            const scrollbar = overlayScrollbar(surface, index) orelse continue;
+            if (std.mem.eql(u8, scrollbar.id, id)) return scrollbar;
+        }
+    }
+    return null;
+}
+
+fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
+    if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
+        app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = hit.id, .index = hit.stack_index } });
+    } else app.emitLuaBuiltInEvent("overlay:leave", .none);
+}
+
+fn boundsContain(b: ui_semantics.Bounds, x: f32, y: f32) bool {
+    return x >= b.x and x < b.x + b.width and y >= b.y and y < b.y + b.height;
+}
+
+/// Records a sidebar segment clipped to the panel, as drawn under its scissor.
+fn cacheSidebarHitRegion(id: []const u8, label: []const u8, rect: ui_semantics.Bounds) void {
+    const panel = g_sidebar_hits.panel orelse return;
+    const x = @max(rect.x, panel.x);
+    const y = @max(rect.y, panel.y);
+    const clipped: ui_semantics.Bounds = .{
+        .x = x,
         .y = y,
-        .height = height,
-        .node_id = owned_id,
-        .stack_index = g_overlay_render_stack_index,
+        .width = @min(rect.x + rect.width, panel.x + panel.width) - x,
+        .height = @min(rect.y + rect.height, panel.y + panel.height) - y,
     };
-    g_overlay_hit_cache.hit_count += 1;
-    if (g_widget_render_ctx) |ctx| {
-        ctx.app.appendUiSemanticNode(.overlay, .button, true, id, label, .{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        });
+    if (clipped.width <= 0 or clipped.height <= 0) return;
+    if (g_widget_render_ctx) |ctx| ctx.app.appendUiSemanticNode(.sidebar, .button, true, id, label, clipped);
+    if (g_sidebar_hits.count >= g_sidebar_hits.regions.len or id.len > ui_semantics.max_id_len) return;
+    const region = &g_sidebar_hits.regions[g_sidebar_hits.count];
+    region.bounds = clipped;
+    region.id_len = id.len;
+    fastmem.copy(u8, region.id_buf[0..id.len], id);
+    g_sidebar_hits.count += 1;
+}
+
+fn sidebarContains(x: f32, y: f32) bool {
+    const panel = g_sidebar_hits.panel orelse return false;
+    return boundsContain(panel, x, y);
+}
+
+fn hitTestSidebar(x: f32, y: f32) ?[]const u8 {
+    if (!sidebarContains(x, y)) return null;
+    var index = g_sidebar_hits.count;
+    while (index > 0) {
+        index -= 1;
+        const region = &g_sidebar_hits.regions[index];
+        if (boundsContain(region.bounds, x, y)) return region.id_buf[0..region.id_len];
     }
+    return null;
 }
 
-test "overlay hit regions retain IDs when segment scratch storage is reused" {
-    g_overlay_hit_cache = .{ .enabled = true };
-    defer g_overlay_hit_cache = .{};
-    var scratch = "activity:dismiss:42".*;
-    cacheOverlayHitRegion(&scratch, "dismiss", 0, 0, 20, 20);
-    @memset(&scratch, 'x');
-    cacheOverlayHitRegion(&scratch, "other", 30, 0, 20, 20);
-    const hit = hitTestOverlay(10, 10).?;
-    try std.testing.expectEqualStrings("activity:dismiss:42", hit.id);
-}
-
-fn cacheOverlayScrollbarRow(
-    id: []const u8,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    is_thumb: bool,
-    thumb_ratio: ?f32,
-    thumb_size: ?f32,
-    track_color: ghostty.ColorRgb,
-    thumb_color: ghostty.ColorRgb,
-) void {
-    if (id.len == 0 or id.len > ui_semantics.max_id_len or width <= 0 or height <= 0) return;
-
-    const scrollbar: *CachedOverlayScrollbar = blk: {
-        for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*cached| {
-            if (cached.id) |cached_id| {
-                if (cached.stack_index == g_overlay_render_stack_index and std.mem.eql(u8, cached_id, id)) break :blk cached;
-            }
+/// Emits sidebar hover for the segment under the pointer, or one leave when
+/// the pointer moves off (or something above covers) a hovered segment.
+fn updateSidebarHover(app: *App, x: f32, y: f32, modifiers: u32, covered: bool) void {
+    if (!covered) {
+        if (hitTestSidebar(x, y)) |id| {
+            g_sidebar_hovered = true;
+            app.emitLuaBuiltInEvent("sidebar:hover", .{ .sidebar_node = .{ .id = id, .mods = ghosttyMods(modifiers), .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
+            return;
         }
-        if (g_overlay_scrollbar_cache.count >= MAX_OVERLAY_SCROLLBARS) return;
-        const cached = &g_overlay_scrollbar_cache.scrollbars[g_overlay_scrollbar_cache.count];
-        g_overlay_scrollbar_cache.count += 1;
-        cached.* = .{
-            .id = id,
-            .x = x,
-            .width = width,
-            .y = y,
-            .height = height,
-            .stack_index = g_overlay_render_stack_index,
-            .thumb_ratio = thumb_ratio,
-            .thumb_size = thumb_size,
-            .track_color = track_color,
-            .thumb_color = thumb_color,
-        };
-        break :blk cached;
+    }
+    if (!g_sidebar_hovered) return;
+    g_sidebar_hovered = false;
+    app.emitLuaBuiltInEvent("sidebar:leave", .none);
+}
+
+test "sidebar hit regions are clipped to the panel and keep their own ids" {
+    const saved = g_sidebar_hits;
+    defer g_sidebar_hits = saved;
+    g_sidebar_hits = .{ .panel = .{ .x = 0, .y = 20, .width = 100, .height = 50 } };
+    var id_buf = "row:one".*;
+    cacheSidebarHitRegion(&id_buf, "one", .{ .x = 4, .y = 22, .width = 40, .height = 18 });
+    cacheSidebarHitRegion("row:two", "two", .{ .x = 4, .y = 60, .width = 40, .height = 18 });
+    cacheSidebarHitRegion("row:gone", "gone", .{ .x = 4, .y = 80, .width = 40, .height = 18 });
+    @memset(&id_buf, 'x');
+    try std.testing.expectEqual(@as(usize, 2), g_sidebar_hits.count);
+    try std.testing.expectEqualStrings("row:one", hitTestSidebar(10, 30).?);
+    try std.testing.expectEqualStrings("row:two", hitTestSidebar(10, 65).?);
+    // Clipped at the panel's bottom edge.
+    try std.testing.expect(hitTestSidebar(10, 72) == null);
+    try std.testing.expect(hitTestSidebar(80, 30) == null);
+    try std.testing.expect(sidebarContains(80, 30));
+    try std.testing.expect(!sidebarContains(120, 30));
+}
+
+test "overlay input queries painted Clay surfaces from the top of the stack" {
+    const static = struct {
+        fn str(text: []const u8) clay.Clay_String {
+            return .{ .chars = text.ptr, .length = @intCast(text.len), .isStaticallyAllocated = true };
+        }
+        fn box(kind: c_int, width: f32, height: f32, children: c_int, id: []const u8) clay.HollowClayNode {
+            var node = std.mem.zeroes(clay.HollowClayNode);
+            node.kind = kind;
+            node.width = width;
+            node.height = height;
+            node.children = children;
+            node.id = str(id);
+            node.scrollbar_thumb_size = 1;
+            return node;
+        }
     };
+    var lower: ClaySurface = .{ .owner_index = 1, .area = .{ .x = 0, .y = 0, .width = 200, .height = 200 } };
+    var upper: ClaySurface = .{ .owner_index = 2, .area = .{ .x = 60, .y = 0, .width = 200, .height = 200 } };
+    defer lower.deinit();
+    defer upper.deinit();
+    lower.context = clay.hollow_clay_create();
+    upper.context = clay.hollow_clay_create();
+    lower.nodes[0] = static.box(0, 100, 100, 1, "layout:1:root");
+    lower.nodes[0].scrollbar_id = static.str("layout:1:bar");
+    lower.nodes[1] = static.box(1, 100, 40, 0, "layout:1:row");
+    lower.nodes[1].clickable = true;
+    lower.len = 2;
+    upper.nodes[0] = static.box(0, 50, 50, 1, "layout:2:root");
+    upper.nodes[1] = static.box(1, 50, 20, 0, "layout:2:row");
+    upper.nodes[1].clickable = true;
+    upper.len = 2;
+    _ = lower.layout(200, 200, 8, 19, 0);
+    _ = upper.layout(200, 200, 8, 19, 0);
+    try std.testing.expect(!clay.hollow_clay_failed(lower.context) and !clay.hollow_clay_failed(upper.context));
+    g_overlay_surfaces[0] = &lower;
+    g_overlay_surfaces[1] = &upper;
+    g_overlay_surface_count = 2;
+    defer g_overlay_surface_count = 0;
 
-    const bottom = @max(scrollbar.y + scrollbar.height, y + height);
-    scrollbar.y = @min(scrollbar.y, y);
-    scrollbar.height = bottom - scrollbar.y;
-    if (is_thumb) {
-        if (scrollbar.has_thumb) {
-            const thumb_bottom = @max(scrollbar.thumb_y + scrollbar.thumb_height, y + height);
-            scrollbar.thumb_y = @min(scrollbar.thumb_y, y);
-            scrollbar.thumb_height = thumb_bottom - scrollbar.thumb_y;
-        } else {
-            scrollbar.thumb_y = y;
-            scrollbar.thumb_height = height;
-            scrollbar.has_thumb = true;
-        }
-    }
-}
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlay(5, 5).?.id);
+    try std.testing.expectEqualStrings("layout:2:row", hitTestOverlay(70, 10).?.id);
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlay(70, 30).?.id);
+    try std.testing.expect(hitTestOverlay(150, 150) == null);
+    // A higher overlay's panel beats clickable rows beneath it for the wheel.
+    try std.testing.expectEqualStrings("layout:2:root", hitTestOverlayWheel(70, 30).?.id);
+    try std.testing.expectEqual(@as(usize, 2), hitTestOverlayWheel(70, 30).?.stack_index);
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlayWheel(5, 30).?.id);
+    try std.testing.expectEqualStrings("layout:1:root", hitTestOverlayWheel(5, 60).?.id);
+    try std.testing.expect(hitTestOverlayWheel(150, 150) == null);
 
-fn finalizeAndDrawOverlayScrollbars(stack_index: usize) void {
-    for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*scrollbar| {
-        if (scrollbar.stack_index != stack_index) continue;
-
-        const bar_width = @min(@as(f32, 5), @max(@as(f32, 3), scrollbar.width - 2));
-        const track_x = scrollbar.x + scrollbar.width - bar_width - 1;
-        const track_y = scrollbar.y + 2;
-        const track_height = @max(@as(f32, 1), scrollbar.height - 4);
-
-        if (scrollbar.thumb_ratio) |raw_ratio| {
-            const ratio = std.math.clamp(raw_ratio, 0, 1);
-            const size = std.math.clamp(scrollbar.thumb_size orelse 1, 0, 1);
-            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 12), track_height * size));
-            scrollbar.thumb_y = track_y + ratio * (track_height - scrollbar.thumb_height);
-            scrollbar.has_thumb = true;
-        } else if (scrollbar.has_thumb) {
-            scrollbar.thumb_y = @max(track_y, scrollbar.thumb_y + 2);
-            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 8), scrollbar.thumb_height - 4));
-        }
-
-        scrollbar.y = track_y;
-        scrollbar.height = track_height;
-
-        drawRoundedRect(track_x, track_y, bar_width, track_height, bar_width * 0.5, scrollbar.track_color.r, scrollbar.track_color.g, scrollbar.track_color.b, 100);
-        if (scrollbar.has_thumb) {
-            drawRoundedRect(track_x, scrollbar.thumb_y, bar_width, scrollbar.thumb_height, bar_width * 0.5, scrollbar.thumb_color.r, scrollbar.thumb_color.g, scrollbar.thumb_color.b, 255);
-        }
-    }
+    const scrollbar = hitTestRoutableOverlayScrollbar(95, 60).?;
+    try std.testing.expectEqualStrings("layout:1:bar", scrollbar.id);
+    try std.testing.expectEqual(@as(usize, 1), scrollbar.stack_index);
+    try std.testing.expectEqual(@as(f32, 92), scrollbar.x);
+    // A higher overlay's clickable row covers the lower scrollbar.
+    try std.testing.expect(hitTestRoutableOverlayScrollbar(95, 10) == null);
+    try std.testing.expect(findOverlayScrollbar("layout:1:bar", 1) != null);
+    try std.testing.expect(findOverlayScrollbar("layout:1:bar", 2) == null);
+    try std.testing.expectEqual(@as(f32, 0), overlayScrollbarRatio(scrollbar, 60, 10));
 }
 
 // Shared paint interpretation for overlay and sidebar rows. Callers retain
@@ -1444,7 +1939,7 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
-        if (seg.id) |id| cacheOverlayHitRegion(id, seg.text, seg_x, bg_y, seg_w, bg_h);
+        if (seg.id) |id| cacheSidebarHitRegion(id, seg.text, .{ .x = seg_x, .y = bg_y, .width = seg_w, .height = bg_h });
     }
 }
 
@@ -1527,42 +2022,33 @@ fn drawRoundedRectOutline(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness
         return;
     }
 
-    const inner_w = w - thickness * 2.0;
-    const inner_h = h - thickness * 2.0;
-    const inner_radius = @max(@as(f32, 0.0), clamped_radius - thickness);
-    const has_inner = inner_w > 0 and inner_h > 0;
-
-    const row_count: usize = @max(1, @as(usize, @intFromFloat(@ceil(h))));
-    var row: usize = 0;
-    while (row < row_count) : (row += 1) {
-        const row_y = y + @as(f32, @floatFromInt(row));
-        const row_h = @min(@as(f32, 1.0), y + h - row_y);
-        if (row_h <= 0) break;
-
-        const sample_y = @as(f32, @floatFromInt(row)) + row_h * 0.5;
-        const outer_inset = @ceil(roundedRectRowInset(h, clamped_radius, sample_y));
-        const outer_x = x + outer_inset;
-        const outer_w = w - outer_inset * 2.0;
-        if (outer_w <= 0) continue;
-
-        if (!has_inner or sample_y <= thickness or sample_y >= h - thickness) {
-            drawBorderRect(outer_x, row_y, outer_w, row_h, r, g, b, a);
-            continue;
-        }
-
-        const inner_sample_y = sample_y - thickness;
-        const inner_inset = thickness + @ceil(roundedRectRowInset(inner_h, inner_radius, inner_sample_y));
-        const left_w = inner_inset - outer_inset;
-        if (left_w > 0) {
-            drawBorderRect(outer_x, row_y, left_w, row_h, r, g, b, a);
-        }
-
-        const right_x = x + w - inner_inset;
-        const right_w = x + w - outer_inset - right_x;
-        if (right_w > 0) {
-            drawBorderRect(right_x, row_y, right_w, row_h, r, g, b, a);
-        }
+    if (thickness * 2 >= @min(w, h)) {
+        drawRoundedRect(x, y, w, h, clamped_radius, r, g, b, a);
+        return;
     }
+
+    const mesh = rounded_border.Border.init(w, h, clamped_radius, thickness);
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+    const af = @as(f32, @floatFromInt(a)) / 255.0;
+    if (g_rect_pip.id != 0) c.sgl_load_pipeline(g_rect_pip);
+    c.sgl_begin_quads();
+    var previous = mesh.sample(mesh.count() - 1);
+    for (0..mesh.count()) |index| {
+        const current = mesh.sample(index);
+        for (0..3) |band| {
+            const points = [4]rounded_border.Point{ previous.points[band], current.points[band], current.points[band + 1], previous.points[band + 1] };
+            const coverage = [4]f32{ previous.coverage[band], current.coverage[band], current.coverage[band + 1], previous.coverage[band + 1] };
+            for (points, coverage) |point, opacity| {
+                c.sgl_c4f(rf, gf, bf, af * opacity);
+                c.sgl_v2f(x + point.x, y + point.y);
+            }
+        }
+        previous = current;
+    }
+    c.sgl_end();
+    c.sgl_load_default_pipeline();
 }
 
 fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
@@ -1572,21 +2058,54 @@ fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
     }
 }
 
-fn drawBarSegmentText(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, view: *const BarSegmentView, default_fg: ghostty.ColorRgb) void {
-    const fg = view.style.fg orelse view.segment.fg orelse default_fg;
-    if (view.segments_len > 0) {
-        drawSegmentArray(renderer, x, y, max_width, view.segments[0..view.segments_len], fg);
+/// Clay can emit independent side widths. Paint the outer rounded shape minus
+/// its independently inset inner shape, rather than treating `top` as uniform.
+fn drawClayBorder(b: clay.Clay_BoundingBox, border: clay.Clay_BorderRenderData, alpha: u8) void {
+    const widths = border.width;
+    const radii = border.cornerRadius;
+    const color = border.color;
+    const r = clayChannel(color.r);
+    const g = clayChannel(color.g);
+    const blue = clayChannel(color.b);
+    if (widths.top == widths.bottom and widths.top == widths.left and widths.top == widths.right and
+        radii.topLeft == radii.topRight and radii.topLeft == radii.bottomLeft and radii.topLeft == radii.bottomRight)
+    {
+        drawRoundedRectOutline(b.x, b.y, b.width, b.height, radii.topLeft, @floatFromInt(widths.top), r, g, blue, alpha);
         return;
     }
-    const max_chars: usize = if (max_width > 0)
-        @max(1, @as(usize, @intFromFloat(max_width / renderer.cell_w)))
-    else
-        0;
-    var display_buf: [512]u8 = undefined;
-    const display = if (max_chars == 0) "" else fitTabLabel(view.segment.text, max_chars, display_buf[0..]);
-    if (display.len == 0) return;
-    renderer.drawLabelFace(x, y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
-    c.sgl_load_default_pipeline();
+    if (b.width <= 0 or b.height <= 0 or alpha == 0) return;
+    const left: f32 = @floatFromInt(widths.left);
+    const right: f32 = @floatFromInt(widths.right);
+    const top: f32 = @floatFromInt(widths.top);
+    const bottom: f32 = @floatFromInt(widths.bottom);
+    const inner_w = @max(0, b.width - left - right);
+    const inner_h = @max(0, b.height - top - bottom);
+    var row: f32 = 0;
+    while (row < b.height) : (row += 1) {
+        const row_h = @min(1, b.height - row);
+        const y = row + row_h * 0.5;
+        const outer_left = roundedSideInset(b.height, radii.topLeft, radii.bottomLeft, y);
+        const outer_right = roundedSideInset(b.height, radii.topRight, radii.bottomRight, y);
+        if (inner_w <= 0 or inner_h <= 0 or y < top or y >= b.height - bottom) {
+            drawBorderRect(b.x + outer_left, b.y + row, @max(0, b.width - outer_left - outer_right), row_h, r, g, blue, alpha);
+            continue;
+        }
+        const inner_y = y - top;
+        const inner_left = left + roundedSideInset(inner_h, @max(0, radii.topLeft - @max(top, left)), @max(0, radii.bottomLeft - @max(bottom, left)), inner_y);
+        const inner_right = right + roundedSideInset(inner_h, @max(0, radii.topRight - @max(top, right)), @max(0, radii.bottomRight - @max(bottom, right)), inner_y);
+        const left_end = @min(b.width - outer_right, inner_left);
+        const right_start = @max(left_end, b.width - inner_right);
+        drawBorderRect(b.x + outer_left, b.y + row, @max(0, left_end - outer_left), row_h, r, g, blue, alpha);
+        drawBorderRect(b.x + right_start, b.y + row, @max(0, b.width - outer_right - right_start), row_h, r, g, blue, alpha);
+    }
+}
+
+fn roundedSideInset(height: f32, top_radius: f32, bottom_radius: f32, y: f32) f32 {
+    const top = @min(top_radius, height * 0.5);
+    const bottom = @min(bottom_radius, height * 0.5);
+    if (y < top) return @ceil(roundedRectRowInset(top * 2, top, y));
+    if (y > height - bottom) return @ceil(roundedRectRowInset(bottom * 2, bottom, y - height + bottom * 2));
+    return 0;
 }
 
 fn segmentViewCodepoints(view: *const BarSegmentView) usize {
@@ -1617,92 +2136,90 @@ fn tabViewShowsFullSegments(view: *const BarTabView, display: []const u8) bool {
     return view.segments_len > 0 and countCodepoints(display) == tabViewCodepoints(view) and tabViewTextLen(view) == view.segment.text.len;
 }
 
-fn tabViewSuffixIndex(view: *const BarTabView) ?usize {
-    var index = view.segments_len;
+/// The one tab truncation implementation: keeps segment styles, preserves a
+/// trailing clickable suffix when it fits and ends the clipped prefix with
+/// "...". Columns are display cells; graphemes are never split.
+fn fitTabSegments(segments: []const bar.Segment, max_cols: usize, out: []bar.Segment, buf: []u8) []const bar.Segment {
+    const ellipsis = "...";
+    var suffix_index: usize = segments.len;
+    var index = segments.len;
     while (index > 0) {
         index -= 1;
-        if (view.segments[index].id != null) return index;
+        if (segments[index].id != null) {
+            suffix_index = index;
+            break;
+        }
     }
-    return null;
-}
-
-fn tabViewPrefixText(view: *const BarTabView, suffix_index: usize, out: []u8) []const u8 {
+    var suffix_cols = segmentArrayCodepoints(segments[suffix_index..]);
+    if (suffix_cols > max_cols) {
+        suffix_index = segments.len;
+        suffix_cols = 0;
+    }
+    const prefix = segments[0..suffix_index];
+    const budget = max_cols - suffix_cols;
+    var len: usize = 0;
     var used: usize = 0;
-    for (view.segments[0..suffix_index]) |segment| {
-        if (used >= out.len) break;
-        const copy_len = @min(segment.text.len, out.len - used);
-        fastmem.copy(u8, out[used .. used + copy_len], segment.text[0..copy_len]);
-        used += copy_len;
-        if (copy_len < segment.text.len) break;
+    if (segmentArrayCodepoints(prefix) <= budget) {
+        for (prefix) |segment| {
+            if (len == out.len) break;
+            out[len] = segment;
+            len += 1;
+        }
+    } else if (budget <= ellipsis.len) {
+        if (budget > 0 and out.len > 0) {
+            out[0] = prefix[0];
+            out[0].text = ellipsis[0..budget];
+            len = 1;
+        }
+    } else {
+        var remaining = budget - ellipsis.len;
+        for (prefix) |segment| {
+            if (len == out.len) break;
+            const cols = countCodepoints(segment.text);
+            if (cols <= remaining) {
+                out[len] = segment;
+                len += 1;
+                remaining -= cols;
+                continue;
+            }
+            const head = takeCodepoints(segment.text, remaining);
+            if (used + head.len + ellipsis.len > buf.len) break;
+            fastmem.copy(u8, buf[used .. used + head.len], head);
+            fastmem.copy(u8, buf[used + head.len .. used + head.len + ellipsis.len], ellipsis);
+            out[len] = segment;
+            out[len].text = buf[used .. used + head.len + ellipsis.len];
+            used += head.len + ellipsis.len;
+            len += 1;
+            break;
+        }
     }
-    return out[0..used];
+    for (segments[suffix_index..]) |segment| {
+        if (len == out.len) break;
+        out[len] = segment;
+        len += 1;
+    }
+    return out[0..len];
 }
 
-fn drawFittedTabSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, view: *const BarTabView, default_fg: ghostty.ColorRgb) void {
-    const max_chars: usize = if (max_width > 0)
-        @max(1, @as(usize, @intFromFloat(max_width / renderer.cell_w)))
-    else
-        0;
-    const suffix_index = tabViewSuffixIndex(view) orelse return;
-    var suffix_chars: usize = 0;
-    for (view.segments[suffix_index..view.segments_len]) |segment| suffix_chars += countCodepoints(segment.text);
-    if (max_chars == 0 or suffix_chars > max_chars) {
-        drawSegmentArray(renderer, x, y, max_width, view.segments[0..view.segments_len], default_fg);
-        return;
-    }
-
-    var prefix_buf: [1024]u8 = undefined;
-    var display_buf: [1024]u8 = undefined;
-    const prefix = tabViewPrefixText(view, suffix_index, prefix_buf[0..]);
-    const display_prefix = fitTabLabel(prefix, max_chars - suffix_chars, display_buf[0..]);
-    var cursor_x = x;
-    if (display_prefix.len > 0 and suffix_index > 0) {
-        const prefix_style = view.segments[0];
-        const fg = prefix_style.fg orelse default_fg;
-        renderer.drawLabelFace(cursor_x, y, display_prefix, fg.r, fg.g, fg.b, if (prefix_style.bold) 1 else 0);
-        c.sgl_load_default_pipeline();
-        cursor_x += @as(f32, @floatFromInt(countCodepoints(display_prefix))) * renderer.cell_w;
-    }
-
-    for (view.segments[suffix_index..view.segments_len]) |segment| {
-        if (segment.text.len == 0) continue;
-        const segment_width = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
-        if (cursor_x + segment_width > x + max_width) break;
-        const fg = segment.fg orelse default_fg;
-        renderer.drawLabelFace(cursor_x, y, segment.text, fg.r, fg.g, fg.b, if (segment.bold) 1 else 0);
-        c.sgl_load_default_pipeline();
-        cursor_x += segment_width;
-    }
-}
-
-fn cacheFittedTabSegments(cache: *BarCache, renderer: *FtRenderer, x: f32, max_width: f32, view: *const BarTabView, tab_index: usize) void {
-    const max_chars: usize = if (max_width > 0)
-        @max(1, @as(usize, @intFromFloat(max_width / renderer.cell_w)))
-    else
-        0;
-    const suffix_index = tabViewSuffixIndex(view) orelse return;
-    var suffix_chars: usize = 0;
-    for (view.segments[suffix_index..view.segments_len]) |segment| suffix_chars += countCodepoints(segment.text);
-    if (max_chars == 0 or suffix_chars > max_chars) return;
-
-    var prefix_buf: [1024]u8 = undefined;
-    var display_buf: [1024]u8 = undefined;
-    const prefix = tabViewPrefixText(view, suffix_index, prefix_buf[0..]);
-    const display_prefix = fitTabLabel(prefix, max_chars - suffix_chars, display_buf[0..]);
-    const prefix_width = @as(f32, @floatFromInt(countCodepoints(display_prefix))) * renderer.cell_w;
-    if (prefix_width > 0) {
-        const prefix_id = if (suffix_index > 0) view.segments[suffix_index - 1].id else null;
-        cacheBarHitRegion(cache, x, prefix_width, null, 0.0, tab_index, prefix_id);
-    }
-
-    var cursor_x = x + prefix_width;
-    for (view.segments[suffix_index..view.segments_len]) |segment| {
-        if (segment.text.len == 0) continue;
-        const segment_width = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
-        if (cursor_x + segment_width > x + max_width) break;
-        cacheBarHitRegion(cache, cursor_x, segment_width, null, 0.0, tab_index, segment.id);
-        cursor_x += segment_width;
-    }
+test "tab segment fitting keeps styles and the clickable suffix" {
+    const red: ghostty.ColorRgb = .{ .r = 255, .g = 0, .b = 0 };
+    var out: [8]bar.Segment = undefined;
+    var buf: [64]u8 = undefined;
+    const styled = [_]bar.Segment{ .{ .text = "prefix " }, .{ .text = "this is a very long name", .fg = red } };
+    const fitted = fitTabSegments(&styled, 20, &out, &buf);
+    try std.testing.expectEqual(@as(usize, 2), fitted.len);
+    try std.testing.expectEqualStrings("prefix ", fitted[0].text);
+    try std.testing.expectEqualStrings("this is a ...", fitted[1].text);
+    try std.testing.expectEqual(red, fitted[1].fg.?);
+    const closable = [_]bar.Segment{ .{ .text = "this is a very looooong title" }, .{ .text = " ×", .id = "close" } };
+    const kept = fitTabSegments(&closable, 20, &out, &buf);
+    try std.testing.expectEqual(@as(usize, 2), kept.len);
+    try std.testing.expectEqualStrings("this is a very ...", kept[0].text);
+    try std.testing.expectEqualStrings(" ×", kept[1].text);
+    try std.testing.expectEqual(@as(usize, 1), fitTabSegments(&styled, 30, &out, &buf)[1..].len);
+    const wide = [_]bar.Segment{.{ .text = "中文abc" }};
+    try std.testing.expectEqualStrings("中...", fitTabSegments(&wide, 5, &out, &buf)[0].text);
+    try std.testing.expectEqualStrings("..", fitTabSegments(&wide, 2, &out, &buf)[0].text);
 }
 
 fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
@@ -1713,86 +2230,181 @@ fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
     return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(tabViewCodepoints(view))) * renderer.cell_w;
 }
 
+fn debugRgb(value: ?ghostty.ColorRgb) ?clay_grid_debug.Rgb {
+    const rgb = value orelse return null;
+    return .{ .r = rgb.r, .g = rgb.g, .b = rgb.b };
+}
+
+/// Inspector view of a bar paint, matching `drawBarBackground`.
+fn debugBarStyle(style: BarStyle, padding: BarBox) clay_grid_debug.Style {
+    return .{
+        .bg = debugRgb(style.bg),
+        .fg = debugRgb(style.fg),
+        .border = debugRgb(style.border),
+        .border_alpha = 72,
+        .radius = style.radius,
+        .bold = style.bold,
+        .padding = .{ padding.top, padding.right, padding.bottom, padding.left },
+    };
+}
+
 fn barItemHeight(renderer: *FtRenderer, style: BarStyle) f32 {
     return renderer.cell_h + style.padding.top + style.padding.bottom;
 }
 
+fn nativePadding(box: BarBox) clay.Clay_Padding {
+    return .{ .left = native_surface.edge(box.left), .right = native_surface.edge(box.right), .top = native_surface.edge(box.top), .bottom = native_surface.edge(box.bottom) };
+}
+
+fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width: f32, height: f32, widget: *const BarWidgetView) bool {
+    const Surface = native_surface.Surface;
+    const fixed = native_surface.fixed;
+    const grow = native_surface.grow;
+    if (!layout.begin(width, height)) return false;
+    Surface.open(0, .{ .sizing = .{ .width = fixed(width), .height = fixed(height) }, .padding = nativePadding(widget.layout.margin) });
+    Surface.open(1, .{
+        .sizing = .{ .width = grow(0), .height = grow(0) },
+        .padding = nativePadding(widget.layout.padding),
+        .layoutDirection = clay.CLAY_LEFT_TO_RIGHT,
+        .childAlignment = .{ .y = clay.CLAY_ALIGN_Y_CENTER },
+    });
+    var unbounded_tabs = false;
+    for (widget.items[0..widget.len]) |*item| {
+        if (item.kind == .tabs and !item.tabs.fit_content and item.tabs.max_width <= 0 and item.tabs.len > 0) unbounded_tabs = true;
+    }
+    var right = false;
+    for (widget.items[0..widget.len], 0..) |*item, i| {
+        const id: u32 = @intCast(10 + i * 100);
+        switch (item.kind) {
+            .spacer => {
+                Surface.open(id, .{ .sizing = .{ .width = if (unbounded_tabs) fixed(0) else grow(0), .height = fixed(0) } });
+                Surface.close();
+                right = true;
+            },
+            .segment => {
+                const view = &item.segment;
+                const desired = segmentViewFullWidth(renderer, view);
+                Surface.preferred(id, .{ .sizing = .{
+                    .width = if (right) fixed(desired) else native_surface.fit(),
+                    .height = fixed(barItemHeight(renderer, view.style) + view.style.margin.vertical()),
+                } }, desired);
+            },
+            .tabs => {
+                var cap: f32 = 0;
+                if (item.tabs.max_width > 0) for (item.tabs.tabs[0..item.tabs.len]) |*tab| {
+                    cap += tab.style.margin.horizontal() + tab.style.padding.horizontal() + item.tabs.max_width * renderer.cell_w;
+                };
+                Surface.open(id, .{
+                    .sizing = .{ .width = if (item.tabs.fit_content or cap > 0) native_surface.fit() else grow(0), .height = grow(0) },
+                    .layoutDirection = clay.CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = .{ .y = clay.CLAY_ALIGN_Y_CENTER },
+                });
+                for (item.tabs.tabs[0..item.tabs.len], 0..) |*tab, ti| {
+                    const max_w = if (item.tabs.max_width > 0) tab.style.margin.horizontal() + tab.style.padding.horizontal() + item.tabs.max_width * renderer.cell_w else 0;
+                    var axis = if (item.tabs.fit_content or max_w > 0) native_surface.fit() else grow(0);
+                    axis.size.minMax.max = max_w;
+                    Surface.preferred(id + 1 + @as(u32, @intCast(ti)), .{ .sizing = .{
+                        .width = axis,
+                        .height = fixed(barItemHeight(renderer, tab.style) + tab.style.margin.vertical()),
+                    } }, if (!item.tabs.fit_content and max_w > 0) max_w else tabViewFullWidth(renderer, tab));
+                }
+                Surface.close();
+            },
+        }
+    }
+    Surface.close();
+    Surface.close();
+    return layout.end();
+}
+
+test "native bars reserve right items and grow tabs before the spacer" {
+    var renderer: FtRenderer = undefined;
+    renderer.cell_w = 10;
+    renderer.cell_h = 20;
+    const widget = try std.testing.allocator.create(BarWidgetView);
+    defer std.testing.allocator.destroy(widget);
+    widget.* = .{};
+    widget.len = 3;
+    widget.items[0].kind = .tabs;
+    widget.items[0].tabs.len = 2;
+    widget.items[0].tabs.max_width = 8;
+    widget.items[0].tabs.tabs[0].segment.text = "first";
+    widget.items[0].tabs.tabs[1].segment.text = "second";
+    widget.items[1].kind = .spacer;
+    widget.items[2].kind = .segment;
+    widget.items[2].segment.segment.text = "right";
+    var layout = native_surface.Surface{};
+    defer layout.deinit();
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expectApproxEqAbs(@as(f32, 80), layout.bounds(11).width, 0.02);
+    try std.testing.expectApproxEqAbs(@as(f32, 350), layout.bounds(210).x, 0.02);
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 100, 30, widget));
+    try std.testing.expectApproxEqAbs(@as(f32, 25), layout.bounds(11).width, 0.02);
+    try std.testing.expectApproxEqAbs(@as(f32, 50), layout.bounds(210).x, 0.02);
+    widget.items[0].tabs.max_width = 0;
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expectApproxEqAbs(@as(f32, 175), layout.bounds(11).width, 0.02);
+}
+
 fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: *const BarWidgetView) void {
     if (bar_h <= 0) return;
+    const layout = &g_native_bars[@backingInt(surface)];
+    if (!layoutNativeBar(layout, renderer, width, bar_h, widget)) return;
     const cache = if (surface == .top) &g_top_bar_cache else &g_bottom_bar_cache;
     const default_fg = ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
 
-    const frame_x = widget.layout.margin.left;
-    const frame_y = bar_y + widget.layout.margin.top;
-    const frame_w = @max(@as(f32, 0.0), width - widget.layout.margin.horizontal());
-    const frame_h = @max(@as(f32, 0.0), bar_h - widget.layout.margin.vertical());
+    const frame = layout.bounds(1);
+    const frame_x = frame.x;
+    const frame_y = bar_y + frame.y;
+    const frame_w = frame.width;
+    const frame_h = frame.height;
     if (widget.style.bg != null or widget.style.border != null) {
         drawBarBackground(frame_x, frame_y, frame_w, frame_h, widget.style);
     }
 
-    const content_x = frame_x + widget.layout.padding.left;
     const content_y = frame_y + widget.layout.padding.top;
-    const content_w = @max(@as(f32, 0.0), frame_w - widget.layout.padding.horizontal());
     const content_h = @max(@as(f32, 0.0), frame_h - widget.layout.padding.vertical());
-    const content_right = content_x + content_w;
+    const debug_record: ?*clay_grid_debug.BarRecord = if (g_grid_debug.enabled) &g_grid_debug.bars[@backingInt(surface)] else null;
+    if (debug_record) |record| record.begin(.{ .x = frame_x, .y = frame_y, .width = frame_w, .height = frame_h }, debugBarStyle(widget.style, widget.layout.padding), content_y, content_h);
 
-    var right_reserved: f32 = 0.0;
-    var saw_spacer = false;
-    for (widget.items[0..widget.len]) |*item| {
-        switch (item.kind) {
-            .spacer => saw_spacer = true,
-            .segment => if (saw_spacer) {
-                right_reserved += segmentViewFullWidth(renderer, &item.segment);
-            },
-            .tabs => if (saw_spacer) {
-                for (item.tabs.tabs[0..item.tabs.len]) |*tab| {
-                    right_reserved += tabViewFullWidth(renderer, tab);
-                }
-            },
-        }
-    }
-
-    var cursor_x = content_x;
-    var on_right_side = false;
     const active_idx = mux_ops.activeTabIndex(app);
-    for (widget.items[0..widget.len]) |*item| {
+    for (widget.items[0..widget.len], 0..) |*item, item_index| {
+        const item_id: u32 = @intCast(10 + item_index * 100);
+        const item_box = layout.bounds(item_id);
         switch (item.kind) {
-            .spacer => {
-                cursor_x = @max(content_x, content_right - right_reserved);
-                on_right_side = true;
-            },
+            .spacer => {},
             .segment => {
                 const view = &item.segment;
-                const full_w = segmentViewFullWidth(renderer, view);
-                const available_w = if (on_right_side)
-                    full_w
-                else
-                    @max(@as(f32, 0.0), content_right - right_reserved - cursor_x);
+                const cursor_x = item_box.x;
+                const available_w = item_box.width;
                 const available_text_w = @max(@as(f32, 0.0), available_w - view.style.margin.horizontal() - view.style.padding.horizontal());
                 const max_chars: usize = if (available_text_w > 0)
                     @max(1, @as(usize, @intFromFloat(available_text_w / renderer.cell_w)))
                 else
                     0;
-                const display = if (!on_right_side and max_chars > 0 and segmentViewCodepoints(view) > max_chars)
+                const display = if (max_chars > 0 and segmentViewCodepoints(view) > max_chars)
                     takeTrailingCodepoints(view.segment.text, max_chars)
-                else if (max_chars == 0 and !on_right_side)
+                else if (max_chars == 0)
                     ""
                 else
                     view.segment.text;
-                if (display.len == 0) {
-                    if (on_right_side) right_reserved -= full_w;
-                    continue;
-                }
+                if (display.len == 0) continue;
 
                 const text_w = @as(f32, @floatFromInt(countCodepoints(display))) * renderer.cell_w;
                 const bg_h = barItemHeight(renderer, view.style);
                 const bg_x = cursor_x + view.style.margin.left;
-                const bg_y = content_y + view.style.margin.top + @max(@as(f32, 0.0), (content_h - view.style.margin.vertical() - bg_h) * 0.5);
+                const bg_y = bar_y + item_box.y + view.style.margin.top;
                 const bg_w = view.style.padding.left + text_w + view.style.padding.right;
                 var bg_style = view.style;
                 if (bg_style.bg == null) bg_style.bg = view.segment.bg;
                 if (bg_style.fg == null) bg_style.fg = view.segment.fg;
                 if (view.segment.id) |id| cacheBarHitRegion(cache, cursor_x, view.style.margin.horizontal() + bg_w, null, 0.0, null, id);
+                if (debug_record) |record| {
+                    var paint = debugBarStyle(bg_style, view.style.padding);
+                    paint.fg = debugRgb(bg_style.fg orelse default_fg);
+                    paint.bold = view.segment.bold or view.style.bold;
+                    record.add(.segment, item_index, cursor_x, view.style.margin.horizontal() + bg_w, .{ .x = bg_x, .y = bg_y, .width = bg_w, .height = bg_h }, paint, false, display);
+                }
                 if (bg_style.bg != null or bg_style.border != null) {
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                 }
@@ -1807,35 +2419,27 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     renderer.drawLabelFace(text_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
                 }
-                cursor_x += view.style.margin.horizontal() + bg_w;
-                if (on_right_side) right_reserved -= full_w;
             },
             .tabs => {
-                const available = @max(@as(f32, 1.0), content_right - cursor_x - right_reserved);
-                const default_tab_w = if (item.tabs.len > 0) available / @as(f32, @floatFromInt(item.tabs.len)) else available;
-                var used_width: f32 = 0.0;
                 for (item.tabs.tabs[0..item.tabs.len], 0..) |*tab, ti| {
-                    const full_w = tabViewFullWidth(renderer, tab);
-                    const tx = cursor_x + used_width;
-                    const remaining_w = content_right - right_reserved - tx;
-                    if (remaining_w <= 0) break;
-
-                    const min_tab_w = tab.style.margin.horizontal() + tab.style.padding.horizontal() + renderer.cell_w;
-                    const desired_raw = if (item.tabs.fit_content) full_w else @max(min_tab_w, default_tab_w);
-                    const max_tab_w = if (item.tabs.max_width > 0)
-                        tab.style.margin.horizontal() + tab.style.padding.horizontal() + (item.tabs.max_width * renderer.cell_w)
-                    else
-                        0;
-                    const desired_tab_w = if (max_tab_w > 0) @min(desired_raw, max_tab_w) else desired_raw;
-                    const tab_w = @min(desired_tab_w, remaining_w);
+                    const tab_box = layout.bounds(item_id + 1 + @as(u32, @intCast(ti)));
+                    const tx = tab_box.x;
+                    const tab_w = tab_box.width;
+                    if (tab_w <= 0) continue;
                     const bg_h = barItemHeight(renderer, tab.style);
                     const bg_x = tx + tab.style.margin.left;
-                    const bg_y = content_y + tab.style.margin.top + @max(@as(f32, 0.0), (content_h - tab.style.margin.vertical() - bg_h) * 0.5);
+                    const bg_y = bar_y + tab_box.y + tab.style.margin.top;
                     const bg_w = @max(@as(f32, 0.0), tab_w - tab.style.margin.horizontal());
 
                     const bg_style = resolvedTabPaint(tab, ti == active_idx);
 
                     cacheBarHitRegion(cache, tx, tab_w, null, 0.0, ti, tab.segment.id);
+                    if (debug_record) |record| {
+                        var paint = debugBarStyle(bg_style, tab.style.padding);
+                        paint.fg = debugRgb(bg_style.fg orelse default_fg);
+                        paint.bold = tab.segment.bold or tab.style.bold;
+                        record.add(.tab, ti, tx, tab_w, .{ .x = bg_x, .y = bg_y, .width = bg_w, .height = bg_h }, paint, ti == active_idx, tab.segment.text);
+                    }
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                     if (tab.style.radius <= 0 and tab.style.bg == null and tab.segment.bg == null and ti == active_idx) {
                         const accent = bg_style.selection_accent.?;
@@ -1856,9 +2460,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     const display_title = if (max_label_chars == 0) "" else fitTabLabel(tab.segment.text, max_label_chars, display_buf[0..]);
                     const text_y = bg_y + tab.style.padding.top;
                     const fg = bg_style.fg orelse default_fg;
-                    if (tab.segments_len > 0 and tabViewCodepoints(tab) > max_label_chars and tabViewSuffixIndex(tab) != null) {
-                        cacheFittedTabSegments(cache, renderer, label_x, label_space, tab, ti);
-                        drawFittedTabSegments(renderer, label_x, text_y, label_space, tab, fg);
+                    if (tab.segments_len > 0 and tabViewCodepoints(tab) > max_label_chars and tabViewTextLen(tab) == tab.segment.text.len) {
+                        var fitted_buf: [16]bar.Segment = undefined;
+                        var fitted_text: [1024]u8 = undefined;
+                        const fitted = fitTabSegments(tab.segments[0..tab.segments_len], max_label_chars, &fitted_buf, &fitted_text);
+                        cacheBarSegmentArray(cache, renderer, label_x, label_space, fitted, ti);
+                        drawSegmentArray(renderer, label_x, text_y, label_space, fitted, fg);
                     } else if (tabViewShowsFullSegments(tab, display_title)) {
                         cacheBarSegmentArray(cache, renderer, label_x, label_space, tab.segments[0..tab.segments_len], ti);
                         drawSegmentArray(renderer, label_x, text_y, label_space, tab.segments[0..tab.segments_len], fg);
@@ -1866,10 +2473,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                         renderer.drawLabelFace(label_x, text_y, display_title, fg.r, fg.g, fg.b, if (tab.segment.bold or tab.style.bold) 1 else 0);
                         c.sgl_load_default_pipeline();
                     }
-                    used_width += tab_w;
                 }
-                cursor_x += used_width;
-                if (on_right_side) right_reserved -= used_width;
             },
         }
     }
@@ -1938,10 +2542,15 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 }
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
+    g_overlay_surface_count = 0;
+    g_sidebar_hits.panel = null;
+    g_sidebar_hits.count = 0;
     const ctx = g_widget_render_ctx orelse return;
     const scratch = &g_bar_widget_scratch;
     const api = runtime.context.api;
     const state = runtime.state;
+    const saved_top = api.get_top(state);
+    defer api.set_top(state, saved_top);
     api.get_field(state, LUA_GLOBALSINDEX, "hollow");
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
         pop(api, state, 1);
@@ -2026,12 +2635,38 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         const sidebar_border = sidebar_style.border orelse ghostty.ColorRgb{ .r = 122, .g = 162, .b = 247 };
         drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, sidebar_bg.r, sidebar_bg.g, sidebar_bg.b, sidebar_style.alpha orelse 235);
         drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, sidebar_border.r, sidebar_border.g, sidebar_border.b, 255);
+        g_sidebar_hits.panel = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
 
         api.get_field(state, sidebar_idx, "rows");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
             const rows_idx = absoluteIndex(api, state, -1);
+            // Sidebar producers already window their rows. Clay owns the
+            // column geometry; keep segment paint and inherited colors intact.
+            var row_count: usize = 0;
+            while (row_count < 512) : (row_count += 1) {
+                api.rawgeti(state, rows_idx, @intCast(row_count + 1));
+                const done = api.value_type(state, -1) == @backingInt(LuaType.nil_type);
+                pop(api, state, 1);
+                if (done) break;
+            }
+            if (!g_native_sidebar.begin(sidebar_width, panel_h)) {
+                pop(api, state, 2);
+                return;
+            }
+            native_surface.Surface.open(0, .{
+                .sizing = .{ .width = native_surface.fixed(sidebar_width), .height = native_surface.fixed(panel_h) },
+                .padding = .{ .top = native_surface.edge(ctx.renderer.cell_h), .left = native_surface.edge(ctx.renderer.cell_w * 0.5), .right = native_surface.edge(ctx.renderer.cell_w * 0.5) },
+                .layoutDirection = clay.CLAY_TOP_TO_BOTTOM,
+            });
+            for (0..row_count) |i| {
+                native_surface.Surface.open(@intCast(i + 1), .{ .sizing = .{ .width = native_surface.grow(0), .height = native_surface.fixed(ctx.renderer.cell_h) } });
+                native_surface.Surface.close();
+            }
+            native_surface.Surface.close();
+            const sidebar_laid_out = g_native_sidebar.end();
+            c.sgl_scissor_rect(@intFromFloat(panel_x), @intFromFloat(panel_y), @intFromFloat(@max(0, sidebar_width)), @intFromFloat(@max(0, panel_h)), true);
             var row_i: c_int = 1;
-            while (true) : (row_i += 1) {
+            while (sidebar_laid_out and row_i <= @as(c_int, @intCast(row_count))) : (row_i += 1) {
                 api.rawgeti(state, rows_idx, row_i);
                 if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                     pop(api, state, 1);
@@ -2039,7 +2674,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 }
                 if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                     const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], absoluteIndex(api, state, -1));
-                    const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
+                    const row_box = g_native_sidebar.bounds(@intCast(row_i));
+                    const text_y = panel_y + row_box.y;
                     var row_paint = RowPaint{};
                     api.get_field(state, sidebar_idx, "row_styles");
                     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
@@ -2050,24 +2686,20 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         pop(api, state, 1);
                     }
                     pop(api, state, 1);
-                    drawRowPaint(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, text_y + bar.rowPadding(row_segments).top, sidebar_width - ctx.renderer.cell_w, ctx.renderer.cell_h, row_paint);
-                    drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments, sidebar_style.fg);
+                    drawRowPaint(ctx.renderer, panel_x + row_box.x, text_y, text_y + bar.rowPadding(row_segments).top, row_box.width, row_box.height, row_paint);
+                    drawRowSegments(ctx.renderer, panel_x + row_box.x, text_y, row_box.width, row_segments, sidebar_style.fg);
                 }
                 pop(api, state, 1);
             }
+            c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
         }
         pop(api, state, 1);
     }
     pop(api, state, 1);
 
-    g_overlay_hit_cache = .{ .enabled = true };
-    g_overlay_scrollbar_cache = .{};
-
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
-        const overlay_stack = @import("overlay_stack.zig");
-        var stacks = overlay_stack.Stack{};
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
             api.rawgeti(state, stacks_idx, stack_i);
@@ -2076,15 +2708,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 break;
             }
             if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                g_overlay_render_stack_index = @intCast(stack_i);
                 const overlay_idx = absoluteIndex(api, state, -1);
-                api.get_field(state, overlay_idx, "stack_context");
-                var context: overlay_stack.Context = .overlay;
-                var context_len: usize = 0;
-                if (api.to_lstring(state, -1, &context_len)) |ptr| {
-                    context = std.meta.stringToEnum(overlay_stack.Context, ptr[0..context_len]) orelse .overlay;
-                }
-                pop(api, state, 1);
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
                 var backdrop_alpha: u8 = 0;
@@ -2107,318 +2731,27 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 }
                 pop(api, state, 1);
 
-                api.get_field(state, overlay_idx, "width");
-                var width_rows: usize = 0;
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
-                    const value = api.to_number(state, -1);
-                    if (value > 0) width_rows = @intFromFloat(value);
-                }
-                pop(api, state, 1);
-
-                api.get_field(state, overlay_idx, "height");
-                var height_rows: usize = 0;
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
-                    const value = api.to_number(state, -1);
-                    if (value > 0) height_rows = @intFromFloat(value);
-                }
-                pop(api, state, 1);
-
-                api.get_field(state, overlay_idx, "chrome");
-                var panel_bg = ghostty.ColorRgb{ .r = 18, .g = 22, .b = 30 };
-                var panel_border = ghostty.ColorRgb{ .r = 136, .g = 192, .b = 208 };
-                var panel_border_size: f32 = 1.0;
-                var panel_alpha: u8 = 255;
-                var panel_radius: f32 = 0;
-                var panel_padding = BarBox{};
-                var panel_margin = BarBox{};
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                    const chrome_idx = absoluteIndex(api, state, -1);
-                    if (overlayRowColorField(api, state, chrome_idx, "bg")) |bg| {
-                        panel_bg = bg;
-                    }
-                    if (overlayRowColorField(api, state, chrome_idx, "border")) |border| {
-                        panel_border = border;
-                    }
-                    api.get_field(state, chrome_idx, "border_size");
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
-                        panel_border_size = @max(@as(f32, 0.0), @as(f32, @floatCast(api.to_number(state, -1))));
-                    }
-                    pop(api, state, 1);
-                    api.get_field(state, chrome_idx, "alpha");
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
-                        const value = api.to_number(state, -1);
-                        panel_alpha = @intCast(std.math.clamp(@as(i32, @intFromFloat(value)), 0, 255));
-                    }
-                    pop(api, state, 1);
-                    api.get_field(state, chrome_idx, "radius");
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
-                        panel_radius = @floatCast(api.to_number(state, -1));
-                    }
-                    pop(api, state, 1);
-                    panel_padding = barBoxField(api, state, chrome_idx, "padding");
-                    panel_margin = barBoxField(api, state, chrome_idx, "margin");
-                }
-                pop(api, state, 1);
-
-                api.get_field(state, overlay_idx, "rows");
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
-                    pop(api, state, 1);
-                    pop(api, state, 1);
-                    continue;
-                }
-                const rows_idx = absoluteIndex(api, state, -1);
-                api.get_field(state, overlay_idx, "align");
-                var overlay_align = enum {
-                    center,
-                    top_left,
-                    top_center,
-                    top_right,
-                    left_center,
-                    right_center,
-                    bottom_left,
-                    bottom_center,
-                    bottom_right,
-                }.center;
-                var align_len: usize = 0;
-                if (api.to_lstring(state, -1, &align_len)) |ptr| {
-                    const align_name = ptr[0..align_len];
-                    if (std.mem.eql(u8, align_name, "top_left")) {
-                        overlay_align = .top_left;
-                    } else if (std.mem.eql(u8, align_name, "top_center")) {
-                        overlay_align = .top_center;
-                    } else if (std.mem.eql(u8, align_name, "top_right")) {
-                        overlay_align = .top_right;
-                    } else if (std.mem.eql(u8, align_name, "left_center")) {
-                        overlay_align = .left_center;
-                    } else if (std.mem.eql(u8, align_name, "right_center")) {
-                        overlay_align = .right_center;
-                    } else if (std.mem.eql(u8, align_name, "bottom_left")) {
-                        overlay_align = .bottom_left;
-                    } else if (std.mem.eql(u8, align_name, "bottom_center")) {
-                        overlay_align = .bottom_center;
-                    } else if (std.mem.eql(u8, align_name, "bottom_right")) {
-                        overlay_align = .bottom_right;
-                    }
-                }
-                pop(api, state, 1);
-
-                var content_w: f32 = 0;
-                var content_h: f32 = 0;
-                var row_i_measure: c_int = 1;
-                while (true) : (row_i_measure += 1) {
-                    api.rawgeti(state, rows_idx, row_i_measure);
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
-                        pop(api, state, 1);
-                        break;
-                    }
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                        const row_idx = absoluteIndex(api, state, -1);
-                        const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
-                        const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
-                        var row_width: f32 = 0;
-                        for (row_segments) |seg| {
-                            if (seg.spacer or seg.text.len == 0) continue;
-                            row_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w + seg.padding.left + seg.padding.right;
-                        }
-                        content_w = @max(content_w, row_width);
-                        const padding = bar.rowPadding(row_segments);
-                        content_h += ctx.renderer.cell_h + padding.top + padding.bottom;
-                        if (row_segments_idx != row_idx) pop(api, state, 1);
-                    }
-                    pop(api, state, 1);
-                }
-
-                const available_width = @max(@as(f32, 160.0), ctx.width - reserved_sidebar_width);
-                const max_panel_w = available_width - ctx.renderer.cell_w * 2.0;
-                const base_padding_x = ctx.renderer.cell_w * 0.5;
-                const base_padding_top = ctx.renderer.cell_h;
-                const base_padding_bottom = ctx.renderer.cell_h * 0.5;
-                const panel_inner_left = base_padding_x + panel_padding.left;
-                const panel_inner_right = base_padding_x + panel_padding.right;
-                const panel_inner_top = base_padding_top + panel_padding.top;
-                const panel_inner_bottom = base_padding_bottom + panel_padding.bottom;
-                const desired_panel_w = if (width_rows > 0)
-                    @as(f32, @floatFromInt(width_rows)) * ctx.renderer.cell_w
+                const overlay_index: usize = @intCast(stack_i);
+                const surface = if (g_clay_surface.owner_index == overlay_index)
+                    &g_clay_surface
+                else if (overlay_index <= g_clay_overlays.items.len)
+                    g_clay_overlays.items[overlay_index - 1]
                 else
-                    content_w + panel_inner_left + panel_inner_right;
-                const desired_panel_h = if (height_rows > 0)
-                    @as(f32, @floatFromInt(height_rows)) * ctx.renderer.cell_h
-                else
-                    @max(ctx.renderer.cell_h, content_h) + panel_inner_top + panel_inner_bottom;
-                const max_clamped_panel_w = @max(@as(f32, 160.0), max_panel_w - panel_margin.horizontal());
-                const max_clamped_panel_h = @max(ctx.renderer.cell_h * 3.0, ctx.height - top_h - bottom_h - ctx.renderer.cell_h * 2.0 - panel_margin.vertical());
-                const panel_w = std.math.clamp(desired_panel_w, @as(f32, 160.0), max_clamped_panel_w);
-                const panel_h = std.math.clamp(desired_panel_h, ctx.renderer.cell_h * 3.0, max_clamped_panel_h);
-                const occupied_w = panel_w + panel_margin.horizontal();
-                const occupied_h = panel_h + panel_margin.vertical();
-                const content_left = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right)
-                    reserved_sidebar_width
-                else
-                    0.0;
-                const content_right = if (reserved_sidebar_width > 0 and reserved_sidebar_side_right)
-                    ctx.width - reserved_sidebar_width
-                else
-                    ctx.width;
-                const content_width = @max(@as(f32, 1.0), content_right - content_left);
-                const overlay_margin_x = ctx.renderer.cell_w;
-                const overlay_margin_y = ctx.renderer.cell_h;
-                const overlay_is_bottom = switch (overlay_align) {
-                    .bottom_left, .bottom_center, .bottom_right => true,
-                    else => false,
-                };
-                const stack_offset = stacks.next(context, overlay_is_bottom, occupied_h, overlay_margin_y);
-
-                var outer_x = content_left + (content_width - occupied_w) * 0.5;
-                var outer_y = top_h + overlay_margin_y + stack_offset;
-
-                if (overlay_align == .top_left) {
-                    outer_x = content_left + overlay_margin_x;
-                    outer_y = top_h + overlay_margin_y + stack_offset;
-                } else if (overlay_align == .top_center) {
-                    outer_x = content_left + (content_width - occupied_w) * 0.5;
-                    outer_y = top_h + overlay_margin_y + stack_offset;
-                } else if (overlay_align == .top_right) {
-                    outer_x = content_right - occupied_w - overlay_margin_x;
-                    outer_y = top_h + overlay_margin_y + stack_offset;
-                } else if (overlay_align == .left_center) {
-                    outer_x = content_left + overlay_margin_x;
-                    outer_y = top_h + ((ctx.height - top_h - bottom_h) - occupied_h) * 0.5 + stack_offset;
-                } else if (overlay_align == .right_center) {
-                    outer_x = content_right - occupied_w - overlay_margin_x;
-                    outer_y = top_h + ((ctx.height - top_h - bottom_h) - occupied_h) * 0.5 + stack_offset;
-                } else if (overlay_align == .bottom_left) {
-                    outer_x = content_left + overlay_margin_x;
-                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
-                } else if (overlay_align == .bottom_center) {
-                    outer_x = content_left + (content_width - occupied_w) * 0.5;
-                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
-                } else if (overlay_align == .bottom_right) {
-                    outer_x = content_right - occupied_w - overlay_margin_x;
-                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
+                    null;
+                if (surface != null and surface.?.active and surface.?.owner_index == overlay_index) {
+                    const content_x = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right) reserved_sidebar_width else 0;
+                    const content_w = @max(1, ctx.width - reserved_sidebar_width);
+                    const content_h = @max(1, ctx.height - top_h - bottom_h);
+                    if (backdrop_color) |bg| {
+                        if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
+                    }
+                    drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h);
+                    if (g_overlay_surface_count < g_overlay_surfaces.len) {
+                        g_overlay_surfaces[g_overlay_surface_count] = surface.?;
+                        g_overlay_surface_count += 1;
+                    }
+                    reportClayMeasurements(runtime, ui_idx, surface.?);
                 }
-
-                const min_outer_x = content_left + overlay_margin_x;
-                const max_outer_x = @max(min_outer_x, content_right - occupied_w - overlay_margin_x);
-                const min_outer_y = top_h + overlay_margin_y;
-                const max_outer_y = @max(min_outer_y, ctx.height - bottom_h - occupied_h - overlay_margin_y);
-                outer_x = std.math.clamp(outer_x, min_outer_x, max_outer_x);
-                outer_y = std.math.clamp(outer_y, min_outer_y, max_outer_y);
-
-                const panel_x = outer_x + panel_margin.left;
-                const panel_y = outer_y + panel_margin.top;
-                const content_x = panel_x + panel_inner_left;
-                const content_y = panel_y + panel_inner_top;
-                const row_w = @max(@as(f32, 1.0), panel_w - panel_inner_left - panel_inner_right);
-                if (backdrop_color) |bg| {
-                    if (backdrop_alpha > 0) {
-                        drawBorderRect(content_left, top_h, content_width, ctx.height - top_h - bottom_h, bg.r, bg.g, bg.b, backdrop_alpha);
-                    }
-                }
-                if (panel_radius > 0) {
-                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_bg.r, panel_bg.g, panel_bg.b, panel_alpha);
-                    if (panel_border_size > 0) {
-                        drawRoundedRectOutline(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_border_size, panel_border.r, panel_border.g, panel_border.b, 72);
-                    }
-                } else {
-                    drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, panel_alpha);
-                    if (panel_border_size > 0) {
-                        drawRectOutline(panel_x, panel_y, panel_w, panel_h, panel_border_size, panel_border.r, panel_border.g, panel_border.b, 255);
-                    }
-                }
-                var panel_id_buf: [64]u8 = undefined;
-                const panel_id = std.fmt.bufPrint(&panel_id_buf, "overlay:{d}", .{stack_i}) catch "overlay";
-                var panel_name_buf: [64]u8 = undefined;
-                const panel_name = std.fmt.bufPrint(&panel_name_buf, "Overlay {d}", .{stack_i}) catch "Overlay";
-                ctx.app.appendUiSemanticNode(.overlay, .dialog, false, panel_id, panel_name, .{
-                    .x = panel_x,
-                    .y = panel_y,
-                    .width = panel_w,
-                    .height = panel_h,
-                });
-
-                var row_i: c_int = 1;
-                var row_y = content_y;
-                while (true) : (row_i += 1) {
-                    api.rawgeti(state, rows_idx, row_i);
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
-                        pop(api, state, 1);
-                        break;
-                    }
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                        const row_idx = absoluteIndex(api, state, -1);
-                        const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
-                        const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
-                        const padding = bar.rowPadding(row_segments);
-                        const row_height = ctx.renderer.cell_h + padding.top + padding.bottom;
-                        const text_y = row_y + padding.top;
-                        var row_paint = rowPaintField(api, state, row_idx);
-                        const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
-                        const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
-                        const row_scrollbar_id = overlayRowStringField(api, state, row_idx, "scrollbar_id");
-                        const row_scrollbar_thumb_ratio = overlayRowNumberField(api, state, row_idx, "scrollbar_thumb_ratio");
-                        const row_scrollbar_thumb_size = overlayRowNumberField(api, state, row_idx, "scrollbar_thumb_size");
-                        const row_scrollbar_track_color = overlayRowColorField(api, state, row_idx, "scrollbar_track_color") orelse ghostty.ColorRgb{ .r = 90, .g = 99, .b = 117 };
-                        const row_scrollbar_thumb_color = overlayRowColorField(api, state, row_idx, "scrollbar_thumb_color") orelse panel_border;
-                        const row_x = content_x;
-                        var label_buf: [ui_semantics.max_label_len]u8 = undefined;
-                        const label = overlaySegmentsLabel(row_segments, &label_buf);
-                        var row_fill_bg = row_paint.bg;
-                        const row_hover_bg = overlayRowColorField(api, state, row_idx, "hover_bg") orelse OVERLAY_HOVER_BG;
-                        const row_id = overlayRowStringField(api, state, row_idx, "id");
-                        if (overlayRowBoolField(api, state, row_idx, "hoverable")) {
-                            if (row_id) |id| {
-                                cacheOverlayHitRegion(id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
-                                if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, id, g_overlay_hovered_id.?)) {
-                                    row_fill_bg = row_hover_bg;
-                                }
-                            } else {
-                                const pool_idx = g_overlay_hit_cache.hit_count;
-                                if (pool_idx < MAX_OVERLAY_HIT_REGIONS) {
-                                    const auto_id = std.fmt.bufPrint(&g_overlay_hit_id_pool[pool_idx], "overlay:{d}:row:{d}", .{ stack_i, row_i }) catch "overlay:row";
-                                    cacheOverlayHitRegion(auto_id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
-                                    ctx.app.appendUiSemanticNode(.overlay, .listitem, false, auto_id, label, .{
-                                        .x = row_x,
-                                        .y = row_y + 1.0,
-                                        .width = row_w,
-                                        .height = @max(@as(f32, 1.0), row_height - 2.0),
-                                    });
-                                    if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, auto_id, g_overlay_hovered_id.?)) {
-                                        row_fill_bg = row_hover_bg;
-                                    }
-                                }
-                            }
-                        }
-                        row_paint.bg = row_fill_bg;
-                        drawRowPaint(ctx.renderer, row_x, row_y, text_y, row_w, row_height, row_paint);
-                        if (row_scrollbar_track) {
-                            if (row_scrollbar_id) |id| {
-                                const hit_width = @max(@as(f32, 8.0), ctx.renderer.cell_w);
-                                cacheOverlayScrollbarRow(
-                                    id,
-                                    row_x + row_w - hit_width,
-                                    row_y,
-                                    hit_width,
-                                    row_height,
-                                    row_scrollbar_thumb,
-                                    row_scrollbar_thumb_ratio,
-                                    row_scrollbar_thumb_size,
-                                    row_scrollbar_track_color,
-                                    row_scrollbar_thumb_color,
-                                );
-                            } else {
-                                const color = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
-                                drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), color.r, color.g, color.b, if (row_scrollbar_thumb) 255 else 120);
-                            }
-                        }
-                        const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 8.0), ctx.renderer.cell_w) else 0.0;
-                        drawRowSegments(ctx.renderer, row_x, row_y, row_w - seg_right_pad, row_segments, null);
-                        row_y += row_height;
-                        if (row_segments_idx != row_idx) pop(api, state, 1);
-                    }
-                    pop(api, state, 1);
-                }
-                finalizeAndDrawOverlayScrollbars(@intCast(stack_i));
-                pop(api, state, 1);
             }
             pop(api, state, 1);
         }
@@ -2487,52 +2820,6 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
     process_bar.run(api, state, renderer, scratch, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
 
     pop(api, state, 2);
-}
-
-fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
-    const tab_count = @min(app.tabCount(), layouts.len);
-    if (tab_count == 0 or max_right <= start_x or title_storage.len == 0) return layouts[0..0];
-
-    var temp_title_buf: [256]u8 = undefined;
-    const available_width = max_right - start_x;
-    if (available_width <= 0) return layouts[0..0];
-    const close_w: f32 = renderer.cell_w + 10.0;
-    const label_padding: f32 = renderer.cell_w;
-
-    var text_used: usize = 0;
-    var cursor_x = start_x;
-    var layout_count: usize = 0;
-    for (0..tab_count) |ti| {
-        if (cursor_x >= max_right) break;
-        const seg = app.topBarTitleSegment(ti, false, &temp_title_buf);
-        const title = seg.text;
-        const x = cursor_x;
-        const desired_width = @max(close_w + label_padding, @as(f32, @floatFromInt(countCodepoints(title))) * renderer.cell_w + close_w + label_padding);
-        const width = @min(desired_width, max_right - x);
-        if (width <= 0) break;
-        const close_x = @floor(x + width - close_w + 2.0);
-        const remaining_storage = title_storage.len - text_used;
-        if (remaining_storage == 0) break;
-        const copy_len = @min(title.len, remaining_storage);
-        fastmem.copy(u8, title_storage[text_used .. text_used + copy_len], title[0..copy_len]);
-        const stored_title = title_storage[text_used .. text_used + copy_len];
-
-        layouts[layout_count] = .{
-            .x = x,
-            .width = width,
-            .title = stored_title,
-            .close_x = close_x,
-            .close_w = close_w,
-            .fg = seg.fg,
-            .bg = seg.bg,
-            .bold = seg.bold,
-        };
-        text_used += copy_len;
-        cursor_x += width;
-        layout_count += 1;
-    }
-
-    return layouts[0..layout_count];
 }
 
 fn resetBarCache(cache: *BarCache, window_width: f32, y: f32, bar_h: f32) void {
@@ -2628,100 +2915,16 @@ fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32, modi
     return hit;
 }
 
-fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32, modifiers: u32) BarHit {
-    const hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
-    _ = app.enqueueMouse(.{ .hover = .{
-        .tab_index = hit.tab_index,
-        .close_tab_index = hit.close_tab_index,
-    } });
-    if (hit.node_id) |id| {
-        const mods = ghosttyMods(modifiers);
-        app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id, .mods = mods, .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
-    } else {
-        app.emitLuaBuiltInEvent("topbar:leave", .none);
-    }
-    return hit;
-}
-
-fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
-    const cache = &g_overlay_hit_cache;
-    if (!cache.enabled or cache.hit_count == 0) {
-        g_overlay_hovered_id = null;
-        app.emitLuaBuiltInEvent("overlay:leave", .none);
-        return;
-    }
-    var idx = cache.hit_count;
-    while (idx > 0) {
-        idx -= 1;
-        const region = cache.hits[idx];
-        if (region.width <= 0) continue;
-        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
-        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        if (region.node_id) |id| {
-            fastmem.copy(u8, g_overlay_hovered_id_buf[0..id.len], id);
-            g_overlay_hovered_id = g_overlay_hovered_id_buf[0..id.len];
-            app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{
-                .id = id,
-                .index = region.stack_index,
-            } });
-        }
-        return;
-    }
-    g_overlay_hovered_id = null;
-    app.emitLuaBuiltInEvent("overlay:leave", .none);
-}
-
-fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?OverlayHit {
-    const cache = &g_overlay_hit_cache;
-    if (!cache.enabled or cache.hit_count == 0) return null;
-    var idx = cache.hit_count;
-    while (idx > 0) {
-        idx -= 1;
-        const region = cache.hits[idx];
-        if (region.width <= 0) continue;
-        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
-        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        if (region.node_id) |id| return .{ .id = id, .stack_index = region.stack_index };
-    }
-    return null;
-}
-
-fn findOverlayScrollbar(id: []const u8, stack_index: usize) ?*const CachedOverlayScrollbar {
-    var idx = g_overlay_scrollbar_cache.count;
-    while (idx > 0) {
-        idx -= 1;
-        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
-        if (scrollbar.id) |scrollbar_id| {
-            if (scrollbar.stack_index == stack_index and std.mem.eql(u8, scrollbar_id, id)) return scrollbar;
-        }
-    }
-    return null;
-}
-
-fn hitTestOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScrollbar {
-    var idx = g_overlay_scrollbar_cache.count;
-    while (idx > 0) {
-        idx -= 1;
-        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
-        if (mouse_x < scrollbar.x or mouse_x >= scrollbar.x + scrollbar.width) continue;
-        if (mouse_y < scrollbar.y or mouse_y >= scrollbar.y + scrollbar.height) continue;
-        return scrollbar;
-    }
-    return null;
-}
-
-fn overlayScrollbarRatio(scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
-    const thumb_height = if (scrollbar.has_thumb) scrollbar.thumb_height else 0;
-    const travel = @max(@as(f32, 0), scrollbar.height - thumb_height);
+fn overlayScrollbarRatio(scrollbar: OverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
+    const travel = @max(@as(f32, 0), scrollbar.height - scrollbar.thumb_height);
     if (travel == 0) return 0;
     const thumb_y = std.math.clamp(pointer_y - grab_y, scrollbar.y, scrollbar.y + travel);
     return (thumb_y - scrollbar.y) / travel;
 }
 
-fn emitOverlayScrollbar(app: *App, scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) void {
-    const id = scrollbar.id orelse return;
+fn emitOverlayScrollbar(app: *App, scrollbar: OverlayScrollbar, pointer_y: f32, grab_y: f32) void {
     app.emitLuaBuiltInEvent("overlay:scrollbar", .{ .overlay_scrollbar = .{
-        .id = id,
+        .id = scrollbar.id,
         .ratio = overlayScrollbarRatio(scrollbar, pointer_y, grab_y),
         .index = scrollbar.stack_index,
     } });
@@ -2764,40 +2967,6 @@ fn drawScrollbar(app: *App, metrics: App.ScrollbarMetrics) void {
     drawBorderRect(metrics.track_x + metrics.track_w - 1.0, metrics.track_y, 1.0, metrics.track_h, cfg.border_color.r, cfg.border_color.g, cfg.border_color.b, 96);
     drawBorderRect(inset_x, metrics.track_y, 1.0, metrics.track_h, cfg.border_color.r, cfg.border_color.g, cfg.border_color.b, 36);
     drawBorderRect(inset_x, metrics.thumb_y, inset_w, metrics.thumb_h, thumb_color.r, thumb_color.g, thumb_color.b, if (active) 230 else 190);
-}
-
-fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
-    var cursor_x = x;
-    for (segments) |seg| {
-        if (seg.text.len == 0) continue;
-        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
-        if (seg.id) |id| {
-            cacheBarHitRegion(&g_top_bar_cache, cursor_x, seg_w, null, 0.0, null, id);
-        }
-        if (seg.bg) |bg| {
-            drawBorderRect(cursor_x, bar_y, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
-        }
-        const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-        renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
-        c.sgl_load_default_pipeline();
-        cursor_x += seg_w;
-    }
-    return cursor_x;
-}
-
-fn drawSingleSegment(renderer: *FtRenderer, x: f32, y: f32, bar_y: f32, bar_h: f32, segment: bar.Segment, default_fg: ghostty.ColorRgb, default_bg: ?ghostty.ColorRgb) f32 {
-    if (segment.text.len == 0) return x;
-    const seg_w = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
-    if (segment.id) |id| {
-        cacheBarHitRegion(&g_top_bar_cache, x, seg_w, null, 0.0, null, id);
-    }
-    if (segment.bg orelse default_bg) |bg| {
-        drawBorderRect(x, bar_y, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
-    }
-    const fg = segment.fg orelse default_fg;
-    renderer.drawLabelFace(x, y, segment.text, fg.r, fg.g, fg.b, if (segment.bold) 1 else 0);
-    c.sgl_load_default_pipeline();
-    return x + seg_w;
 }
 
 fn framebufferSize() struct { width: f32, height: f32 } {
@@ -3056,6 +3225,7 @@ pub fn run(app: *App) !void {
 }
 
 fn initCb(user_data: ?*anyopaque) callconv(.c) void {
+    app_profile.init();
     const app = appFromUserData(user_data) orelse return;
     std.log.info("sokol init callback", .{});
 
@@ -3188,9 +3358,14 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
 
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    const profile_start = app_profile.start();
+    var profile_rendered = false;
+    var profile_active_wall: ?i128 = null;
+    defer app_profile.finish(profile_start, profile_rendered, profile_active_wall);
     flushPendingMouseMove(app);
     const frame_start_ns = io.nanoTimestamp();
     var busy_start_ns = frame_start_ns;
+    var profile_before_idle_ns: i128 = 0;
     var frame_busy_recorded = false;
     defer if (!frame_busy_recorded) {
         app.previous_frame_slow = io.nanoTimestamp() - busy_start_ns > frameDeadlineNs(app);
@@ -3258,6 +3433,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        if (profile_start != null) profile_before_idle_ns = io.nanoTimestamp() - frame_start_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
         busy_start_ns = io.nanoTimestamp();
         // Returning without also suppressing the backend present rotates to an
@@ -3938,6 +4114,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         if (app.lua) |*lua| {
             const now_ns = io.nanoTimestamp();
+            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
+            lua.withLockedState(void, prepareClaySurface);
+            g_widget_pre_raster_ctx = null;
             const needs_topbar = app.barCacheNeedsRefresh(.topbar, now_ns);
             const needs_bottombar = app.barCacheNeedsRefresh(.bottombar, now_ns);
             const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
@@ -4249,6 +4428,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
         }
+        if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0);
+        drawGridDebug(app, renderer, width, height);
     }
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
         app.invalidateUiSemanticFrame();
@@ -4300,7 +4481,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         } else cmd_ipc.finishScreenshot(app, null, 0, 0);
     }
     c.sg_commit();
+    profile_rendered = true;
     const after_commit_ns = io.nanoTimestamp();
+    if (profile_start != null) profile_active_wall = profile_before_idle_ns + after_commit_ns - busy_start_ns;
     const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;
     const frame_cap_fps = if (use_idle_frame_cap)
         app.config.idle_max_fps
@@ -4541,22 +4724,41 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const text20 = std.fmt.bufPrint(&lines[20], "pty hp={d:.2} san={d:.2} ch={d:.2} enc={d:.2}", .{ debug_timing.last_frame_has_pending_ms, debug_timing.last_frame_sanitize_ms, debug_timing.last_frame_child_alive_ms, debug_timing.last_frame_encoder_sync_ms }) catch "pty detail ?";
     const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12, text13, text14, text15, text16, text17, text18, text19, text20 };
 
-    var max_chars: usize = 0;
-    for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));
-
     const pad_x = renderer.cell_w * 0.75;
     const pad_y = renderer.cell_h * 0.5;
-    const panel_w = @as(f32, @floatFromInt(max_chars)) * renderer.cell_w + pad_x * 2.0;
-    const panel_h = @as(f32, @floatFromInt(overlay_lines.len)) * renderer.cell_h + pad_y * 2.0;
-    const panel_x = width - panel_w - renderer.cell_w;
-    const panel_y = height - panel_h - renderer.cell_h;
+    if (!g_native_debug.begin(width, height)) return;
+    native_surface.Surface.open(0, .{
+        .sizing = .{ .width = native_surface.fixed(width), .height = native_surface.fixed(height) },
+        .padding = .{ .right = native_surface.edge(renderer.cell_w), .bottom = native_surface.edge(renderer.cell_h) },
+        .childAlignment = .{ .x = clay.CLAY_ALIGN_X_RIGHT, .y = clay.CLAY_ALIGN_Y_BOTTOM },
+    });
+    native_surface.Surface.open(1, .{
+        .sizing = .{ .width = native_surface.fit(), .height = native_surface.fit() },
+        .layoutDirection = clay.CLAY_TOP_TO_BOTTOM,
+        .padding = .{ .left = native_surface.edge(pad_x), .right = native_surface.edge(pad_x), .top = native_surface.edge(pad_y), .bottom = native_surface.edge(pad_y) },
+    });
+    for (overlay_lines, 0..) |line, i| {
+        native_surface.Surface.open(@intCast(i + 2), .{ .sizing = .{
+            .width = native_surface.fixed(@as(f32, @floatFromInt(countCodepoints(line))) * renderer.cell_w),
+            .height = native_surface.fixed(renderer.cell_h),
+        } });
+        native_surface.Surface.close();
+    }
+    native_surface.Surface.close();
+    native_surface.Surface.close();
+    if (!g_native_debug.end()) return;
+    const panel = g_native_debug.bounds(1);
+    const panel_w = panel.width;
+    const panel_h = panel.height;
+    const panel_x = panel.x;
+    const panel_y = panel.y;
 
     drawBorderRect(panel_x, panel_y, panel_w, panel_h, 20, 22, 29, 230);
     drawBorderRect(panel_x, panel_y, panel_w, 1.0, 122, 162, 247, 255);
 
     for (overlay_lines, 0..) |line, i| {
-        const text_y = panel_y + pad_y + @as(f32, @floatFromInt(i)) * renderer.cell_h;
-        renderer.drawLabelFace(panel_x + pad_x, text_y, line, 220, 225, 238, if (i < 2) 1 else 0);
+        const bounds = g_native_debug.bounds(@intCast(i + 2));
+        renderer.drawLabelFace(bounds.x, bounds.y, line, 220, 225, 238, if (i < 2) 1 else 0);
         c.sgl_load_default_pipeline();
     }
 }
@@ -4615,6 +4817,17 @@ const ShutdownWatchdog = struct {
 };
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
+    app_profile.deinit();
+    g_clay_surface.deinit();
+    for (g_clay_overlays.items) |surface| {
+        surface.deinit();
+        std.heap.page_allocator.destroy(surface);
+    }
+    g_clay_overlays.deinit(std.heap.page_allocator);
+    g_grid_debug.deinit();
+    for (&g_native_bars) |*surface| surface.deinit();
+    g_native_sidebar.deinit();
+    g_native_debug.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window
@@ -4881,6 +5094,11 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (inspectorResizeEvent(app, event)) return;
+    if (gridDebugEvent(app, event)) return;
+    if (surfaceInspectorEvent(app, event)) return;
+    if (claySurfaceEvent(event)) return;
+
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE) {
         g_pending_mouse_move = event;
         return;
@@ -4894,6 +5112,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
         setMouseCursorHidden(false);
+        updateSidebarHover(app, 0, 0, 0, true);
         return;
     }
 
@@ -5304,25 +5523,23 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-        if (hitTestOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
-            const overlay_hit = hitTestOverlay(event.mouse_x, event.mouse_y);
-            if (overlay_hit != null and overlay_hit.?.stack_index == scrollbar.stack_index) {
-                const id = scrollbar.id orelse return;
-                g_overlay_scrollbar_drag_id_len = id.len;
-                fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
-                g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
-                const on_thumb = scrollbar.has_thumb and event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
-                g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
-                if (builtin.os.tag == .windows) {
-                    const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
-                    if (hwnd_raw) |raw| {
-                        const hwnd: win32.HWND = @ptrCast(@constCast(raw));
-                        _ = win32.SetCapture(hwnd);
-                    }
+        if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
+            const id = scrollbar.id;
+            if (id.len > g_overlay_scrollbar_drag_id.len) return;
+            g_overlay_scrollbar_drag_id_len = id.len;
+            fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
+            g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
+            const on_thumb = event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
+            g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
+            if (builtin.os.tag == .windows) {
+                const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
+                if (hwnd_raw) |raw| {
+                    const hwnd: win32.HWND = @ptrCast(@constCast(raw));
+                    _ = win32.SetCapture(hwnd);
                 }
-                emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
-                return;
             }
+            emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
+            return;
         }
         if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
             app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{
@@ -5331,6 +5548,20 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             } });
             return;
         }
+    }
+
+    // The sidebar panel is opaque: presses on it never reach the terminal.
+    if (action == .press and sidebarContains(event.mouse_x, event.mouse_y)) {
+        if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            if (hitTestSidebar(event.mouse_x, event.mouse_y)) |id| {
+                app.emitLuaBuiltInEvent("sidebar:click", .{ .sidebar_node = .{
+                    .id = id,
+                    .mods = ghosttyMods(event.modifiers),
+                    .shifted = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0,
+                } });
+            }
+        }
+        return;
     }
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
@@ -5574,6 +5805,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
+        updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
@@ -5581,7 +5813,19 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
-    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |_| {
+    if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y) != null or
+        hitTestOverlay(event.mouse_x, event.mouse_y) != null)
+    {
+        updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
+        g_scrollbar_hover_pane = null;
+        g_hover_hyperlink = false;
+        setTextSelectionCursor(.arrow);
+        return;
+    }
+
+    updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, false);
+    // Drags that started in a pane keep updating across the sidebar.
+    if (g_mouse_button_down == null and sidebarContains(event.mouse_x, event.mouse_y)) {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
@@ -5679,7 +5923,7 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
     if (bottomBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
 
-    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
+    if (hitTestOverlayWheel(event.mouse_x, event.mouse_y)) |hit| {
         if (event.scroll_y == 0) return;
         app.emitLuaBuiltInEvent("overlay:scroll", .{ .overlay_scroll = .{
             .id = hit.id,

@@ -20,7 +20,6 @@ A Windows release zip should contain:
 | File                                         | Role                                         |
 | -------------------------------------------- | -------------------------------------------- |
 | `hollow.exe`                                 | Console launcher and `hollow cli …` host     |
-| `hollow-gui.exe`                             | Console-less GUI shim                        |
 | `hollow-native.exe`                          | Actual GUI process                           |
 | `hollow-cli.exe`                             | Standalone shared Zig CLI                   |
 | `hollow-cli.py` _(optional)_                 | Legacy Python compatibility client          |
@@ -51,7 +50,6 @@ After a user unpacks a release and runs `hollow.exe` once:
 ```text
 <install dir>/
   hollow.exe
-  hollow-gui.exe
   hollow-native.exe
   hollow-cli.exe              # standalone Zig CLI
   hollow-cli.py               # Python compatibility fallback
@@ -149,9 +147,11 @@ Releases do not include `.pdb` files, so the shipped bundle cannot
 symbolicate a crash on its own.
 To symbolicate a user-reported crash:
 
-1. Build the matching release with `zig build -Doptimize=ReleaseFast`
-   from the same source tree.
-2. Capture `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb`
+1. Build with `zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast -Dpdb`
+   from the matching source tree. Normal ReleaseFast builds omit debug information;
+   preserve the exact executable and PDB from this symbol-enabled build together
+   when collecting a crash, since rebuilding later does not guarantee identical addresses.
+2. Capture `hollow.pdb` and `hollow-native.pdb`
    from `zig-out/bin/`.
 3. Ask the user for `%APPDATA%\hollow\hollow.log`.
 4. Resolve addresses from `%APPDATA%\hollow\hollow.log` against the matching PDB.

@@ -1,25 +1,39 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
-local function overlay_text(hollow)
-  local lines = {}
-  for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-    local text = ""
-    for _, segment in ipairs(row.segments or {}) do
-      text = text .. (segment.text or "")
-    end
-    lines[#lines + 1] = text
+local function overlay_segments(hollow)
+  local overlay = hollow.ui._overlay_state()[1]
+  if overlay.clay then
+    hollow.ui._layout_prepare(1200, 900, 8, 19)
+    return hollow
+      .tbl(hollow.ui._layout_tree)
+      :filter(function(node)
+        return node.kind == 2
+      end)
+      :get()
   end
-  return table.concat(lines, "\n")
+  return hollow
+    .tbl(overlay.rows)
+    :flat_map(function(row)
+      return row.segments or {}
+    end)
+    :get()
+end
+
+local function overlay_text(hollow)
+  return hollow
+    .tbl(overlay_segments(hollow))
+    :map(function(node)
+      return node.text or ""
+    end)
+    :join("")
 end
 
 local function bell_colors(hollow)
   local colors = {}
-  for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-    for _, segment in ipairs(row.segments or {}) do
-      if (segment.text or ""):find("󰂚", 1, true) then
-        colors[#colors + 1] = segment.fg
-      end
+  for _, segment in ipairs(overlay_segments(hollow)) do
+    if (segment.text or ""):find("󰂚", 1, true) then
+      colors[#colors + 1] = segment.fg
     end
   end
   return colors
@@ -69,6 +83,7 @@ describe("program status in navigation overlays", function()
     assert.same({ levels.warn, levels.error }, bell_colors(hollow))
     failed[1].attention = false
     tree[1].tabs[2].panes[2].has_bell = true
+    hollow._emit_builtin_event("term:bell", { pane_id = 103 })
     assert.same({ levels.warn, levels.warn }, bell_colors(hollow))
   end)
 
@@ -85,25 +100,28 @@ describe("program status in navigation overlays", function()
     assert.is_truthy(overlay_text(hollow):find("⠹ 25%", 1, true))
     local palette = hollow.theme.current().palette
     local function indicator_color(text)
-      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        for _, segment in ipairs(row.segments or {}) do
-          if segment.text == text then
-            return segment.fg
-          end
+      for _, segment in ipairs(overlay_segments(hollow)) do
+        if segment.text == text then
+          return segment.fg
         end
       end
     end
     assert.equals(palette.bright_blue, indicator_color("⠹ 25% "))
     env.recorded.now_ms = env.recorded.now_ms + 100
+    env.flush_deferred()
     assert.is_truthy(overlay_text(hollow):find("⠸ 25%", 1, true))
     assert.equals(initial, discoveries)
     working[1] = { state = "done" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_green, indicator_color("✓ "))
     working[1] = { state = "error" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_red, indicator_color("✗ "))
     working[1] = { state = "blocked", kind = "auth" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_yellow, indicator_color("󰌾 "))
     working[1] = { state = "idle" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.is_nil(overlay_text(hollow):find("󰌾", 1, true))
   end)
 
@@ -149,8 +167,10 @@ describe("program status in navigation overlays", function()
     hollow.ui.workspace.open_switcher()
     assert.same({ levels.error }, bell_colors(hollow))
     failed[1].attention = false
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 103 })
     assert.same({ levels.warn }, bell_colors(hollow))
     blocked[1].attention = false
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
     assert.same({}, bell_colors(hollow))
   end)
 
@@ -255,6 +275,44 @@ describe("program status in navigation overlays", function()
     tree[1].tabs[2].panes[2].program_status = {}
     overlay_text(hollow)
     assert.equals("󰒃 ", seen)
+  end)
+
+  it("refreshes workspace status and theme without losing navigation", function()
+    hollow.ui.workspace.open_switcher({
+      known_workspaces = function()
+        return { "m-other" }
+      end,
+    })
+    env.get_key_handler()("m", 0)
+    env.get_key_handler()("arrow_down", 0)
+    local before = overlay_text(hollow)
+    assert.is_truthy(before:find("Filter: m", 1, true))
+    assert.is_truthy(before:find("2/2", 1, true))
+    failed[1].attention = false
+    failed[1].state = "done"
+    hollow.config.set({
+      theme = { ui = { widgets = { select = { notify_levels = { warn = "#123456" } } } } },
+    })
+    local after = overlay_text(hollow)
+    assert.is_truthy(after:find("Filter: m", 1, true))
+    assert.is_truthy(after:find("2/2", 1, true))
+    assert.is_nil(after:find("✗", 1, true))
+    assert.same({ "#123456" }, bell_colors(hollow))
+  end)
+
+  it("reformats mutated workspace items live", function()
+    local items = { { name = "main", cwd = "first", workspace_id = 41 } }
+    require("hollow.ui.workspace.source").items = function()
+      return items
+    end
+    hollow.ui.workspace.open_switcher({
+      format_item = function(item)
+        return item.name .. ":" .. item.cwd
+      end,
+    })
+    assert.is_truthy(overlay_text(hollow):find("main:first", 1, true))
+    items[1].cwd = "second"
+    assert.is_truthy(overlay_text(hollow):find("main:second", 1, true))
   end)
 
   it(

@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("UI mux navigator test suite", function()
@@ -38,18 +39,15 @@ describe("UI mux navigator test suite", function()
       mux_overlay = hollow.ui._overlay_state()
       harness.assert_true(mux_overlay ~= nil, "mux navigator should create an overlay")
       mux_theme = hollow.ui.resolve_theme("select")
-      for _, row in ipairs(mux_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          mux_overlay_text = mux_overlay_text .. (segment.text or "")
-          if segment.text == bell_marker and segment.fg == mux_theme.notify_levels.warn then
-            saw_yellow_bell = true
-            bell_marker_count = bell_marker_count + 1
-          end
-          if segment.text == ": zig build" and segment.fg == mux_theme.notify_levels.success then
-            saw_green_process = true
-          end
+      for _, segment in ipairs(clay.nodes(hollow.ui)) do
+        mux_overlay_text = mux_overlay_text .. (segment.text or "")
+        if segment.text == bell_marker and segment.fg == mux_theme.notify_levels.warn then
+          saw_yellow_bell = true
+          bell_marker_count = bell_marker_count + 1
         end
-        mux_overlay_text = mux_overlay_text .. "\n"
+        if segment.text == ": zig build" and segment.fg == mux_theme.notify_levels.success then
+          saw_green_process = true
+        end
       end
       harness.assert_true(
         mux_overlay_text:find("zig build", 1, true) ~= nil,
@@ -66,11 +64,9 @@ describe("UI mux navigator test suite", function()
     end)
 
     it("shows pane cwd as a right-aligned detail", function()
-      for _, row in ipairs(mux_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          if segment.text == "/tmp/project" then
-            cwd_detail_fg = segment.fg
-          end
+      for _, segment in ipairs(clay.nodes(hollow.ui)) do
+        if segment.text == "/tmp/project" then
+          cwd_detail_fg = segment.fg
         end
       end
       subtle_fg = require("hollow.color").brighten_hex_color(
@@ -106,12 +102,7 @@ describe("UI mux navigator test suite", function()
     it("cycles filters on f", function()
       harness.assert_true(on_key("f", 0), "mux navigator should cycle filters")
       mux_overlay = hollow.ui._overlay_state()
-      local mux_filter_text = ""
-      for _, row in ipairs(mux_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          mux_filter_text = mux_filter_text .. (segment.text or "")
-        end
-      end
+      local mux_filter_text = clay.text(hollow.ui)
       harness.assert_true(
         mux_filter_text:find("All panes", 1, true) ~= nil,
         "mux navigator filter key should select all panes"
@@ -129,13 +120,7 @@ describe("UI mux navigator test suite", function()
       harness.assert_true(on_key("0", 0), "mux navigator should continue searching pane ids")
       harness.assert_true(on_key("1", 0), "mux navigator should complete pane id search")
       local mux_id_overlay = hollow.ui._overlay_state()
-      local mux_id_text = ""
-      for _, row in ipairs(mux_id_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          mux_id_text = mux_id_text .. (segment.text or "")
-        end
-        mux_id_text = mux_id_text .. "\n"
-      end
+      local mux_id_text = clay.text(hollow.ui)
       harness.assert_true(
         mux_id_text:find("Pane 1: zig build", 1, true) ~= nil,
         "mux navigator should search by pane id"

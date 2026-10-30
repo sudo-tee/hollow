@@ -23,7 +23,16 @@ end
 
 mount.install(cache.invalidate, configured)
 sidebar.install()
-events.install(ui, active, cache.invalidate)
+events.install(ui, active, function(surface)
+  if surface == "sidebar" then
+    -- The sidebar is serialized every frame; a hover change only needs one.
+    if type(state.host_api) == "table" and type(state.host_api.request_redraw) == "function" then
+      state.host_api.request_redraw()
+    end
+    return
+  end
+  cache.invalidate(surface)
+end)
 
 local function state_for(surface)
   local widget = active(surface)

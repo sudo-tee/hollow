@@ -24,6 +24,7 @@ const glyph_shader = @import("shaders/glyph_shader.zig");
 
 const color_math = @import("color_math.zig");
 const text_util = @import("text_util.zig");
+const text_width = @import("../text_width.zig");
 const font_config = @import("font_config.zig");
 const font_discovery = @import("font_discovery.zig");
 const ft_types = @import("ft_types.zig");
@@ -48,7 +49,6 @@ const CURSOR_BLINK_INTERVAL_MS = color_math.CURSOR_BLINK_INTERVAL_MS;
 const RowSelectionBounds = color_math.RowSelectionBounds;
 const rowSelectionBounds = color_math.rowSelectionBounds;
 const encodeUtf8 = text_util.encodeUtf8;
-const utf8CodepointLen = text_util.utf8CodepointLen;
 
 // Internal aliases so remaining code in this file compiles unchanged.
 const FtRendererConfig = font_config.FtRendererConfig;
@@ -682,11 +682,9 @@ pub const FtRenderer = struct {
 
     pub fn preRasterizeLabelFace(self: *FtRenderer, text: []const u8, face_idx: u8) void {
         var i: usize = 0;
-        while (i < text.len) {
-            const cp_len = utf8CodepointLen(text[i]);
-            const end = @min(i + cp_len, text.len);
-            self.preRasterize(text[i..end], face_idx, .ui);
-            i = end;
+        while (text_width.next(text[i..])) |cp| {
+            self.preRasterize(cp.text, face_idx, .ui);
+            i += cp.len;
         }
     }
 
@@ -695,7 +693,7 @@ pub const FtRenderer = struct {
     /// (sgl_defaults + sgl_viewport full-fb + sgl_ortho(0, w, h, 0, -1, 1)).
     /// The atlas must already be flushed before calling this (call preRasterizeLabel
     /// before the frame's flushAtlas, then drawLabel during the draw phase).
-    /// Advances x by cell_w per UTF-8 codepoint.
+    /// Advances x by Ghostty grapheme display width times cell_w.
     pub fn drawLabel(self: *FtRenderer, x: f32, y: f32, text: []const u8, r: u8, g: u8, b: u8) void {
         self.drawLabelFace(x, y, text, r, g, b, 0);
     }
@@ -719,12 +717,10 @@ pub const FtRenderer = struct {
         var px = @round(x);
         const py = @round(y);
         var i: usize = 0;
-        while (i < text.len) {
-            const cp_len = utf8CodepointLen(text[i]);
-            const end = @min(i + cp_len, text.len);
-            self.batchGlyphsSgl(px, py, text[i..end], face_idx, fg, .ui);
-            px += self.cell_w;
-            i = end;
+        while (text_width.next(text[i..])) |cp| {
+            self.batchGlyphsSgl(px, py, cp.text, face_idx, fg, .ui);
+            px += self.cell_w * @as(f32, @floatFromInt(cp.width));
+            i += cp.len;
         }
 
         c.sgl_end();

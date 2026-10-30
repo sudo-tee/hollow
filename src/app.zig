@@ -776,6 +776,7 @@ pub const App = struct {
         switch (surface) {
             .topbar => self.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = id } }),
             .bottombar => self.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = id } }),
+            .sidebar => self.emitLuaBuiltInEvent("sidebar:click", .{ .sidebar_node = .{ .id = id } }),
             .overlay => self.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = id } }),
         }
         self.markAutomationChanged();
@@ -1188,8 +1189,10 @@ pub const App = struct {
             .set_leader_state = lua_callbacks.luaSetLeaderStateCallback,
             .set_bar_cache_state = lua_callbacks.luaSetBarCacheStateCallback,
             .request_layout_refresh = lua_callbacks.luaRequestLayoutRefreshCallback,
+            .request_redraw = lua_callbacks.luaRequestRedrawCallback,
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
+            .clipboard_read = lua_callbacks.luaClipboardReadCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
             .scroll_active = lua_callbacks.luaScrollActiveCallback,
             .scroll_active_page = lua_callbacks.luaScrollActivePageCallback,
@@ -1510,6 +1513,13 @@ pub const App = struct {
         self.signalWake();
     }
 
+    /// Repaint-only request: marks the next frame visually active and wakes the
+    /// loop, without touching pane geometry or bar layout caches.
+    pub fn requestRedraw(self: *App) void {
+        self.last_visual_activity_ns = io.nanoTimestamp();
+        self.signalWake();
+    }
+
     fn invalidateCachedBarLayouts(self: *App) void {
         self.cached_bar_layouts_dirty = true;
         self.cached_sidebar_layout = null;
@@ -1587,6 +1597,10 @@ pub const App = struct {
             return;
         }
         try mux_ops.sendPaste(self, text);
+    }
+
+    pub fn readClipboard(_: *App) []const u8 {
+        return std.mem.span(c.sapp_get_clipboard_string());
     }
 
     pub fn cellPointInPane(self: *App, pane: *Pane, x: f32, y: f32) ?selection.CellPoint {

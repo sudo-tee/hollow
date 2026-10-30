@@ -25,6 +25,8 @@ pub const Workspace = workspace_mod.Workspace;
 pub const Mux = mux_mod.Mux;
 
 pub const layoutSplitTree = layout.layoutSplitTree;
+pub const splitChildBounds = layout.splitChildBounds;
+pub const floatingPaneBounds = layout.floatingPaneBounds;
 pub const hitTestDivider = layout.hitTestDivider;
 pub const boundsForNode = layout.boundsForNode;
 pub const nodeIsInTree = layout.nodeIsInTree;

@@ -6,6 +6,8 @@ local block_icons = { permission = "󰒃", question = "?", auth = "󰌾" }
 local spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local frame_ms = 100
 
+---@param state 'idle'|'working'|'done'|'blocked'|'error'|nil
+---@return HollowColor|nil
 function M.color(state)
   local palette = require("hollow.theme").current().palette
   return ({
@@ -18,7 +20,13 @@ end
 
 -- Labels only: never interpret program-provided text as UI markup.
 -- Returns text, state, and the next animation deadline (working only).
+---@param panes HollowPane[]|nil
+---@param now_ms number|nil
+---@return string|nil label
+---@return 'working'|'done'|'blocked'|'error'|nil state
+---@return number|nil deadline
 function M.badge(panes, now_ms)
+  ---@type HollowProgramStatus|{ state: 'working', kind?: string, progress?: integer }|nil
   local selected
   for _, pane in ipairs(panes or {}) do
     for _, record in ipairs(pane.program_status or {}) do
@@ -59,7 +67,12 @@ function M.badge(panes, now_ms)
   return label .. " ", selected.state, deadline
 end
 
+---@param workspace HollowMuxWorkspace
+---@return string|nil label
+---@return 'working'|'done'|'blocked'|'error'|nil state
+---@return number|nil deadline
 function M.workspace_badge(workspace)
+  ---@type HollowPane[]
   local panes = {}
   for _, tab in ipairs(workspace.tabs or {}) do
     for _, pane in ipairs(tab.panes or {}) do
@@ -69,6 +82,8 @@ function M.workspace_badge(workspace)
   return M.badge(panes)
 end
 
+---@param panes HollowPane[]|nil
+---@return boolean
 function M.needs_attention(panes)
   for _, pane in ipairs(panes or {}) do
     for _, record in ipairs(pane.program_status or {}) do
@@ -81,11 +96,15 @@ function M.needs_attention(panes)
 end
 
 -- Both sources share the existing bell UI; protocol state stays independent.
+---@param pane HollowPane
+---@return boolean
 function M.pane_has_attention(pane)
   return pane.has_bell == true or M.needs_attention({ pane })
 end
 
 -- Only unread reports color bells; acknowledged status must not mask new attention.
+---@param panes HollowPane[]|nil
+---@return 'warn'|'error'|nil
 function M.attention_level(panes)
   local level
   for _, pane in ipairs(panes or {}) do
@@ -104,6 +123,8 @@ function M.attention_level(panes)
   return level
 end
 
+---@param workspace HollowMuxWorkspace
+---@return 'warn'|'error'|nil
 function M.workspace_attention_level(workspace)
   local level
   for _, tab in ipairs(workspace.tabs or {}) do
@@ -116,6 +137,8 @@ function M.workspace_attention_level(workspace)
   return level
 end
 
+---@param workspace HollowMuxWorkspace
+---@return boolean
 function M.workspace_needs_attention(workspace)
   for _, tab in ipairs(workspace.tabs or {}) do
     if M.needs_attention(tab.panes) then

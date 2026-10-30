@@ -196,7 +196,9 @@ hollow.ui.overlay.push(hollow.ui.overlay.new({
   backdrop = { color = "#000000", alpha = 96 },
   chrome = { bg = "#1f1f28", border = "#3a3a52", radius = 6 },
   width = 60,
-  render = function(ctx) return hollow.ui.column({ ... }) end,
+  render = function(ctx)
+    return hollow.ui.components.column({ hollow.ui.components.text("Custom overlay") })
+  end,
   on_key = function(key, mods)
     if key == "<Esc>" then
       hollow.ui.overlay.pop()
@@ -210,17 +212,16 @@ Overlays with buttons, text input, or list navigation use composition
 helpers from the same `hollow.ui` namespace:
 
 ```lua
-local m = hollow.ui.modal({
+local m
+m = hollow.ui.modal({
   render = function(theme)
-    return hollow.ui.dialog({
-      title = "Pick one",
-      body = { hollow.ui.text("Choose an option:") },
-      footer = {
-        { id = "choose", text = "Choose", kind = "primary", on_click = function()
+    return hollow.ui.components.column({
+      hollow.ui.components.text("Pick one", { fg = theme.title, bold = true }),
+      hollow.ui.components.text("Choose an option:", { fg = theme.fg }),
+      hollow.ui.components.button({ id = "choose", text = "Choose", variant = "primary", on_click = function()
           choose(items[nav.index]); m.close()
-        end },
-      },
-    }, theme)
+        end }),
+    }, { width = "grow", gap = 8 })
   end,
   keys = hollow.ui.keys(nav, {
     escape = function() m.close() end,
@@ -232,7 +233,7 @@ local m = hollow.ui.modal({
 
 Behaviors (`hollow.ui.list_nav`, `hollow.ui.scroll_nav`,
 `hollow.ui.text_input`) encapsulate state and key handlers, while
-`hollow.ui.dialog` produces a renderable column. See
+`hollow.ui.layout` composes hierarchical Clay trees. See
 [`hollow.ui`](reference/lua/ui.md) for the full reference.
 
 Built on top of overlays and the composition helpers:

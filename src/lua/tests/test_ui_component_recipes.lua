@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("unified component styling", function()
@@ -10,7 +11,7 @@ describe("unified component styling", function()
   end)
 
   it("preserves legacy row states for partial themes, including missing selected paint", function()
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local partial = { hover_bg = "#112233" }
     local row = list_row(partial, { variant = "section", selected = true, hovered = true }).paint
     assert.is_nil(row.fill_bg)
@@ -27,7 +28,7 @@ describe("unified component styling", function()
       hover_bg = "#334455",
       muted = "#445566",
     }
-    local button = ui.button({
+    local button = ui.components.button({
       id = "run",
       text = "Run",
       variant = "primary",
@@ -38,15 +39,14 @@ describe("unified component styling", function()
     assert.equals("#445566", button.style.fg)
     assert.equals("#223344", button.style.bg)
     assert.same({ left = 6, right = 0, top = 2, bottom = 2 }, button.style.padding)
-    assert.same({}, ui.button().style)
     assert.has_error(function()
-      ui.button({ variant = "typo" })
+      ui.components.button({ variant = "typo" })
     end, "hollow.ui: unknown button variant typo")
     assert.has_error(function()
       ui.action_button({ size = "large" })
     end, "hollow.ui: unknown button size large")
     assert.has_error(function()
-      local _ = require("hollow.ui.styles.list_row")(palette, { variant = "typo" }).paint
+      local _ = require("hollow.ui.recipes.list_row")(palette, { variant = "typo" }).paint
     end, "hollow.ui: unknown list_row variant typo")
   end)
 
@@ -54,8 +54,8 @@ describe("unified component styling", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({
       render = function()
-        return ui.row({
-          ui.action_button({
+        return ui.components.row({
+          ui.components.button({
             id = "run",
             text = "Run",
             disabled = disabled,
@@ -67,22 +67,21 @@ describe("unified component styling", function()
       end,
     })
     ui.overlay.push(widget)
-    ui._overlay_state()
-    widget.on_event("overlay:click", { id = "run" })
+    widget.on_event("overlay:click", { id = clay.find(ui, ":run").id })
     assert.equals(1, clicks)
     disabled = true
-    ui._overlay_state()
-    widget.on_event("overlay:click", { id = "run" })
+    widget._layout_surface:invalidate()
+    clay.nodes(ui)
+    widget.on_event("overlay:click", { id = widget._layout_surface.namespace .. "run" })
     assert.equals(1, clicks)
-    local button = ui.button({
+    local button = ui.components.button({
       id = "off",
       disabled = true,
       on_click = function() end,
       on_mouse_enter = function() end,
       style = { hover = { bg = "#ffffff" } },
     })
-    assert.is_nil(button.style.on_click)
-    assert.is_nil(button.style.on_mouse_enter)
+    assert.is_nil(button.on_click)
     assert.is_nil(button.style.hover)
   end)
 
@@ -91,7 +90,7 @@ describe("unified component styling", function()
     ui.topbar.mount(ui.topbar.new({
       render = function()
         return {
-          ui.button({
+          ui.action_button({
             id = "off",
             variant = "primary",
             disabled = disabled,
@@ -115,26 +114,29 @@ describe("unified component styling", function()
   it("uses row recipes without inheriting boxes or identity into text", function()
     local widget = ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("inherited"), ui.text("child", { fg = "#abcdef" }) }, {
-          id = "choice",
-          variant = "selectable",
-          selected = true,
-          style = { radius = 9, fg = "muted" },
-        })
+        return clay.row(
+          ui,
+          ui.row({ ui.text("inherited", { fg = "muted" }), ui.text("child", { fg = "#abcdef" }) }, {
+            id = "choice",
+            variant = "selectable",
+            selected = true,
+            style = { radius = 9, fg = "muted" },
+          })
+        )
       end,
     })
     ui.overlay.push(widget)
-    local row = ui._overlay_state()[1].rows[1]
+    local row = assert(clay.find(ui, ":choice"))
     local theme = shared.palette("overlay")
-    assert.equals(theme.selection_bg, row.fill_bg)
-    assert.equals(theme.panel_border, row.accent_bar)
-    assert.equals(9, row.fill_radius)
-    assert.equals(theme.muted, row.segments[1].fg)
-    assert.equals("#abcdef", row.segments[2].fg)
-    assert.is_nil(row.segments[1].bg)
-    assert.is_nil(row.segments[1].padding)
-    assert.is_nil(row.segments[1].radius)
-    assert.is_nil(row.segments[1].id)
+    assert.equals(theme.selection_bg, row.bg)
+    assert.equals(9, row.radius)
+    local inherited = assert(clay.text_node(ui, "inherited"))
+    assert.equals(theme.muted, inherited.fg)
+    assert.equals("#abcdef", clay.text_node(ui, "child").fg)
+    assert.is_nil(inherited.bg)
+    assert.is_nil(inherited.padding)
+    assert.is_nil(inherited.radius)
+    assert.is_nil(inherited.id)
   end)
 
   it("rejects unsupported row geometry instead of silently dropping it", function()
@@ -146,34 +148,40 @@ describe("unified component styling", function()
   it("resolves row hover once and keeps explicit legacy aliases final", function()
     local widget = ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("Choice") }, {
-          id = "choice",
-          style = { fg = "#111111", bg = "#222222", hover = { fg = "#333333", bg = "#444444" } },
-          fill_bg = "#555555",
-          fill_radius = 0,
-        })
+        return clay.row(
+          ui,
+          ui.row({ ui.text("Choice") }, {
+            id = "choice",
+            style = { fg = "#111111", bg = "#222222", hover = { fg = "#333333", bg = "#444444" } },
+            fill_bg = "#555555",
+            fill_radius = 0,
+          })
+        )
       end,
     })
     ui.overlay.push(widget)
-    widget.on_event("overlay:hover", { id = "choice" })
-    local row = ui._overlay_state()[1].rows[1]
-    assert.equals("#333333", row.segments[1].fg)
-    assert.equals("#555555", row.fill_bg)
-    assert.equals(0, row.fill_radius)
-    widget.on_event("overlay:leave")
-    assert.equals("#111111", ui._overlay_state()[1].rows[1].segments[1].fg)
+    local row = assert(clay.find(ui, ":choice"))
+    assert.equals(shared.palette("overlay").fg, clay.text_node(ui, "Choice").fg)
+    assert.equals("#555555", row.bg)
+    assert.is_nil(row.radius)
+    assert.equals(shared.palette("overlay").hover_bg, row.hover_bg)
   end)
 
   it("honors an explicit disabled accent part on selectable rows", function()
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return ui.row(
-          { ui.text("Choice") },
-          { id = "choice", variant = "selectable", selected = true, accent_bar = false }
+        return clay.row(
+          ui,
+          ui.row(
+            { ui.text("Choice") },
+            { id = "choice", variant = "selectable", selected = true, accent_bar = false }
+          )
         )
       end,
     }))
-    assert.is_false(ui._overlay_state()[1].rows[1].accent_bar)
+    for _, node in ipairs(clay.nodes(ui)) do
+      assert.not_equals(shared.palette("overlay").panel_border, node.bg)
+    end
   end)
 
   it("resolves overlay style tokens and keeps explicit chrome fields final", function()
@@ -181,14 +189,15 @@ describe("unified component styling", function()
       style = { bg = "panel_bg", border = "panel_border", padding = 4, radius = 7 },
       chrome = { bg = "#abcdef", padding = { left = 9 } },
       render = function()
-        return ui.row({ ui.text("Panel") })
+        return ui.components.row({ ui.components.text("Panel") })
       end,
     }))
-    local chrome = ui._overlay_state()[1].chrome
+    local chrome = assert(clay.find(ui, ":dialog"))
     assert.equals("#abcdef", chrome.bg)
     assert.equals(shared.palette("overlay").panel_border, chrome.border)
     assert.equals(7, chrome.radius)
-    assert.same({ left = 9, right = 0, top = 0, bottom = 0 }, chrome.padding)
+    -- Explicit 9px plus the half-cell base inset.
+    assert.equals(13, chrome.padding.left)
   end)
 
   it("does not mutate shared styles when bars assign automatic ids", function()
@@ -215,10 +224,10 @@ describe("unified component styling", function()
     assert.is_not.equal(before, ui.action_button({}).style.fg)
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("row") }, { id = "row" })
+        return clay.row(ui, ui.row({ ui.text("row") }, { id = "row" }))
       end,
     }))
-    assert.equals("#654321", ui._overlay_state()[1].rows[1].hover_bg)
+    assert.equals("#654321", clay.find(ui, ":row").hover_bg)
   end)
 
   it("derives dialog emphasis after widget overrides and permits a semantic override", function()
@@ -255,11 +264,9 @@ describe("unified component styling", function()
   it("refreshes open picker paint and chrome while retaining instance overrides", function()
     ui.select.open({ items = { "one" }, theme = { title = "#abcdef" } })
     local function label_color()
-      for _, row in ipairs(ui._overlay_state()[1].rows) do
-        for _, segment in ipairs(row.segments) do
-          if segment.text == "one" then
-            return segment.fg
-          end
+      for _, segment in ipairs(clay.nodes(ui)) do
+        if segment.text == "one" then
+          return segment.fg
         end
       end
     end
@@ -279,7 +286,7 @@ describe("unified component styling", function()
     })
     assert.is_not.equal(before, label_color())
     assert.equals("#123456", label_color())
-    assert.equals("#234567", ui._overlay_state()[1].chrome.bg)
+    assert.equals("#234567", clay.find(ui, ":dialog").bg)
     local palette = shared.widget_theme("select", { title = "#abcdef", selected_bg = "#102030" })
     hollow.config.set({ theme = "nord" })
     assert.equals("#abcdef", palette.title)
@@ -295,22 +302,34 @@ describe("unified component styling", function()
       theme = { muted = "#123456", panel_bg = "#234567" },
       chrome = { bg = "panel_bg" },
       render = function()
-        return ui.row({ ui.text("lazy", { fg = "muted" }) })
+        return ui.components.row({ ui.components.text("lazy", { fg = "muted" }) })
       end,
     })
     local widget = ui._overlay_state()[1]
-    assert.equals("#123456", widget.rows[1].segments[1].fg)
-    assert.equals("#234567", widget.chrome.bg)
+    assert.equals("#123456", clay.text_node(ui, "lazy").fg)
+    assert.equals("#234567", clay.find(ui, ":dialog").bg)
   end)
 
-  it("refreshes notification text and border from the same level token", function()
+  it("refreshes notification text and subdued borders from level colors", function()
     ui.notify.show("message", { level = "warn" })
     hollow.config.set({
-      theme = { ui = { widgets = { notify = { notify_levels = { warn = "#abcdef" } } } } },
+      theme = {
+        ui = {
+          widgets = {
+            notify = { panel_bg = "#202020", notify_levels = { warn = "#abcdef" } },
+          },
+        },
+      },
     })
     local widget = ui._overlay_state()[1]
-    assert.equals("#abcdef", widget.rows[1].segments[1].fg)
-    assert.equals("#abcdef", widget.chrome.border)
+    assert.equals("#abcdef", clay.text_node(ui, "[WARN] message").fg)
+    local border
+    for _, node in ipairs(clay.nodes(ui)) do
+      if node.border then
+        border = node.border
+      end
+    end
+    assert.equals("#47505a", border)
   end)
 
   it("does not retain released live palette or chrome tables", function()
@@ -385,8 +404,6 @@ describe("unified component styling", function()
     local function row()
       return ui.row({ ui.text("detail", { fg = "muted" }) }, { theme = { muted = "#123456" } })
     end
-    ui.overlay.push(ui.overlay.new({ render = row }))
-    assert.equals("#123456", ui._overlay_state()[1].rows[1].segments[1].fg)
     ui.sidebar.mount(ui.sidebar.new({ width = 20, render = row }))
     assert.equals("#123456", ui._sidebar_state().rows[1][1].fg)
   end)

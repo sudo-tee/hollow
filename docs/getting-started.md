@@ -21,12 +21,11 @@ Linux and macOS are not part of the supported matrix yet; see
 
 The latest release is on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases).
 
-A Windows release contains three executables that belong next to each other, plus helpers:
+A Windows release contains two application executables that belong next to each other, plus helpers:
 
 | File | Role |
 | --- | --- |
 | `hollow.exe` | CLI launcher and `hollow cli …` host |
-| `hollow-gui.exe` | Console-less GUI shim |
 | `hollow-native.exe` | Actual GUI process |
 | `hollow-cli` | Python HTP client (optional, OSC over tty) |
 | `agents/linux-<arch>/hollow-agent` | Static Linux guest agent, auto-deployed into WSL/SSH/containers |

@@ -293,6 +293,7 @@ local function start_host_scan(sources, signature)
         loaded_at = util.host_now_ms(state.host_api), items = combined }
       s.host_scan_pending = nil
       s.host_scan_revision = (s.host_scan_revision or 0) + 1
+      hollow.events.emit("workspace:items_changed", { revision = s.host_scan_revision })
       return
     end
     local source, host = scan.source, scan.source.host
@@ -768,6 +769,9 @@ function M.configure(opts)
     switcher.cache_loaded_at_ms = 0
     switcher.host_signature = host_signature(configured_sources())
   end
+  if next(opts) ~= nil then
+    hollow.events.emit("workspace:items_changed", { revision = switcher.host_scan_revision or 0 })
+  end
 end
 
 function M.clear_cache()
@@ -777,6 +781,7 @@ function M.clear_cache()
   switcher.cached_items = nil
   switcher.cache_loaded_at_ms = 0
   switcher.host_signature = host_signature(configured_sources())
+  hollow.events.emit("workspace:items_changed", { revision = switcher.host_scan_revision or 0 })
 end
 
 ---@param force_refresh? boolean

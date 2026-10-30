@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("UI notify test suite", function()
@@ -47,6 +48,58 @@ describe("UI notify test suite", function()
       )
       hollow.ui.notify.clear()
     end)
+
+    it("keeps group unpainted and uses subdued borders on individual toasts", function()
+      local ui = hollow.ui
+      local theme = {
+        panel_bg = "#202020",
+        notify_levels = { info = "#8090a0", error = "#8090a0" },
+      }
+      ui.notify.info("hello", { ttl = 0, theme = theme })
+      ui.notify.error("failure", { ttl = 0, theme = theme })
+      local group = clay.find(ui, ":dialog")
+      assert.is_nil(group.border)
+      assert.is_nil(group.bg)
+      for _, text in ipairs({ "[INFO] hello", "[ERROR] failure" }) do
+        local toast = clay.label(ui, text)
+        assert.equals("#3b3f44", toast.border)
+      end
+      ui.notify.clear()
+    end)
+
+    it("expires lower toasts before snapshotting and keeps draw owner indices stable", function()
+      local ui = hollow.ui
+      local start = env.recorded.now_ms
+      local lower = ui.notify.info("expires first", { ttl = 10 })
+      local newer = ui.notify.info("survives", { ttl = 100 })
+      ui.input.open({ prompt = "Keep modal" })
+      local stack = require("hollow.state").get().ui.overlay_stack
+      local modal = stack[3]
+      env.recorded.now_ms = start + 11
+      ui._layout_prepare(1200, 900, 8, 19)
+      assert.equals(2, #stack)
+      assert.equals(newer, stack[1])
+      assert.equals(modal, stack[2])
+      assert.is_true(lower._layout_surface.destroyed)
+      local snapshots = ui._overlay_state()
+      assert.equals(newer._layout_surface.id, snapshots[1].layout.surface_id)
+      assert.equals(modal._layout_surface.id, snapshots[2].layout.surface_id)
+      -- Time can advance while drawing. Reading serialized owners must not expire
+      -- or reindex this already-prepared frame.
+      env.recorded.now_ms = start + 101
+      for index = 1, 2 do
+        assert.is_true(ui._layout_prepare_overlay(index, 1200, 900, 8, 19))
+        assert.equals(index, ui._layout_owner)
+        assert.equals(snapshots[index].layout.surface_id, ui._layout_surface_id)
+        assert.equals(2, #ui._overlay_state())
+      end
+      ui._layout_prepare(1200, 900, 8, 19)
+      assert.equals(1, #stack)
+      assert.equals(modal, stack[1])
+      assert.is_true(ui._layout_prepare_overlay(1, 1200, 900, 8, 19))
+      assert.equals(modal._layout_surface.id, ui._layout_surface_id)
+      ui.overlay.clear()
+    end)
   end)
 
   describe("direct overlays", function()
@@ -55,8 +108,8 @@ describe("UI notify test suite", function()
       local direct_overlay_event = false
       local direct_overlay = hollow.ui.overlay.new({
         render = function()
-          return hollow.ui.row({
-            hollow.ui.button({
+          return hollow.ui.components.row({
+            hollow.ui.components.button({
               id = "direct-overlay-button",
               text = "Run",
               on_click = function()
@@ -70,8 +123,10 @@ describe("UI notify test suite", function()
         end,
       })
       hollow.ui.overlay.push(direct_overlay)
-      hollow.ui._overlay_state()
-      hollow._emit_builtin_event("overlay:click", { id = "direct-overlay-button" })
+      hollow._emit_builtin_event(
+        "overlay:click",
+        { id = clay.find(hollow.ui, ":direct-overlay-button").id }
+      )
       harness.assert_true(
         direct_button_clicked,
         "ui.button callbacks should work in direct overlays"

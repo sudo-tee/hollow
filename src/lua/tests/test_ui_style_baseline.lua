@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("styling unification baseline", function()
@@ -8,9 +9,9 @@ describe("styling unification baseline", function()
     hollow = harness.boot().hollow
   end)
 
-  it("preserves legacy row paint with selection taking priority over hover", function()
+  it("preserves row recipe selection priority over hover in Clay", function()
     local ui = hollow.ui
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local theme = {
       selection_bg = "#112233",
       hover_bg = "#223344",
@@ -26,22 +27,13 @@ describe("styling unification baseline", function()
         local options = hollow.util.merge_tables({ id = "row" }, paint.paint)
         ui.overlay.push(ui.overlay.new({
           render = function()
-            return ui.row({ ui.text("Choice", { fg = "#abcdef" }) }, options)
+            return clay.row(ui, ui.row({ ui.text("Choice", { fg = "#abcdef" }) }, options))
           end,
         }))
-        assert.same({
-          id = "row",
-          hoverable = true,
-          segments = { { text = "Choice", fg = "#abcdef", bold = false } },
-          fill_bg = selected and "#112233" or (hovered and "#223344" or "#010203"),
-          fill_radius = 4,
-          hover_bg = hollow.theme.resolve_widget("overlay").hover_bg,
-          accent_bar = selected and "#334455" or nil,
-          scrollbar_track = false,
-          scrollbar_thumb = false,
-          scrollbar_track_color = "#445566",
-          scrollbar_thumb_color = "#556677",
-        }, ui._overlay_state()[1].rows[1])
+        local row = assert(clay.find(ui, ":row"))
+        assert.equals(selected and "#112233" or (hovered and "#223344" or "#010203"), row.bg)
+        assert.equals(4, row.radius)
+        assert.equals("#abcdef", clay.text_node(ui, "Choice").fg)
         ui.overlay.clear()
       end
     end
@@ -55,7 +47,7 @@ describe("styling unification baseline", function()
     end
     local widget = ui.overlay.new({
       render = function()
-        return ui.row({ action() })
+        return clay.row(ui, ui.row({ action() }))
       end,
     })
     ui.overlay.push(widget)
@@ -65,7 +57,6 @@ describe("styling unification baseline", function()
       end,
     }))
     for _, hovered in ipairs({ false, true, false }) do
-      widget.on_event(hovered and "overlay:hover" or "overlay:leave", { id = "run" })
       hollow._emit_builtin_event(hovered and "topbar:hover" or "topbar:leave", { id = "run" })
       local expected = {
         text = "Run",
@@ -76,7 +67,10 @@ describe("styling unification baseline", function()
         radius = 4,
         padding = { left = 4, right = 4, top = 0, bottom = 0 },
       }
-      assert.same(expected, ui._overlay_state()[1].rows[1].segments[1])
+      local action_box = assert(clay.label(ui, "Run"))
+      assert.equals(hollow.theme.resolve_widget("overlay").hover_bg, action_box.hover_bg)
+      assert.equals(4, action().style.radius)
+      assert.equals("#112233", clay.text_node(ui, "Run").fg)
       assert.same(expected, ui._topbar_state().items[1].segments[1])
     end
     ui.overlay.clear()

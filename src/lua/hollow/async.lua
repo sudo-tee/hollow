@@ -1,6 +1,9 @@
+---@type HollowAsyncNamespace
 local M = {}
 local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missing")
 
+---@param fn function
+---@return thread
 function M.run(fn)
   if type(fn) ~= "function" then
     error("hollow.async.run(fn) expects a function")
@@ -14,6 +17,8 @@ function M.run(fn)
   return thread
 end
 
+---@param register fun(resolve: fun(value: any), reject: fun(err: any))
+---@return any
 function M.await(register)
   if type(register) ~= "function" then
     error("hollow.async.await(register) expects a function")
@@ -68,6 +73,8 @@ function M.next_tick()
   end)
 end
 
+---@param register fun(resolve: fun(value: any), reject: fun(err: any))
+---@return HollowPromise<any>
 function M.promise(register)
   if type(register) ~= "function" then
     error("hollow.async.promise(register) expects a function")
@@ -80,6 +87,7 @@ function M.promise(register)
     listeners = {},
   }
 
+  ---@type HollowPromise<any>
   local promise = {}
 
   local function flush()
@@ -126,6 +134,9 @@ function M.promise(register)
     return state.error
   end
 
+  ---@param on_resolve? fun(value: any): any
+  ---@param on_reject? fun(err: any): any
+  ---@return HollowPromise<any>
   function promise:next(on_resolve, on_reject)
     if on_resolve ~= nil and type(on_resolve) ~= "function" then
       error("promise:next(on_resolve, on_reject) expects on_resolve to be a function or nil")
@@ -176,6 +187,8 @@ function M.promise(register)
     return M.promise(forward)
   end
 
+  ---@param on_reject fun(err: any): any
+  ---@return HollowPromise<any>
   function promise:catch(on_reject)
     return self:next(nil, on_reject)
   end

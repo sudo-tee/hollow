@@ -1,11 +1,10 @@
 local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
-local format = require("hollow.ui.widgets.format")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
-local styles = require("hollow.ui.styles.workspace")
+local styles = require("hollow.ui.recipes.workspace")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
@@ -69,24 +68,18 @@ local function derived_palette()
   }
 end
 
----@param workspace HollowUiWorkspaceItem
----@param domain_width? integer
----@return HollowUiRenderableNode[]
-local function default_format_item(workspace, domain_width)
+-- Retain the original padded accessibility labels independently of layout.
+local function default_item_columns(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
-  local palette = derived_palette()
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
-  local s = styles(palette, { variant = variant })
-  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
-    or palette.bell
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local badge = workspace.program_status_badge or ""
-  local badge_width = util.utf8_len(badge)
+  local badge_width = util.display_width(badge)
   domain_width = domain_width or 0
   local cwd_width = math.max(
     12,
@@ -99,36 +92,110 @@ local function default_format_item(workspace, domain_width)
   end
 
   local domain = source.normalize_domain(workspace.domain)
-  local domain_colors = workspace_name_color(domain or "default")
+  return {
+    variant = variant,
+    attention = attention,
+    domain = domain,
+    status = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
+    status_width = status_width,
+    name_width = name_width,
+    gap_width = gap_width,
+    badge = badge,
+    badge_width = badge_width,
+    cwd = cwd_text,
+    cwd_width = cwd_width,
+    domain_text = domain and domain_width > 0 and (" " .. util.truncate_end(
+      domain,
+      domain_width - 3
+    ) .. " ") or nil,
+  }
+end
 
-  local columns = format.columns({
-    {
-      text = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
-      width = status_width,
-      style = ui.style(s.status, attention and { fg = bell, bold = true }),
-    },
-    { text = "", width = gap_width, style = s.gap },
-    { text = workspace.name, width = name_width, style = s.name },
-    { text = "", width = gap_width, style = s.gap },
-    {
-      text = badge,
-      width = badge_width,
-      style = ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
-    },
-    { text = cwd_text, width = cwd_width, style = s.cwd },
-  })
-  return shared.normalize_inline_nodes({
-    columns,
-    ui.when(domain and domain_width > 0, function()
-      return {
-        ui.spacer(),
-        ui.span(
-          " " .. util.truncate_end(domain, domain_width - 3) .. " ",
-          ui.style(s.domain_pill, { fg = domain_colors.fg, bg = domain_colors.bg })
-        ),
+local function default_plain_item(workspace, domain_width)
+  local c = default_item_columns(workspace, domain_width)
+  local function pad(text, width)
+    return util.pad_right(util.truncate_end(tostring(text or ""), width), width)
+  end
+  return pad(c.status, c.status_width)
+    .. pad("", c.gap_width)
+    .. pad(workspace.name, c.name_width)
+    .. pad("", c.gap_width)
+    .. pad(c.badge, c.badge_width)
+    .. pad(c.cwd, c.cwd_width)
+    .. (c.domain_text or "")
+end
+
+-- Native counterpart of the default formatter: retain column settings/paint,
+-- but let Clay allocate the remaining cwd width instead of padding strings.
+local function layout_format_item(workspace, domain_width, ctx, view)
+  local c = ui.components
+  local component = require("hollow.ui.components.select")
+  local switcher = switcher_state()
+  ctx._workspace_palette = ctx._workspace_palette or derived_palette()
+  local palette = ctx._workspace_palette
+  local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
+  local s = styles(palette, { variant = variant })
+  local match = require("hollow.ui.recipes.select")(view.theme).match
+  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+  local status_width =
+    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
+  local gap = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP) * cell_w
+  local attention = workspace.has_bell or workspace.program_status_attention
+  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
+    or palette.bell
+  local cwd = source.trim_string(workspace.cwd)
+  if cwd == "" then
+    cwd = CWD_FALLBACK[variant]
+  end
+  local function column(text, style, width, suffix)
+    return component.inline(
+      shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
+      nil,
+      {
+        id = view.id .. ":" .. suffix,
+        width = width,
+        height = cell_h,
+        scroll_x = true,
+        align_y = "center",
       }
-    end),
-  })
+    )
+  end
+  local columns = {
+    c.column({
+      c.text(
+        attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
+        ui.style(s.status, attention and { fg = bell, bold = true }),
+        { wrap = "none" }
+      ),
+    }, { width = status_width * cell_w }),
+    c.column({}, { width = gap }),
+    column(util.truncate_end(workspace.name, name_width), s.name, name_width * cell_w, "name"),
+    c.column({}, { width = gap }),
+  }
+  local badge = workspace.program_status_badge or ""
+  if badge ~= "" then
+    columns[#columns + 1] = c.text(
+      badge,
+      ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
+      { wrap = "none" }
+    )
+  end
+  columns[#columns + 1] = column(cwd, s.cwd, "grow", "cwd")
+  local domain = source.normalize_domain(workspace.domain)
+  if domain and domain_width > 0 then
+    local colors = workspace_name_color(domain)
+    columns[#columns + 1] = c.column({
+      c.text(
+        " " .. util.truncate_end(domain, domain_width - 3) .. " ",
+        { fg = colors.fg },
+        { wrap = "none" }
+      ),
+    }, {
+      style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
+    })
+  end
+  return c.row(columns, { width = "grow", height = cell_h, align_y = "center" })
 end
 
 ---@param items HollowUiWorkspaceItem[]
@@ -273,22 +340,76 @@ function ui.workspace.open_switcher(opts)
   local domain_width = domain_column_width(items)
   local switcher = switcher_state()
   local host_revision = switcher.host_scan_revision or 0
+  local dirty = false
+  local deadline
+  local events = {
+    "term:program_status_changed",
+    "term:bell",
+    "term:pane_focused",
+    "term:pane_created",
+    "term:pane_exited",
+    "term:pane_closed",
+    "term:pane_layout_changed",
+    "term:title_changed",
+    "term:cwd_changed",
+    "term:foreground_process_changed",
+    "term:tab_activated",
+    "term:tab_closed",
+    "workspace:new",
+    "workspace:changed",
+    "workspace:closed",
+    "workspace:items_changed",
+    "config:reloaded",
+    "config:changed",
+    "theme:changed",
+    "term:command_started",
+    "term:command_finished",
+  }
+  local listeners = {}
   ui.select.open({
+    layout_live = type(switcher.format_item) == "function",
+    semantic_hover = false,
+    layout_events = events,
+    layout_refresh_after = function()
+      return deadline
+        and math.max(1, deadline - util.host_now_ms(require("hollow.state").get().host_api))
+    end,
+    on_mount = function()
+      for _, name in ipairs(events) do
+        if name ~= "term:program_status_changed" and name ~= "term:bell" then
+          listeners[#listeners + 1] = hollow.events.on(name, function()
+            dirty = true
+          end)
+        end
+      end
+    end,
+    on_unmount = function()
+      for _, listener in ipairs(listeners) do
+        hollow.events.off(listener)
+      end
+    end,
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
       local current_revision = switcher_state().host_scan_revision or 0
-      if current_revision ~= host_revision then
+      if dirty or current_revision ~= host_revision then
         items = source.items()
         domain_width = domain_column_width(items)
         host_revision = current_revision
+        dirty = false
       end
       -- Read live status without rescanning local/remote discovery sources.
       local badges = {}
       local states = {}
       local attention = {}
       local attention_levels = {}
+      deadline = nil
       for _, workspace in ipairs(hollow.term.mux_tree()) do
-        badges[workspace.id], states[workspace.id] = program_status.workspace_badge(workspace)
+        local next_frame
+        badges[workspace.id], states[workspace.id], next_frame =
+          program_status.workspace_badge(workspace)
+        if next_frame then
+          deadline = math.min(deadline or next_frame, next_frame)
+        end
         attention[workspace.id] = program_status.workspace_needs_attention(workspace)
         attention_levels[workspace.id] = program_status.workspace_attention_level(workspace)
       end
@@ -312,7 +433,13 @@ function ui.workspace.open_switcher(opts)
       if formatter then
         return formatter(item)
       end
-      return default_format_item(item, domain_width)
+      return default_plain_item(item, domain_width)
+    end,
+    layout_label = function(item, ctx, view)
+      if switcher_state().format_item then
+        return nil
+      end
+      return layout_format_item(item, domain_width, ctx, view)
     end,
     search_text = search_text_for_item,
     actions = switcher_actions(),

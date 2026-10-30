@@ -218,6 +218,9 @@ function hollow._emit_builtin_event(name, payload)
     or name == "bottombar:hover"
     or name == "bottombar:leave"
     or name == "bottombar:click"
+    or name == "sidebar:hover"
+    or name == "sidebar:leave"
+    or name == "sidebar:click"
   then
     hollow.ui.handle_bar_node_event(name, adapted)
   end

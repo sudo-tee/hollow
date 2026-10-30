@@ -1,6 +1,6 @@
 local attention = require("hollow.ui.widgets.attention")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.topbar")
+local styles = require("hollow.ui.recipes.topbar")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui

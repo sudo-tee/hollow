@@ -1,9 +1,9 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.activity")
+local styles = require("hollow.ui.recipes.activity")
 local util = require("hollow.util")
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -174,12 +174,15 @@ function ui.activity.open(opts)
   local width = opts.width or DEFAULT_WIDTH
   local height = opts.height or opts.max_height or DEFAULT_HEIGHT
   height = math.min(height, opts.max_height or height)
+  local clay_budget = math.min(20, math.max(1, height - 6))
+  local reveal_start = false
   local modal, list, details
   local copy_feedback
-  local detail_view = ui.text_view({
+  local detail_options = {
     width = width - 6,
-    row_budget = height - 4,
-  })
+    row_budget = math.min(20, math.max(1, height - 4)),
+  }
+  local detail_view = ui.text_view(detail_options)
   local rows = {}
   local row_group = {}
   local filter = ui.text_input({
@@ -368,7 +371,7 @@ function ui.activity.open(opts)
       return rows
     end,
     row_budget = function()
-      return math.max(2, height - (searching and 6 or 4))
+      return clay_budget
     end,
     on_activate = activate,
   })
@@ -534,9 +537,11 @@ function ui.activity.open(opts)
     local pill_width, time_width = 0, 0
     for _, entry in ipairs(rows) do
       if not entry.header_category then
-        pill_width =
-          math.max(pill_width, util.utf8_len(util.truncate_end(entry.workspace or "", pill_cap)))
-        time_width = math.max(time_width, util.utf8_len((age(entry))))
+        pill_width = math.max(
+          pill_width,
+          util.display_width(util.truncate_end(entry.workspace or "", pill_cap))
+        )
+        time_width = math.max(time_width, util.display_width((age(entry))))
       end
     end
     return {
@@ -565,7 +570,7 @@ function ui.activity.open(opts)
         local colors = shared.workspace_colors(entry.workspace, columns.color_fn)
         return {
           ui.text(workspace, ui.style(styles(theme).pill, { fg = colors.fg, bg = colors.bg })),
-          ui.text(string.rep(" ", columns.pill_width - util.utf8_len(workspace))),
+          ui.text(string.rep(" ", columns.pill_width - util.display_width(workspace))),
         }
       end, function()
         return ui.text(string.rep(" ", columns.pill_width), styles(theme).pill_gap)
@@ -595,14 +600,14 @@ function ui.activity.open(opts)
     local time, seconds = age(entry)
     local indent = row_group[entry] and "  " or ""
     local reserved = 11
-      + util.utf8_len(indent)
+      + util.display_width(indent)
       + columns.time_width
       + (columns.pill_width > 0 and columns.pill_width + 4 or 0)
       + (entry.pane_closed and 13 or 0)
     local budget = math.max(8, width - reserved)
     local primary, secondary = row_parts(entry)
     primary = util.truncate_end(primary, budget)
-    local rest = budget - util.utf8_len(primary) - 3
+    local rest = budget - util.display_width(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
     local entry_s = entry_styles(theme, entry, row_state, columns, seconds)
     return ui.row({
@@ -616,7 +621,7 @@ function ui.activity.open(opts)
       ui.text(entry.pane_closed and "pane closed  " or "", entry_s.stale),
       render_workspace_pill(entry, workspace, columns),
       ui.text(
-        "  " .. string.rep(" ", columns.time_width - util.utf8_len(time)) .. time,
+        "  " .. string.rep(" ", columns.time_width - util.display_width(time)) .. time,
         entry_s.time
       ),
       ui.text("  "),
@@ -624,63 +629,184 @@ function ui.activity.open(opts)
     }, row_state.options)
   end
 
-  local function render_rows(state, columns, viewport)
-    return ui.each(hollow.tbl.range(viewport.start_idx, viewport.end_idx), function(index)
+  local function render_layout(render_theme, state, ctx)
+    local c = ui.components
+    local component = require("hollow.ui.components.select")
+    local cell_h = ctx.cell_h or 19
+    local function line(node)
+      return component.inline(
+        node.children,
+        nil,
+        { width = "grow", height = cell_h, scroll_x = true }
+      )
+    end
+    if details then
+      local measured = ctx.metrics and ctx.metrics["activity:details"]
+      if measured then
+        detail_options.row_budget = math.max(1, math.min(20, math.floor(measured.height / cell_h)))
+      end
+      local detail_rows = detail_view.render(theme)
+      local body = {}
+      for _, row in ipairs(detail_rows) do
+        body[#body + 1] = c.text(
+          shared.nodes_plain_text(row.children),
+          { fg = theme.fg },
+          { wrap = "none" }
+        )
+      end
+      local header = render_details().children[1]
+      local scrollbar = detail_rows[1] or {}
+      return component.sections({
+        line(header),
+        c.column(body, {
+          id = "activity:details",
+          width = "grow",
+          height = "grow",
+          scroll = true,
+          measure = true,
+          padding = {
+            left = 0,
+            right = scrollbar.scrollbar_track and math.max(8, ctx.cell_w or 8) or 0,
+          },
+          scrollbar_id = scrollbar.scrollbar_track and scrollbar.scrollbar_id or nil,
+          scrollbar_thumb_ratio = scrollbar.scrollbar_thumb_ratio,
+          scrollbar_thumb_size = scrollbar.scrollbar_thumb_size,
+          scrollbar_track_color = scrollbar.scrollbar_track_color,
+          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+        }),
+        line(hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back")),
+      }, theme, cell_h),
+        height * cell_h
+    end
+    refresh()
+    local measured = ctx.metrics and ctx.metrics["activity:viewport"]
+    local columns = measure_columns()
+    local sample = rows[1]
+      and (
+        rows[1].header_category
+          and render_category_row(rows[1], { selected = false, options = {} })
+        or render_entry_row(
+          rows[1],
+          { selected = false, hovered = false, options = {}, fg = theme.fg },
+          columns
+        )
+      )
+    local row_height = sample and component.row_height(sample, ctx) or cell_h
+    if measured then
+      clay_budget = math.max(1, math.min(20, math.floor(measured.height / row_height)))
+    end
+    local viewport = list.visible_range()
+    local first = math.max(1, viewport.start_idx - math.floor((23 - clay_budget) / 2))
+    local last = math.min(#rows, first + 22)
+    first = math.max(1, last - 22)
+    local items, costs, total = {}, {}, 0
+    local function count(node)
+      local result = 1
+      for _, child in ipairs(node.children or {}) do
+        result = result + count(child)
+      end
+      return result
+    end
+    local function make_item(index, plain)
       local entry = rows[index]
-      local id, options = list.row(index, entry.id, index - viewport.start_idx + 1, viewport)
-      local selected = index == list.nav.index
-      local hovered = state.hovered_id == id
+      local id = "activity:item:" .. tostring(entry.id)
+      local selected, hovered = index == list.nav.index, state.hovered_id == id
+      local options = list_row(theme, { selected = selected, hovered = hovered }).paint
       local row_state = {
         options = options,
         selected = selected,
         hovered = hovered,
         fg = styles(theme, { selected = selected, hovered = hovered }).row.fg,
       }
-      util.merge_tables(options, list_row(theme, { selected = selected, hovered = hovered }).paint)
-      if entry.header_category then
-        return render_category_row(entry, row_state)
-      end
-      return render_entry_row(entry, row_state, columns)
-    end)
-  end
-
-  local function render_search()
-    return ui.when(searching, function()
-      return {
-        ui.row({ ui.text("/ ", styles(theme).label), ui.group(filter.render(theme)) }),
-        ui.divider(theme.divider),
-      }
-    end)
-  end
-
-  local function render_empty()
-    return ui.when(#rows == 0, function()
-      return ui.row({
-        ui.text(
-          filter.value ~= "" and "No matching activity"
-            or view == "inbox" and "All caught up"
-            or "No activity recorded",
-          styles(theme).empty
-        ),
-      })
-    end)
-  end
-
-  local function render_footer()
-    return ui.when(copy_feedback, function()
-      return ui.row({ ui.text(copy_feedback, styles(theme).success) })
-    end, function()
-      return hint_row(
+      local row = entry.header_category and render_category_row(entry, row_state)
+        or render_entry_row(entry, row_state, columns)
+      local entry_id = entry.id
+      return component.from_row(
+        row,
+        id,
+        entry.header_category and entry.title or row_label(entry),
         theme,
-        rows[list.nav.index]
-            and rows[list.nav.index].header_category
-            and (view == "history" and "Enter/Space toggle   / search   Tab views" or "Enter/Space toggle   t tasks   c commands   / search   Tab views")
-          or "Enter open   v details   y copy   d dismiss   / search   Tab views"
+        ctx,
+        function()
+          refresh()
+          for current, candidate in ipairs(rows) do
+            if candidate.id == entry_id then
+              list.nav.index = current
+              activate(current)
+              break
+            end
+          end
+        end,
+        plain
       )
-    end)
+    end
+    for index = first, last do
+      local item = make_item(index, false)
+      items[#items + 1] = item
+      costs[#costs + 1] = count(item)
+      total = total + costs[#costs]
+    end
+    local simplified = {}
+    while total > component.row_budget do
+      local farthest, distance
+      for offset = 1, #items do
+        local index = first + offset - 1
+        local d = math.abs(index - list.nav.index)
+        if not simplified[offset] and (not distance or d > distance) then
+          farthest, distance = offset, d
+        end
+      end
+      if not farthest then
+        break
+      end
+      local item = make_item(first + farthest - 1, true)
+      total = total - costs[farthest] + count(item)
+      items[farthest], costs[farthest], simplified[farthest] = item, count(item), true
+    end
+    if #rows == 0 then
+      items[1] = c.text(
+        filter.value ~= "" and "No matching activity"
+          or view == "inbox" and "All caught up"
+          or "No activity recorded",
+        styles(theme).empty
+      )
+    end
+    local target = rows[reveal_start and viewport.start_idx or list.nav.index]
+    local scrollbar = viewport.show_scrollbar
+        and shared.serialize_row_paint({ scrollbar_track = true }, theme)
+      or {}
+    local children = { line(render_header()) }
+    if searching then
+      children[#children + 1] = c.row({
+        c.text("/ ", styles(theme).label),
+        require("hollow.ui.components.input")(filter, theme, ctx, true),
+      }, { width = "grow" })
+    end
+    children[#children + 1] = c.column(items, {
+      id = "activity:viewport",
+      width = "grow",
+      height = "grow",
+      scroll = true,
+      scroll_x = true,
+      measure = true,
+      reveal = target and ("activity:item:" .. tostring(target.id)) or nil,
+      reveal_start = reveal_start,
+      padding = { left = 0, right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0 },
+      scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
+      scrollbar_thumb_ratio = viewport.thumb_ratio,
+      scrollbar_thumb_size = viewport.thumb_size,
+      scrollbar_track_color = scrollbar.scrollbar_track_color,
+      scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+    })
+    children[#children + 1] = line(
+      copy_feedback and ui.row({ ui.text(copy_feedback, styles(theme).success) })
+        or hint_row(theme, "Enter open   v details   y copy   d dismiss   / search   Tab views")
+    )
+    return component.sections(children, theme, cell_h), height * cell_h
   end
 
   modal = ui.modal({
+    title = "Activity",
     theme = theme,
     width = width,
     height = opts.height,
@@ -688,11 +814,69 @@ function ui.activity.open(opts)
     chrome = chrome,
     backdrop = backdrop,
     theme_backdrop = opts.backdrop == nil,
+    layout_events = {
+      "activity:changed",
+      "term:program_status_changed",
+      "term:bell",
+      "term:pane_focused",
+      "term:pane_created",
+      "term:pane_exited",
+      "term:pane_closed",
+      "term:pane_layout_changed",
+      "term:title_changed",
+      "term:cwd_changed",
+      "term:foreground_process_changed",
+      "term:tab_activated",
+      "term:tab_closed",
+      "workspace:new",
+      "workspace:changed",
+      "workspace:closed",
+      "term:command_started",
+      "term:command_finished",
+      "config:reloaded",
+      "config:changed",
+      "theme:changed",
+    },
+    layout_refresh_after = function()
+      if details then
+        return nil
+      end
+      local now = now_ms()
+      local delay
+      for _, entry in ipairs(rows) do
+        local timestamp = entry.started_ms or entry.timestamp_ms
+        if not entry.header_category and timestamp then
+          local seconds = math.max(0, math.floor((now - timestamp) / 1000))
+          local interval = seconds < 60 and (entry.started_ms and 1000 or 60000)
+            or seconds < 3600 and 60000
+            or 3600000
+          local next_delay = interval - math.max(0, now - timestamp) % interval
+          delay = math.min(delay or next_delay, next_delay)
+        end
+        if entry.kind == "program" and entry.state == "working" then
+          delay = math.min(delay or 100, 100 - now % 100)
+        end
+      end
+      return delay
+    end,
+    render = render_layout,
     on_event = function(name, event)
-      return (details and detail_view or list).on_event(name, event)
+      local consumed = (details and detail_view or list).on_event(name, event)
+      if
+        not details
+        and consumed
+        and (
+          name == "overlay:scrollbar"
+          or name == "overlay:scroll" and (event and event.delta or 0) ~= 0
+        )
+      then
+        reveal_start = true
+      end
+      return consumed
     end,
     keys = function(key, mods)
       if not details then
+        reveal_start = false
         return main_keys(key, mods)
       end
       if key == "escape" then
@@ -704,24 +888,6 @@ function ui.activity.open(opts)
         return true
       end
       return detail_view.keys(key, mods)
-    end,
-    render = function(_, state)
-      if details then
-        return render_details()
-      end
-      refresh()
-      local header = render_header()
-      local columns = measure_columns()
-      local viewport = list.visible_range()
-      return ui.column({
-        header,
-        ui.divider(theme.divider),
-        render_search(),
-        render_rows(state, columns, viewport),
-        render_empty(),
-        ui.divider(theme.divider),
-        render_footer(),
-      })
     end,
   })
   return modal

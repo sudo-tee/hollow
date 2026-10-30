@@ -11,36 +11,37 @@ return function()
     theme = "select",
     width = 44,
     render = function(theme)
-      return ui.column({
-        ui.row({ ui.text("Choose workspace", ui.style(ui.styles.title)) }),
-        ui.row({
-          ui.tab_bar({
-            theme = theme,
-            tabs = ui.each({ "Projects", "Recent" }, function(name)
-              return {
-                id = "styling:tab:" .. name,
-                label = name,
-                active = active == name,
-                on_click = function()
-                  active, selected = name, groups[name][1]
-                end,
-              }
-            end),
-          }),
-        }),
-        ui.each(groups[active], function(name)
-          return ui.row({
-            ui.button({
-              id = "styling:choice:" .. name,
+      local c = ui.components
+      return c.column({
+        c.text("Choose workspace", { fg = theme.title, bold = true }),
+        c.row(
+          ui.each({ "Projects", "Recent" }, function(name)
+            return c.button({
+              id = "styling:tab:" .. name,
               text = name,
+              theme = theme,
+              style = { bg = active == name and theme.selection_bg or nil },
               on_click = function()
-                selected = name
+                active, selected = name, groups[name][1]
               end,
-            }),
-          }, { variant = "selectable", selected = selected == name })
+            })
+          end),
+          { gap = 8 }
+        ),
+        ui.each(groups[active], function(name)
+          return c.button({
+            id = "styling:choice:" .. name,
+            text = name,
+            theme = theme,
+            width = "grow",
+            style = { bg = selected == name and theme.selection_bg or nil },
+            on_click = function()
+              selected = name
+            end,
+          })
         end),
-        ui.row({
-          ui.action_button({
+        c.row({
+          c.button({
             id = "styling:done",
             text = "Done",
             variant = "primary",
@@ -51,7 +52,7 @@ return function()
             end,
           }),
         }),
-      })
+      }, { width = "grow", gap = 8 })
     end,
     keys = function(key)
       if key == "escape" or key == "<Esc>" then

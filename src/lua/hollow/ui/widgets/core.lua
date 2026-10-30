@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -30,8 +31,20 @@ end
 
 ---@param widget HollowUiWidget|nil
 local function unmount_widget(widget)
+  if widget and widget._layout_surface then
+    widget._layout_surface:destroy()
+  end
   if widget ~= nil and type(widget.on_unmount) == "function" then
     widget.on_unmount()
+  end
+  if widget and widget._kind == "overlay" then
+    widget.render, widget.on_event, widget.on_key, widget.on_unmount = nil, nil, nil, nil
+    widget._layout_snapshot, widget._toast_render, widget._layout_visible = nil, nil, nil
+  end
+  for _, overlay in ipairs(overlay_stack) do
+    if overlay._notify and overlay._layout_surface then
+      overlay._layout_surface:invalidate()
+    end
   end
 end
 
@@ -73,12 +86,19 @@ local function trim_row_for_width(row, max_chars, palette, resolved_paint)
 
     if not node.spacer then
       local text = node.text or ""
-      if #text > remaining then
-        text = text:sub(1, remaining)
+      -- Keep complete graphemes and use cell widths, without adding ellipsis.
+      local parts, used = {}, 0
+      for _, cluster in ipairs(util.text_graphemes(text)) do
+        if used + cluster.width > remaining then
+          break
+        end
+        parts[#parts + 1] = cluster.text
+        used = used + cluster.width
       end
+      text = table.concat(parts)
       if #text > 0 then
         segments[#segments + 1] = shared.style_to_segment(text, node.style, palette)
-        remaining = remaining - #text
+        remaining = remaining - used
       end
     end
   end

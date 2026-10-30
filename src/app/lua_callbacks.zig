@@ -505,6 +505,11 @@ pub fn luaRequestLayoutRefreshCallback(app_ptr: *anyopaque) void {
     app.requestLayoutRefresh();
 }
 
+pub fn luaRequestRedrawCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.requestRedraw();
+}
+
 pub fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_selection);
@@ -525,6 +530,12 @@ pub fn luaClipboardWriteCallback(app_ptr: *anyopaque, text: []const u8) bool {
 pub fn luaPasteClipboardCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.paste_clipboard);
+}
+
+pub fn luaClipboardReadCallback(app_ptr: *anyopaque) []const u8 {
+    // Called synchronously by Lua's UI key handler; the bridge copies into Lua.
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.readClipboard();
 }
 
 pub fn luaScrollActiveCallback(app_ptr: *anyopaque, delta: isize) void {

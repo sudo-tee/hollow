@@ -1,6 +1,6 @@
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.bottombar")
+local styles = require("hollow.ui.recipes.bottombar")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui
