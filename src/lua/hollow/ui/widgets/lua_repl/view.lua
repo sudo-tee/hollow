@@ -42,16 +42,21 @@ local function output_view(theme, h, ctx, opts, rows)
       }),
     }, { id = "output:" .. (first + i - 1), height = h })
   end)
-  return c.column(lines, {
+  return c.scroll({
     id = "repl:output",
+    theme = theme,
+    ctx = ctx,
+    axis = "x",
     width = "grow",
     height = opts.height and "grow" or #lines * h,
     measure = true,
-    scroll_x = true,
-    padding = scrolled and { left = 0, right = math.max(8, ctx.cell_w or 8) } or nil,
-    scrollbar_id = scrolled and M.SCROLLBAR or nil,
-    scrollbar_thumb_ratio = scrolled and (last - rows) / hidden or nil,
-    scrollbar_thumb_size = scrolled and rows / #transcript.lines or nil,
+    scrollbar = scrolled and {
+      id = M.SCROLLBAR,
+      ratio = (last - rows) / hidden,
+      size = rows / #transcript.lines,
+      _raw_colors = true,
+    } or nil,
+    lines,
   })
 end
 
