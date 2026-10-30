@@ -10,6 +10,8 @@ local M = {}
 local lazy = {
   badge = "hollow.ui.components.badge",
   dialog = "hollow.ui.components.dialog",
+  empty = "hollow.ui.components.empty",
+  header = "hollow.ui.components.header",
   hints = "hollow.ui.components.hints",
   icon = "hollow.ui.components.icon",
   input = "hollow.ui.components.input",
@@ -17,6 +19,7 @@ local lazy = {
   label = "hollow.ui.components.label",
   pill = "hollow.ui.components.pill",
   select = "hollow.ui.components.select",
+  stack = "hollow.ui.components.stack",
   tabs = "hollow.ui.components.tabs",
   title = "hollow.ui.components.title",
 }

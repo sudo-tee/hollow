@@ -84,6 +84,44 @@ describe("hierarchical Clay layout", function()
     assert.equals(" close", nodes[5].text)
   end)
 
+  it("composes stack, header and empty state without extra wrappers", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      counter = "#333333",
+      empty = "#444444",
+      divider = "#555555",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.stack({
+          divided = true,
+          gap = "1ch",
+          width = "grow",
+          c.header({ title = "Workspaces", prompt = true, meta = "3/12", width = "grow" }),
+          c.empty("No matches"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10 })
+    assert.equals(6, #nodes)
+    assert.equals(2, nodes[1].children)
+    assert.equals(10, nodes[1].gap)
+    assert.equals("#555555", nodes[1].border)
+    assert.equals(1, nodes[1].border_width.between_children)
+    assert.equals(3, nodes[2].children)
+    assert.equals("Workspaces:", nodes[3].text)
+    assert.equals("#222222", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(-1, nodes[4].width)
+    assert.equals("#333333", nodes[5].fg)
+    assert.equals("#444444", nodes[6].fg)
+    assert.has_error(function()
+      c.stack({ direction = "diagonal" })
+    end, "invalid stack direction")
+  end)
+
   it("renders painted atoms in two nodes with theme and prop overrides", function()
     local clicked = 0
     local theme = {
