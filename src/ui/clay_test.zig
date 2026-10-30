@@ -558,6 +558,22 @@ test "Clay paint snapping rounds edges, not origin plus size" {
     try std.testing.expectEqual(@as(f32, 0), b.height);
 }
 
+test "Clay paint scissor without axis flags clips both axes" {
+    const paint = @import("clay_paint.zig");
+    const screen: c.Clay_BoundingBox = .{ .x = 0, .y = 0, .width = 800, .height = 600 };
+    const pane: c.Clay_BoundingBox = .{ .x = 400, .y = 40, .width = 400, .height = 200 };
+    const floating = paint.scissorBounds(screen, pane, std.mem.zeroes(c.Clay_ClipRenderData));
+    try std.testing.expectEqual(pane.x, floating.x);
+    try std.testing.expectEqual(pane.y, floating.y);
+    try std.testing.expectEqual(pane.width, floating.width);
+    try std.testing.expectEqual(pane.height, floating.height);
+    const vertical = paint.scissorBounds(screen, pane, .{ .horizontal = false, .vertical = true });
+    try std.testing.expectEqual(screen.x, vertical.x);
+    try std.testing.expectEqual(screen.width, vertical.width);
+    try std.testing.expectEqual(pane.y, vertical.y);
+    try std.testing.expectEqual(pane.height, vertical.height);
+}
+
 fn debugRect(label: []const u8, index: u32, children: c_int, x: f32, y: f32, w: f32, h: f32) c.HollowClayDebugRect {
     var r = std.mem.zeroes(c.HollowClayDebugRect);
     r.id = .{ .chars = label.ptr, .length = @intCast(label.len), .isStaticallyAllocated = true };

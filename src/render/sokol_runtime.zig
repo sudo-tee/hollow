@@ -264,15 +264,10 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
             clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_START => {
                 if (depth + 1 >= clips.len) return;
                 const previous = clips[depth];
-                const clip = command.renderData.clip;
-                b = clay_paint.snap(b);
-                const x = if (clip.horizontal) @max(previous.x, b.x) else previous.x;
-                const y = if (clip.vertical) @max(previous.y, b.y) else previous.y;
-                const right = if (clip.horizontal) @min(previous.x + previous.width, b.x + b.width) else previous.x + previous.width;
-                const bottom = if (clip.vertical) @min(previous.y + previous.height, b.y + b.height) else previous.y + previous.height;
                 depth += 1;
-                clips[depth] = .{ .x = x, .y = y, .width = @max(0, right - x), .height = @max(0, bottom - y) };
-                c.sgl_scissor_rect(@intFromFloat(x), @intFromFloat(y), @intFromFloat(clips[depth].width), @intFromFloat(clips[depth].height), true);
+                clips[depth] = clay_paint.scissorBounds(previous, clay_paint.snap(b), command.renderData.clip);
+                const clip = clips[depth];
+                c.sgl_scissor_rect(@intFromFloat(clip.x), @intFromFloat(clip.y), @intFromFloat(clip.width), @intFromFloat(clip.height), true);
             },
             clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_END => {
                 depth -|= 1;
