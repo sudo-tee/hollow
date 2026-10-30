@@ -62,4 +62,33 @@ describe("UI input test suite", function()
       hollow.ui.overlay.clear()
     end)
   end)
+
+  describe("input overlay paste", function()
+    it("pastes clipboard text at the caret as a single line", function()
+      local host = require("hollow.state").get().host_api
+      local original = host.clipboard_read
+      host.clipboard_read = function()
+        return "one\r\ntwo\tthree\27\n"
+      end
+      local confirm_value = nil
+      hollow.ui.input.open({
+        prompt = "Paste test",
+        default = "[]",
+        on_confirm = function(value)
+          confirm_value = value
+        end,
+      })
+      harness.assert_true(on_key("arrow_left", 0), "input overlay should consume arrow keys")
+      harness.assert_true(on_key("v", 2), "input overlay should consume ctrl+v")
+      harness.assert_true(on_key("v", 3), "input overlay should consume ctrl+shift+v")
+      harness.assert_true(on_key("enter", 0), "input overlay should consume enter")
+      host.clipboard_read = original
+      harness.assert_equal(
+        confirm_value,
+        "[one two threeone two three]",
+        "paste should insert sanitized clipboard text at the caret"
+      )
+      hollow.ui.overlay.clear()
+    end)
+  end)
 end)

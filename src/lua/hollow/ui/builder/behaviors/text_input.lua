@@ -27,6 +27,12 @@ local function insert_text(value, cursor, text)
   return value:sub(1, cursor) .. text .. value:sub(cursor + 1), cursor + #text
 end
 
+-- Single-line field: fold line breaks/tabs to spaces and drop other control bytes.
+local function sanitize_paste(text)
+  text = text:gsub("[\r\n]+$", ""):gsub("\r\n", " "):gsub("[\r\n\t]", " ")
+  return (text:gsub("[%z\1-\31\127]", ""))
+end
+
 ---@param opts { initial?: string, on_change?: function }
 ---@return table
 function M.text_input(opts)
@@ -60,7 +66,24 @@ function M.text_input(opts)
     }
   end
 
+  function self.paste(text)
+    text = sanitize_paste(text or "")
+    if text == "" then
+      return
+    end
+    self.value, self.cursor = insert_text(self.value, self.cursor, text)
+    if self.on_change then
+      self.on_change(self.value)
+    end
+  end
+
   self.handlers = {
+    ["<C-v>|<C-S-v>|<S-insert>|<D-v>"] = function()
+      local host = require("hollow.state").get().host_api
+      if host and host.clipboard_read then
+        self.paste(host.clipboard_read())
+      end
+    end,
     arrow_left = function()
       self.cursor = math.max(0, self.cursor - 1)
     end,
