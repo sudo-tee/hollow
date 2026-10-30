@@ -122,6 +122,51 @@ describe("hierarchical Clay layout", function()
     end, "invalid stack direction")
   end)
 
+  it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()
+    local theme = {
+      fg = "#111111",
+      panel_border = "#222222",
+      scrollbar_track = "#333333",
+      scrollbar_thumb = "#444444",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.scroll({
+          id = "list",
+          axis = "both",
+          width = "grow",
+          reveal = "item",
+          measure = true,
+          padding = { x = "0.5ch", y = "0.5lh" },
+          scrollbar = { id = "bar", ratio = 0.25, size = 0.5 },
+          c.column({ id = "item", c.text("row") }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(3, #nodes)
+    assert.is_true(nodes[1].scroll)
+    assert.is_true(nodes[1].scroll_x)
+    assert.is_true(nodes[1].measure)
+    assert.equals(nodes[2].id, nodes[1].reveal)
+    assert.equals(surface.namespace .. "bar", nodes[1].scrollbar_id)
+    assert.equals(0.25, nodes[1].scrollbar_thumb_ratio)
+    assert.equals(0.5, nodes[1].scrollbar_thumb_size)
+    assert.equals("#333333", nodes[1].scrollbar_track_color)
+    assert.equals("#444444", nodes[1].scrollbar_thumb_color)
+    assert.same({ left = 5, right = 15, top = 10, bottom = 10 }, nodes[1].padding)
+    assert.has_error(function()
+      c.scroll({ axis = "y" })
+    end, "scroll requires an id")
+    assert.has_error(function()
+      c.scroll({ id = "x", axis = "z" })
+    end, "invalid scroll axis")
+    local horizontal = c.scroll({ id = "horizontal", axis = "x" })
+    assert.is_false(horizontal.scroll)
+    assert.is_true(horizontal.scroll_x)
+  end)
+
   it("renders painted atoms in two nodes with theme and prop overrides", function()
     local clicked = 0
     local theme = {
