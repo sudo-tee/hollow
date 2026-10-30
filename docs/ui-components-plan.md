@@ -353,3 +353,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   resolve units before normalization rather than modifying shared box behavior.
 - A scalar `gap(n)` has no parent-axis information. It defaults to width;
   use `gap { height = n }` for vertical gaps.
+- Existing input rendering costs two nodes per run (a container plus text),
+  not one; its total cost is `2 + 2/runs`. Keep this structure for parity.

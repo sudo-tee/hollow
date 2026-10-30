@@ -27,6 +27,49 @@ describe("Clay text-input overlay", function()
     return table.concat(text)
   end
 
+  it("supports scoped props while preserving positional input snapshots", function()
+    local c = ui.components
+    local theme = { fg = "#111111", input_bg = "#222222" }
+    local behavior = {
+      render = function(palette)
+        assert.equals(theme, palette)
+        return {
+          { text = "abc", style = { fg = "#333333" } },
+          { text = " ", style = { bg = "#444444" } },
+        }
+      end,
+    }
+    local ctx = { cell_w = 10, cell_h = 20 }
+    local serialize = require("hollow.ui.layout.serialize")
+    local legacy = serialize(c.input(behavior, theme, ctx), theme, "test:", ctx)
+    local surface = ui.layout.new({
+      theme = theme,
+      render = function()
+        return c.input({ behavior = behavior })
+      end,
+    })
+    local actual = surface:snapshot(ctx)
+    local expected = serialize(c.input(behavior, theme, ctx), theme, surface.namespace, ctx)
+    assert.same(expected, actual)
+    assert.equals(5, legacy[1].padding.left)
+    local named = ui.layout
+      .new({
+        theme = theme,
+        render = function()
+          return c.column({
+            c.input({ behavior = behavior, id = "first", boxed = false }),
+            c.input({ behavior = behavior, id = "second", style = { bg = "#555555" } }),
+          })
+        end,
+      })
+      :snapshot(ctx)
+    assert.is_nil(named[2].bg)
+    assert.matches("first:viewport$", named[3].id)
+    assert.matches("first:caret$", named[3].reveal)
+    assert.equals("#555555", named[8].bg)
+    assert.matches("second:viewport$", named[9].id)
+  end)
+
   it("composes styled inline runs with a horizontal viewport and reveal target", function()
     ui.input.open({ prompt = "Rename", default = "world", width = 50 })
     assert.is_true(ui._overlay_state()[1].clay)
