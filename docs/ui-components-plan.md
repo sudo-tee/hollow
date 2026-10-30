@@ -364,3 +364,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   snapshot; colored key/description runs remain a separate visual change.
 - Select scrollbar track uses `list_row.raw_paint`, not `paint`; retain its
   legacy fallback during migration to avoid an unreviewed color change.
+- Activity details supplies its own scrollbar colors; preserve those overrides
+  when moving its viewport to `scroll`.

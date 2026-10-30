@@ -39,8 +39,13 @@ return function(value)
     options.scrollbar_id = bar.id
     options.scrollbar_thumb_ratio = bar.ratio
     options.scrollbar_thumb_size = bar.size
-    options.scrollbar_track_color = paint.scrollbar_track_color
-    options.scrollbar_thumb_color = paint.scrollbar_thumb_color
+    if bar._raw_colors then
+      options.scrollbar_track_color = bar.track_color
+      options.scrollbar_thumb_color = bar.thumb_color
+    else
+      options.scrollbar_track_color = bar.track_color or paint.scrollbar_track_color
+      options.scrollbar_thumb_color = bar.thumb_color or paint.scrollbar_thumb_color
+    end
     local padding = options.padding
     if padding == nil and type(options.style) == "table" then
       padding = options.style.padding

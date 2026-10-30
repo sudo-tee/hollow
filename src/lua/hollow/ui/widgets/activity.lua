@@ -668,21 +668,22 @@ function ui.activity.open(opts)
       local scrollbar = detail_rows[1] or {}
       return component.sections({
         line(header),
-        c.column(body, {
+        c.scroll({
           id = "activity:details",
+          theme = theme,
+          ctx = ctx,
           width = "grow",
           height = "grow",
-          scroll = true,
           measure = true,
-          padding = {
-            left = 0,
-            right = scrollbar.scrollbar_track and math.max(8, ctx.cell_w or 8) or 0,
-          },
-          scrollbar_id = scrollbar.scrollbar_track and scrollbar.scrollbar_id or nil,
-          scrollbar_thumb_ratio = scrollbar.scrollbar_thumb_ratio,
-          scrollbar_thumb_size = scrollbar.scrollbar_thumb_size,
-          scrollbar_track_color = scrollbar.scrollbar_track_color,
-          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+          scrollbar = scrollbar.scrollbar_track and {
+            id = scrollbar.scrollbar_id,
+            ratio = scrollbar.scrollbar_thumb_ratio,
+            size = scrollbar.scrollbar_thumb_size,
+            track_color = scrollbar.scrollbar_track_color,
+            thumb_color = scrollbar.scrollbar_thumb_color,
+            _raw_colors = true,
+          } or nil,
+          body,
         }),
         hints(detail_hints),
       }, theme, cell_h),
@@ -782,9 +783,6 @@ function ui.activity.open(opts)
       )
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
-    local scrollbar = viewport.show_scrollbar
-        and shared.serialize_row_paint({ scrollbar_track = true }, theme)
-      or {}
     local children = { line(render_header()) }
     if searching then
       children[#children + 1] = c.row({
@@ -792,21 +790,23 @@ function ui.activity.open(opts)
         require("hollow.ui.components.input")(filter, theme, ctx, true),
       }, { width = "grow" })
     end
-    children[#children + 1] = c.column(items, {
+    children[#children + 1] = c.scroll({
       id = "activity:viewport",
+      theme = theme,
+      ctx = ctx,
+      _legacy_paint = true,
       width = "grow",
       height = "grow",
-      scroll = true,
-      scroll_x = true,
+      axis = "both",
       measure = true,
       reveal = target and ("activity:item:" .. tostring(target.id)) or nil,
       reveal_start = reveal_start,
-      padding = { left = 0, right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0 },
-      scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
-      scrollbar_thumb_ratio = viewport.thumb_ratio,
-      scrollbar_thumb_size = viewport.thumb_size,
-      scrollbar_track_color = scrollbar.scrollbar_track_color,
-      scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+      scrollbar = viewport.show_scrollbar and {
+        id = viewport.scrollbar_id,
+        ratio = viewport.thumb_ratio,
+        size = viewport.thumb_size,
+      } or nil,
+      items,
     })
     children[#children + 1] = copy_feedback
         and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))
