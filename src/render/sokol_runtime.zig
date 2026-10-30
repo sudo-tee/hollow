@@ -342,6 +342,14 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
             );
         }
         finalizeAndDrawOverlayScrollbars(g_clay_surface.owner_index);
+        for (nodes[0..g_clay_surface.len], 0..) |node, index| {
+            if (index != 0 and !node.scroll and !node.scroll_x) continue;
+            if (node.id.length == 0) continue;
+            const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
+            if (!element.found) continue;
+            const b = element.boundingBox;
+            cacheOverlayScrollRegion(node.id.chars[0..@intCast(node.id.length)], b.x + offset_x, b.y + offset_y, b.width, b.height);
+        }
         if (g_widget_render_ctx) |ctx| {
             for (nodes[0..g_clay_surface.len], 0..) |node, index| {
                 if (index != 0 and !node.clickable) continue;
@@ -584,6 +592,13 @@ var g_overlay_scrollbar_cache: struct {
     scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = @splat(.{}),
 } = .{};
 var g_overlay_scrollbar_cached_ids: [MAX_OVERLAY_SCROLLBARS][ui_semantics.max_id_len]u8 = undefined;
+// Wheel-only targets: Clay panels and scroll viewports. Kept apart from the
+// hit cache so non-clickable regions never become click/hover/a11y targets.
+var g_overlay_scroll_cache: struct {
+    count: usize = 0,
+    regions: [MAX_OVERLAY_SCROLL_REGIONS]CachedOverlayHitRegion = @splat(.{}),
+} = .{};
+var g_overlay_scroll_cached_ids: [MAX_OVERLAY_SCROLL_REGIONS][ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
 var g_overlay_scrollbar_drag_grab_y: f32 = 0;
@@ -957,6 +972,7 @@ const BarHit = struct {
 const MAX_BAR_HIT_REGIONS = 256;
 const MAX_OVERLAY_HIT_REGIONS = 128;
 const MAX_OVERLAY_SCROLLBARS = 16;
+const MAX_OVERLAY_SCROLL_REGIONS = 32;
 
 const CachedOverlayHitRegion = struct {
     x: f32 = 0,
@@ -1634,6 +1650,80 @@ fn cacheOverlayHitRegionWithRole(id: []const u8, label: []const u8, x: f32, y: f
             .height = height,
         });
     }
+}
+
+fn cacheOverlayScrollRegion(id: []const u8, x: f32, y: f32, width: f32, height: f32) void {
+    if (id.len == 0 or id.len > ui_semantics.max_id_len or width <= 0 or height <= 0) return;
+    const cache = &g_overlay_scroll_cache;
+    if (cache.count >= cache.regions.len) return;
+    const owned_id = g_overlay_scroll_cached_ids[cache.count][0..id.len];
+    fastmem.copy(u8, owned_id, id);
+    cache.regions[cache.count] = .{
+        .x = x,
+        .width = width,
+        .y = y,
+        .height = height,
+        .node_id = owned_id,
+        .stack_index = g_overlay_render_stack_index,
+    };
+    cache.count += 1;
+}
+
+/// Deepest scroll region under the pointer. Regions are cached in layout
+/// preorder, so later entries are descendants or later siblings.
+fn hitTestOverlayScrollRegion(mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    const cache = &g_overlay_scroll_cache;
+    var best: ?OverlayHit = null;
+    var idx = cache.count;
+    while (idx > 0) {
+        idx -= 1;
+        const region = cache.regions[idx];
+        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
+        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
+        const id = region.node_id orelse continue;
+        if (best == null or region.stack_index > best.?.stack_index) {
+            best = .{ .id = id, .stack_index = region.stack_index };
+        }
+    }
+    return best;
+}
+
+/// Clickable rows are the most specific wheel target within an overlay, but a
+/// scroll region on a higher overlay wins over clickable rows beneath it.
+fn hitTestOverlayWheel(mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    const clickable = hitTestOverlay(mouse_x, mouse_y);
+    const region = hitTestOverlayScrollRegion(mouse_x, mouse_y);
+    if (clickable) |hit| {
+        if (region) |viewport| {
+            if (viewport.stack_index > hit.stack_index) return viewport;
+        }
+        return hit;
+    }
+    return region;
+}
+
+test "overlay wheel falls back to scroll regions without clickable rows" {
+    g_overlay_hit_cache = .{ .enabled = true };
+    g_overlay_scroll_cache = .{};
+    g_overlay_render_stack_index = 1;
+    defer {
+        g_overlay_hit_cache = .{};
+        g_overlay_scroll_cache = .{};
+        g_overlay_render_stack_index = 0;
+    }
+    try std.testing.expect(hitTestOverlayWheel(10, 10) == null);
+    var id = "layout:1:root".*;
+    cacheOverlayScrollRegion(&id, 0, 0, 100, 100);
+    @memset(&id, 'x');
+    cacheOverlayScrollRegion("layout:1:output", 0, 10, 100, 20);
+    try std.testing.expectEqualStrings("layout:1:root", hitTestOverlayWheel(5, 50).?.id);
+    try std.testing.expectEqualStrings("layout:1:output", hitTestOverlayWheel(5, 15).?.id);
+    try std.testing.expect(hitTestOverlayWheel(150, 15) == null);
+    cacheOverlayHitRegion("layout:1:row", "", 0, 10, 100, 5);
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlayWheel(5, 12).?.id);
+    g_overlay_render_stack_index = 2;
+    cacheOverlayScrollRegion("layout:2:root", 0, 0, 100, 100);
+    try std.testing.expectEqualStrings("layout:2:root", hitTestOverlayWheel(5, 12).?.id);
 }
 
 test "overlay hit regions retain IDs when segment scratch storage is reused" {
@@ -2459,6 +2549,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
     g_overlay_hit_cache = .{ .enabled = true };
     g_overlay_scrollbar_cache = .{};
+    g_overlay_scroll_cache = .{};
 
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
@@ -6136,7 +6227,7 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
     if (bottomBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
 
-    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
+    if (hitTestOverlayWheel(event.mouse_x, event.mouse_y)) |hit| {
         if (event.scroll_y == 0) return;
         app.emitLuaBuiltInEvent("overlay:scroll", .{ .overlay_scroll = .{
             .id = hit.id,
