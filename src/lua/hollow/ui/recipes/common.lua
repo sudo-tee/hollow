@@ -9,7 +9,7 @@ return {
   empty = { fg = "empty" },
   counter = { fg = "counter" },
   key_hint = { fg = "panel_border", bold = true },
-  pill = { radius = 4, padding = { x = 4 } },
-  badge = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } },
-  kbd = { fg = "fg", bg = "input_bg", radius = 3, padding = { x = 4 } },
+  pill = require("hollow.ui.recipes.pill").slots.root,
+  badge = require("hollow.ui.recipes.badge").slots.root,
+  kbd = require("hollow.ui.recipes.kbd").slots.root,
 }

@@ -60,6 +60,58 @@ describe("hierarchical Clay layout", function()
     end, "unknown icon: unknown")
   end)
 
+  it("renders painted atoms in two nodes with theme and prop overrides", function()
+    local clicked = 0
+    local theme = {
+      fg = "#111111",
+      panel_bg = "#222222",
+      input_bg = "#333333",
+      styles = { badge = { root = { radius = 7, fg = "fg" } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.badge({
+            text = "busy",
+            color = "#444444",
+            id = "badge",
+            label = "status",
+            on_click = function()
+              clicked = clicked + 1
+            end,
+          }),
+          c.pill({ "domain", fg = "#555555", bg = "#666666", width = 30 }),
+          c.kbd({
+            key = "<CR>",
+            style = { bg = "#777777" },
+            disabled = true,
+            id = "key",
+            on_click = function()
+              error("disabled")
+            end,
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals(7, nodes[2].radius)
+    assert.equals("#444444", nodes[2].bg)
+    assert.equals("status", nodes[2].label)
+    assert.equals("#111111", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(30, nodes[4].width)
+    assert.equals("#666666", nodes[4].bg)
+    assert.equals("#555555", nodes[5].fg)
+    assert.equals("#777777", nodes[6].bg)
+    assert.is_nil(nodes[6].clickable)
+    local key, mods = hollow.keymap.parse_chord("<CR>")
+    assert.equals(hollow.keymap.format_chord(key, mods), nodes[7].text)
+    surface:dispatch(nodes[2].id)
+    assert.equals(1, clicked)
+  end)
+
   it("resolves cell units and reports invalid fields", function()
     local surface = layout.new({
       render = function()
