@@ -147,6 +147,30 @@ describe("Clay Lua REPL", function()
     assert.is_falsy(text():find("123", 1, true))
   end)
 
+  it("saves history and restores it after a restart", function()
+    ui.lua_repl.open()
+    paste("1 + 1")
+    key("enter")
+    paste("if true then\n  print('two')\nend")
+    key("enter")
+    local path, saved
+    for name, contents in pairs(env.recorded.files) do
+      if name:match("lua_repl_history$") then
+        path, saved = name, contents
+      end
+    end
+    assert.equals("1 + 1\nif true then\\n  print('two')\\nend\n", saved)
+
+    env = harness.boot()
+    ui = env.hollow.ui
+    env.recorded.files[path] = saved
+    ui.lua_repl.open()
+    key("arrow_up")
+    assert.equals("> if true then..   print('two').. end ", input_text())
+    key("arrow_up")
+    assert.equals("> 1 + 1 ", input_text())
+  end)
+
   it("edits UTF-8 without splitting codepoints and swallows unknown shortcuts", function()
     ui.lua_repl.open()
     paste("'é🙂'")

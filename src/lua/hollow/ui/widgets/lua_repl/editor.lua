@@ -1,8 +1,9 @@
 -- REPL input: draft text, UTF-8 aware cursor and command history.
--- The draft and history survive closing the console.
+-- The draft survives closing the console; history also survives restarts.
+local history_file = require("hollow.ui.widgets.lua_repl.history_file")
 local M = { text = "", cursor = 0 }
 local MAX_HISTORY = 100
-local history, history_index, saved = {}, 1, ""
+local history, history_index, saved = nil, 1, ""
 
 local function continuation_byte(pos)
   local byte = M.text:byte(pos + 1)
@@ -74,8 +75,15 @@ function M.lines()
   return lines
 end
 
--- Starts history browsing from the current draft.
+-- Starts history browsing from the current draft. Loads saved history the
+-- first time the console opens.
 function M.start_history()
+  if not history then
+    history = history_file.load()
+    while #history > MAX_HISTORY do
+      table.remove(history, 1)
+    end
+  end
   history_index, saved = #history + 1, M.text
 end
 
@@ -94,6 +102,7 @@ function M.commit()
     if #history > MAX_HISTORY then
       table.remove(history, 1)
     end
+    history_file.save(history)
   end
   M.clear()
   history_index, saved = #history + 1, ""
