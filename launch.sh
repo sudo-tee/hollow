@@ -95,6 +95,9 @@ if [[ $BUILD -eq 1 ]]; then
       BUILD_ARGS+=("gui")
     fi
     BUILD_ARGS+=("-Dtarget=$TARGET" "-Ddev")
+    if [[ $PDB -eq 1 ]]; then
+      BUILD_ARGS+=("-Dpdb")
+    fi
   else
     echo "[launch] optimize mode: $OPTIMIZE"
     BUILD_ARGS+=("-Dtarget=$TARGET" "-Doptimize=$OPTIMIZE")

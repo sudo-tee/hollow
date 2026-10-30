@@ -74,6 +74,9 @@ grep -Fxq 'x86_64-windows-gnu dev' "$REPO/zig-out/.launch-build-mode"
 bash "$REPO/launch.sh" --build-only --dev --install
 grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Ddev' "$TEST_LOG"
 rm -rf "$INSTALL_DEST"
+: > "$TEST_LOG"
+bash "$REPO/launch.sh" --build-only --dev --pdb
+grep -Fxq 'build build gui -Dtarget=x86_64-windows-gnu -Ddev -Dpdb' "$TEST_LOG"
 
 # Normal development launches directly from zig-out/bin and forwards arguments.
 : > "$TEST_LOG"

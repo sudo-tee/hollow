@@ -97,8 +97,10 @@ pub fn build(b: *std.Build) void {
     const dev = b.option(bool, "dev", "Build app code in Debug and C dependencies in ReleaseFast") orelse false;
     const optimize: std.builtin.OptimizeMode = if (dev) .Debug else requested_optimize;
     const dep_optimize: std.builtin.OptimizeMode = if (dev) .ReleaseFast else optimize;
-    @import("src/cli_build_steps.zig").add(b, target, optimize);
-    addAgentSteps(b, target, optimize);
+    // The CLI and guest agents are installed and deployed, so dev mode keeps
+    // them ReleaseFast with the other dependencies.
+    @import("src/cli_build_steps.zig").add(b, target, dep_optimize);
+    addAgentSteps(b, target, dep_optimize);
     // Skip GUI graph configuration. build-agent.zig also avoids resolving the
     // main package's GUI dependency manifest on a minimal checkout.
     if (b.option(bool, "agent-only", "Configure only the standalone Linux agent") orelse false) return;

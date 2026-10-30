@@ -19,6 +19,7 @@ for arg in "$@"; do
   case "$arg" in
   --force-build) FORCE_BUILD=1 ;;
   --release) DEV=0 ;;
+  --dev) DEV=1 ;;
   --debug)
     DEV=0
     OPTIMIZE="Debug"
