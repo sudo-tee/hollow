@@ -145,6 +145,31 @@ describe("hierarchical Clay layout", function()
     assert.is_nil(node.wrap)
   end)
 
+  it("supports inline header metadata without adding a spacer or theme paint", function()
+    local theme = { fg = "#111111", styles = { label = { root = { bold = true } } } }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.header({
+          title = "Filter",
+          prompt = true,
+          meta = " 1/2",
+          meta_align = "inline",
+          title_style = { fg = "#222222" },
+          meta_style = { fg = "#333333" },
+          _legacy_style = true,
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(3, #nodes)
+    assert.equals("Filter:", nodes[2].text)
+    assert.equals("#222222", nodes[2].fg)
+    assert.is_nil(nodes[2].bold)
+    assert.equals(" 1/2", nodes[3].text)
+    assert.equals("#333333", nodes[3].fg)
+  end)
+
   it("renders panel chrome and inset with unit-aware padding", function()
     local theme = { fg = "#111111", panel_bg = "#222222", panel_border = "#333333", radius = 3 }
     local surface = layout.new({

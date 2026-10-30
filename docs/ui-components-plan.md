@@ -366,3 +366,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   legacy fallback during migration to avoid an unreviewed color change.
 - Activity details supplies its own scrollbar colors; preserve those overrides
   when moving its viewport to `scroll`.
+- Select header metadata is inline rather than right-aligned. Preserve its
+  two text nodes and widget-specific styles during the refactor.

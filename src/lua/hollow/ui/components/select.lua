@@ -287,14 +287,20 @@ function M.render(opts, theme, ctx)
       and ((opts.id_prefix or "select") .. ":item:" .. entries[target].source_index)
     or nil
   local children = {
-    c.row({
-      c.text((opts.prompt or "Select") .. ":", s.title, { wrap = "none" }),
-      c.text(
-        opts.counter or (#entries > 0 and string.format("   %d/%d", opts.selected, #entries) or ""),
-        s.counter,
-        { wrap = "none" }
-      ),
-    }, { id = "select:header", width = "grow", height = cell_h, scroll_x = true }),
+    c.header({
+      id = "select:header",
+      width = "grow",
+      height = cell_h,
+      scroll_x = true,
+      title = opts.prompt or "Select",
+      prompt = true,
+      meta = opts.counter
+        or (#entries > 0 and string.format("   %d/%d", opts.selected, #entries) or ""),
+      meta_align = "inline",
+      title_style = s.title,
+      meta_style = s.counter,
+      _legacy_style = true,
+    }),
     c.row({
       c.text("Filter: ", s.title, { wrap = "none" }),
       input_field(opts.filter, theme, ctx, true),
