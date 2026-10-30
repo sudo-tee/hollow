@@ -2256,19 +2256,21 @@ local workspace = {}
 ---@field kbd HollowStyle
 
 --- Hierarchical Clay layout; inline row/column helpers remain for bars and rich labels.
+---@alias HollowUiLayoutLength number|string Pixel number or cell unit string such as "1ch" or "0.5lh".
+---@alias HollowUiLayoutPadding HollowUiLayoutLength|HollowUiLayoutLength[]|{x?: HollowUiLayoutLength, y?: HollowUiLayoutLength, horizontal?: HollowUiLayoutLength, vertical?: HollowUiLayoutLength, left?: HollowUiLayoutLength, right?: HollowUiLayoutLength, top?: HollowUiLayoutLength, bottom?: HollowUiLayoutLength}|false
 ---@class HollowUiLayoutOptions
 ---@field id? string Required for clickable nodes; unique within the surface.
 ---@field label? string Automation label for clickable containers.
 ---@field role? 'button'|'listitem' Automation role for clickable containers.
----@field width? number|'fit'|'grow' Pixel count, content size, or remaining space.
----@field height? number|'fit'|'grow'
----@field min_width? number Minimum pixel width for fit/grow sizing.
----@field max_width? number Maximum pixel width for fit/grow sizing.
----@field min_height? number Minimum pixel height for fit/grow sizing.
----@field max_height? number Maximum pixel height for fit/grow sizing.
+---@field width? HollowUiLayoutLength|'fit'|'grow' Pixel count, cell unit, content size, or remaining space.
+---@field height? HollowUiLayoutLength|'fit'|'grow'
+---@field min_width? HollowUiLayoutLength
+---@field max_width? HollowUiLayoutLength
+---@field min_height? HollowUiLayoutLength
+---@field max_height? HollowUiLayoutLength
 ---@field border_width? number|{left?: number, right?: number, top?: number, bottom?: number, between_children?: number} Pixel border widths; border color comes from style.border.
----@field padding? HollowUiBoxValue
----@field gap? number
+---@field padding? HollowUiLayoutPadding
+---@field gap? HollowUiLayoutLength
 ---@field style? HollowUiNodeStyle
 ---@field scroll? boolean Vertical scrolling.
 ---@field scroll_x? boolean Horizontal scrolling; children may exceed the viewport width.
@@ -2293,6 +2295,103 @@ local workspace = {}
 ---@field text? string
 ---@field value? number Progress value.
 
+---@class HollowUiComponentProps: HollowUiLayoutOptions
+---@field theme? HollowUiTheme Override the render-scope palette.
+---@field disabled? boolean
+---@field variant? string
+---@field size? string
+---@field selected? boolean
+---@field hovered? boolean
+
+---@class HollowUiLabelProps: HollowUiLayoutTextOptions
+---@field [1]? any
+---@field text? any
+---@field tone? 'default'|'muted'|'title'|'empty'|'counter'
+---@field theme? HollowUiTheme
+---@field style? HollowUiNodeStyle
+
+---@class HollowUiTitleProps: HollowUiLabelProps
+
+---@class HollowUiEmptyProps: HollowUiLabelProps
+
+---@class HollowUiBadgeProps: HollowUiComponentProps
+---@field [1]? string
+---@field text? string
+---@field color? string
+---@field wrap? 'words'|'newlines'|'none'
+
+---@class HollowUiPillProps: HollowUiComponentProps
+---@field [1]? string
+---@field text? string
+---@field fg? string
+---@field bg? string
+
+---@class HollowUiKbdProps: HollowUiComponentProps
+---@field [1]? string
+---@field key? string
+
+---@class HollowUiIconProps: HollowUiLabelProps
+---@field name string
+
+---@class HollowUiButtonComponentProps: HollowUiButtonOptions, HollowUiComponentProps
+---@field appearance? 'solid'|'quiet'
+
+---@class HollowUiHintsProps: HollowUiComponentProps
+---@field [integer] { [1]: string, [2]: string }
+---@field separator? string
+---@field trailing_separator? boolean
+---@field plain? boolean One text node instead of separate key and description nodes.
+---@field key_style? HollowUiNodeStyle
+---@field description_style? HollowUiNodeStyle
+---@field separator_style? HollowUiNodeStyle
+
+---@class HollowUiInputComponentProps: HollowUiComponentProps
+---@field behavior HollowUiTextInput
+---@field boxed? boolean Defaults to true.
+
+---@class HollowUiTabComponentItem
+---@field id string
+---@field label string
+---@field badge? string|number|{text: string|number, color?: string}
+---@field disabled? boolean
+---@field style? HollowUiNodeStyle
+
+---@class HollowUiTabsProps: HollowUiComponentProps
+---@field tabs HollowUiTabComponentItem[]
+---@field active? string
+---@field on_select? fun(id: string)
+
+---@class HollowUiStackProps: HollowUiComponentProps
+---@field [integer] HollowUiLayoutNode|table|boolean
+---@field direction? 'row'|'column'
+---@field divided? boolean
+
+---@class HollowUiScrollbarProps
+---@field id string
+---@field ratio? number
+---@field size? number
+---@field track_color? string
+---@field thumb_color? string
+
+---@class HollowUiScrollProps: HollowUiComponentProps
+---@field [integer] HollowUiLayoutNode|table|boolean
+---@field id string
+---@field axis? 'x'|'y'|'both'
+---@field scrollbar? HollowUiScrollbarProps
+
+---@class HollowUiPanelProps: HollowUiComponentProps
+---@field [integer] HollowUiLayoutNode|table|boolean
+---@field chrome? HollowUiChrome|boolean
+---@field inset? 'overlay'|'modal'|'none'
+
+---@class HollowUiHeaderProps: HollowUiComponentProps
+---@field title? string
+---@field meta? string|number|HollowUiLayoutNode|table
+---@field meta_align? 'inline'|'end'
+---@field prompt? boolean
+---@field title_style? HollowUiNodeStyle
+---@field meta_style? HollowUiNodeStyle
+
 --- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
 ---@class HollowUiLayout
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
@@ -2307,10 +2406,28 @@ local workspace = {}
 ---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field text fun(value: any, style?: HollowUiNodeStyle, opts?: HollowUiLayoutTextOptions): HollowUiLayoutNode
----@field button fun(opts?: HollowUiButtonOptions): HollowUiLayoutNode
+---@field spacer fun(): HollowUiLayoutNode One growing container.
+---@field gap fun(value: HollowUiLayoutLength|HollowUiLayoutOptions): HollowUiLayoutNode
+---@field stack fun(props: HollowUiStackProps): HollowUiLayoutNode
+---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
+---@field label fun(value: string|HollowUiLabelProps): HollowUiLayoutNode
+---@field title fun(value: string|HollowUiTitleProps): HollowUiLayoutNode
+---@field empty fun(value: string|HollowUiEmptyProps): HollowUiLayoutNode
+---@field badge fun(value: string|HollowUiBadgeProps): HollowUiLayoutNode
+---@field pill fun(value: string|HollowUiPillProps): HollowUiLayoutNode
+---@field kbd fun(value: string|HollowUiKbdProps): HollowUiLayoutNode
+---@field icon fun(value: string|HollowUiIconProps): HollowUiLayoutNode
+---@field button fun(opts?: HollowUiButtonComponentProps): HollowUiLayoutNode
+---@field hints fun(props: HollowUiHintsProps): HollowUiLayoutNode
+---@field tabs fun(props: HollowUiTabsProps): HollowUiLayoutNode
+---@field panel fun(props: HollowUiPanelProps): HollowUiLayoutNode
+---@field header fun(props: HollowUiHeaderProps): HollowUiLayoutNode
+---@field when fun(cond: any, then_: any, else_?: any): any
+---@field each fun(list: table|nil, fn: fun(item: any, index: integer): any): table
+---@field join fun(items: table, sep: any): table
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field dialog fun(opts: table, theme: HollowUiTheme, ctx: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
----@field input fun(input: HollowUiTextInput, theme: HollowUiTheme, ctx: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
+---@field input fun(input: HollowUiInputComponentProps|HollowUiTextInput, theme?: HollowUiTheme, ctx?: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
 ---@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
 ---@field demo fun()
 
