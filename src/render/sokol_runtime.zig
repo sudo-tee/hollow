@@ -33,6 +33,7 @@ const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
 const color_math = @import("color_math.zig");
+const rounded_border = @import("rounded_border.zig");
 const text_width = @import("../text_width.zig");
 const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
@@ -2021,42 +2022,33 @@ fn drawRoundedRectOutline(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness
         return;
     }
 
-    const inner_w = w - thickness * 2.0;
-    const inner_h = h - thickness * 2.0;
-    const inner_radius = @max(@as(f32, 0.0), clamped_radius - thickness);
-    const has_inner = inner_w > 0 and inner_h > 0;
-
-    const row_count: usize = @max(1, @as(usize, @intFromFloat(@ceil(h))));
-    var row: usize = 0;
-    while (row < row_count) : (row += 1) {
-        const row_y = y + @as(f32, @floatFromInt(row));
-        const row_h = @min(@as(f32, 1.0), y + h - row_y);
-        if (row_h <= 0) break;
-
-        const sample_y = @as(f32, @floatFromInt(row)) + row_h * 0.5;
-        const outer_inset = @ceil(roundedRectRowInset(h, clamped_radius, sample_y));
-        const outer_x = x + outer_inset;
-        const outer_w = w - outer_inset * 2.0;
-        if (outer_w <= 0) continue;
-
-        if (!has_inner or sample_y <= thickness or sample_y >= h - thickness) {
-            drawBorderRect(outer_x, row_y, outer_w, row_h, r, g, b, a);
-            continue;
-        }
-
-        const inner_sample_y = sample_y - thickness;
-        const inner_inset = thickness + @ceil(roundedRectRowInset(inner_h, inner_radius, inner_sample_y));
-        const left_w = inner_inset - outer_inset;
-        if (left_w > 0) {
-            drawBorderRect(outer_x, row_y, left_w, row_h, r, g, b, a);
-        }
-
-        const right_x = x + w - inner_inset;
-        const right_w = x + w - outer_inset - right_x;
-        if (right_w > 0) {
-            drawBorderRect(right_x, row_y, right_w, row_h, r, g, b, a);
-        }
+    if (thickness * 2 >= @min(w, h)) {
+        drawRoundedRect(x, y, w, h, clamped_radius, r, g, b, a);
+        return;
     }
+
+    const mesh = rounded_border.Border.init(w, h, clamped_radius, thickness);
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+    const af = @as(f32, @floatFromInt(a)) / 255.0;
+    if (g_rect_pip.id != 0) c.sgl_load_pipeline(g_rect_pip);
+    c.sgl_begin_quads();
+    var previous = mesh.sample(mesh.count() - 1);
+    for (0..mesh.count()) |index| {
+        const current = mesh.sample(index);
+        for (0..3) |band| {
+            const points = [4]rounded_border.Point{ previous.points[band], current.points[band], current.points[band + 1], previous.points[band + 1] };
+            const coverage = [4]f32{ previous.coverage[band], current.coverage[band], current.coverage[band + 1], previous.coverage[band + 1] };
+            for (points, coverage) |point, opacity| {
+                c.sgl_c4f(rf, gf, bf, af * opacity);
+                c.sgl_v2f(x + point.x, y + point.y);
+            }
+        }
+        previous = current;
+    }
+    c.sgl_end();
+    c.sgl_load_default_pipeline();
 }
 
 fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {

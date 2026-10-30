@@ -60,6 +60,36 @@ Input checksum, byte count, grid dimensions, frame count, and chunk size identif
 
 Use `--chunk-bytes 16384`, `--chunk-bytes 65536`, and the default `--chunk-bytes 393216` when comparing parser behavior.
 
+## Rounded border CPU benchmark
+
+```sh
+python3 scripts/bench-rounded-borders.py --iterations 8192
+```
+
+Extracts the old outline function from revision `4a4775d` (`--baseline` overrides
+this) and the new function from the working tree. Both use the real Sokol GL
+implementation with its dummy GPU backend, identical blending, and batches of
+16 borders at fractional positions. ReleaseFast compilation, setup and warmup
+are outside timing. Nine samples alternate old/new order; JSON reports median
+CPU time per border, recorded vertices, and draw commands. Timed work includes
+geometry generation, vertex/command recording, and buffer rewind via `sg_commit`.
+Buffer-capacity errors are checked on warmup and count-verification batches.
+
+Example measurement, 2026-10-30, Ryzen 7 PRO 8840HS under WSL, Zig 0.17.0:
+
+| Border (width × height, radius, thickness) | Old µs | AA µs | Old / AA | Vertices old → AA |
+| --- | ---: | ---: | ---: | ---: |
+| Tab (180 × 28, 6, 1) | 1.27 | 1.29 | 0.98× | 324 → 360 |
+| Toast (220 × 44, 6, 2) | 1.97 | 1.30 | 1.52× | 504 → 360 |
+| Large-radius toast (220 × 44, 16, 2) | 2.10 | 2.30 | 0.92× | 504 → 648 |
+| Dialog (768 × 480, 8, 1) | 22.09 | 2.42 | 9.12× | 5,748 → 648 |
+| Tall panel (768 × 900, 8, 2) | 41.98 | 2.38 | 17.66× | 10,776 → 648 |
+
+Both paths coalesce into one draw command per batch: the improvement is reduced
+CPU recording and geometry, not fewer GPU draw calls. Small borders can cost
+slightly more, especially with larger radii. These headless measurements do
+not measure GPU blending/rasterization, real frame times, or application FPS.
+
 ## Picker Lua snapshot benchmark
 
 Run `luajit scripts/bench-pickers.lua 10` from the repository root, with the
