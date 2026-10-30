@@ -72,7 +72,9 @@ return function(opts)
     style = { bg = "#1b1d2b", border = themes[theme_index].accent, alpha = 240 },
     render = function(ctx)
       local accent = themes[theme_index].accent
-      local rows = {
+      local workspaces = ctx.term.workspaces or {}
+      local tabs = ctx.term.tabs or {}
+      return ui.column({
         ui.row({
           ui.text("◆ ", { fg = accent }),
           ui.text("HOLLOW", { fg = C.fg, bold = true }),
@@ -84,82 +86,89 @@ return function(opts)
           end),
         }),
         ui.divider(C.dim),
-        heading("WORKSPACES"),
-      }
 
-      for _, ws in ipairs(ctx.term.workspaces or {}) do
-        local active = ws.is_active
-        rows[#rows + 1] = ui.row({
-          ui.text(active and "▌" or " ", { fg = accent }),
-          chip("ws:" .. ws.index, tostring(ws.index) .. " " .. tostring(ws.name), {
-            fg = active and accent or C.fg,
-            bg = active and C.hover or C.chip,
-            bold = active,
-          }, function()
-            hollow.term.switch_workspace(ws.index)
+        ui.when(#workspaces > 0, function()
+          return {
+            heading("WORKSPACES"),
+            ui.each(workspaces, function(ws)
+              local active = ws.is_active
+              return ui.row({
+                ui.text(ui.when(active, "▌", " "), { fg = accent }),
+                chip("ws:" .. ws.index, tostring(ws.index) .. " " .. tostring(ws.name), {
+                  fg = ui.when(active, accent, C.fg),
+                  bg = ui.when(active, C.hover, C.chip),
+                  bold = active,
+                }, function()
+                  hollow.term.switch_workspace(ws.index)
+                end),
+              })
+            end),
+            blank(),
+          }
+        end),
+
+        ui.when(#tabs > 0, function()
+          return {
+            heading("TABS"),
+            ui.each(tabs, function(tab)
+              return ui.row({
+                ui.text(ui.when(tab.is_active, "▸ ", "  "), { fg = C.pink }),
+                chip("tab:" .. tab.id, ui.when(tab.title ~= "", tab.title, "tab " .. tab.index), {
+                  fg = ui.when(tab.is_active, C.fg, C.muted),
+                  bg = "#1b1d2b",
+                  bold = tab.is_active,
+                }, function()
+                  hollow.term.focus_tab(tab.id)
+                end),
+              })
+            end),
+            blank(),
+          }
+        end),
+
+        heading("ACTIONS"),
+        ui.row({
+          chip("new-tab", "+ tab", { fg = C.green }, function()
+            hollow.term.new_tab()
           end),
-        })
-      end
-
-      rows[#rows + 1] = blank()
-      rows[#rows + 1] = heading("TABS")
-      for _, tab in ipairs(ctx.term.tabs or {}) do
-        local title = tab.title ~= "" and tab.title or ("tab " .. tab.index)
-        rows[#rows + 1] = ui.row({
-          ui.text(tab.is_active and "▸ " or "  ", { fg = C.pink }),
-          chip("tab:" .. tab.id, title, {
-            fg = tab.is_active and C.fg or C.muted,
-            bg = "#1b1d2b",
-            bold = tab.is_active,
-          }, function()
-            hollow.term.focus_tab(tab.id)
+          ui.text(" "),
+          chip("new-ws", "+ workspace", { fg = C.green }, function()
+            hollow.term.new_workspace()
           end),
-        })
-      end
-
-      rows[#rows + 1] = blank()
-      rows[#rows + 1] = heading("ACTIONS")
-      rows[#rows + 1] = ui.row({
-        chip("new-tab", "+ tab", { fg = C.green }, function()
-          hollow.term.new_tab()
-        end),
-        ui.text(" "),
-        chip("new-ws", "+ workspace", { fg = C.green }, function()
-          hollow.term.new_workspace()
-        end),
-      })
-      rows[#rows + 1] = ui.row({
-        chip("count", "clicked " .. clicks, { fg = C.yellow }, function()
-          clicks = clicks + 1
-        end),
-        ui.text(" "),
-        chip("theme", "theme: " .. themes[theme_index].name, { fg = accent }, function()
-          theme_index = theme_index % #themes + 1
-          widget.style.border = themes[theme_index].accent
-        end),
-      })
-      rows[#rows + 1] = ui.row({
-        chip("notify", "toast", { fg = C.pink }, function(event)
-          ui.notify.show("Hello from the sidebar" .. (event.shifted and " (shift)" or ""), {
-            title = "sidebar-demo",
-          })
-        end),
-        ui.text(" "),
-        -- No id: gets a sidebar:auto:N id from its handler.
-        ui.text("auto id", {
-          fg = C.muted,
-          hover = { fg = C.fg, bg = C.hover },
-          on_click = function(event)
-            log("click " .. tostring(event.id))
-          end,
         }),
-      })
+        ui.row({
+          chip("count", "clicked " .. clicks, { fg = C.yellow }, function()
+            clicks = clicks + 1
+          end),
+          ui.text(" "),
+          chip("theme", "theme: " .. themes[theme_index].name, { fg = accent }, function()
+            theme_index = theme_index % #themes + 1
+            widget.style.border = themes[theme_index].accent
+          end),
+        }),
+        ui.row({
+          chip("notify", "toast", { fg = C.pink }, function(event)
+            ui.notify.show(
+              "Hello from the sidebar" .. ui.when(event.shifted, " (shift)", ""),
+              { title = "sidebar-demo" }
+            )
+          end),
+          ui.text(" "),
+          -- No id: gets a sidebar:auto:N id from its handler.
+          ui.text("auto id", {
+            fg = C.muted,
+            hover = { fg = C.fg, bg = C.hover },
+            on_click = function(event)
+              log("click " .. tostring(event.id))
+            end,
+          }),
+        }),
 
-      rows[#rows + 1] = blank()
-      rows[#rows + 1] = ui.divider(C.dim)
-      rows[#rows + 1] = heading("LAST EVENT")
-      rows[#rows + 1] = ui.row({ ui.text("› " .. last_event, { fg = accent }) })
-      return ui.column(rows)
+        blank(),
+        ui.divider(C.dim),
+        heading("LAST EVENT"),
+        ui.row({ ui.text("› " .. last_event, { fg = accent }) }),
+      })
     end,
   })
 
