@@ -47,4 +47,35 @@ describe("select hints snapshot", function()
     end
     error("missing select hints")
   end)
+
+  it("preserves a measured select viewport with scrollbar", function()
+    local ui = harness.boot().hollow.ui
+    local items = {}
+    for i = 1, 30 do
+      items[i] = "item " .. i
+    end
+    ui.select.open({ items = items })
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local ctx = { width = 800, height = 600, cell_w = 10, cell_h = 20 }
+    surface:snapshot(ctx)
+    surface.metrics["select:viewport"] = { width = 400, height = 48 }
+    surface:invalidate()
+    local normalized = json.decode(json.encode(surface:snapshot(ctx)))
+    local found
+    for _, node in ipairs(normalized) do
+      if node.scrollbar_id then
+        found = true
+      end
+      for _, field in ipairs({ "id", "reveal", "scrollbar_id" }) do
+        if node[field] then
+          node[field] = node[field]:gsub("^layout:%d+:", "test:")
+        end
+      end
+    end
+    assert.is_true(found)
+    local file = assert(io.open("src/lua/tests/fixtures/select_scroll_snapshot.json", "r"))
+    local expected = json.decode(file:read("*a"))
+    file:close()
+    assert.same(expected, normalized)
+  end)
 end)
