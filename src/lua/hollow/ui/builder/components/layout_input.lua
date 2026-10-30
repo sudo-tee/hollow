@@ -1,6 +1,12 @@
 -- Existing text_input behavior owns editing; these are ordinary layout boxes.
+---@type HollowUiLayout
 local layout = _G.hollow.ui.layout
 
+---@param input HollowUiTextInput
+---@param theme HollowUiTheme
+---@param ctx HollowUiLayoutContext
+---@param inline boolean|nil
+---@return HollowUiLayoutNode
 return function(input, theme, ctx, inline)
   local cell_h = ctx.cell_h or 19
   local runs = {}

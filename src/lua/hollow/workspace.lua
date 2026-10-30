@@ -1,3 +1,4 @@
+---@type HollowWorkspaceNamespace
 local M = {}
 
 ---@type Hollow
@@ -52,6 +53,8 @@ local function normalize_command(command)
   return trim_string(command) ~= "" and command or nil
 end
 
+---@param pane HollowWorkspaceBootstrapPane
+---@return boolean
 local function can_reuse_current_pane(pane)
   local current_pane = hollow.term.current_pane()
   if current_pane == nil then
@@ -66,6 +69,7 @@ local function can_reuse_current_pane(pane)
   return true
 end
 
+---@param pane HollowWorkspaceBootstrapPane
 local function send_startup_commands(pane)
   if pane.command ~= nil then
     hollow.term.send_text(pane.command .. "\r")
@@ -120,6 +124,9 @@ local function normalize_relative_path(base_dir, value)
   return util.join_path(base_dir, normalized)
 end
 
+---@param base_dir string|nil
+---@param pane HollowWorkspaceBootstrapPane
+---@return HollowWorkspaceBootstrapPane
 local function clone_with_resolved_paths(base_dir, pane)
   local copy = util.clone_value(pane)
   copy.cwd = normalize_relative_path(base_dir, copy.cwd)
@@ -188,6 +195,11 @@ local function pane_opts(pane, tab_layout)
   return opts
 end
 
+---@param tab HollowWorkspaceBootstrapTab
+---@param base_dir string|nil
+---@param is_first_tab boolean
+---@param reuse_existing boolean
+---@return integer|nil
 local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
   local panes = type(tab.panes) == "table" and tab.panes or {}
   if #panes == 0 then
@@ -309,6 +321,9 @@ local function validate_spec(spec)
   end
 end
 
+---@param spec HollowWorkspaceBootstrapSpec
+---@param opts? { base_dir?: string, name?: string, replace_current?: boolean }
+---@return HollowWorkspaceSnapshot|nil
 function M.bootstrap(spec, opts)
   opts = opts or {}
   validate_spec(spec)
@@ -357,6 +372,8 @@ function M.bootstrap(spec, opts)
   return hollow.term.current_workspace()
 end
 
+---@param path string
+---@return HollowWorkspaceBootstrapSpec
 function M.load(path)
   if type(path) ~= "string" or path == "" then
     error("hollow.workspace.load(path) expects a path string")
@@ -370,6 +387,10 @@ end
 
 -- Read-only host integration. Loading never selects a pane backend or executes
 -- commands from the spec; callers must explicitly choose bootstrap policy.
+---@param host HollowAgentHost
+---@param path string
+---@param opts? { max_bytes?: integer }
+---@return HollowPromise<HollowWorkspaceBootstrapSpec>
 function M.load_host(host, path, opts)
   if type(host) ~= "table" or type(host.fs) ~= "table" or type(host.fs.read) ~= "function" then
     error("hollow.workspace.load_host(host, path) expects a ready host")
@@ -437,6 +458,9 @@ function M.load_host(host, path, opts)
   return promise
 end
 
+---@param path string
+---@param opts? { base_dir?: string, name?: string, replace_current?: boolean }
+---@return HollowWorkspaceSnapshot|nil
 function M.load_and_bootstrap(path, opts)
   local spec = M.load(path)
   opts = opts or {}
@@ -445,6 +469,7 @@ function M.load_and_bootstrap(path, opts)
   return M.bootstrap(spec, opts)
 end
 
+---@return HollowWorkspaceBootstrapSpec
 function M.export_current()
   local workspace = hollow.term.current_workspace()
   local tabs = {}
@@ -472,6 +497,8 @@ function M.export_current()
   }
 end
 
+---@param path string
+---@return string
 function M.export_to(path)
   if type(path) ~= "string" or path == "" then
     error("hollow.workspace.export_to(path) expects a path string")
@@ -481,6 +508,8 @@ function M.export_to(path)
   return path
 end
 
+---@param dir string|nil
+---@return string|nil
 function M.project_local_path(dir)
   dir = trim_string(dir)
   if dir == "" then
@@ -531,6 +560,7 @@ local function default_layout_path(name)
   return default_path
 end
 
+---@return string|nil
 function M.resolve_auto_bootstrap_path()
   local config = hollow.config.snapshot()
   local workspace_cfg = type(config.workspace) == "table" and config.workspace or {}
@@ -556,6 +586,7 @@ function M.resolve_auto_bootstrap_path()
   return nil
 end
 
+---@return boolean
 function M.auto_bootstrap()
   local path = M.resolve_auto_bootstrap_path()
   if path == nil then
@@ -599,6 +630,9 @@ local function read_bootstrap_layout(path, descriptor, still_current)
 end
 
 -- Guest project paths belong to the terminal domain's host, never the client.
+---@param dir string|nil
+---@param domain string|nil
+---@return HollowPromise<boolean>
 function M.bootstrap_project_async(dir, domain)
   local pane = hollow.term.current_pane()
   local config = hollow.config.snapshot()
@@ -631,6 +665,8 @@ function M.bootstrap_project_async(dir, domain)
   end)
 end
 
+---@param dir string|nil
+---@return boolean
 function M.bootstrap_project(dir)
   local path = M.project_local_path(dir)
   if path == nil or not host_api.path_exists(path) then

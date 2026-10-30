@@ -6,7 +6,9 @@ local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.styles.mux_navigator")
 local util = require("hollow.util")
 
+---@type Hollow
 local hollow = _G.hollow
+---@type HollowUi
 local ui = hollow.ui
 
 ui.mux_navigator = ui.mux_navigator or {}
@@ -50,10 +52,15 @@ local FILTERS = {
   },
 }
 
+---@param query string
+---@param text string
+---@return boolean
 local function matches(query, text)
   return query == "" or shared.select_item_matches(query, text, true)
 end
 
+---@param pane HollowPane
+---@return string|nil
 local function pane_value(pane)
   if pane.foreground_process and pane.foreground_process ~= "" then
     return pane.foreground_process
@@ -183,6 +190,7 @@ local function row_detail(row)
   return ""
 end
 
+---@param opts HollowUiMuxNavigatorOptions|nil
 function ui.mux_navigator.open(opts)
   opts = opts or {}
   local theme = resolve_theme(opts)

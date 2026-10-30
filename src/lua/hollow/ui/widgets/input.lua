@@ -11,6 +11,7 @@
 --- })
 --- ```
 local shared = require("hollow.ui.shared")
+---@type HollowUi
 local ui = _G.hollow.ui
 
 ui.input = ui.input or {}
@@ -25,6 +26,7 @@ function ui.input.open(opts)
     initial = opts.default,
   })
 
+  ---@type HollowUiModalHandle
   local m
 
   local backdrop = opts.backdrop

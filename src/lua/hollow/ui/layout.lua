@@ -1,12 +1,36 @@
 -- Hierarchical components and independently owned, invalidated surface snapshots.
 local serialize = require("hollow.ui.layout_serialize")
 local shared = require("hollow.ui.shared")
+---@type HollowUi
 local ui = _G.hollow.ui
-local M, Surface = {}, {}
+---@type HollowUiLayout
+local M = {}
+---@class HollowUiLayoutSurfaceImpl: HollowUiLayoutSurface
+---@field render? fun(ctx: HollowUiLayoutContext): HollowUiLayoutNode
+---@field palette? HollowUiTheme
+---@field frame? HollowUiLayoutFrame
+---@field dirty boolean
+---@field destroyed? boolean
+---@field invalidation_revision? integer
+---@field palette_generation? integer
+---@field revision? integer
+---@field nodes? table[]
+---@field context? HollowUiLayoutContext
+---@field callbacks table<string, fun(event: { id: string })>
+---@field local_ids table<string, string>
+---@field metrics table<string, { width: number, height: number }>
+local Surface = {}
 Surface.__index = Surface
 local next_id, revision = 0, 0
-local shown, active
+---@type HollowUiLayoutSurfaceImpl|nil
+local shown
+---@type HollowUiLayoutSurfaceImpl|nil
+local active
 
+---@param kind integer
+---@param children table|nil
+---@param opts HollowUiLayoutOptions|nil
+---@return HollowUiLayoutNode
 local function container(kind, children, opts)
   opts = opts or {}
   return {
@@ -40,12 +64,22 @@ local function container(kind, children, opts)
   }
 end
 
+---@param children table
+---@param opts HollowUiLayoutOptions|nil
+---@return HollowUiLayoutNode
 function M.row(children, opts)
   return container(1, children, opts)
 end
+---@param children table
+---@param opts HollowUiLayoutOptions|nil
+---@return HollowUiLayoutNode
 function M.column(children, opts)
   return container(0, children, opts)
 end
+---@param text any
+---@param style HollowUiNodeStyle|nil
+---@param opts HollowUiLayoutTextOptions|nil
+---@return HollowUiLayoutNode
 function M.text(text, style, opts)
   return {
     kind = 2,
@@ -57,12 +91,17 @@ function M.text(text, style, opts)
 end
 
 -- Custom-paint demonstration; not an arbitrary Lua drawing API.
+---@param value number
+---@param opts HollowUiLayoutOptions|nil
+---@return HollowUiLayoutNode
 function M.progress(value, opts)
   local node = container(3, {}, opts)
   node.value = value
   return node
 end
 
+---@param opts HollowUiButtonOptions|nil
+---@return HollowUiLayoutNode
 function M.button(opts)
   opts = opts or {}
   local span = ui.button(opts)
@@ -74,6 +113,8 @@ function M.button(opts)
   })
 end
 
+---@param opts HollowUiLayoutSurfaceOptions
+---@return HollowUiLayoutSurfaceImpl
 function M.new(opts)
   assert(
     type(opts) == "table" and type(opts.render) == "function",
@@ -100,6 +141,8 @@ function Surface:invalidate()
   end
 end
 
+---@param ctx HollowUiLayoutContext|nil
+---@return table[]
 function Surface:snapshot(ctx)
   assert(not self.destroyed, "layout surface is destroyed")
   ctx = ctx or {}
@@ -115,6 +158,7 @@ function Surface:snapshot(ctx)
   end
   if self.dirty then
     local invalidation_revision = self.invalidation_revision
+    ---@type HollowUiLayoutContext
     local render_ctx = {}
     for key, value in pairs(ctx) do
       render_ctx[key] = value
@@ -136,6 +180,7 @@ function Surface:snapshot(ctx)
   return self.nodes
 end
 
+---@param id string
 function Surface:dispatch(id)
   if self.destroyed then
     return
@@ -146,6 +191,8 @@ function Surface:dispatch(id)
   end
 end
 
+---@param id string
+---@return string|nil
 function Surface:local_id(id)
   return self.local_ids[id]
 end
@@ -162,6 +209,9 @@ function Surface:destroy()
   end
 end
 
+---@param surface HollowUiLayoutSurfaceImpl|nil
+---@param owner integer|nil
+---@param ctx HollowUiLayoutContext|nil
 local function publish(surface, owner, ctx)
   local nodes = surface and surface:snapshot(ctx)
   active = surface
@@ -174,6 +224,12 @@ end
 
 -- Native renderer selects each overlay before reading the existing globals.
 -- False means this entry belongs to another toast's combined column.
+---@param index integer
+---@param width number
+---@param height number
+---@param cell_w number
+---@param cell_h number
+---@return boolean
 function ui._layout_prepare_overlay(index, width, height, cell_w, cell_h)
   local widget = require("hollow.state").get().ui.overlay_stack[index]
   if
@@ -191,6 +247,7 @@ function ui._layout_prepare_overlay(index, width, height, cell_w, cell_h)
 end
 
 -- Standalone mounting convenience; modal surfaces are mounted by the overlay shell.
+---@return HollowUiLayoutSurfaceImpl
 function Surface:show()
   self:snapshot(self.context)
   if shown and shown ~= self then
@@ -202,6 +259,10 @@ function Surface:show()
 end
 
 -- Called before atlas upload. Overlay ownership remains with the existing stack.
+---@param width number
+---@param height number
+---@param cell_w number
+---@param cell_h number
 function ui._layout_prepare(width, height, cell_w, cell_h)
   if ui._expire_overlays then
     ui._expire_overlays()
@@ -243,6 +304,7 @@ function ui._layout_prepare(width, height, cell_w, cell_h)
 end
 
 -- Convenience for standalone layouts.
+---@param root HollowUiLayoutNode
 function M.show(root)
   local candidate = M.new({
     render = function()
@@ -265,6 +327,10 @@ end
 ui._layout_hide = M.hide
 -- Native feedback is delivered under the Lua lock after layout. Only changed
 -- viewport dimensions invalidate a snapshot; ordinary scrolling does not.
+---@param surface_id integer
+---@param id string
+---@param width number
+---@param height number
 function ui._layout_measure(surface_id, id, width, height)
   local surface = active
   if not surface or surface.id ~= surface_id then
@@ -289,6 +355,7 @@ function ui._layout_measure(surface_id, id, width, height)
   end
 end
 
+---@param id string
 function ui._layout_click(id)
   if active then
     -- Accept local IDs for the original standalone convenience API.
@@ -302,12 +369,15 @@ function M.debug(enabled)
   ui._layout_debug = enabled == true
 end
 
+---@param enabled boolean
 function M.debug_grid(enabled)
   ui._layout_debug_grid = enabled == true
 end
 
 -- Inspector panel width in pixels, shared by both inspectors. The host clamps
 -- it to the window and writes the applied width back, including after drags.
+---@param width number|nil
+---@return number|nil
 function M.debug_width(width)
   if width == nil then
     return ui._layout_debug_width or 400

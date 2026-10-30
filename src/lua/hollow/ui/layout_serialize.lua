@@ -33,11 +33,19 @@ local function nonzero(value)
   return nil
 end
 
+---@param root HollowUiLayoutNode
+---@param palette HollowUiTheme
+---@param namespace string
+---@return table[] nodes
+---@return table<string, fun(event: { id: string })> callbacks
+---@return table<string, string> local_ids
 return function(root, palette, namespace)
+  ---@type table[], table<string, fun(event: { id: string })>, table<string, integer>, table<string, string>, integer[]
   local nodes, callbacks, ids, local_ids, subtree_ends = {}, {}, {}, {}, {}
   -- Callers may mutate style tables between snapshots, so memoize by identity
   -- only within this call.
   local styles, text_styles = {}, {}
+  ---@param source HollowUiNodeStyle|nil
   local function container_style(source)
     local entry = styles[source or EMPTY]
     if not entry then
@@ -47,6 +55,7 @@ return function(root, palette, namespace)
     end
     return entry
   end
+  ---@param source HollowUiNodeStyle|nil
   local function text_style(source)
     local entry = text_styles[source or EMPTY]
     if not entry then
@@ -67,7 +76,12 @@ return function(root, palette, namespace)
     end
     return scrollbar_defaults[key] or nil
   end
+  ---@type fun(node: HollowUiLayoutNode, depth: integer)
   local visit
+  ---@param list table
+  ---@param fragment_depth integer
+  ---@param serialized table
+  ---@param depth integer
   local function children(list, fragment_depth, serialized, depth)
     assert(
       type(list) == "table" and fragment_depth <= 32,

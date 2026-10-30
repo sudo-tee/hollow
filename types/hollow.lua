@@ -2283,17 +2283,22 @@ local workspace = {}
 ---@field align_y? 'start'|'center'|'end' Vertical alignment of container children.
 ---@field on_click? fun(event: { id: string })
 
----@class HollowUiLayoutNode
+---@class HollowUiLayoutTextOptions
+---@field wrap? 'words'|'newlines'|'none'
+---@field text_align? 'left'|'center'|'right'|0|1|2
+
+---@class HollowUiLayoutNode: HollowUiLayoutOptions, HollowUiLayoutTextOptions
 ---@field kind integer
 ---@field children? table
 ---@field text? string
+---@field value? number Progress value.
 
 ---@class HollowUiLayout
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
 ---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
----@field text fun(value: any, style?: HollowUiNodeStyle, opts?: { wrap?: 'words'|'newlines'|'none', text_align?: 'left'|'center'|'right'|0|1|2 }): HollowUiLayoutNode
----@field button fun(opts: HollowUiButtonOptions): HollowUiLayoutNode
+---@field text fun(value: any, style?: HollowUiNodeStyle, opts?: HollowUiLayoutTextOptions): HollowUiLayoutNode
+---@field button fun(opts?: HollowUiButtonOptions): HollowUiLayoutNode
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
 ---@field hide fun()

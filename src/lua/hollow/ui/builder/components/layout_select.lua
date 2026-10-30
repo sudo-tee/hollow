@@ -5,10 +5,41 @@ local list_row = require("hollow.ui.styles.list_row")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.styles.select")
 local util = require("hollow.util")
+---@type HollowUiLayout
 local layout = _G.hollow.ui.layout
 local input_field = require("hollow.ui.builder.components.layout_input")
+
+---@class HollowUiLayoutInlineOptions: HollowUiLayoutOptions
+---@field prefix? string
+
+---@class HollowUiLayoutSelectViewport
+---@field start_idx integer
+---@field end_idx integer
+---@field show_scrollbar boolean
+---@field scrollbar_id string
+---@field thumb_ratio number
+---@field thumb_size number
+
+---@class HollowUiLayoutSelectOptions
+---@field entries HollowUiSelectEntry[]
+---@field viewport HollowUiLayoutSelectViewport
+---@field selected integer
+---@field query string
+---@field filter HollowUiTextInput
+---@field on_activate fun(index: integer, source_index: integer)
+---@field id_prefix? string
+---@field hovered_id? string
+---@field prompt? string
+---@field counter? string
+---@field reveal_start? boolean
+---@field styles? table<string, HollowUiNodeStyle>
+---@field hints? HollowUiRowNode[]
+---@field render_label? fun(item: any, ctx: HollowUiLayoutContext, view: { query: string, selected: boolean, hovered: boolean, theme: HollowUiTheme, id: string }): HollowUiLayoutNode|nil
+---@field render_item? fun(entry: HollowUiSelectEntry, index: integer, id: string, plain: boolean): HollowUiLayoutNode
 local M = { window_items = 24, row_budget = 410 }
 
+---@param node HollowUiLayoutNode
+---@return integer
 local function count(node)
   local n = 1
   for _, child in ipairs(node.children or {}) do
@@ -17,6 +48,10 @@ local function count(node)
   return n
 end
 
+---@param children HollowUiChild[]
+---@param style HollowUiNodeStyle|nil
+---@param opts HollowUiLayoutInlineOptions|nil
+---@return HollowUiLayoutNode
 local function inline(children, style, opts)
   opts = opts or {}
   local flat = shared.flatten_span_nodes(children, style)
@@ -75,11 +110,17 @@ local function inline(children, style, opts)
   return layout.row(runs, opts)
 end
 
+---@param theme HollowUiTheme
+---@param ctx HollowUiLayoutContext
+---@return number
 function M.line_height(theme, ctx)
   local padding = box.normalize(list_row(theme).indicator.padding)
   return (ctx.cell_h or 19) + padding.top + padding.bottom
 end
 
+---@param color HollowStyleColor|number|nil
+---@param radius number|nil
+---@return HollowUiLayoutNode
 local function accent_gutter(color, radius)
   local inset = box.px(radius, 0)
   local children = {}
@@ -97,6 +138,13 @@ local function accent_gutter(color, radius)
   })
 end
 
+---@param entry HollowUiSelectEntry
+---@param index integer
+---@param opts HollowUiLayoutSelectOptions
+---@param theme HollowUiTheme
+---@param ctx HollowUiLayoutContext
+---@param plain boolean
+---@return HollowUiLayoutNode
 local function item(entry, index, opts, theme, ctx, plain)
   local id = (opts.id_prefix or "select") .. ":item:" .. entry.source_index
   local selected, hovered = index == opts.selected, opts.hovered_id == id
@@ -163,6 +211,10 @@ local function item(entry, index, opts, theme, ctx, plain)
 end
 
 -- Stacks sections one row apart; Clay paints a rule centred in each gap.
+---@param children HollowUiLayoutNode[]
+---@param theme HollowUiTheme
+---@param cell_h number
+---@return HollowUiLayoutNode
 function M.sections(children, theme, cell_h)
   return layout.column(children, {
     width = "grow",
@@ -173,6 +225,10 @@ function M.sections(children, theme, cell_h)
   })
 end
 
+---@param opts HollowUiLayoutSelectOptions
+---@param theme HollowUiTheme
+---@param ctx HollowUiLayoutContext
+---@return HollowUiLayoutNode
 function M.render(opts, theme, ctx)
   local cell_h = ctx.cell_h or 19
   local entries = opts.entries
@@ -277,6 +333,14 @@ end
 
 -- Adapter for existing row components. Layout is rebuilt as boxes/text;
 -- Segment serialization and native row positioning are not involved.
+---@param row HollowUiRowNode
+---@param id string
+---@param label string
+---@param theme HollowUiTheme
+---@param ctx HollowUiLayoutContext
+---@param on_click fun(event: { id: string })|nil
+---@param plain boolean|nil
+---@return HollowUiLayoutNode
 function M.from_row(row, id, label, theme, ctx, on_click, plain)
   local serialized = shared.serialize_row_paint(row, theme)
   local flat = shared.flatten_span_nodes(row.children)
@@ -329,6 +393,9 @@ function M.from_row(row, id, label, theme, ctx, on_click, plain)
   })
 end
 
+---@param row HollowUiRowNode
+---@param ctx HollowUiLayoutContext
+---@return number
 function M.row_height(row, ctx)
   local top, bottom = 0, 0
   for _, span in ipairs(shared.flatten_span_nodes(row.children)) do
