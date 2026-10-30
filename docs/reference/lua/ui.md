@@ -159,8 +159,8 @@ local view = hollow.ui.text_view({
 view.set("Replacement text") -- resets scrolling
 ```
 
-Width is measured in Unicode code points, not terminal display cells; UTF-8
-sequences are never split. Whitespace within each paragraph is normalized.
+Width is measured in terminal display cells, so wide characters such as CJK
+and emoji count as two; grapheme clusters are never split. Whitespace within each paragraph is normalized.
 
 ### Span style
 

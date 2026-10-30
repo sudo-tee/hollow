@@ -2450,7 +2450,7 @@ function ui.text_input(opts) end
 ---@field keys fun(key: string, mods: HollowUiKeyMods): boolean
 ---@field on_event fun(name: string, event: table): boolean
 
---- Read-only wrapped text behavior. Width counts Unicode code points, not display cells.
+--- Read-only wrapped text behavior. Width counts terminal display cells.
 ---@param opts? { text?: string, width?: integer, row_budget?: integer, id?: string }
 ---@return HollowUiTextView
 function ui.text_view(opts) end

@@ -13,19 +13,19 @@ local function wrap(text, width)
   for paragraph in (text .. "\n"):gmatch("(.-)\n") do
     local line, length = "", 0
     for word in paragraph:gmatch("%S+") do
-      local word_length = util.utf8_len(word)
+      local word_length = util.display_width(word)
       if length > 0 and length + 1 + word_length > width then
         lines[#lines + 1], line, length = line, "", 0
       end
       if length > 0 then
         line, length = line .. " ", length + 1
       end
-      -- Never split a UTF-8 sequence, including when breaking long URLs.
-      for character in word:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-        if length == width then
+      -- Never split a grapheme cluster, including when breaking long URLs.
+      for _, cluster in ipairs(util.text_graphemes(word)) do
+        if length > 0 and length + cluster.width > width then
           lines[#lines + 1], line, length = line, "", 0
         end
-        line, length = line .. character, length + 1
+        line, length = line .. cluster.text, length + cluster.width
       end
     end
     lines[#lines + 1] = line
