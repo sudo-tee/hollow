@@ -776,6 +776,7 @@ pub const App = struct {
         switch (surface) {
             .topbar => self.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = id } }),
             .bottombar => self.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = id } }),
+            .sidebar => self.emitLuaBuiltInEvent("sidebar:click", .{ .sidebar_node = .{ .id = id } }),
             .overlay => self.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = id } }),
         }
         self.markAutomationChanged();

@@ -145,6 +145,9 @@ for an observational event does not change its host behavior.
 | `bottombar:hover` | `{ id }` |
 | `bottombar:leave` | (empty) |
 | `bottombar:click` | `{ id }` |
+| `sidebar:hover` | `{ id }` |
+| `sidebar:leave` | (empty) |
+| `sidebar:click` | `{ id }` |
 
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane

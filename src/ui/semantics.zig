@@ -7,11 +7,13 @@ pub const max_label_len = 256;
 pub const Surface = enum {
     topbar,
     bottombar,
+    sidebar,
     overlay,
 
     pub fn parse(value: []const u8) ?Surface {
         if (std.mem.eql(u8, value, "topbar")) return .topbar;
         if (std.mem.eql(u8, value, "bottombar")) return .bottombar;
+        if (std.mem.eql(u8, value, "sidebar")) return .sidebar;
         if (std.mem.eql(u8, value, "overlay")) return .overlay;
         return null;
     }

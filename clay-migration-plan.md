@@ -29,24 +29,26 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
 ## 1. Current state
 
 **Backend switch**
+
 - `src/lua/hollow/ui/layout.lua:11-20`: `configure({ backend })` and
   `resolve_backend(override, default)`. The final fallback is `"legacy"`
   (line 19).
 
 **Widget defaults**
 
-| Widget | Default | Legacy-only code |
-|---|---|---|
-| `widgets/select.lua` | legacy (222) | `render` ~355-399, `render_entry_rows` ~163-182, `render_empty_row` ~152-154 |
-| `widgets/input.lua` | legacy (39) | `render` ~47-54 (`ui.dialog`) |
-| `widgets/confirm.lua` | legacy (84) | `render` ~95-104 (`ui.dialog`) |
-| `widgets/palette.lua` | clay (297) | `render_content` ~356-417 |
-| `widgets/activity.lua` | clay (177) | `render` ~939-956, `render_rows`/`render_search`/`render_empty`/`render_footer` ~631-685, budget branches ~184 and ~375 |
-| `widgets/mux_navigator.lua` | clay (188) | `render_content` ~350-384 |
-| `widgets/workspace.lua` | clay (401) | `default_format_item` ~132-173, label branch ~465-466 |
-| `widgets/notify.lua` | **legacy only** | whole render (`ui.overlay.new` ~57-87, uses `overlay_stack`) |
+| Widget                      | Default         | Legacy-only code                                                                                                        |
+| --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `widgets/select.lua`        | legacy (222)    | `render` ~355-399, `render_entry_rows` ~163-182, `render_empty_row` ~152-154                                            |
+| `widgets/input.lua`         | legacy (39)     | `render` ~47-54 (`ui.dialog`)                                                                                           |
+| `widgets/confirm.lua`       | legacy (84)     | `render` ~95-104 (`ui.dialog`)                                                                                          |
+| `widgets/palette.lua`       | clay (297)      | `render_content` ~356-417                                                                                               |
+| `widgets/activity.lua`      | clay (177)      | `render` ~939-956, `render_rows`/`render_search`/`render_empty`/`render_footer` ~631-685, budget branches ~184 and ~375 |
+| `widgets/mux_navigator.lua` | clay (188)      | `render_content` ~350-384                                                                                               |
+| `widgets/workspace.lua`     | clay (401)      | `default_format_item` ~132-173, label branch ~465-466                                                                   |
+| `widgets/notify.lua`        | **legacy only** | whole render (`ui.overlay.new` ~57-87, uses `overlay_stack`)                                                            |
 
 **Not on Clay today**
+
 - Top bar, bottom bar and tabs: `widgets/bars/*` → segment payload →
   `renderBarWidgetSurface` (`sokol_runtime.zig:2189`).
 - Sidebar: segment rows → `sokol_runtime.zig` ~2480-2544.
@@ -54,6 +56,7 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
 - Debug overlay: `drawDebugOverlay` (`sokol_runtime.zig:5028`).
 
 **Legacy pieces the Clay path reuses (keep until bars move)**
+
 - `ui.row` / `ui.column` / `ui.divider` (`primitives.lua` ~144-193), consumed
   by `layout_select.lua` `from_row` (~271-316).
 - `shared.lua`: `serialize_row_paint` (~1152-1198), `flatten_span_nodes`,
@@ -65,6 +68,7 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
 - `lua_bridge.zig` `parseSegmentArray` (~5333-5424) and `ui/bar.zig`.
 
 **Clay 0.14 features**
+
 - Used: FIT/GROW/FIXED sizing, padding, childGap, childAlignment, bg, uniform
   corner radius, border-all, clip and scroll, CUSTOM (progress bar), text wrap,
   `Clay_Hovered`, element data, the debug inspector.
@@ -73,6 +77,7 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
   betweenChildren borders, per-corner radius, `Clay_SetQueryScrollOffsetFunction`.
 
 **Clay can't do these, so they stay custom**
+
 - Text ellipsis/truncation.
 - Scroll-to-element (the reveal pass in `clay_bridge.c`).
 - A scrollbar widget.
@@ -84,6 +89,7 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
 
 The following in `src/render/sokol_runtime.zig` are defined but never called.
 Re-confirm with grep, then delete:
+
 - `computeCustomTabLayouts` (~2994-3038) and its struct (~941)
 - `drawStatusSegments` (~3302)
 - `drawSingleSegment` (~3321)
@@ -119,6 +125,7 @@ Done when every overlay renders through `drawClaySurface` with no
 ## 4. Phase 3: strip the legacy backend
 
 **Lua (~700-900 LOC removed)**
+
 - Remove the legacy branches listed in §1 from every widget.
 - Delete `builder/components/dialog.lua`, `builder/components/button.lua`,
   `builder/internal/click_registry.lua` and `widgets/format.lua`. Remove the
@@ -134,6 +141,7 @@ Done when every overlay renders through `drawClaySurface` with no
   render Clay unconditionally.
 
 **Zig (~400 LOC removed)**
+
 - `sokol_runtime.zig` `renderLuaWidgets`: delete the legacy overlay branch
   (~2612-2922). That covers chrome parse, 9-way align, row measure, stack
   offsets, panel draw, auto `overlay:{d}:row:{d}` IDs, the hover fill and the
@@ -143,6 +151,7 @@ Done when every overlay renders through `drawClaySurface` with no
 - Delete `src/render/overlay_stack.zig` and the test import in `main.zig:629`.
 
 **Types, docs, scripts and tests**
+
 - `types/hollow.lua`: remove the `layout?` fields (~1054, 1090, 1185, 2075,
   2134, 2204), `HollowUiLayout.configure`/`resolve_backend` (~2302) and the
   overlay row payload types (`HollowUiOverlaySerializedRow` ~937,
@@ -251,14 +260,14 @@ phase.
 
 ## 8. Estimated impact
 
-| Phase | Zig/C | Lua |
-|---|---|---|
-| 1 Dead code | −150 to −250 | −10 |
-| 2 Port widgets | ~0 | +50 (notify) |
-| 3 Strip legacy | −400 | −700 to −900 |
-| 4 Hit, hover, scroll | −300 to −400 | −60 |
-| 5 Bars, sidebar, debug | −700 to −900 | −200+ |
-| 6 Cleanups | −100 | −150 |
+| Phase                  | Zig/C        | Lua          |
+| ---------------------- | ------------ | ------------ |
+| 1 Dead code            | −150 to −250 | −10          |
+| 2 Port widgets         | ~0           | +50 (notify) |
+| 3 Strip legacy         | −400         | −700 to −900 |
+| 4 Hit, hover, scroll   | −300 to −400 | −60          |
+| 5 Bars, sidebar, debug | −700 to −900 | −200+        |
+| 6 Cleanups             | −100         | −150         |
 
 Tests and docs shrink on top of this.
 
@@ -266,22 +275,22 @@ Tests and docs shrink on top of this.
 
 ## Status (2026-10-30)
 
-| Item | State |
-|---|---|
-| Phase 1 dead code | Done |
-| Phase 2 port widgets | Done (notify on Clay; select/input/confirm Clay-only) |
-| Phase 3 strip legacy | Done. Plain `ui.overlay.new` chrome restored on Clay (see Findings) |
-| 4.1 hit via pointer-over | Done (`hollow_clay_hit` uses `Clay_GetPointerOverIds`) |
-| 4.2 hover | Done (Lua re-snapshot only with `semantic_hover`) |
-| 4.3 overlay caches | Not done, by decision (see Findings) |
-| 4.4 wheel into Clay | Not done, by decision (see Findings) |
-| 4.5 node cap | Kept at 512 (see Findings) |
-| Phase 5 bars/sidebar/debug | Done as Clay geometry (`ui/native_surface.zig`); painting stays native |
-| 6.1 one truncation | Done: `fitTabSegments` (Zig); Lua `clamp_tab_segment_width` removed |
-| 6.2 columns | Workspace already Clay FIXED columns; activity keeps padding, now display-width |
-| 6.3 divider/gutter | Dividers are Clay `betweenChildren` borders (`layout_select.sections`); `full_bleed_x` removed; gutter kept (see Findings) |
-| 6.4 modal sizing | Kept `preferred_height` (see Findings) |
-| 6.5 / 6.6 | Done (`text_width.zig`/`.c`, Lua `util.display_width`) |
+| Item                       | State                                                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Phase 1 dead code          | Done                                                                                                                       |
+| Phase 2 port widgets       | Done (notify on Clay; select/input/confirm Clay-only)                                                                      |
+| Phase 3 strip legacy       | Done. Plain `ui.overlay.new` chrome restored on Clay (see Findings)                                                        |
+| 4.1 hit via pointer-over   | Done (`hollow_clay_hit` uses `Clay_GetPointerOverIds`)                                                                     |
+| 4.2 hover                  | Done (Lua re-snapshot only with `semantic_hover`)                                                                          |
+| 4.3 overlay caches         | Done: input queries retained overlay surfaces; hit, scroll and scrollbar caches removed (see Findings)                     |
+| 4.4 wheel into Clay        | Closed, not done: lists stay virtual; text views would need caps and more Zig code (see Findings)                          |
+| 4.5 node cap               | Kept at 512 (see Findings)                                                                                                 |
+| Phase 5 bars/sidebar/debug | Done as Clay geometry (`ui/native_surface.zig`); painting stays native                                                     |
+| 6.1 one truncation         | Done: `fitTabSegments` (Zig); Lua `clamp_tab_segment_width` removed                                                        |
+| 6.2 columns                | Workspace already Clay FIXED columns; activity keeps padding, now display-width                                            |
+| 6.3 divider/gutter         | Dividers are Clay `betweenChildren` borders (`layout_select.sections`); `full_bleed_x` removed; gutter kept (see Findings) |
+| 6.4 modal sizing           | Kept `preferred_height` (see Findings)                                                                                     |
+| 6.5 / 6.6                  | Done (`text_width.zig`/`.c`, Lua `util.display_width`)                                                                     |
 
 Manual visual and mouse verification is still outstanding for everything above.
 
@@ -293,7 +302,7 @@ Manual visual and mouse verification is still outstanding for everything above.
   dynamic linker rather than the host glibc loader. Isolated Clay tests remain
   available without GUI libraries.
 - Visual verification is blocked: `python3 scripts/hollow-cli --transport socket
-  get mux-tree --pretty` times out, and no `hollow-wsl-bypass` process is present
+get mux-tree --pretty` times out, and no `hollow-wsl-bypass` process is present
   to recover a live command address. Before/after screenshots and interactive
   mouse checks must not be claimed as verified.
 - Phase 4 prerequisite found during execution: the original `clay_surface.zig`
@@ -316,7 +325,7 @@ Manual visual and mouse verification is still outstanding for everything above.
   the node cap.
 - Native test environment workaround (no repository build changes needed):
   `nix-shell -p libx11 libxi libxcursor libGL alsa-lib --run 'make test
-  ARGS="-Ddynamic-linker=$(dirname "$(cc -print-file-name=libc.so.6)")/ld-linux-x86-64.so.2"'`.
+ARGS="-Ddynamic-linker=$(dirname "$(cc -print-file-name=libc.so.6)")/ld-linux-x86-64.so.2"'`.
   Setting `LD_LIBRARY_PATH` globally instead is unsafe here because it mixes
   host/Nix libc loaders in subprocesses.
 - Validation checkpoint: the full native test graph passes with that Nix
@@ -334,20 +343,58 @@ Manual visual and mouse verification is still outstanding for everything above.
   (explicit chrome replaces whole boxes) plus the former native base insets
   (half a cell horizontally, one cell top, half a cell bottom). The root of a
   plain overlay's tree is therefore the `:dialog` chrome node.
-- 4.3: the overlay hit, scroll and scrollbar caches also feed accessibility
-  (`cacheOverlayHitRegionWithRole`) and cross-stack routing (a higher overlay's
-  scroll region beats lower clickable rows). Replacing them with pointer-over
-  queries would mean calling `Clay_SetPointerState` on every retained overlay
-  context per event. That has side effects (hover callbacks, button state),
-  and accessibility would still need per-frame geometry. Net LOC gain is small
-  and the mouse risk is high, so the caches stay until a11y has its own
-  geometry source.
+- 4.3: done without pointer-over queries. Each overlay already keeps its
+  own Clay context and the bridge records clipped visible bounds per node
+  after every layout, so input reads those directly. `drawClaySurface`
+  registers each painted surface (bottom to top); click, hover, wheel and
+  scrollbar routing walk them from the top using `Surface.hitTest` and
+  `visibleBounds`, and scrollbar geometry is derived from the node on demand.
+  This removes the hit, scroll and scrollbar caches, their ID copies (about
+  530 KB of static buffers) and their silent caps (128 clickables, 32 scroll
+  regions, 16 scrollbars). Routing rules are unchanged: within an overlay a
+  clickable row beats a viewport or the panel; a higher overlay's panel beats
+  lower rows for the wheel; a higher overlay's clickable node hides a lower
+  scrollbar. Clicks on a panel's empty area still fall through to whatever is
+  below, as before. Accessibility nodes are emitted inline with the same
+  labels and roles, now without the 128-node cap. `Clay_SetPointerState`
+  isn't used, so input has no hover or inspector side effects.
+- Sidebar segments with an `id` only ever produced accessibility nodes: their
+  hit regions were written to the overlay cache and wiped before the overlays
+  drew, and nothing handled sidebar clicks. Fixed: the sidebar paint keeps its
+  own small hit list (ids copied, clipped to the panel) and emits
+  `sidebar:hover`/`sidebar:leave`/`sidebar:click`, routed like the bars to the
+  span's `on_click`/`on_mouse_enter`/`on_mouse_leave` and `hover` style
+  (handler-only spans get `sidebar:auto:N` ids). Overlays' clickable nodes
+  still win. Presses on the panel no longer reach the terminal beneath a
+  non-reserving sidebar. Accessibility labels are unchanged; the nodes now use
+  a new `sidebar` surface, so `hollow-cli ui click` routes to the sidebar.
 - 4.4: every overlay wheel event is semantic. Virtualized lists turn it into
   selection movement, and the REPL handles it itself. The bridge's reveal pass
   re-pins scroll to the selection on every layout, so wheel deltas fed into
   `Clay_UpdateScrollContainers` would be undone, or would scroll past the
   24-row virtual window. Do this only for non-virtualized, reveal-free
   containers once one exists.
+- Virtualization stays for lists (select, activity, mux navigator, palette).
+  Clay lays out every frame (`drawClaySurface` → `surface.layout`, plus the
+  reveal pass), not only when the tree changes, so per-frame cost grows with
+  node count. A workspace row costs about 13 nodes (328 nodes for 24 rows),
+  so the 512-node cap holds about 38 rows. `ui.select` takes any number of
+  items, and a 1,000-item picker would be about 13,000 nodes (about 4 MB of
+  node structs plus Clay's arena). A hybrid (full tree when small, virtual
+  when large) would keep two code paths and two wheel behaviours for a small
+  gain. Lists keep wheel-moves-selection.
+- 4.4 for text views (activity details, REPL output): Clay scrolling needs the
+  whole text in the tree, and that hits other fixed Clay capacities. Each
+  context's measure cache holds 4,096 words (`elements * 2`) across all text,
+  and wrapped lines are capped at `maxElementCount` (2,048). Going over either
+  fails the layout. Activity messages and REPL output have no length limit.
+  Native scrolling would therefore need a text cap ("truncated, copy for full
+  text") plus new Zig plumbing: a `native_scroll` node flag, wheel routing to
+  the owning overlay's context, one-shot `scroll_by` for keys, and native
+  scrollbar thumb and drag. That is more code than the Lua `text_view` it
+  replaces, so it isn't done. The real bug found here was that `text_view`
+  wrapped by code points; it now wraps by display width and never splits a
+  grapheme cluster (`util.text_graphemes`).
 - 4.5: `HollowClayNode` is 304 bytes, about 155 KB per retained surface at 512
   nodes, before Clay's per-element arena. Select's `row_budget` (410) already
   keeps trees under the cap, and nothing would use a higher cap while 4.4 is
@@ -374,3 +421,14 @@ Manual visual and mouse verification is still outstanding for everything above.
   suffix. `fitTabSegments` keeps per-segment styles and the suffix. It runs on
   the laid-out width, which covers both `max_width` and shrinking grow tabs.
   Serialized Lua tab state now holds the full text.
+
+  Every item in the plan is now done or set aside on purpose. Here's what's left, in the order I'd do it:
+
+1. **Visual and mouse check (most important).** Nothing in the migration has been checked on screen yet, and the plan's status table still lists it as outstanding. The tool I'd use for screenshots, `hollow-cli`, timed out on me. If you can run Hollow and either fix that tool or send screenshots, I'd check:
+   - The select, activity, mux navigator and confirm/input dialogs, including the new divider lines.
+   - Tab truncation when space is tight.
+   - Wide characters and emoji in labels.
+   - Clicking and hovering list rows, and scrolling.
+2. **4.4, a small first step:** let Clay handle mouse-wheel scrolling in the activity details view. I'd mark that one container, send its wheel input to Clay instead of Lua, and remove the Lua scroll offset there. The long lists keep their current wheel behaviour, where the wheel moves the selection. If that works, apply it to the REPL output next.
+3. **4.3, overlay caches (optional, bigger):** this is only worth doing if we keep a separate Clay layout per overlay. It would let us drop the separate stored copies of overlay geometry used for clicks, scrolling and accessibility. It's the most code removed, but also the riskiest. I'd do it only after step 1, and probably only after 4.4.
+4. **Cleanup:** remove  `clay-migration-plan.md` once its findings are moved into  `docs/clay-layout.md`, or keep it as a record.

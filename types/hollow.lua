@@ -205,6 +205,9 @@
 ---| "bottombar:hover"
 ---| "bottombar:leave"
 ---| "bottombar:click"
+---| "sidebar:hover"
+---| "sidebar:leave"
+---| "sidebar:click"
 ---| "overlay:hover"
 ---| "overlay:leave"
 ---| "overlay:click"
@@ -252,6 +255,9 @@
 ---@field ["bottombar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["bottombar:leave"] {}
 ---@field ["bottombar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
+---@field ["sidebar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
+---@field ["sidebar:leave"] {}
+---@field ["sidebar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["overlay:hover"] { id: string, index: integer|nil }
 ---@field ["overlay:leave"] {}
 ---@field ["overlay:click"] { id: string, index: integer|nil }

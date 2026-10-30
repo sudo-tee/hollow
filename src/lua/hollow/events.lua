@@ -200,6 +200,8 @@ function M.setup(hollow, state, term_helpers)
     ["topbar:click"] = adapt_bar_node,
     ["bottombar:hover"] = adapt_bar_node,
     ["bottombar:click"] = adapt_bar_node,
+    ["sidebar:hover"] = adapt_bar_node,
+    ["sidebar:click"] = adapt_bar_node,
   }
 
   local function adapt_builtin_payload(name, payload)

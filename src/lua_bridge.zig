@@ -597,6 +597,12 @@ fn luaUpvalueIndex(i: c_int) c_int {
     return LUA_GLOBALSINDEX - i;
 }
 
+pub const BarNode = struct {
+    id: []const u8,
+    mods: u32 = 0,
+    shifted: bool = false,
+};
+
 pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
@@ -650,16 +656,9 @@ pub const BuiltInPayload = union(enum) {
         y: f32,
         text: []const u8,
     },
-    topbar_node: struct {
-        id: []const u8,
-        mods: u32 = 0,
-        shifted: bool = false,
-    },
-    bottombar_node: struct {
-        id: []const u8,
-        mods: u32 = 0,
-        shifted: bool = false,
-    },
+    topbar_node: BarNode,
+    bottombar_node: BarNode,
+    sidebar_node: BarNode,
     overlay_node: struct {
         id: []const u8,
         index: usize = 0,
@@ -3068,16 +3067,7 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .files_dropped => |value| {
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
-        .topbar_node => |value| {
-            api.create_table(state, 0, 3);
-            try pushOwnedString(allocator, api, state, value.id);
-            api.set_field(state, -2, "id");
-            api.push_number(state, @floatFromInt(value.mods));
-            api.set_field(state, -2, "mods");
-            api.push_boolean(state, if (value.shifted) 1 else 0);
-            api.set_field(state, -2, "shifted");
-        },
-        .bottombar_node => |value| {
+        .topbar_node, .bottombar_node, .sidebar_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");

@@ -77,6 +77,8 @@ pub const Surface = struct {
     surface_id: f64 = -1,
     error_logged_revision: f64 = -1,
     owner_index: usize = 0,
+    /// Cell width of the latest layout, for geometry derived at event time.
+    cell_w: f32 = 0,
     runtime_generation: u64 = 0,
     frame: c.HollowClayFrame = std.mem.zeroes(c.HollowClayFrame),
 
@@ -325,6 +327,7 @@ pub const Surface = struct {
     }
 
     pub fn layout(self: *Surface, width: f32, height: f32, cell_w: f32, cell_h: f32, dt: f32) c.Clay_RenderCommandArray {
+        self.cell_w = cell_w;
         c.hollow_clay_frame(self.context, self.frame);
         c.hollow_clay_set_debug(self.context, self.debug);
         if (!self.debug) self.inspector_button = .{};
@@ -348,6 +351,43 @@ pub const Surface = struct {
             return std.mem.zeroes(c.Clay_RenderCommandArray);
         }
         return commands;
+    }
+
+    /// Window-space clipped bounds of node `index` from the latest layout.
+    pub fn visibleBounds(self: *Surface, index: usize) ?c.Clay_BoundingBox {
+        if (self.context == null or c.hollow_clay_failed(self.context)) return null;
+        const element = c.hollow_clay_visible_bounds(self.context, &self.nodes, @intCast(self.len), @intCast(index));
+        if (!element.found) return null;
+        var bounds = element.boundingBox;
+        bounds.x += self.area.x;
+        bounds.y += self.area.y;
+        return bounds;
+    }
+
+    pub const Target = enum { clickable, scroll };
+
+    /// Last node in preorder (the deepest or latest sibling) of `target`
+    /// under the window-space point. Scroll targets include the root panel.
+    pub fn hitTest(self: *Surface, target: Target, x: f32, y: f32) ?usize {
+        var index = self.len;
+        while (index > 0) {
+            index -= 1;
+            const node = &self.nodes[index];
+            if (node.id.length <= 0) continue;
+            const wanted = switch (target) {
+                .clickable => index != 0 and node.clickable,
+                .scroll => index == 0 or node.scroll or node.scroll_x,
+            };
+            if (!wanted) continue;
+            const b = self.visibleBounds(index) orelse continue;
+            if (x >= b.x and x < b.x + b.width and y >= b.y and y < b.y + b.height) return index;
+        }
+        return null;
+    }
+
+    pub fn nodeId(self: *const Surface, index: usize) []const u8 {
+        const id = self.nodes[index].id;
+        return if (id.length > 0) id.chars[0..@intCast(id.length)] else "";
     }
 
     pub fn pointerButton(self: *Surface, down: bool, x: f32, y: f32) void {

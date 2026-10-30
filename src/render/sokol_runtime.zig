@@ -65,6 +65,8 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
 fn prepareLowerClayOverlays(runtime: *lua_mod.Runtime, renderer: anytype, width: f32, height: f32) void {
     const count = if (g_clay_surface.active) g_clay_surface.owner_index else 0;
     const lower_count = count -| 1;
+    // Painted-surface pointers must not outlive retired surfaces.
+    g_overlay_surface_count = 0;
     while (g_clay_overlays.items.len > lower_count) {
         const retired = g_clay_overlays.pop().?;
         retired.deinit();
@@ -383,7 +385,6 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     const commands = surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
     const context = surface.context;
     const nodes = &surface.nodes;
-    const len: c_int = @intCast(surface.len);
     const framed = surface.frame.enabled;
     const overlay = surface.owner_index > 0;
     const panel_node: *const clay.HollowClayNode = &nodes[0];
@@ -405,48 +406,17 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     }
     paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) panel_node else null);
     if (overlay) {
-        // Visible bounds are recorded once per layout, so these passes are linear.
-        for (nodes[0..surface.len], 0..) |node, index| {
-            if (node.scrollbar_id.length <= 0) continue;
-            const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
-            if (!element.found) continue;
-            const b = element.boundingBox;
-            const hit_width = @min(b.width, @max(@as(f32, 8), renderer.cell_w));
-            const track = node.scrollbar_track_color;
-            const thumb = node.scrollbar_thumb_color;
-            cacheOverlayScrollbarRow(
-                node.scrollbar_id.chars[0..@intCast(node.scrollbar_id.length)],
-                offset_x + b.x + b.width - hit_width,
-                offset_y + b.y,
-                hit_width,
-                b.height,
-                false,
-                node.scrollbar_thumb_ratio,
-                node.scrollbar_thumb_size,
-                if (track.a > 0) .{ .r = clayChannel(track.r), .g = clayChannel(track.g), .b = clayChannel(track.b) } else .{ .r = 90, .g = 99, .b = 117 },
-                if (thumb.a > 0) .{ .r = clayChannel(thumb.r), .g = clayChannel(thumb.g), .b = clayChannel(thumb.b) } else .{ .r = 90, .g = 99, .b = 117 },
-            );
-        }
-        finalizeAndDrawOverlayScrollbars(surface.owner_index);
-        for (nodes[0..surface.len], 0..) |node, index| {
-            if (index != 0 and !node.scroll and !node.scroll_x) continue;
-            if (node.id.length == 0) continue;
-            const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
-            if (!element.found) continue;
-            const b = element.boundingBox;
-            cacheOverlayScrollRegion(node.id.chars[0..@intCast(node.id.length)], b.x + offset_x, b.y + offset_y, b.width, b.height);
+        for (0..surface.len) |index| {
+            if (overlayScrollbar(surface, index)) |scrollbar| drawOverlayScrollbar(scrollbar);
         }
         if (g_widget_render_ctx) |ctx| {
             for (nodes[0..surface.len], 0..) |node, index| {
                 if (index != 0 and !node.clickable) continue;
-                const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
-                if (!element.found or node.id.length == 0) continue;
-                const b = element.boundingBox;
-                const id = node.id.chars[0..@intCast(node.id.length)];
+                if (node.id.length == 0) continue;
+                const b = surface.visibleBounds(index) orelse continue;
                 const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
-                if (index == 0) {
-                    ctx.app.appendUiSemanticNode(.overlay, .dialog, false, id, label, .{ .x = b.x + offset_x, .y = b.y + offset_y, .width = b.width, .height = b.height });
-                } else cacheOverlayHitRegionWithRole(id, label, b.x + offset_x, b.y + offset_y, b.width, b.height, if (node.list_item) .listitem else .button);
+                const role: ui_semantics.Role = if (index == 0) .dialog else if (node.list_item) .listitem else .button;
+                ctx.app.appendUiSemanticNode(.overlay, role, index != 0, surface.nodeId(index), label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
             }
         }
     }
@@ -659,27 +629,27 @@ var g_mouse_x: f32 = 0;
 var g_mouse_y: f32 = 0;
 var g_top_bar_cache: BarCache = .{};
 var g_bottom_bar_cache: BarCache = .{};
-var g_overlay_hit_cache: struct {
-    enabled: bool = false,
-    hit_count: usize = 0,
-    hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = @splat(.{}),
-} = .{};
-// Segment IDs are parsed into a scratch buffer reused for every row. Hit
-// regions must own their IDs until the next frame's hit cache is rebuilt.
-var g_overlay_cached_ids: [MAX_OVERLAY_HIT_REGIONS][4096]u8 = undefined;
-var g_overlay_render_stack_index: usize = 0;
-var g_overlay_scrollbar_cache: struct {
+// Overlay surfaces painted this frame, bottom to top. Input queries their
+// retained layouts instead of copying hit geometry each frame.
+var g_overlay_surfaces: [MAX_OVERLAY_SURFACES]*ClaySurface = undefined;
+var g_overlay_surface_count: usize = 0;
+
+const MAX_SIDEBAR_HIT_REGIONS = 64;
+
+const SidebarHitRegion = struct {
+    bounds: ui_semantics.Bounds = .{},
+    id_buf: [ui_semantics.max_id_len]u8 = undefined,
+    id_len: usize = 0,
+};
+
+// Sidebar segments with an id, from the latest sidebar paint. Ids are copied
+// because the Lua sidebar state is rebuilt every frame.
+var g_sidebar_hits: struct {
+    panel: ?ui_semantics.Bounds = null,
     count: usize = 0,
-    scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = @splat(.{}),
+    regions: [MAX_SIDEBAR_HIT_REGIONS]SidebarHitRegion = undefined,
 } = .{};
-var g_overlay_scrollbar_cached_ids: [MAX_OVERLAY_SCROLLBARS][ui_semantics.max_id_len]u8 = undefined;
-// Wheel-only targets: Clay panels and scroll viewports. Kept apart from the
-// hit cache so non-clickable regions never become click/hover/a11y targets.
-var g_overlay_scroll_cache: struct {
-    count: usize = 0,
-    regions: [MAX_OVERLAY_SCROLL_REGIONS]CachedOverlayHitRegion = @splat(.{}),
-} = .{};
-var g_overlay_scroll_cached_ids: [MAX_OVERLAY_SCROLL_REGIONS][ui_semantics.max_id_len]u8 = undefined;
+var g_sidebar_hovered = false;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
 var g_overlay_scrollbar_drag_grab_y: f32 = 0;
@@ -1040,38 +1010,28 @@ const BarHit = struct {
 };
 
 const MAX_BAR_HIT_REGIONS = 256;
-const MAX_OVERLAY_HIT_REGIONS = 128;
-const MAX_OVERLAY_SCROLLBARS = 16;
-const MAX_OVERLAY_SCROLL_REGIONS = 32;
-
-const CachedOverlayHitRegion = struct {
-    x: f32 = 0,
-    width: f32 = 0,
-    y: f32 = 0,
-    height: f32 = 0,
-    node_id: ?[]const u8 = null,
-    stack_index: usize = 0,
-};
+const MAX_OVERLAY_SURFACES = 32;
 
 const OverlayHit = struct {
     id: []const u8,
     stack_index: usize,
 };
 
-const CachedOverlayScrollbar = struct {
-    id: ?[]const u8 = null,
-    x: f32 = 0,
-    width: f32 = 0,
-    y: f32 = 0,
-    height: f32 = 0,
-    thumb_y: f32 = 0,
-    thumb_height: f32 = 0,
-    has_thumb: bool = false,
-    stack_index: usize = 0,
-    thumb_ratio: ?f32 = null,
-    thumb_size: ?f32 = null,
-    track_color: ghostty.ColorRgb = .{ .r = 90, .g = 99, .b = 117 },
-    thumb_color: ghostty.ColorRgb = .{ .r = 160, .g = 170, .b = 190 },
+/// Window-space scrollbar derived from a node's latest layout. The hit strip
+/// is `x..x+width` by the track (`y..y+height`); paint uses `bar_x/bar_width`.
+const OverlayScrollbar = struct {
+    id: []const u8,
+    stack_index: usize,
+    x: f32,
+    width: f32,
+    y: f32,
+    height: f32,
+    bar_x: f32,
+    bar_width: f32,
+    thumb_y: f32,
+    thumb_height: f32,
+    track_color: ghostty.ColorRgb,
+    thumb_color: ghostty.ColorRgb,
 };
 
 const CachedBarHitRegion = struct {
@@ -1657,204 +1617,249 @@ fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int
     return @floatCast(api.to_number(state, -1));
 }
 
-fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32) void {
-    cacheOverlayHitRegionWithRole(id, label, x, y, width, height, .button);
-}
-
-fn cacheOverlayHitRegionWithRole(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32, role: ui_semantics.Role) void {
-    if (!g_overlay_hit_cache.enabled or id.len == 0 or width <= 0 or height <= 0) return;
-    if (g_overlay_hit_cache.hit_count >= g_overlay_hit_cache.hits.len) return;
-    if (id.len > g_overlay_cached_ids[0].len) return;
-    const owned_id = g_overlay_cached_ids[g_overlay_hit_cache.hit_count][0..id.len];
-    fastmem.copy(u8, owned_id, id);
-    g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
+fn overlayScrollbar(surface: *ClaySurface, index: usize) ?OverlayScrollbar {
+    const node = &surface.nodes[index];
+    if (node.scrollbar_id.length <= 0) return null;
+    const b = surface.visibleBounds(index) orelse return null;
+    const hit_width = @min(b.width, @max(@as(f32, 8), surface.cell_w));
+    const bar_width = @min(@as(f32, 5), @max(@as(f32, 3), hit_width - 2));
+    const x = b.x + b.width - hit_width;
+    const track_y = b.y + 2;
+    const track_height = @max(@as(f32, 1), b.height - 4);
+    const ratio = std.math.clamp(node.scrollbar_thumb_ratio, 0, 1);
+    const size = std.math.clamp(node.scrollbar_thumb_size, 0, 1);
+    const thumb_height = @min(track_height, @max(@as(f32, 12), track_height * size));
+    const track = node.scrollbar_track_color;
+    const thumb = node.scrollbar_thumb_color;
+    const fallback: ghostty.ColorRgb = .{ .r = 90, .g = 99, .b = 117 };
+    return .{
+        .id = node.scrollbar_id.chars[0..@intCast(node.scrollbar_id.length)],
+        .stack_index = surface.owner_index,
         .x = x,
-        .width = width,
-        .y = y,
-        .height = height,
-        .node_id = owned_id,
-        .stack_index = g_overlay_render_stack_index,
+        .width = hit_width,
+        .y = track_y,
+        .height = track_height,
+        .bar_x = x + hit_width - bar_width - 1,
+        .bar_width = bar_width,
+        .thumb_y = track_y + ratio * (track_height - thumb_height),
+        .thumb_height = thumb_height,
+        .track_color = if (track.a > 0) .{ .r = clayChannel(track.r), .g = clayChannel(track.g), .b = clayChannel(track.b) } else fallback,
+        .thumb_color = if (thumb.a > 0) .{ .r = clayChannel(thumb.r), .g = clayChannel(thumb.g), .b = clayChannel(thumb.b) } else fallback,
     };
-    g_overlay_hit_cache.hit_count += 1;
-    if (g_widget_render_ctx) |ctx| {
-        ctx.app.appendUiSemanticNode(.overlay, role, true, id, label, .{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        });
+}
+
+fn drawOverlayScrollbar(scrollbar: OverlayScrollbar) void {
+    const radius = scrollbar.bar_width * 0.5;
+    const track = scrollbar.track_color;
+    const thumb = scrollbar.thumb_color;
+    drawRoundedRect(scrollbar.bar_x, scrollbar.y, scrollbar.bar_width, scrollbar.height, radius, track.r, track.g, track.b, 100);
+    drawRoundedRect(scrollbar.bar_x, scrollbar.thumb_y, scrollbar.bar_width, scrollbar.thumb_height, radius, thumb.r, thumb.g, thumb.b, 255);
+}
+
+fn overlayHit(surface: *ClaySurface, target: ClaySurface.Target, mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    const index = surface.hitTest(target, mouse_x, mouse_y) orelse return null;
+    return .{ .id = surface.nodeId(index), .stack_index = surface.owner_index };
+}
+
+fn overlayScrollbarAt(surface: *ClaySurface, mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
+    var index = surface.len;
+    while (index > 0) {
+        index -= 1;
+        const scrollbar = overlayScrollbar(surface, index) orelse continue;
+        if (mouse_x < scrollbar.x or mouse_x >= scrollbar.x + scrollbar.width) continue;
+        if (mouse_y < scrollbar.y or mouse_y >= scrollbar.y + scrollbar.height) continue;
+        return scrollbar;
     }
+    return null;
 }
 
-fn cacheOverlayScrollRegion(id: []const u8, x: f32, y: f32, width: f32, height: f32) void {
-    if (id.len == 0 or id.len > ui_semantics.max_id_len or width <= 0 or height <= 0) return;
-    const cache = &g_overlay_scroll_cache;
-    if (cache.count >= cache.regions.len) return;
-    const owned_id = g_overlay_scroll_cached_ids[cache.count][0..id.len];
-    fastmem.copy(u8, owned_id, id);
-    cache.regions[cache.count] = .{
-        .x = x,
-        .width = width,
-        .y = y,
-        .height = height,
-        .node_id = owned_id,
-        .stack_index = g_overlay_render_stack_index,
-    };
-    cache.count += 1;
-}
-
-/// Deepest scroll region under the pointer. Regions are cached in layout
-/// preorder, so later entries are descendants or later siblings.
-fn hitTestOverlayScrollRegion(mouse_x: f32, mouse_y: f32) ?OverlayHit {
-    const cache = &g_overlay_scroll_cache;
-    var best: ?OverlayHit = null;
-    var idx = cache.count;
-    while (idx > 0) {
-        idx -= 1;
-        const region = cache.regions[idx];
-        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
-        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        const id = region.node_id orelse continue;
-        if (best == null or region.stack_index > best.?.stack_index) {
-            best = .{ .id = id, .stack_index = region.stack_index };
-        }
+/// Topmost clickable overlay node under the pointer.
+fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?OverlayHit {
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        if (overlayHit(g_overlay_surfaces[i], .clickable, mouse_x, mouse_y)) |hit| return hit;
     }
-    return best;
+    return null;
 }
 
-/// Clickable rows are the most specific wheel target within an overlay, but a
-/// scroll region on a higher overlay wins over clickable rows beneath it.
+/// Clickable rows are the most specific wheel target within an overlay, then
+/// its scroll viewports and panel. A higher overlay wins over lower rows.
 fn hitTestOverlayWheel(mouse_x: f32, mouse_y: f32) ?OverlayHit {
-    const clickable = hitTestOverlay(mouse_x, mouse_y);
-    const region = hitTestOverlayScrollRegion(mouse_x, mouse_y);
-    if (clickable) |hit| {
-        if (region) |viewport| {
-            if (viewport.stack_index > hit.stack_index) return viewport;
-        }
-        return hit;
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        const surface = g_overlay_surfaces[i];
+        if (overlayHit(surface, .clickable, mouse_x, mouse_y)) |hit| return hit;
+        if (overlayHit(surface, .scroll, mouse_x, mouse_y)) |hit| return hit;
     }
-    return region;
+    return null;
 }
 
-test "overlay wheel falls back to scroll regions without clickable rows" {
-    g_overlay_hit_cache = .{ .enabled = true };
-    g_overlay_scroll_cache = .{};
-    g_overlay_render_stack_index = 1;
-    defer {
-        g_overlay_hit_cache = .{};
-        g_overlay_scroll_cache = .{};
-        g_overlay_render_stack_index = 0;
+/// Topmost scrollbar under the pointer, unless a higher overlay's clickable
+/// node covers it.
+fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
+    var i = g_overlay_surface_count;
+    while (i > 0) {
+        i -= 1;
+        const surface = g_overlay_surfaces[i];
+        if (overlayScrollbarAt(surface, mouse_x, mouse_y)) |scrollbar| return scrollbar;
+        if (surface.hitTest(.clickable, mouse_x, mouse_y) != null) return null;
     }
-    try std.testing.expect(hitTestOverlayWheel(10, 10) == null);
-    var id = "layout:1:root".*;
-    cacheOverlayScrollRegion(&id, 0, 0, 100, 100);
-    @memset(&id, 'x');
-    cacheOverlayScrollRegion("layout:1:output", 0, 10, 100, 20);
-    try std.testing.expectEqualStrings("layout:1:root", hitTestOverlayWheel(5, 50).?.id);
-    try std.testing.expectEqualStrings("layout:1:output", hitTestOverlayWheel(5, 15).?.id);
-    try std.testing.expect(hitTestOverlayWheel(150, 15) == null);
-    cacheOverlayHitRegion("layout:1:row", "", 0, 10, 100, 5);
-    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlayWheel(5, 12).?.id);
-    g_overlay_render_stack_index = 2;
-    cacheOverlayScrollRegion("layout:2:root", 0, 0, 100, 100);
-    try std.testing.expectEqualStrings("layout:2:root", hitTestOverlayWheel(5, 12).?.id);
+    return null;
 }
 
-test "overlay hit regions retain IDs when segment scratch storage is reused" {
-    g_overlay_hit_cache = .{ .enabled = true };
-    defer g_overlay_hit_cache = .{};
-    var scratch = "activity:dismiss:42".*;
-    cacheOverlayHitRegion(&scratch, "dismiss", 0, 0, 20, 20);
-    @memset(&scratch, 'x');
-    cacheOverlayHitRegion(&scratch, "other", 30, 0, 20, 20);
-    const hit = hitTestOverlay(10, 10).?;
-    try std.testing.expectEqualStrings("activity:dismiss:42", hit.id);
-}
-
-fn cacheOverlayScrollbarRow(
-    id: []const u8,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    is_thumb: bool,
-    thumb_ratio: ?f32,
-    thumb_size: ?f32,
-    track_color: ghostty.ColorRgb,
-    thumb_color: ghostty.ColorRgb,
-) void {
-    if (id.len == 0 or id.len > ui_semantics.max_id_len or width <= 0 or height <= 0) return;
-
-    const scrollbar: *CachedOverlayScrollbar = blk: {
-        for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*cached| {
-            if (cached.id) |cached_id| {
-                if (cached.stack_index == g_overlay_render_stack_index and std.mem.eql(u8, cached_id, id)) break :blk cached;
-            }
+fn findOverlayScrollbar(id: []const u8, stack_index: usize) ?OverlayScrollbar {
+    for (g_overlay_surfaces[0..g_overlay_surface_count]) |surface| {
+        if (surface.owner_index != stack_index) continue;
+        for (0..surface.len) |index| {
+            const scrollbar = overlayScrollbar(surface, index) orelse continue;
+            if (std.mem.eql(u8, scrollbar.id, id)) return scrollbar;
         }
-        if (g_overlay_scrollbar_cache.count >= MAX_OVERLAY_SCROLLBARS) return;
-        const cached = &g_overlay_scrollbar_cache.scrollbars[g_overlay_scrollbar_cache.count];
-        const owned_id = g_overlay_scrollbar_cached_ids[g_overlay_scrollbar_cache.count][0..id.len];
-        fastmem.copy(u8, owned_id, id);
-        g_overlay_scrollbar_cache.count += 1;
-        cached.* = .{
-            .id = owned_id,
-            .x = x,
-            .width = width,
-            .y = y,
-            .height = height,
-            .stack_index = g_overlay_render_stack_index,
-            .thumb_ratio = thumb_ratio,
-            .thumb_size = thumb_size,
-            .track_color = track_color,
-            .thumb_color = thumb_color,
-        };
-        break :blk cached;
+    }
+    return null;
+}
+
+fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
+    if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
+        app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = hit.id, .index = hit.stack_index } });
+    } else app.emitLuaBuiltInEvent("overlay:leave", .none);
+}
+
+fn boundsContain(b: ui_semantics.Bounds, x: f32, y: f32) bool {
+    return x >= b.x and x < b.x + b.width and y >= b.y and y < b.y + b.height;
+}
+
+/// Records a sidebar segment clipped to the panel, as drawn under its scissor.
+fn cacheSidebarHitRegion(id: []const u8, label: []const u8, rect: ui_semantics.Bounds) void {
+    const panel = g_sidebar_hits.panel orelse return;
+    const x = @max(rect.x, panel.x);
+    const y = @max(rect.y, panel.y);
+    const clipped: ui_semantics.Bounds = .{
+        .x = x,
+        .y = y,
+        .width = @min(rect.x + rect.width, panel.x + panel.width) - x,
+        .height = @min(rect.y + rect.height, panel.y + panel.height) - y,
     };
-
-    const bottom = @max(scrollbar.y + scrollbar.height, y + height);
-    scrollbar.y = @min(scrollbar.y, y);
-    scrollbar.height = bottom - scrollbar.y;
-    if (is_thumb) {
-        if (scrollbar.has_thumb) {
-            const thumb_bottom = @max(scrollbar.thumb_y + scrollbar.thumb_height, y + height);
-            scrollbar.thumb_y = @min(scrollbar.thumb_y, y);
-            scrollbar.thumb_height = thumb_bottom - scrollbar.thumb_y;
-        } else {
-            scrollbar.thumb_y = y;
-            scrollbar.thumb_height = height;
-            scrollbar.has_thumb = true;
-        }
-    }
+    if (clipped.width <= 0 or clipped.height <= 0) return;
+    if (g_widget_render_ctx) |ctx| ctx.app.appendUiSemanticNode(.sidebar, .button, true, id, label, clipped);
+    if (g_sidebar_hits.count >= g_sidebar_hits.regions.len or id.len > ui_semantics.max_id_len) return;
+    const region = &g_sidebar_hits.regions[g_sidebar_hits.count];
+    region.bounds = clipped;
+    region.id_len = id.len;
+    fastmem.copy(u8, region.id_buf[0..id.len], id);
+    g_sidebar_hits.count += 1;
 }
 
-fn finalizeAndDrawOverlayScrollbars(stack_index: usize) void {
-    for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*scrollbar| {
-        if (scrollbar.stack_index != stack_index) continue;
+fn sidebarContains(x: f32, y: f32) bool {
+    const panel = g_sidebar_hits.panel orelse return false;
+    return boundsContain(panel, x, y);
+}
 
-        const bar_width = @min(@as(f32, 5), @max(@as(f32, 3), scrollbar.width - 2));
-        const track_x = scrollbar.x + scrollbar.width - bar_width - 1;
-        const track_y = scrollbar.y + 2;
-        const track_height = @max(@as(f32, 1), scrollbar.height - 4);
+fn hitTestSidebar(x: f32, y: f32) ?[]const u8 {
+    if (!sidebarContains(x, y)) return null;
+    var index = g_sidebar_hits.count;
+    while (index > 0) {
+        index -= 1;
+        const region = &g_sidebar_hits.regions[index];
+        if (boundsContain(region.bounds, x, y)) return region.id_buf[0..region.id_len];
+    }
+    return null;
+}
 
-        if (scrollbar.thumb_ratio) |raw_ratio| {
-            const ratio = std.math.clamp(raw_ratio, 0, 1);
-            const size = std.math.clamp(scrollbar.thumb_size orelse 1, 0, 1);
-            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 12), track_height * size));
-            scrollbar.thumb_y = track_y + ratio * (track_height - scrollbar.thumb_height);
-            scrollbar.has_thumb = true;
-        } else if (scrollbar.has_thumb) {
-            scrollbar.thumb_y = @max(track_y, scrollbar.thumb_y + 2);
-            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 8), scrollbar.thumb_height - 4));
-        }
-
-        scrollbar.y = track_y;
-        scrollbar.height = track_height;
-
-        drawRoundedRect(track_x, track_y, bar_width, track_height, bar_width * 0.5, scrollbar.track_color.r, scrollbar.track_color.g, scrollbar.track_color.b, 100);
-        if (scrollbar.has_thumb) {
-            drawRoundedRect(track_x, scrollbar.thumb_y, bar_width, scrollbar.thumb_height, bar_width * 0.5, scrollbar.thumb_color.r, scrollbar.thumb_color.g, scrollbar.thumb_color.b, 255);
+/// Emits sidebar hover for the segment under the pointer, or one leave when
+/// the pointer moves off (or something above covers) a hovered segment.
+fn updateSidebarHover(app: *App, x: f32, y: f32, modifiers: u32, covered: bool) void {
+    if (!covered) {
+        if (hitTestSidebar(x, y)) |id| {
+            g_sidebar_hovered = true;
+            app.emitLuaBuiltInEvent("sidebar:hover", .{ .sidebar_node = .{ .id = id, .mods = ghosttyMods(modifiers), .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
+            return;
         }
     }
+    if (!g_sidebar_hovered) return;
+    g_sidebar_hovered = false;
+    app.emitLuaBuiltInEvent("sidebar:leave", .none);
+}
+
+test "sidebar hit regions are clipped to the panel and keep their own ids" {
+    const saved = g_sidebar_hits;
+    defer g_sidebar_hits = saved;
+    g_sidebar_hits = .{ .panel = .{ .x = 0, .y = 20, .width = 100, .height = 50 } };
+    var id_buf = "row:one".*;
+    cacheSidebarHitRegion(&id_buf, "one", .{ .x = 4, .y = 22, .width = 40, .height = 18 });
+    cacheSidebarHitRegion("row:two", "two", .{ .x = 4, .y = 60, .width = 40, .height = 18 });
+    cacheSidebarHitRegion("row:gone", "gone", .{ .x = 4, .y = 80, .width = 40, .height = 18 });
+    @memset(&id_buf, 'x');
+    try std.testing.expectEqual(@as(usize, 2), g_sidebar_hits.count);
+    try std.testing.expectEqualStrings("row:one", hitTestSidebar(10, 30).?);
+    try std.testing.expectEqualStrings("row:two", hitTestSidebar(10, 65).?);
+    // Clipped at the panel's bottom edge.
+    try std.testing.expect(hitTestSidebar(10, 72) == null);
+    try std.testing.expect(hitTestSidebar(80, 30) == null);
+    try std.testing.expect(sidebarContains(80, 30));
+    try std.testing.expect(!sidebarContains(120, 30));
+}
+
+test "overlay input queries painted Clay surfaces from the top of the stack" {
+    const static = struct {
+        fn str(text: []const u8) clay.Clay_String {
+            return .{ .chars = text.ptr, .length = @intCast(text.len), .isStaticallyAllocated = true };
+        }
+        fn box(kind: c_int, width: f32, height: f32, children: c_int, id: []const u8) clay.HollowClayNode {
+            var node = std.mem.zeroes(clay.HollowClayNode);
+            node.kind = kind;
+            node.width = width;
+            node.height = height;
+            node.children = children;
+            node.id = str(id);
+            node.scrollbar_thumb_size = 1;
+            return node;
+        }
+    };
+    var lower: ClaySurface = .{ .owner_index = 1, .area = .{ .x = 0, .y = 0, .width = 200, .height = 200 } };
+    var upper: ClaySurface = .{ .owner_index = 2, .area = .{ .x = 60, .y = 0, .width = 200, .height = 200 } };
+    defer lower.deinit();
+    defer upper.deinit();
+    lower.context = clay.hollow_clay_create();
+    upper.context = clay.hollow_clay_create();
+    lower.nodes[0] = static.box(0, 100, 100, 1, "layout:1:root");
+    lower.nodes[0].scrollbar_id = static.str("layout:1:bar");
+    lower.nodes[1] = static.box(1, 100, 40, 0, "layout:1:row");
+    lower.nodes[1].clickable = true;
+    lower.len = 2;
+    upper.nodes[0] = static.box(0, 50, 50, 1, "layout:2:root");
+    upper.nodes[1] = static.box(1, 50, 20, 0, "layout:2:row");
+    upper.nodes[1].clickable = true;
+    upper.len = 2;
+    _ = lower.layout(200, 200, 8, 19, 0);
+    _ = upper.layout(200, 200, 8, 19, 0);
+    try std.testing.expect(!clay.hollow_clay_failed(lower.context) and !clay.hollow_clay_failed(upper.context));
+    g_overlay_surfaces[0] = &lower;
+    g_overlay_surfaces[1] = &upper;
+    g_overlay_surface_count = 2;
+    defer g_overlay_surface_count = 0;
+
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlay(5, 5).?.id);
+    try std.testing.expectEqualStrings("layout:2:row", hitTestOverlay(70, 10).?.id);
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlay(70, 30).?.id);
+    try std.testing.expect(hitTestOverlay(150, 150) == null);
+    // A higher overlay's panel beats clickable rows beneath it for the wheel.
+    try std.testing.expectEqualStrings("layout:2:root", hitTestOverlayWheel(70, 30).?.id);
+    try std.testing.expectEqual(@as(usize, 2), hitTestOverlayWheel(70, 30).?.stack_index);
+    try std.testing.expectEqualStrings("layout:1:row", hitTestOverlayWheel(5, 30).?.id);
+    try std.testing.expectEqualStrings("layout:1:root", hitTestOverlayWheel(5, 60).?.id);
+    try std.testing.expect(hitTestOverlayWheel(150, 150) == null);
+
+    const scrollbar = hitTestRoutableOverlayScrollbar(95, 60).?;
+    try std.testing.expectEqualStrings("layout:1:bar", scrollbar.id);
+    try std.testing.expectEqual(@as(usize, 1), scrollbar.stack_index);
+    try std.testing.expectEqual(@as(f32, 92), scrollbar.x);
+    // A higher overlay's clickable row covers the lower scrollbar.
+    try std.testing.expect(hitTestRoutableOverlayScrollbar(95, 10) == null);
+    try std.testing.expect(findOverlayScrollbar("layout:1:bar", 1) != null);
+    try std.testing.expect(findOverlayScrollbar("layout:1:bar", 2) == null);
+    try std.testing.expectEqual(@as(f32, 0), overlayScrollbarRatio(scrollbar, 60, 10));
 }
 
 // Shared paint interpretation for overlay and sidebar rows. Callers retain
@@ -1933,7 +1938,7 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
-        if (seg.id) |id| cacheOverlayHitRegion(id, seg.text, seg_x, bg_y, seg_w, bg_h);
+        if (seg.id) |id| cacheSidebarHitRegion(id, seg.text, .{ .x = seg_x, .y = bg_y, .width = seg_w, .height = bg_h });
     }
 }
 
@@ -2545,6 +2550,9 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 }
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
+    g_overlay_surface_count = 0;
+    g_sidebar_hits.panel = null;
+    g_sidebar_hits.count = 0;
     const ctx = g_widget_render_ctx orelse return;
     const scratch = &g_bar_widget_scratch;
     const api = runtime.context.api;
@@ -2635,6 +2643,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         const sidebar_border = sidebar_style.border orelse ghostty.ColorRgb{ .r = 122, .g = 162, .b = 247 };
         drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, sidebar_bg.r, sidebar_bg.g, sidebar_bg.b, sidebar_style.alpha orelse 235);
         drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, sidebar_border.r, sidebar_border.g, sidebar_border.b, 255);
+        g_sidebar_hits.panel = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
 
         api.get_field(state, sidebar_idx, "rows");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
@@ -2696,10 +2705,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     }
     pop(api, state, 1);
 
-    g_overlay_hit_cache = .{ .enabled = true };
-    g_overlay_scrollbar_cache = .{};
-    g_overlay_scroll_cache = .{};
-
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
@@ -2711,7 +2716,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 break;
             }
             if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                g_overlay_render_stack_index = @intCast(stack_i);
                 const overlay_idx = absoluteIndex(api, state, -1);
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
@@ -2750,6 +2754,10 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
                     }
                     drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h);
+                    if (g_overlay_surface_count < g_overlay_surfaces.len) {
+                        g_overlay_surfaces[g_overlay_surface_count] = surface.?;
+                        g_overlay_surface_count += 1;
+                    }
                     reportClayMeasurements(runtime, ui_idx, surface.?);
                 }
             }
@@ -2915,112 +2923,16 @@ fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32, modi
     return hit;
 }
 
-fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
-    const cache = &g_overlay_hit_cache;
-    if (!cache.enabled or cache.hit_count == 0) {
-        app.emitLuaBuiltInEvent("overlay:leave", .none);
-        return;
-    }
-    var idx = cache.hit_count;
-    while (idx > 0) {
-        idx -= 1;
-        const region = cache.hits[idx];
-        if (region.width <= 0) continue;
-        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
-        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        if (region.node_id) |id| {
-            app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{
-                .id = id,
-                .index = region.stack_index,
-            } });
-        }
-        return;
-    }
-    app.emitLuaBuiltInEvent("overlay:leave", .none);
-}
-
-fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?OverlayHit {
-    const cache = &g_overlay_hit_cache;
-    if (!cache.enabled or cache.hit_count == 0) return null;
-    var idx = cache.hit_count;
-    while (idx > 0) {
-        idx -= 1;
-        const region = cache.hits[idx];
-        if (region.width <= 0) continue;
-        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
-        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        if (region.node_id) |id| return .{ .id = id, .stack_index = region.stack_index };
-    }
-    return null;
-}
-
-fn findOverlayScrollbar(id: []const u8, stack_index: usize) ?*const CachedOverlayScrollbar {
-    var idx = g_overlay_scrollbar_cache.count;
-    while (idx > 0) {
-        idx -= 1;
-        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
-        if (scrollbar.id) |scrollbar_id| {
-            if (scrollbar.stack_index == stack_index and std.mem.eql(u8, scrollbar_id, id)) return scrollbar;
-        }
-    }
-    return null;
-}
-
-fn hitTestOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScrollbar {
-    var idx = g_overlay_scrollbar_cache.count;
-    while (idx > 0) {
-        idx -= 1;
-        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
-        if (mouse_x < scrollbar.x or mouse_x >= scrollbar.x + scrollbar.width) continue;
-        if (mouse_y < scrollbar.y or mouse_y >= scrollbar.y + scrollbar.height) continue;
-        return scrollbar;
-    }
-    return null;
-}
-
-fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScrollbar {
-    const scrollbar = hitTestOverlayScrollbar(mouse_x, mouse_y) orelse return null;
-    if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
-        if (hit.stack_index > scrollbar.stack_index) return null;
-    }
-    return scrollbar;
-}
-
-test "overlay scrollbar routes without clickable row and owns its id" {
-    g_overlay_hit_cache = .{ .enabled = true };
-    g_overlay_scrollbar_cache = .{};
-    g_overlay_render_stack_index = 1;
-    defer {
-        g_overlay_hit_cache = .{};
-        g_overlay_scrollbar_cache = .{};
-        g_overlay_render_stack_index = 0;
-    }
-    var id = "workspace:scrollbar".*;
-    cacheOverlayScrollbarRow(&id, 10, 20, 8, 100, false, 0.0, 0.5, .{ .r = 0, .g = 0, .b = 0 }, .{ .r = 0, .g = 0, .b = 0 });
-    @memset(&id, 'x');
-    const scrollbar = hitTestRoutableOverlayScrollbar(12, 30).?;
-    try std.testing.expectEqualStrings("workspace:scrollbar", scrollbar.id.?);
-    try std.testing.expect(findOverlayScrollbar("workspace:scrollbar", 1) != null);
-    try std.testing.expect(hitTestRoutableOverlayScrollbar(30, 30) == null);
-    cacheOverlayHitRegion("row", "", 0, 0, 30, 150);
-    try std.testing.expect(hitTestRoutableOverlayScrollbar(12, 30) != null);
-    g_overlay_render_stack_index = 2;
-    cacheOverlayHitRegion("upper", "", 0, 0, 30, 150);
-    try std.testing.expect(hitTestRoutableOverlayScrollbar(12, 30) == null);
-}
-
-fn overlayScrollbarRatio(scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
-    const thumb_height = if (scrollbar.has_thumb) scrollbar.thumb_height else 0;
-    const travel = @max(@as(f32, 0), scrollbar.height - thumb_height);
+fn overlayScrollbarRatio(scrollbar: OverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
+    const travel = @max(@as(f32, 0), scrollbar.height - scrollbar.thumb_height);
     if (travel == 0) return 0;
     const thumb_y = std.math.clamp(pointer_y - grab_y, scrollbar.y, scrollbar.y + travel);
     return (thumb_y - scrollbar.y) / travel;
 }
 
-fn emitOverlayScrollbar(app: *App, scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) void {
-    const id = scrollbar.id orelse return;
+fn emitOverlayScrollbar(app: *App, scrollbar: OverlayScrollbar, pointer_y: f32, grab_y: f32) void {
     app.emitLuaBuiltInEvent("overlay:scrollbar", .{ .overlay_scrollbar = .{
-        .id = id,
+        .id = scrollbar.id,
         .ratio = overlayScrollbarRatio(scrollbar, pointer_y, grab_y),
         .index = scrollbar.stack_index,
     } });
@@ -5208,6 +5120,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
         setMouseCursorHidden(false);
+        updateSidebarHover(app, 0, 0, 0, true);
         return;
     }
 
@@ -5619,11 +5532,12 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
         if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
-            const id = scrollbar.id orelse return;
+            const id = scrollbar.id;
+            if (id.len > g_overlay_scrollbar_drag_id.len) return;
             g_overlay_scrollbar_drag_id_len = id.len;
             fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
             g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
-            const on_thumb = scrollbar.has_thumb and event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
+            const on_thumb = event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
             g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
             if (builtin.os.tag == .windows) {
                 const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
@@ -5642,6 +5556,20 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             } });
             return;
         }
+    }
+
+    // The sidebar panel is opaque: presses on it never reach the terminal.
+    if (action == .press and sidebarContains(event.mouse_x, event.mouse_y)) {
+        if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            if (hitTestSidebar(event.mouse_x, event.mouse_y)) |id| {
+                app.emitLuaBuiltInEvent("sidebar:click", .{ .sidebar_node = .{
+                    .id = id,
+                    .mods = ghosttyMods(event.modifiers),
+                    .shifted = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0,
+                } });
+            }
+        }
+        return;
     }
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
@@ -5885,6 +5813,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
+        updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
@@ -5895,6 +5824,16 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y) != null or
         hitTestOverlay(event.mouse_x, event.mouse_y) != null)
     {
+        updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
+        g_scrollbar_hover_pane = null;
+        g_hover_hyperlink = false;
+        setTextSelectionCursor(.arrow);
+        return;
+    }
+
+    updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, false);
+    // Drags that started in a pane keep updating across the sidebar.
+    if (g_mouse_button_down == null and sidebarContains(event.mouse_x, event.mouse_y)) {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);

@@ -15,7 +15,7 @@ pub fn choices(kind: Kind, field: []const u8) ?[]const []const u8 {
         else => &.{ "left", "right", "up", "down" },
     };
     if (std.mem.eql(u8, field, "level")) return &.{ "info", "warn", "error", "success" };
-    if (std.mem.eql(u8, field, "surface")) return &.{ "topbar", "bottombar", "overlay" };
+    if (std.mem.eql(u8, field, "surface")) return &.{ "topbar", "bottombar", "sidebar", "overlay" };
     if (std.mem.eql(u8, field, "event")) return &.{ "command_started", "command_finished", "process_exited", "status_changed", "pane_closed" };
     return null;
 }

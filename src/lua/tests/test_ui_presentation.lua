@@ -98,6 +98,59 @@ describe("shared presentation adapters", function()
     assert.is_nil(sidebar.rows[1][1].bg)
   end)
 
+  it("routes sidebar segment clicks and hover to span handlers", function()
+    local clicks, entered, left = {}, 0, 0
+    ui.sidebar.mount(ui.sidebar.new({
+      render = function()
+        return ui.column({
+          ui.row({
+            ui.text("go", {
+              id = "go",
+              fg = "#00ff00",
+              hover = { fg = "#ff0000" },
+              on_click = function(event)
+                clicks[#clicks + 1] = event.id
+              end,
+              on_mouse_enter = function()
+                entered = entered + 1
+              end,
+              on_mouse_leave = function()
+                left = left + 1
+              end,
+            }),
+          }),
+          ui.row({
+            ui.text("auto", {
+              on_click = function(event)
+                clicks[#clicks + 1] = event.id
+              end,
+            }),
+          }),
+        })
+      end,
+    }))
+    local sidebar = ui._sidebar_state()
+    assert.equals("go", sidebar.rows[1][1].id)
+    assert.equals("#00ff00", sidebar.rows[1][1].fg)
+    local auto_id = sidebar.rows[2][1].id
+    assert.equals("sidebar:auto:1", auto_id)
+
+    hollow._emit_builtin_event("sidebar:hover", { id = "go" })
+    assert.equals(1, entered)
+    assert.equals("#ff0000", ui._sidebar_state().rows[1][1].fg)
+    hollow._emit_builtin_event("sidebar:click", { id = "go" })
+    hollow._emit_builtin_event("sidebar:click", { id = auto_id })
+    assert.same({ "go", auto_id }, clicks)
+    hollow._emit_builtin_event("sidebar:leave", {})
+    assert.equals(1, left)
+    assert.equals("#00ff00", ui._sidebar_state().rows[1][1].fg)
+
+    ui.sidebar.unmount()
+    assert.is_nil(ui._sidebar_state())
+    hollow._emit_builtin_event("sidebar:click", { id = "go" })
+    assert.equals(2, #clicks)
+  end)
+
   it("resolves each styled sidebar row once before adapting text and paint", function()
     ui.sidebar.mount(ui.sidebar.new({
       render = function()

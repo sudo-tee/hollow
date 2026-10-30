@@ -53,6 +53,9 @@ function M.hovered_key(surface)
   if surface == "bottombar" then
     return "bottombar_hovered_id"
   end
+  if surface == "sidebar" then
+    return "sidebar_hovered_id"
+  end
   return nil
 end
 
@@ -64,6 +67,9 @@ function M.hovered_shifted_key(surface)
   end
   if surface == "bottombar" then
     return "bottombar_hovered_shifted"
+  end
+  if surface == "sidebar" then
+    return "sidebar_hovered_shifted"
   end
   return nil
 end
@@ -150,7 +156,7 @@ function M.install(ui, active_widget, invalidate)
   end
   function ui.handle_bar_node_event(kind, payload)
     local surface = kind:match("^(%a+bar):")
-    if surface ~= "topbar" and surface ~= "bottombar" then
+    if surface ~= "topbar" and surface ~= "bottombar" and surface ~= "sidebar" then
       return
     end
     local key = M.hovered_key(surface)

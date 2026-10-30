@@ -430,6 +430,10 @@ Sidebar options:
 }
 ```
 
+Sidebar spans take the same `id`, `on_click`, `on_mouse_enter`,
+`on_mouse_leave` and `hover` fields as bar spans. They emit `sidebar:hover`,
+`sidebar:leave` and `sidebar:click`.
+
 ## Overlays
 
 ```lua
