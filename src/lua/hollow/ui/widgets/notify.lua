@@ -144,28 +144,24 @@ function ui.notify.show(message, opts)
     if not opts.chrome then
       chrome.border = notification_border(theme, level)
     end
-    local padding = box.normalize(chrome.padding)
-    local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-    padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
-    padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-    return ui.components.column(
-      { ui.components.text(text, notification_style(theme, level), { wrap = "none" }) },
-      {
-        id = "notify:" .. tostring(widget._toast_id),
-        label = text,
-        padding = padding,
-        style = chrome,
-        on_click = function()
-          if action and type(action.fn) == "function" then
-            action.fn()
-          end
-          if widget._activity_id then
-            hollow.activity.dismiss(widget._activity_id)
-          end
-          ui.close_overlay_widget(widget)
-        end,
-      }
-    )
+    return ui.components.panel({
+      id = "notify:" .. tostring(widget._toast_id),
+      label = text,
+      theme = theme,
+      ctx = ctx,
+      inset = "modal",
+      chrome = chrome,
+      on_click = function()
+        if action and type(action.fn) == "function" then
+          action.fn()
+        end
+        if widget._activity_id then
+          hollow.activity.dismiss(widget._activity_id)
+        end
+        ui.close_overlay_widget(widget)
+      end,
+      ui.components.text(text, notification_style(theme, level), { wrap = "none" }),
+    })
   end
   ui.notify._next_toast_id = (ui.notify._next_toast_id or 0) + 1
   widget._toast_id = ui.notify._next_toast_id

@@ -160,24 +160,27 @@ function M.modal(spec)
       render = function(ctx)
         local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
         widget._layout_surface.frame.margin = box.normalize(chrome.margin)
-        local padding = box.normalize(chrome.padding)
-        local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-        padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
-        padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
         local content, preferred_height = spec.render(theme, state, ctx)
+        local panel = ui.components.panel({
+          id = "dialog",
+          label = spec.title or "Confirmation",
+          theme = theme,
+          ctx = ctx,
+          inset = "modal",
+          chrome = chrome,
+          content,
+        })
         if spec.layout_refresh_after then
           schedule(spec.layout_refresh_after())
         end
         if preferred_height and not shared.normalize_overlay_size(spec.height) then
-          widget._layout_surface.frame.height = (preferred_height + padding.top + padding.bottom)
-            / cell_h
+          widget._layout_surface.frame.height = (
+            preferred_height
+            + panel.padding.top
+            + panel.padding.bottom
+          ) / (ctx.cell_h or 19)
         end
-        return ui.components.column({ content }, {
-          id = "dialog",
-          label = spec.title or "Confirmation",
-          padding = padding,
-          style = chrome,
-        })
+        return panel
       end,
     })
   end

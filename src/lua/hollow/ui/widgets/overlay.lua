@@ -97,16 +97,15 @@ function ui.overlay.push(widget)
         local palette = widget._palette or shared.palette(widget._kind or "overlay")
         local chrome = overlay_surface_style(widget.style, widget.chrome, palette) or {}
         surface.frame.margin = box.normalize(chrome.margin)
-        -- Base insets match the former native overlay panel.
-        local padding = box.normalize(chrome.padding)
-        local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-        padding.left, padding.right = padding.left + cell_w * 0.5, padding.right + cell_w * 0.5
-        padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-        return ui.components.column({ widget.render(ctx) }, {
+        return ui.components.panel({
           id = "dialog",
-          padding = padding,
+          theme = palette,
+          ctx = ctx,
+          inset = "overlay",
+          padding = chrome.padding,
           -- Notification groups provide their own per-toast chrome.
-          style = widget._notify and {} or chrome,
+          chrome = not widget._notify and chrome or false,
+          widget.render(ctx),
         })
       end,
     })
