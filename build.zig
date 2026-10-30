@@ -58,7 +58,38 @@ fn addNativeRuntime(b: *std.Build, module: *std.Build.Module, os_tag: std.Target
     }
 }
 
+// Every Lua file under src/lua/hollow, as paths relative to src/. lua_bridge.zig
+// embeds each one and derives its module name from the path.
+fn luaModulePaths(b: *std.Build) []const []const u8 {
+    const io = b.graph.io;
+    var dir = b.root.openDir(io, "src/lua/hollow", .{ .iterate = true }) catch |err|
+        std.debug.panic("cannot open src/lua/hollow: {s}", .{@errorName(err)});
+    defer dir.close(io);
+    var walker = dir.walk(b.allocator) catch @panic("OOM");
+    defer walker.deinit();
+    var paths: std.ArrayList([]const u8) = .empty;
+    // Configure results are cached; rerun it when a Lua file is added or removed.
+    b.dependOnDirectoryContents(b.path("src/lua/hollow"));
+    while (walker.next(io) catch |err| std.debug.panic("cannot walk src/lua/hollow: {s}", .{@errorName(err)})) |entry| {
+        if (entry.kind == .directory) {
+            b.dependOnDirectoryContents(b.path(b.fmt("src/lua/hollow/{s}", .{entry.path})));
+            continue;
+        }
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".lua")) continue;
+        const path = b.fmt("lua/hollow/{s}", .{entry.path});
+        std.mem.replaceScalar(u8, path, '\\', '/');
+        paths.append(b.allocator, path) catch @panic("OOM");
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, z: []const u8) bool {
+            return std.mem.lessThan(u8, a, z);
+        }
+    }.lessThan);
+    return paths.items;
+}
+
 pub fn build(b: *std.Build) void {
+    const lua_modules = luaModulePaths(b);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     @import("src/cli_build_steps.zig").add(b, target, optimize);
@@ -120,6 +151,7 @@ pub fn build(b: *std.Build) void {
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    launcher_build_options.addOption([]const []const u8, "lua_modules", lua_modules);
     addShellIntegrationOptions(b, target, optimize, launcher_build_options, launcher_root_module);
     launcher_build_options.addOption(bool, "launcher_mode", true);
     launcher_build_options.addOption(bool, "headless", false);
@@ -140,6 +172,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    build_options.addOption([]const []const u8, "lua_modules", lua_modules);
     addShellIntegrationOptions(b, target, optimize, build_options, root_module);
     build_options.addOption(bool, "launcher_mode", false);
     build_options.addOption(bool, "headless", false);
@@ -252,6 +285,7 @@ pub fn build(b: *std.Build) void {
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
         gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+        gui_build_options.addOption([]const []const u8, "lua_modules", lua_modules);
         addShellIntegrationOptions(b, target, optimize, gui_build_options, gui_root_module);
         gui_build_options.addOption(bool, "launcher_mode", false);
         gui_build_options.addOption(bool, "headless", false);

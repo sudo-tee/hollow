@@ -16,8 +16,8 @@ in Lua panes, running Lua panes inside the agent process, or reactive state/hook
 ## 0. Ground rules
 
 - This plan **does** change Zig and the renderer, unlike `ui-master-plan.md`.
-  New Lua modules are allowed but must be added to the packaged module registry
-  in `src/lua_bridge.zig` (around line 158).
+  New Lua modules are allowed; files under `src/lua/hollow` are embedded
+  automatically.
 - Terminal panes must behave exactly as before. Any change in terminal
   rendering, input, or lifecycle output is a bug.
 - Tests: `make test` (Zig), `make test-lua` (Busted). After every step both are
@@ -343,7 +343,7 @@ hollow.ui.pane.get(id)           -- instance or nil
 hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by restore
 ```
 
-- New module `hollow.ui.widgets.pane` (register in `src/lua_bridge.zig`).
+- New module `hollow.ui.widgets.pane` (embedded automatically).
 - `render` output goes through the same children rules as overlays
   (`collect_rows`) and `shared.serialize_surface_row` with namespace
   `"pane:<id>:"`.

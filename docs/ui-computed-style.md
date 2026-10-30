@@ -326,8 +326,8 @@ CSS-order arrays and false resets. Token completions list built-in names while
 still allowing custom palette keys.
 
 Per-component stylesheets are described in [Stylesheets](#stylesheets).
-`attention` and `notify` keep one-line dynamic color helpers. New embedded Lua
-modules must be registered in `src/lua_bridge.zig`.
+`attention` and `notify` keep one-line dynamic color helpers. Lua files under
+`src/lua/hollow` are embedded automatically; see `src/lua_bridge.zig`.
 
 Run `emmylua_check scripts/typecheck --warnings-as-errors` for focused authoring
 fixtures. Repository-wide analysis still has unrelated existing diagnostics.
