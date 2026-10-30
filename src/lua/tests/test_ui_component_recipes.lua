@@ -310,10 +310,16 @@ describe("unified component styling", function()
     assert.equals("#234567", clay.find(ui, ":dialog").bg)
   end)
 
-  it("refreshes notification text and border from the same level token", function()
+  it("refreshes notification text and subdued borders from level colors", function()
     ui.notify.show("message", { level = "warn" })
     hollow.config.set({
-      theme = { ui = { widgets = { notify = { notify_levels = { warn = "#abcdef" } } } } },
+      theme = {
+        ui = {
+          widgets = {
+            notify = { panel_bg = "#202020", notify_levels = { warn = "#abcdef" } },
+          },
+        },
+      },
     })
     local widget = ui._overlay_state()[1]
     assert.equals("#abcdef", clay.text_node(ui, "[WARN] message").fg)
@@ -323,7 +329,7 @@ describe("unified component styling", function()
         border = node.border
       end
     end
-    assert.equals("#abcdef", border)
+    assert.equals("#47505a", border)
   end)
 
   it("does not retain released live palette or chrome tables", function()

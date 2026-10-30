@@ -105,7 +105,8 @@ function ui.overlay.push(widget)
         return ui.layout.column({ widget.render(ctx) }, {
           id = "dialog",
           padding = padding,
-          style = chrome,
+          -- Notification groups provide their own per-toast chrome.
+          style = widget._notify and {} or chrome,
         })
       end,
     })

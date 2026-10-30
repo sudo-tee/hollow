@@ -49,6 +49,24 @@ describe("UI notify test suite", function()
       hollow.ui.notify.clear()
     end)
 
+    it("keeps group unpainted and uses subdued borders on individual toasts", function()
+      local ui = hollow.ui
+      local theme = {
+        panel_bg = "#202020",
+        notify_levels = { info = "#8090a0", error = "#8090a0" },
+      }
+      ui.notify.info("hello", { ttl = 0, theme = theme })
+      ui.notify.error("failure", { ttl = 0, theme = theme })
+      local group = clay.find(ui, ":dialog")
+      assert.is_nil(group.border)
+      assert.is_nil(group.bg)
+      for _, text in ipairs({ "[INFO] hello", "[ERROR] failure" }) do
+        local toast = clay.label(ui, text)
+        assert.equals("#3b3f44", toast.border)
+      end
+      ui.notify.clear()
+    end)
+
     it("expires lower toasts before snapshotting and keeps draw owner indices stable", function()
       local ui = hollow.ui
       local start = env.recorded.now_ms

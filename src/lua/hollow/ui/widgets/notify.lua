@@ -17,6 +17,18 @@ local function notification_style(theme, level)
   return styles(theme, { variant = variant }).message
 end
 
+local function notification_border(theme, level)
+  local foreground = theme.notify_levels[level] or theme.title
+  local background = theme.panel_bg
+  local channels = {}
+  for index = 2, 6, 2 do
+    local fg = tonumber(foreground:sub(index, index + 1), 16)
+    local bg = tonumber(background:sub(index, index + 1), 16)
+    channels[#channels + 1] = math.floor(bg + (fg - bg) * 0.28 + 0.5)
+  end
+  return string.format("#%02x%02x%02x", unpack(channels))
+end
+
 ---@param level string|nil
 ---@param title string|nil
 ---@param message string
@@ -104,11 +116,7 @@ function ui.notify.show(message, opts)
     end,
     on_unmount = invalidate_toasts,
     align = opts.align or "top_right",
-    chrome = opts.chrome or shared.theme_overlay_chrome(
-      theme,
-      theme.notify_levels[level] and ("notify_levels." .. level) or "title",
-      2
-    ),
+    chrome = opts.chrome or shared.theme_overlay_chrome(theme, nil, 2),
     backdrop = opts.backdrop,
     on_key = function(key)
       if key == "escape" then
@@ -133,6 +141,9 @@ function ui.notify.show(message, opts)
   widget._toast_render = function(ctx)
     local text = notify_text(level, opts.title, message, action)
     local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
+    if not opts.chrome then
+      chrome.border = notification_border(theme, level)
+    end
     local padding = box.normalize(chrome.padding)
     local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
     padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
