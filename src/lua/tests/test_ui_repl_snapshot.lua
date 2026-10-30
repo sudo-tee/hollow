@@ -32,4 +32,34 @@ describe("REPL snapshots", function()
     file:close()
     assert.same(expected, snapshots)
   end)
+
+  it("preserves a scrolled transcript viewport", function()
+    local ui = harness.boot().hollow.ui
+    ui.lua_repl.open()
+    require("hollow.state").get().host_api.clipboard_read = function()
+      return "for i = 1, 50 do print('line-' .. i) end"
+    end
+    assert.is_true(ui.dispatch_overlay_key("v", 2))
+    assert.is_true(ui.dispatch_overlay_key("enter", 0))
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local nodes = json.decode(
+      json.encode(surface:snapshot({ width = 1000, height = 700, cell_w = 10, cell_h = 20 }))
+    )
+    local found
+    for _, node in ipairs(nodes) do
+      if node.scrollbar_id and node.scrollbar_id:match("repl:output:scrollbar$") then
+        found = true
+      end
+      for _, field in ipairs({ "id", "reveal", "scrollbar_id" }) do
+        if node[field] then
+          node[field] = node[field]:gsub("^layout:%d+:", "test:")
+        end
+      end
+    end
+    assert.is_true(found)
+    local file = assert(io.open("src/lua/tests/fixtures/repl_scroll_snapshot.json", "r"))
+    local expected = json.decode(file:read("*a"))
+    file:close()
+    assert.same(expected, nodes)
+  end)
 end)
