@@ -122,6 +122,48 @@ describe("hierarchical Clay layout", function()
     end, "invalid stack direction")
   end)
 
+  it("renders panel chrome and inset with unit-aware padding", function()
+    local theme = { fg = "#111111", panel_bg = "#222222", panel_border = "#333333", radius = 3 }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.panel({
+          id = "panel",
+          label = "Panel",
+          inset = "modal",
+          padding = { x = "0.5ch", y = "0.5lh" },
+          c.text("content"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(2, #nodes)
+    assert.equals("Panel", nodes[1].label)
+    assert.equals("#222222", nodes[1].bg)
+    assert.equals("#333333", nodes[1].border)
+    assert.equals(3, nodes[1].radius)
+    assert.same({ left = 20, right = 20, top = 30, bottom = 20 }, nodes[1].padding)
+    local plain = layout
+      .new({
+        theme = theme,
+        render = function()
+          return c.panel({
+            inset = "none",
+            chrome = false,
+            padding = "1ch",
+            style = { bg = "#abcdef" },
+          })
+        end,
+      })
+      :snapshot({ cell_w = 10 })
+    assert.equals("#abcdef", plain[1].bg)
+    assert.is_nil(plain[1].border)
+    assert.same({ left = 10, right = 10, top = 10, bottom = 10 }, plain[1].padding)
+    assert.has_error(function()
+      c.panel({ inset = "wrong" })
+    end, "invalid panel inset")
+  end)
+
   it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()
     local theme = {
       fg = "#111111",
