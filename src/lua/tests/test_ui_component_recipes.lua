@@ -88,6 +88,55 @@ describe("unified component styling", function()
     assert.is_nil(nodes[4].hover_bg)
   end)
 
+  it("applies scoped solid button states and forwards layout props", function()
+    local palette = {
+      fg = "#111111",
+      muted = "#222222",
+      hover_fg = "#eeeeee",
+      hover_bg = "#333333",
+      primary_fg = "#ffffff",
+      primary_bg = "#444444",
+      styles = { button = { root = { radius = 9 } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.column({
+          ui.components.button({
+            appearance = "solid",
+            id = "a",
+            text = "Go",
+            variant = "primary",
+            selected = true,
+            width = 80,
+            label = "Launch",
+            on_click = function() end,
+          }),
+          ui.components.button({
+            appearance = "solid",
+            id = "b",
+            text = "No",
+            disabled = true,
+            on_click = function() end,
+          }),
+          ui.components.button({ id = "c", text = "Legacy", variant = "primary" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals(80, nodes[2].width)
+    assert.equals("Launch", nodes[2].label)
+    assert.equals(9, nodes[2].radius)
+    assert.equals("#333333", nodes[2].bg)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#222222", nodes[5].fg)
+    assert.is_nil(nodes[4].clickable)
+    assert.is_nil(nodes[4].hover_bg)
+    assert.equals("#444444", nodes[6].bg)
+    assert.equals(9, nodes[6].radius)
+  end)
+
   it("does not retain disabled overlay callbacks from a previous enabled render", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({

@@ -10,6 +10,7 @@ local M = {}
 local lazy = {
   badge = "hollow.ui.components.badge",
   dialog = "hollow.ui.components.dialog",
+  hints = "hollow.ui.components.hints",
   icon = "hollow.ui.components.icon",
   input = "hollow.ui.components.input",
   kbd = "hollow.ui.components.kbd",
@@ -152,13 +153,26 @@ function M.button(opts)
     return M.column({ M.text(opts.text, sheet.merge(style), { wrap = "none" }) }, root)
   end
   assert(opts.appearance == nil or opts.appearance == "solid", "unknown button appearance")
-  local span = ui.button(opts)
-  return M.column({ M.text(span.text, { fg = span.style.fg, bold = span.style.bold }) }, {
-    id = opts.id,
-    label = span.text,
-    style = span.style,
-    on_click = not opts.disabled and opts.on_click or nil,
-  })
+  local root = {}
+  for key, value in pairs(opts) do
+    root[key] = value
+  end
+  root.label = opts.label or opts.text or ""
+  root.on_click = not opts.disabled and opts.on_click or nil
+  if opts.appearance == "solid" or opts.selected or opts.hovered then
+    local theme = opts.theme or props.scope().theme
+    local recipe = require("hollow.ui.recipes.button")
+    root.style = ui.styled(theme, recipe(theme, opts).root, opts.style)
+    if opts.disabled then
+      root.style.hover = nil
+    end
+    return M.column({ M.text(opts.text, root.style, { wrap = "none" }) }, root)
+  end
+  -- Preserve raw legacy buttons, while recipe-backed legacy calls use the surface palette.
+  root.theme = opts.theme or props.scope().theme
+  local span = ui.button(root)
+  root.style = span.style
+  return M.column({ M.text(span.text, { fg = span.style.fg, bold = span.style.bold }) }, root)
 end
 
 function M.demo()

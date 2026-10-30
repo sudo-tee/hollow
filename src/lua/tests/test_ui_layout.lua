@@ -60,6 +60,30 @@ describe("hierarchical Clay layout", function()
     end, "unknown icon: unknown")
   end)
 
+  it("renders hints within the two-nodes-per-hint budget", function()
+    local theme = { fg = "#111111", muted = "#222222", panel_border = "#333333" }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.hints({
+          { "Enter", "open" },
+          { "Esc", "close" },
+          separator = " · ",
+          width = "grow",
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals(-1, nodes[1].width)
+    assert.equals("Enter", nodes[2].text)
+    assert.equals("#333333", nodes[2].fg)
+    assert.is_true(nodes[2].bold)
+    assert.equals(" open · ", nodes[3].text)
+    assert.equals("#222222", nodes[3].fg)
+    assert.equals(" close", nodes[5].text)
+  end)
+
   it("renders painted atoms in two nodes with theme and prop overrides", function()
     local clicked = 0
     local theme = {
