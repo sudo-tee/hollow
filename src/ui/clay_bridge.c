@@ -7,12 +7,19 @@ struct HollowClay {
     void *memory;
     float cell_w, cell_h;
     bool failed;
+    Clay_String error;
     HollowClayFrame frame;
     float width, height;
+    // Geometry of the latest layout, indexed like its input nodes.
+    int count;
+    Clay_ElementData bounds[HOLLOW_CLAY_MAX_NODES];
+    Clay_ElementData visible[HOLLOW_CLAY_MAX_NODES];
 };
 
 static void on_error(Clay_ErrorData error) {
-    ((HollowClay *)error.userData)->failed = true;
+    HollowClay *surface = error.userData;
+    if (!surface->failed) surface->error = error.errorText;
+    surface->failed = true;
 }
 
 static Clay_Dimensions measure(Clay_StringSlice text, Clay_TextElementConfig *config, void *data) {
@@ -24,20 +31,30 @@ static Clay_Dimensions measure(Clay_StringSlice text, Clay_TextElementConfig *co
     return (Clay_Dimensions){ codepoints * surface->cell_w, surface->cell_h };
 }
 
+#define HOLLOW_CLAY_ELEMENTS 2048
+
+static bool init_context(HollowClay *surface, int32_t elements) {
+    Clay_Context *previous = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(NULL);
+    Clay_SetMaxElementCount(elements);
+    Clay_SetMaxMeasureTextCacheWordCount(elements * 2);
+    uint32_t size = Clay_MinMemorySize();
+    void *memory = malloc(size);
+    if (!memory) { Clay_SetCurrentContext(previous); return false; }
+    if (previous == surface->context) previous = NULL;
+    free(surface->memory);
+    surface->memory = memory;
+    surface->context = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(size, memory),
+        (Clay_Dimensions){1, 1}, (Clay_ErrorHandler){on_error, surface});
+    Clay_SetMeasureTextFunction(measure, surface);
+    Clay_SetCurrentContext(previous);
+    return true;
+}
+
 HollowClay *hollow_clay_create(void) {
     HollowClay *surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
-    Clay_Context *previous = Clay_GetCurrentContext();
-    Clay_SetCurrentContext(NULL);
-    // Also accommodates the optional inspector without growing arenas at runtime.
-    Clay_SetMaxElementCount(2048);
-    Clay_SetMaxMeasureTextCacheWordCount(4096);
-    uint32_t size = Clay_MinMemorySize();
-    surface->memory = malloc(size);
-    if (!surface->memory) { Clay_SetCurrentContext(previous); free(surface); return NULL; }
-    surface->context = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(size, surface->memory),
-        (Clay_Dimensions){1, 1}, (Clay_ErrorHandler){on_error, surface});
-    Clay_SetMeasureTextFunction(measure, surface);
+    if (!init_context(surface, HOLLOW_CLAY_ELEMENTS)) { free(surface); return NULL; }
     return surface;
 }
 
@@ -56,42 +73,21 @@ static Clay_SizingAxis sizing(float value) {
 
 static float min_size(float value, float max) { return value < max ? value : max; }
 
-static Clay_ElementId node_id(HollowClayNode *node, int index) {
-    return node->id.length ? Clay_GetElementId(node->id) : CLAY_IDI("hollow.layout", index);
-}
-
-// Clay's update removes retired records with swapback while advancing its
-// cursor, leaving some swapped records behind. Bounded list windows can replace
-// every column each frame; prune absent IDs before that update so stale records
-// never exhaust the pinned library's fixed 100-record scroll array.
-static void prune_scroll_containers(HollowClay *surface, HollowClayNode *nodes, int count) {
-    uint32_t ids[512];
-    int length = 0;
-    for (int i = 0; i < count && length < 512; ++i)
-        if (nodes[i].scroll || nodes[i].scroll_x) ids[length++] = node_id(&nodes[i], i).id;
-    Clay__ScrollContainerDataInternalArray *records = &surface->context->scrollContainerDatas;
-    for (int i = 0; i < records->length;) {
-        bool present = false;
-        for (int j = 0; j < length; ++j)
-            if (records->internalArray[i].elementId == ids[j]) { present = true; break; }
-        if (present) ++i;
-        else Clay__ScrollContainerDataInternalArray_RemoveSwapback(records, i);
-    }
+static void hash_ids(HollowClayNode *nodes, int count) {
+    for (int i = 0; i < count; ++i)
+        nodes[i].element_id = nodes[i].id.length ? Clay_GetElementId(nodes[i].id) : CLAY_IDI("hollow.layout", i);
 }
 
 static void declare_node(HollowClayNode *nodes, int count, int *cursor, int depth, HollowClay *surface) {
     if (*cursor >= count || depth > 32) { surface->failed = true; return; }
     int index = (*cursor)++;
     HollowClayNode *node = &nodes[index];
-    Clay_ElementId id = node_id(node, index);
     if (node->kind == 2) {
         CLAY_TEXT(node->text, { .textColor = node->fg, .fontId = node->bold ? 1 : 0,
             .fontSize = (uint16_t)surface->cell_h, .lineHeight = (uint16_t)surface->cell_h,
             .wrapMode = (Clay_TextElementConfigWrapMode)node->wrap });
         return;
     }
-    Clay_Color bg = node->bg;
-    if (node->hover_bg.a && Clay_PointerOver(id)) bg = node->hover_bg;
     Clay_Sizing sizes = { sizing(node->width), sizing(node->height) };
     if (index == 0 && surface->frame.enabled) {
         float max_w = surface->width - surface->frame.margin.left - surface->frame.margin.right;
@@ -101,13 +97,16 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
         sizes.width = surface->frame.width > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.width, max_w)) : CLAY_SIZING_FIT(0, max_w);
         sizes.height = surface->frame.height > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.height, max_h)) : CLAY_SIZING_FIT(0, max_h);
     }
-    CLAY(id, {
+    // CLAY() opens the element before evaluating its declaration, so
+    // Clay_Hovered() refers to this node.
+    CLAY(node->element_id, {
         .userData = node,
         .layout = { .sizing = sizes,
             .padding = node->padding, .childGap = node->gap,
             .childAlignment = { .y = node->align_y == 1 ? CLAY_ALIGN_Y_CENTER : (node->align_y == 2 ? CLAY_ALIGN_Y_BOTTOM : CLAY_ALIGN_Y_TOP) },
             .layoutDirection = node->kind == 1 ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM },
-        .backgroundColor = bg, .cornerRadius = CLAY_CORNER_RADIUS(node->radius),
+        .backgroundColor = node->hover_bg.a && Clay_Hovered() ? node->hover_bg : node->bg,
+        .cornerRadius = CLAY_CORNER_RADIUS(node->radius),
         .border = { .color = node->border, .width = CLAY_BORDER_ALL(node->border_size) },
         // Clay clip flags opt into overflow sizing on that axis. Only scroll
         // viewports use them; the renderer clips framed panels independently.
@@ -155,9 +154,8 @@ static bool reveal_targets(HollowClayNode *nodes, int count) {
     for (int i = 0; i < count; ++i) {
         HollowClayNode *node = &nodes[i];
         if (!node->reveal.length || (!node->scroll && !node->scroll_x)) continue;
-        Clay_ElementId id = node_id(node, i);
-        Clay_ScrollContainerData scroll = Clay_GetScrollContainerData(id);
-        Clay_ElementData view = Clay_GetElementData(id);
+        Clay_ScrollContainerData scroll = Clay_GetScrollContainerData(node->element_id);
+        Clay_ElementData view = Clay_GetElementData(node->element_id);
         Clay_ElementData target = Clay_GetElementData(Clay_GetElementId(node->reveal));
         if (!scroll.found || !view.found || !target.found) continue;
         Clay_Vector2 before = *scroll.scrollPosition;
@@ -173,38 +171,6 @@ static bool reveal_targets(HollowClayNode *nodes, int count) {
     return changed;
 }
 
-Clay_RenderCommandArray hollow_clay_layout(HollowClay *surface, HollowClayNode *nodes, int count,
-    float width, float height, float cell_w, float cell_h, float mouse_x, float mouse_y,
-    float scroll_y, float delta_time) {
-    Clay_SetCurrentContext(surface->context);
-    surface->failed = false;
-    if (surface->cell_w != cell_w || surface->cell_h != cell_h) Clay_ResetMeasureTextCache();
-    surface->cell_w = cell_w;
-    surface->cell_h = cell_h;
-    surface->width = width;
-    surface->height = height;
-    Clay_SetLayoutDimensions((Clay_Dimensions){width, height});
-    Clay_SetPointerState((Clay_Vector2){mouse_x, mouse_y}, false);
-    prune_scroll_containers(surface, nodes, count);
-    Clay_UpdateScrollContainers(false, (Clay_Vector2){0, scroll_y}, delta_time);
-    Clay_RenderCommandArray commands = build_layout(surface, nodes, count, delta_time);
-    // Resolve caret visibility using actual Clay bounds, not Lua character-budget math.
-    // A second pass applies changed offsets before painting the same frame.
-    if (!surface->failed && reveal_targets(nodes, count)) commands = build_layout(surface, nodes, count, 0);
-    // Refresh overlaps against this layout, not last frame's geometry.
-    Clay_SetPointerState((Clay_Vector2){mouse_x, mouse_y}, false);
-    return commands;
-}
-
-bool hollow_clay_failed(HollowClay *surface) { return surface->failed; }
-
-void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame) { surface->frame = frame; }
-
-Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index) {
-    Clay_SetCurrentContext(surface->context);
-    return Clay_GetElementData(node_id(&nodes[index], index));
-}
-
 static void intersect_bounds(Clay_BoundingBox *bounds, Clay_BoundingBox clip, bool horizontal, bool vertical) {
     if (horizontal) {
         float right = min_size(bounds->x + bounds->width, clip.x + clip.width);
@@ -218,44 +184,95 @@ static void intersect_bounds(Clay_BoundingBox *bounds, Clay_BoundingBox clip, bo
     }
 }
 
-Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index) {
-    if (index < 0 || index >= count) return (Clay_ElementData){0};
-    Clay_ElementData result = hollow_clay_bounds(surface, nodes, index);
-    if (!result.found) return result;
-    intersect_bounds(&result.boundingBox, (Clay_BoundingBox){0, 0, surface->width, surface->height}, true, true);
-    // Recover the target's ancestors from preorder child counts. Sibling clips
-    // must not affect each other, and a framed panel is paint-clipped on both axes.
-    int ancestors[33], remaining[33], depth = 0;
-    for (int i = 0; i <= index; ++i) {
+// One preorder pass with a clip stack. Sibling clips never affect each other;
+// scroll viewports clip their axes and a framed panel is paint-clipped on both.
+static void record_bounds(HollowClay *surface, HollowClayNode *nodes, int count) {
+    Clay_BoundingBox clips[34];
+    int remaining[34], depth = 0;
+    Clay_BoundingBox host = { 0, 0, surface->width, surface->height };
+    surface->count = 0;
+    for (int i = 0; i < count; ++i) {
         while (depth > 0 && remaining[depth - 1] == 0) --depth;
-        if (i == index) break;
         if (depth > 0) --remaining[depth - 1];
+        Clay_BoundingBox clip = depth > 0 ? clips[depth - 1] : host;
+        Clay_ElementData element = Clay_GetElementData(nodes[i].element_id);
+        Clay_ElementData visible = element;
+        if (visible.found) {
+            intersect_bounds(&visible.boundingBox, clip, true, true);
+            visible.found = visible.boundingBox.width > 0 && visible.boundingBox.height > 0;
+        }
+        surface->bounds[i] = element;
+        surface->visible[i] = visible;
         if (nodes[i].children > 0) {
-            if (depth >= 33) return (Clay_ElementData){0};
-            ancestors[depth] = i;
+            if (depth >= 34) { surface->failed = true; return; }
+            bool panel = i == 0 && surface->frame.enabled;
+            if (element.found && (panel || nodes[i].scroll || nodes[i].scroll_x))
+                intersect_bounds(&clip, element.boundingBox, panel || nodes[i].scroll_x, panel || nodes[i].scroll);
+            clips[depth] = clip;
             remaining[depth++] = nodes[i].children;
         }
     }
-    for (int d = 0; d < depth; ++d) {
-        int i = ancestors[d];
-        bool panel = i == 0 && surface->frame.enabled;
-        if (!panel && !nodes[i].scroll && !nodes[i].scroll_x) continue;
-        Clay_ElementData parent = hollow_clay_bounds(surface, nodes, i);
-        if (parent.found) intersect_bounds(&result.boundingBox, parent.boundingBox,
-            panel || nodes[i].scroll_x, panel || nodes[i].scroll);
-    }
-    result.found = result.boundingBox.width > 0 && result.boundingBox.height > 0;
-    return result;
+    surface->count = count;
 }
 
-int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y) {
+Clay_RenderCommandArray hollow_clay_layout(HollowClay *surface, HollowClayNode *nodes, int count,
+    float width, float height, float cell_w, float cell_h, float mouse_x, float mouse_y,
+    float scroll_y, float delta_time) {
     Clay_SetCurrentContext(surface->context);
-    Clay_SetPointerState((Clay_Vector2){x, y}, false);
+    surface->failed = false;
+    surface->error = (Clay_String){0};
+    surface->count = 0;
+    if (count < 0 || count > HOLLOW_CLAY_MAX_NODES) {
+        surface->failed = true;
+        surface->error = CLAY_STRING("Layout exceeds the supported node count.");
+        return (Clay_RenderCommandArray){0};
+    }
+    if (surface->cell_w != cell_w || surface->cell_h != cell_h) Clay_ResetMeasureTextCache();
+    surface->cell_w = cell_w;
+    surface->cell_h = cell_h;
+    surface->width = width;
+    surface->height = height;
+    hash_ids(nodes, count);
+    Clay_SetLayoutDimensions((Clay_Dimensions){width, height});
+    Clay_SetPointerState((Clay_Vector2){mouse_x, mouse_y}, false);
+    Clay_UpdateScrollContainers(false, (Clay_Vector2){0, scroll_y}, delta_time);
+    Clay_RenderCommandArray commands = build_layout(surface, nodes, count, delta_time);
+    // Resolve caret visibility using actual Clay bounds, not Lua character-budget math.
+    // A second pass applies changed offsets before painting the same frame.
+    if (!surface->failed && reveal_targets(nodes, count)) commands = build_layout(surface, nodes, count, 0);
+    // Refresh overlaps against this layout, not last frame's geometry.
+    Clay_SetPointerState((Clay_Vector2){mouse_x, mouse_y}, false);
+    if (!surface->failed) record_bounds(surface, nodes, count);
+    return commands;
+}
+
+bool hollow_clay_failed(HollowClay *surface) { return surface->failed; }
+
+Clay_String hollow_clay_error(HollowClay *surface) { return surface->error; }
+
+void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame) { surface->frame = frame; }
+
+Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index) {
+    (void)nodes;
+    if (index < 0 || index >= surface->count) return (Clay_ElementData){0};
+    return surface->bounds[index];
+}
+
+Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index) {
+    (void)nodes;
+    if (index < 0 || index >= count || index >= surface->count) return (Clay_ElementData){0};
+    return surface->visible[index];
+}
+
+// Topmost clickable node under the point. Nodes are painted in preorder and
+// visible bounds already include every clipping ancestor.
+int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y) {
+    if (count > surface->count) count = surface->count;
     for (int i = count - 1; i >= 0; --i) {
-        if (!nodes[i].clickable || !Clay_PointerOver(node_id(&nodes[i], i))) continue;
-        Clay_ElementData visible = hollow_clay_visible_bounds(surface, nodes, count, i);
-        Clay_BoundingBox b = visible.boundingBox;
-        if (visible.found && x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) return i;
+        if (!nodes[i].clickable || !surface->visible[i].found) continue;
+        Clay_BoundingBox b = surface->visible[i].boundingBox;
+        if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) return i;
     }
     return -1;
 }
+

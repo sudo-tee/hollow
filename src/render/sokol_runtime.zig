@@ -34,6 +34,7 @@ const debug_timing = @import("debug_timing.zig");
 const color_math = @import("color_math.zig");
 const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
+const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
 
 fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
@@ -70,28 +71,19 @@ fn clayChannel(value: f32) u8 {
     return @intFromFloat(std.math.clamp(value, 0, 255));
 }
 
-fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
-    if (!g_clay_surface.active) return;
-    if (g_clay_surface.owner_index > 0) {
-        g_clay_surface.mouse_x = g_mouse_x - offset_x;
-        g_clay_surface.mouse_y = g_mouse_y - offset_y;
-    }
-    const commands = g_clay_surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+/// Framed overlay panel whose paint policy (full-bleed rows, subdued rounded
+/// outline) applies while painting its Clay commands.
+const ClayPaintPanel = struct {
+    bounds: clay.Clay_BoundingBox,
+    node: *const clay.HollowClayNode,
+    owner: usize,
+};
+
+/// Paints one Clay command array translated by the offset and clipped to
+/// `initial_clip`.
+fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArray, offset_x: f32, offset_y: f32, initial_clip: clay.Clay_BoundingBox, panel: ?ClayPaintPanel) void {
     var clips: [34]clay.Clay_BoundingBox = undefined;
-    clips[0] = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
-    if (g_clay_surface.frame.enabled) {
-        // Paint clipping must not enable Clay's horizontal overflow sizing.
-        const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
-        const x = @max(0, panel.x);
-        const y = @max(0, panel.y);
-        clips[0] = .{
-            .x = offset_x + x,
-            .y = offset_y + y,
-            .width = @max(0, @min(width, panel.x + panel.width) - x),
-            .height = @max(0, @min(height, panel.y + panel.height) - y),
-        };
-    }
-    const initial_clip = clips[0];
+    clips[0] = initial_clip;
     c.sgl_scissor_rect(@intFromFloat(initial_clip.x), @intFromFloat(initial_clip.y), @intFromFloat(initial_clip.width), @intFromFloat(initial_clip.height), true);
     defer c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
     var depth: usize = 0;
@@ -103,15 +95,13 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
             clay.CLAY_RENDER_COMMAND_TYPE_RECTANGLE => {
                 const rect = command.renderData.rectangle;
                 const color = rect.backgroundColor;
-                if (g_clay_surface.owner_index > 0 and g_clay_surface.frame.enabled) {
+                if (panel) |p| {
                     if (command.userData) |data| {
                         const node: *const clay.HollowClayNode = @ptrCast(@alignCast(data));
-                        var panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
-                        panel.x += offset_x;
-                        panel.y += offset_y;
-                        b = @import("../ui/clay_paint.zig").rectangleBounds(b, panel, @floatFromInt(g_clay_surface.nodes[0].border_size), g_clay_surface.owner_index, g_clay_surface.frame.enabled, node.full_bleed_x);
+                        b = clay_paint.rectangleBounds(b, p.bounds, @floatFromInt(p.node.border_size), p.owner, true, node.full_bleed_x);
                     }
                 }
+                b = clay_paint.snap(b);
                 drawRoundedRect(b.x, b.y, b.width, b.height, rect.cornerRadius.topLeft, clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
             },
             clay.CLAY_RENDER_COMMAND_TYPE_BORDER => {
@@ -120,11 +110,9 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
                 // Rounded legacy overlay chrome deliberately uses a subdued
                 // outline. Preserve that paint policy for the Clay panel only,
                 // not nested component borders or standalone surfaces.
-                const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
-                const is_panel = g_clay_surface.owner_index > 0 and g_clay_surface.frame.enabled and
-                    command.boundingBox.x == panel.x and command.boundingBox.y == panel.y and
-                    command.boundingBox.width == panel.width and command.boundingBox.height == panel.height;
+                const is_panel = if (panel) |p| command.userData == @as(?*anyopaque, @ptrCast(@constCast(p.node))) else false;
                 const alpha: u8 = if (is_panel and border.cornerRadius.topLeft > 0) 72 else clayChannel(color.a);
+                b = clay_paint.snap(b);
                 drawRoundedRectOutline(b.x, b.y, b.width, b.height, border.cornerRadius.topLeft, @floatFromInt(border.width.top), clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), alpha);
             },
             clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
@@ -135,13 +123,15 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
             },
             clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
                 const node: *const clay.HollowClayNode = @ptrCast(@alignCast(command.renderData.custom.customData orelse continue));
+                b = clay_paint.snap(b);
                 drawRoundedRect(b.x, b.y, b.width, b.height, 4, 48, 58, 76, 255);
-                drawRoundedRect(b.x, b.y, b.width * node.value, b.height, 4, 136, 192, 208, 255);
+                drawRoundedRect(b.x, b.y, @round(b.width * node.value), b.height, 4, 136, 192, 208, 255);
             },
             clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_START => {
                 if (depth + 1 >= clips.len) return;
                 const previous = clips[depth];
                 const clip = command.renderData.clip;
+                b = clay_paint.snap(b);
                 const x = if (clip.horizontal) @max(previous.x, b.x) else previous.x;
                 const y = if (clip.vertical) @max(previous.y, b.y) else previous.y;
                 const right = if (clip.horizontal) @min(previous.x + previous.width, b.x + b.width) else previous.x + previous.width;
@@ -158,10 +148,46 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
             else => {}, // Images and transitions are intentionally outside this prototype.
         }
     }
+}
+
+fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
+    if (!g_clay_surface.active) return;
     if (g_clay_surface.owner_index > 0) {
-        for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
+        g_clay_surface.mouse_x = g_mouse_x - offset_x;
+        g_clay_surface.mouse_y = g_mouse_y - offset_y;
+    }
+    const commands = g_clay_surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+    const context = g_clay_surface.context;
+    const nodes = &g_clay_surface.nodes;
+    const len: c_int = @intCast(g_clay_surface.len);
+    const framed = g_clay_surface.frame.enabled;
+    const overlay = g_clay_surface.owner_index > 0;
+    const panel_node: *const clay.HollowClayNode = &nodes[0];
+    var panel = clay.hollow_clay_bounds(context, nodes, 0).boundingBox;
+    panel.x += offset_x;
+    panel.y += offset_y;
+    var clip = clay_paint.snap(.{ .x = offset_x, .y = offset_y, .width = width, .height = height });
+    // Paint clipping must not enable Clay's horizontal overflow sizing.
+    if (framed) {
+        const x = @max(offset_x, panel.x);
+        const y = @max(offset_y, panel.y);
+        clip = clay_paint.snap(.{
+            .x = x,
+            .y = y,
+            .width = @max(0, @min(offset_x + width, panel.x + panel.width) - x),
+            .height = @max(0, @min(offset_y + height, panel.y + panel.height) - y),
+        });
+    }
+    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) .{
+        .bounds = panel,
+        .node = panel_node,
+        .owner = g_clay_surface.owner_index,
+    } else null);
+    if (overlay) {
+        // Visible bounds are recorded once per layout, so these passes are linear.
+        for (nodes[0..g_clay_surface.len], 0..) |node, index| {
             if (node.scrollbar_id.length <= 0) continue;
-            const element = clay.hollow_clay_visible_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(g_clay_surface.len), @intCast(index));
+            const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
             if (!element.found) continue;
             const b = element.boundingBox;
             const hit_width = @min(b.width, @max(@as(f32, 8), renderer.cell_w));
@@ -182,9 +208,9 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
         }
         finalizeAndDrawOverlayScrollbars(g_clay_surface.owner_index);
         if (g_widget_render_ctx) |ctx| {
-            for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
+            for (nodes[0..g_clay_surface.len], 0..) |node, index| {
                 if (index != 0 and !node.clickable) continue;
-                const element = clay.hollow_clay_visible_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(g_clay_surface.len), @intCast(index));
+                const element = clay.hollow_clay_visible_bounds(context, nodes, len, @intCast(index));
                 if (!element.found or node.id.length == 0) continue;
                 const b = element.boundingBox;
                 const id = node.id.chars[0..@intCast(node.id.length)];

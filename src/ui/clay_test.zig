@@ -548,3 +548,12 @@ test "Clay list clips long unwrapped labels to the viewport rather than panel pa
     try std.testing.expectEqual(@as(c_int, 3), c.hollow_clay_hit(surface, &nodes, nodes.len, viewport.x + 1, viewport.y + 1));
     try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, panel.x + panel.width - 1, viewport.y + 1));
 }
+
+test "Clay paint snapping rounds edges, not origin plus size" {
+    const paint = @import("clay_paint.zig");
+    const b = paint.snap(.{ .x = 10.4, .y = 3.6, .width = 20.2, .height = 0.3 });
+    try std.testing.expectEqual(@as(f32, 10), b.x);
+    try std.testing.expectEqual(@as(f32, 4), b.y);
+    try std.testing.expectEqual(@as(f32, 21), b.width);
+    try std.testing.expectEqual(@as(f32, 0), b.height);
+}

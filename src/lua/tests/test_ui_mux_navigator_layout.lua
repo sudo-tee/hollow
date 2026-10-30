@@ -146,7 +146,7 @@ describe("Clay mux navigator", function()
     assert.is_not_nil(find(":mux-navigator:item:pane:1100"))
     assert.is_true(#tree() <= 512)
     ui.dispatch_overlay_key("home", 0)
-    assert.is_false(find(":mux:viewport").reveal_start)
+    assert.is_nil(find(":mux:viewport").reveal_start)
     panes[1].foreground_process = "updated process"
     hollow._emit_builtin_event("term:foreground_process_changed", { pane_id = 101 })
     assert.is_truthy(text():find("updated process", 1, true))

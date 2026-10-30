@@ -69,9 +69,9 @@ describe("experimental hierarchical layout", function()
       scrollbar = { track = "#333333", thumb = "#444444" },
     } }
     local root = layout.column({
-      layout.column({}, { scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }),
-      layout.column({}, { style = { fg = "fg" } }),
-    })
+      layout.column({}, { scrollbar_id = "bar", scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }),
+      layout.text("label", { fg = "fg" }),
+    }, { scrollbar_id = "root" })
     local first = serialize(root, palette, "test:")
     assert.equals("#333333", first[1].scrollbar_track_color)
     assert.equals("#444444", first[1].scrollbar_thumb_color)
@@ -95,7 +95,7 @@ describe("experimental hierarchical layout", function()
     assert.equals(12, tree[1].padding.left)
     assert.equals(12, tree[1].padding.right)
     assert.is_true(tree[2].full_bleed_x)
-    assert.is_false(tree[3].full_bleed_x)
+    assert.is_nil(tree[3].full_bleed_x)
     assert.has_error(function() layout.show(layout.column({}, { full_bleed_x = "yes" })) end)
   end)
 

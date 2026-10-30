@@ -39,7 +39,7 @@ describe("Clay text-input overlay", function()
       if node.scroll_x then
         viewport = node
       end
-      if node.id:match("input:caret$") then
+      if node.id and node.id:match("input:caret$") then
         caret = node
       end
     end

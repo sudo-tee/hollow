@@ -4248,6 +4248,7 @@ void Clay_UpdateScrollContainers(bool enableDragScrolling, Clay_Vector2 scrollDe
         Clay__ScrollContainerDataInternal *scrollData = Clay__ScrollContainerDataInternalArray_Get(&context->scrollContainerDatas, i);
         if (!scrollData->openThisFrame) {
             Clay__ScrollContainerDataInternalArray_RemoveSwapback(&context->scrollContainerDatas, i);
+            --i; // Hollow patch: revisit the record swapped into this slot.
             continue;
         }
         scrollData->openThisFrame = false;
@@ -4255,6 +4256,7 @@ void Clay_UpdateScrollContainers(bool enableDragScrolling, Clay_Vector2 scrollDe
         // Element isn't rendered this frame but scroll offset has been retained
         if (!hashMapItem) {
             Clay__ScrollContainerDataInternalArray_RemoveSwapback(&context->scrollContainerDatas, i);
+            --i; // Hollow patch: revisit the record swapped into this slot.
             continue;
         }
 

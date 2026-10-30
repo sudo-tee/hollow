@@ -16,7 +16,7 @@ describe("Clay selectable list", function()
 
   local function viewport()
     for _, node in ipairs(prepare()) do
-      if node.id:match(":select:viewport$") then
+      if node.id and node.id:match(":select:viewport$") then
         return node
       end
     end
@@ -35,7 +35,7 @@ describe("Clay selectable list", function()
 
   local function row(source_index)
     for _, node in ipairs(prepare()) do
-      if node.id:match(":select:item:" .. source_index .. "$") then
+      if node.id and node.id:match(":select:item:" .. source_index .. "$") then
         return node
       end
     end
@@ -60,9 +60,9 @@ describe("Clay selectable list", function()
     local tree = prepare()
     local selected, other
     for index, node in ipairs(tree) do
-      if node.id:match(":select:item:1$") then
+      if node.id and node.id:match(":select:item:1$") then
         selected = index
-      elseif node.id:match(":select:item:2$") then
+      elseif node.id and node.id:match(":select:item:2$") then
         other = index
       end
     end
@@ -100,7 +100,7 @@ describe("Clay selectable list", function()
   it("adds horizontal shell padding while preserving custom chrome padding", function()
     local function dialog()
       for _, node in ipairs(prepare()) do
-        if node.id:match(":dialog$") then
+        if node.id and node.id:match(":dialog$") then
           return node
         end
       end
@@ -136,7 +136,7 @@ describe("Clay selectable list", function()
     assert.equals(row(1).id, viewport().reveal)
     local count = 0
     for _, node in ipairs(tree) do
-      if node.id:match(":select:item:%d+$") then
+      if node.id and node.id:match(":select:item:%d+$") then
         count = count + 1
       end
     end
@@ -154,10 +154,10 @@ describe("Clay selectable list", function()
     assert.equals((4 * 19 + 23 + 1.5 * 19) / 19, ui._layout_frame.height)
     local divider_rows, filter_view = 0, nil
     for _, node in ipairs(tree) do
-      if node.height == 19 and node.padding.top == 9 then
+      if node.height == 19 and node.padding and node.padding.top == 9 then
         divider_rows = divider_rows + 1
       end
-      if node.id:match(":input:viewport$") then
+      if node.id and node.id:match(":input:viewport$") then
         filter_view = node
       end
     end
@@ -166,7 +166,7 @@ describe("Clay selectable list", function()
     for index, node in ipairs(tree) do
       if node == filter_view then
         assert.is_nil(tree[index - 1].bg)
-        assert.equals(0, tree[index - 1].padding.left)
+        assert.is_nil(tree[index - 1].padding)
       end
     end
     ui.select.close()
@@ -190,7 +190,7 @@ describe("Clay selectable list", function()
     assert.is_true(viewport().reveal_start)
     assert.equals(row(2).id, viewport().reveal)
     ui.dispatch_overlay_key("arrow_down", 0)
-    assert.is_false(viewport().reveal_start)
+    assert.is_nil(viewport().reveal_start)
     assert.equals(row(4).id, viewport().reveal)
   end)
 
@@ -201,7 +201,7 @@ describe("Clay selectable list", function()
     assert.is_string(view.scrollbar_id)
     assert.equals(8, view.padding.right)
     assert.equals(0, view.padding.left)
-    assert.equals(0, view.scrollbar_thumb_ratio)
+    assert.is_nil(view.scrollbar_thumb_ratio)
     assert.is_true(view.scrollbar_thumb_size < 0.01)
     assert.is_not_nil(view.scrollbar_track_color)
     assert.is_not_nil(view.scrollbar_thumb_color)
@@ -211,14 +211,14 @@ describe("Clay selectable list", function()
     assert.is_true(view.reveal_start)
     assert.is_not_nil(row(1000))
     ui.dispatch_overlay_key("home", 0)
-    assert.is_false(viewport().reveal_start)
-    assert.equals(0, viewport().scrollbar_thumb_ratio)
+    assert.is_nil(viewport().reveal_start)
+    assert.is_nil(viewport().scrollbar_thumb_ratio)
   end)
 
   it("omits scrollbar gutter for lists that fit", function()
     ui.select.open({ layout = "clay", items = { "one" } })
     assert.is_nil(viewport().scrollbar_id)
-    assert.equals(0, viewport().padding.right)
+    assert.equals(0, (viewport().padding or {}).right or 0)
   end)
 
   it("preserves plain ranking, query highlighting and filter caret editing", function()

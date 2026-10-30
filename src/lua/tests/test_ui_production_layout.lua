@@ -15,7 +15,7 @@ describe("production Clay pickers", function()
 
   local function find(suffix)
     for _, node in ipairs(prepare() or {}) do
-      if node.id:sub(-#suffix) == suffix then
+      if node.id and node.id:sub(-#suffix) == suffix then
         return node
       end
     end
@@ -123,7 +123,7 @@ describe("production Clay pickers", function()
     local name = find(":select:item:1:name")
     assert.equals(240, name.width)
     assert.is_true(name.scroll_x)
-    assert.is_false(name.measure)
+    assert.is_nil(name.measure)
     local count = 0
     for _, node in ipairs(prepare()) do
       if node.list_item then

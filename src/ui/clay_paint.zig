@@ -9,3 +9,16 @@ pub fn rectangleBounds(bounds: c.Clay_BoundingBox, panel: c.Clay_BoundingBox, in
     }
     return result;
 }
+
+/// Snaps edges to whole pixels so fractional Clay centering cannot leave
+/// backgrounds, borders and rounded glyph origins half a pixel apart.
+pub fn snap(bounds: c.Clay_BoundingBox) c.Clay_BoundingBox {
+    const x = @round(bounds.x);
+    const y = @round(bounds.y);
+    return .{
+        .x = x,
+        .y = y,
+        .width = @max(0, @round(bounds.x + bounds.width) - x),
+        .height = @max(0, @round(bounds.y + bounds.height) - y),
+    };
+}

@@ -3,10 +3,54 @@ const std = @import("std");
 const c = @import("clay_c");
 const lua = @import("../lua_bridge.zig");
 
+/// Snapshot node fields. Lua omits defaults, so absent keys keep their zero value
+/// except `alpha` (255) and `scrollbar_thumb_size` (1).
+const Field = enum {
+    id,
+    text,
+    label,
+    reveal,
+    scrollbar_id,
+    scrollbar_thumb_ratio,
+    scrollbar_thumb_size,
+    scrollbar_track_color,
+    scrollbar_thumb_color,
+    kind,
+    children,
+    width,
+    height,
+    gap,
+    radius,
+    border_size,
+    value,
+    fg,
+    bg,
+    alpha,
+    border,
+    hover_bg,
+    bold,
+    scroll,
+    scroll_x,
+    reveal_start,
+    list_item,
+    measure,
+    full_bleed_x,
+    align_y,
+    wrap,
+    clickable,
+    padding,
+};
+const fields = std.StaticStringMap(Field).initComptime(blk: {
+    const values = std.enums.values(Field);
+    var entries: [values.len]struct { []const u8, Field } = undefined;
+    for (values, 0..) |value, i| entries[i] = .{ @tagName(value), value };
+    break :blk entries;
+});
+
 pub const Surface = struct {
     context: ?*c.HollowClay = null,
     arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
-    nodes: [512]c.HollowClayNode = undefined,
+    nodes: [c.HOLLOW_CLAY_MAX_NODES]c.HollowClayNode = undefined,
     len: usize = 0,
     active: bool = false,
     mouse_x: f32 = -1,
@@ -19,6 +63,7 @@ pub const Surface = struct {
     close: bool = false,
     revision: f64 = -1,
     surface_id: f64 = -1,
+    error_logged_revision: f64 = -1,
     owner_index: usize = 0,
     runtime_generation: u64 = 0,
     frame: c.HollowClayFrame = std.mem.zeroes(c.HollowClayFrame),
@@ -29,13 +74,16 @@ pub const Surface = struct {
         self.arena.deinit();
     }
 
-    fn string(self: *Surface, api: lua.Api, state: *lua.State, table: c_int, key: [:0]const u8) !c.Clay_String {
-        api.get_field(state, table, key);
-        defer lua.pop(api, state, 1);
+    fn string(self: *Surface, api: lua.Api, state: *lua.State, index: c_int) !c.Clay_String {
         var len: usize = 0;
-        const ptr = api.to_lstring(state, -1, &len) orelse return std.mem.zeroes(c.Clay_String);
+        const ptr = api.to_lstring(state, index, &len) orelse return std.mem.zeroes(c.Clay_String);
         const owned = try self.arena.allocator().dupe(u8, ptr[0..len]);
         return .{ .chars = owned.ptr, .length = @intCast(len), .isStaticallyAllocated = false };
+    }
+
+    fn numberAt(api: lua.Api, state: *lua.State, index: c_int) f32 {
+        const n = api.to_number(state, index);
+        return @floatCast(std.math.clamp(if (std.math.isFinite(n)) n else 0, -65535, 65535));
     }
 
     fn number(api: lua.Api, state: *lua.State, table: c_int, key: [:0]const u8) f32 {
@@ -55,11 +103,9 @@ pub const Surface = struct {
         return api.to_boolean(state, -1) != 0;
     }
 
-    fn color(api: lua.Api, state: *lua.State, table: c_int, key: [:0]const u8) c.Clay_Color {
-        api.get_field(state, table, key);
-        defer lua.pop(api, state, 1);
+    fn colorAt(api: lua.Api, state: *lua.State, index: c_int) c.Clay_Color {
         var len: usize = 0;
-        const ptr = api.to_lstring(state, -1, &len) orelse return std.mem.zeroes(c.Clay_Color);
+        const ptr = api.to_lstring(state, index, &len) orelse return std.mem.zeroes(c.Clay_Color);
         if (len != 7 or ptr[0] != '#') return std.mem.zeroes(c.Clay_Color);
         const rgb = std.fmt.parseInt(u32, ptr[1..len], 16) catch return std.mem.zeroes(c.Clay_Color);
         return .{ .r = @floatFromInt((rgb >> 16) & 255), .g = @floatFromInt((rgb >> 8) & 255), .b = @floatFromInt(rgb & 255), .a = 255 };
@@ -75,6 +121,64 @@ pub const Surface = struct {
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| std.log.err("Clay surface callback: {s}", .{ptr[0..len]});
         }
+    }
+
+    /// Parses one sparse snapshot node table at absolute index `idx`, visiting only present keys.
+    fn parseNode(self: *Surface, api: lua.Api, state: *lua.State, idx: c_int) !c.HollowClayNode {
+        var node = std.mem.zeroes(c.HollowClayNode);
+        node.scrollbar_thumb_size = 1;
+        var alpha: f32 = 255;
+        api.push_nil(state);
+        while (api.next(state, idx) != 0) {
+            defer lua.pop(api, state, 1);
+            // Never coerce non-string keys: lua_tolstring would break lua_next.
+            if (api.value_type(state, -2) != @backingInt(lua.LuaType.string)) continue;
+            var key_len: usize = 0;
+            const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+            const field = fields.get(key_ptr[0..key_len]) orelse continue;
+            switch (field) {
+                .id => node.id = try self.string(api, state, -1),
+                .text => node.text = try self.string(api, state, -1),
+                .label => node.label = try self.string(api, state, -1),
+                .reveal => node.reveal = try self.string(api, state, -1),
+                .scrollbar_id => node.scrollbar_id = try self.string(api, state, -1),
+                .scrollbar_thumb_ratio => node.scrollbar_thumb_ratio = std.math.clamp(numberAt(api, state, -1), 0, 1),
+                .scrollbar_thumb_size => node.scrollbar_thumb_size = std.math.clamp(numberAt(api, state, -1), 0, 1),
+                .scrollbar_track_color => node.scrollbar_track_color = colorAt(api, state, -1),
+                .scrollbar_thumb_color => node.scrollbar_thumb_color = colorAt(api, state, -1),
+                .kind => node.kind = @intFromFloat(numberAt(api, state, -1)),
+                .children => node.children = @intFromFloat(@max(0, numberAt(api, state, -1))),
+                .width => node.width = numberAt(api, state, -1),
+                .height => node.height = numberAt(api, state, -1),
+                .gap => node.gap = @intFromFloat(@max(0, numberAt(api, state, -1))),
+                .radius => node.radius = @max(0, numberAt(api, state, -1)),
+                .border_size => node.border_size = @intFromFloat(@max(0, numberAt(api, state, -1))),
+                .value => node.value = std.math.clamp(numberAt(api, state, -1), 0, 1),
+                .fg => node.fg = colorAt(api, state, -1),
+                .bg => node.bg = colorAt(api, state, -1),
+                .alpha => alpha = std.math.clamp(numberAt(api, state, -1), 0, 255),
+                .border => node.border = colorAt(api, state, -1),
+                .hover_bg => node.hover_bg = colorAt(api, state, -1),
+                .bold => node.bold = api.to_boolean(state, -1) != 0,
+                .scroll => node.scroll = api.to_boolean(state, -1) != 0,
+                .scroll_x => node.scroll_x = api.to_boolean(state, -1) != 0,
+                .reveal_start => node.reveal_start = api.to_boolean(state, -1) != 0,
+                .list_item => node.list_item = api.to_boolean(state, -1) != 0,
+                .measure => node.measure = api.to_boolean(state, -1) != 0,
+                .full_bleed_x => node.full_bleed_x = api.to_boolean(state, -1) != 0,
+                .clickable => node.clickable = api.to_boolean(state, -1) != 0,
+                .align_y => node.align_y = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
+                .wrap => node.wrap = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
+                .padding => if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
+                    const padding = lua.absoluteIndex(api, state, -1);
+                    inline for (.{ "top", "right", "bottom", "left" }) |side| {
+                        @field(node.padding, side) = @intFromFloat(@max(0, number(api, state, padding, side)));
+                    }
+                },
+            }
+        }
+        if (node.bg.a > 0) node.bg.a = alpha;
+        return node;
     }
 
     /// Must run before atlas upload / swapchain rendering. Own all Lua strings until next prepare.
@@ -145,11 +249,9 @@ pub const Surface = struct {
             self.preRasterize(renderer);
             return;
         }
-        if (surface_id != self.surface_id) {
-            c.hollow_clay_destroy(self.context);
-            self.context = null;
-            self.pressed_len = 0;
-        }
+        // One Clay context serves every surface. IDs are namespaced per surface,
+        // so retired scroll state is pruned by Clay instead of reallocating the arena.
+        if (surface_id != self.surface_id) self.pressed_len = 0;
         self.len = 0;
         _ = self.arena.reset(.retain_capacity);
         const tree = lua.absoluteIndex(api, state, -1);
@@ -157,48 +259,8 @@ pub const Surface = struct {
             api.rawgeti(state, tree, @intCast(self.len + 1));
             if (api.value_type(state, -1) != @backingInt(lua.LuaType.table)) break;
             const idx = lua.absoluteIndex(api, state, -1);
-            var node = std.mem.zeroes(c.HollowClayNode);
-            node.id = self.string(api, state, idx, "id") catch return;
-            node.text = self.string(api, state, idx, "text") catch return;
-            node.label = self.string(api, state, idx, "label") catch return;
-            node.reveal = self.string(api, state, idx, "reveal") catch return;
-            node.scrollbar_id = self.string(api, state, idx, "scrollbar_id") catch return;
-            node.scrollbar_thumb_ratio = std.math.clamp(number(api, state, idx, "scrollbar_thumb_ratio"), 0, 1);
-            node.scrollbar_thumb_size = std.math.clamp(number(api, state, idx, "scrollbar_thumb_size"), 0, 1);
-            node.scrollbar_track_color = color(api, state, idx, "scrollbar_track_color");
-            node.scrollbar_thumb_color = color(api, state, idx, "scrollbar_thumb_color");
-            node.kind = @intFromFloat(number(api, state, idx, "kind"));
-            node.children = @intFromFloat(@max(0, number(api, state, idx, "children")));
-            node.width = number(api, state, idx, "width");
-            node.height = number(api, state, idx, "height");
-            node.gap = @intFromFloat(@max(0, number(api, state, idx, "gap")));
-            node.radius = @max(0, number(api, state, idx, "radius"));
-            node.border_size = @intFromFloat(@max(0, number(api, state, idx, "border_size")));
-            node.value = std.math.clamp(number(api, state, idx, "value"), 0, 1);
-            node.fg = color(api, state, idx, "fg");
-            node.bg = color(api, state, idx, "bg");
-            if (node.bg.a > 0) node.bg.a = std.math.clamp(number(api, state, idx, "alpha"), 0, 255);
-            node.border = color(api, state, idx, "border");
-            node.hover_bg = color(api, state, idx, "hover_bg");
-            node.bold = boolean(api, state, idx, "bold");
-            node.scroll = boolean(api, state, idx, "scroll");
-            node.scroll_x = boolean(api, state, idx, "scroll_x");
-            node.reveal_start = boolean(api, state, idx, "reveal_start");
-            node.list_item = boolean(api, state, idx, "list_item");
-            node.measure = boolean(api, state, idx, "measure");
-            node.full_bleed_x = boolean(api, state, idx, "full_bleed_x");
-            node.align_y = @intFromFloat(std.math.clamp(number(api, state, idx, "align_y"), 0, 2));
-            node.wrap = @intFromFloat(std.math.clamp(number(api, state, idx, "wrap"), 0, 2));
-            node.clickable = boolean(api, state, idx, "clickable");
-            api.get_field(state, idx, "padding");
-            if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
-                const padding = lua.absoluteIndex(api, state, -1);
-                inline for (.{ "top", "right", "bottom", "left" }) |side| {
-                    @field(node.padding, side) = @intFromFloat(@max(0, number(api, state, padding, side)));
-                }
-            }
-            lua.pop(api, state, 2);
-            self.nodes[self.len] = node;
+            self.nodes[self.len] = self.parseNode(api, state, idx) catch return;
+            lua.pop(api, state, 1);
             self.len += 1;
         }
         if (self.context == null) self.context = c.hollow_clay_create();
@@ -216,10 +278,17 @@ pub const Surface = struct {
 
     pub fn layout(self: *Surface, width: f32, height: f32, cell_w: f32, cell_h: f32, dt: f32) c.Clay_RenderCommandArray {
         c.hollow_clay_frame(self.context, self.frame);
-        const commands = c.hollow_clay_layout(self.context, &self.nodes, @intCast(self.len), width, height, cell_w, cell_h, self.mouse_x, self.mouse_y, self.scroll_y, dt);
+        // Clay scales wheel deltas by 10 px; one notch scrolls one cell row.
+        const scroll = self.scroll_y * cell_h / 10;
+        const commands = c.hollow_clay_layout(self.context, &self.nodes, @intCast(self.len), width, height, cell_w, cell_h, self.mouse_x, self.mouse_y, scroll, dt);
         self.scroll_y = 0;
         if (c.hollow_clay_failed(self.context)) {
-            std.log.err("Clay surface exceeded limits or received invalid layout", .{});
+            if (self.error_logged_revision != self.revision) {
+                self.error_logged_revision = self.revision;
+                const message = c.hollow_clay_error(self.context);
+                const text = if (message.length > 0) message.chars[0..@intCast(message.length)] else "exceeded limits or received invalid layout";
+                std.log.err("Clay surface {d} revision {d}: {s}", .{ self.surface_id, self.revision, text });
+            }
             return std.mem.zeroes(c.Clay_RenderCommandArray);
         }
         return commands;

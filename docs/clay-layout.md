@@ -236,6 +236,18 @@ clipping implementation, custom painting and native memory lifetime. Text and
 IDs are copied out of Lua before rendering, and glyphs are prerasterized before
 the swapchain pass. Command arrays and custom payloads are consumed in that frame.
 
+Snapshots are sparse: false, zero and default fields are omitted and the native
+parser supplies defaults (`alpha` 255, `scrollbar_thumb_size` 1). Only the root,
+explicit IDs, scroll viewports and `measure` nodes carry IDs; anonymous nodes are
+identified by preorder index. Style resolution is memoized per style table within
+one snapshot, and text nodes resolve only `fg` and `bold`.
+
+One Clay context is shared by all surfaces; IDs are namespaced per surface, so
+retired scroll records are pruned by Clay rather than by reallocating the arena.
+Bounds, visible (clip-intersected) bounds and hit testing are computed once per
+layout in a single preorder pass. Paint geometry is snapped to whole pixels.
+Clay errors are logged once per snapshot revision.
+
 Overlay invalidation (`layout_events`, timed refreshes) calls the host's
 `request_redraw`, which wakes the frame loop without recomputing pane layout.
 Legacy overlays register no layout listeners.
@@ -281,6 +293,7 @@ clicks, input editing/cancellation, caret reveal, selectable-list ranking/action
 bounded windows, clipped hits, live sources, modal ownership and destruction.
 Full `make test` still requires normal Linux GUI development libraries.
 
-Clay is pinned under `third_party/clay`; its declaration macros stay inside
+Clay is pinned under `third_party/clay` with one local patch to
+`Clay_UpdateScrollContainers` (see its README); its declaration macros stay inside
 `src/ui/clay_bridge.c`. Future Lua panes can reuse this layout boundary inside
 mux-provided rectangles without transferring terminal split geometry to Clay.
