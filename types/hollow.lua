@@ -2294,6 +2294,9 @@ local workspace = {}
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
 ---@field hide fun()
+---@field debug fun(enabled: boolean) Toggle Clay's built-in inspector for the active surface.
+---@field debug_grid fun(enabled: boolean) Toggle Clay's inspector over the window's bars, sidebar and pane layout.
+---@field debug_width fun(width?: number): number? Get, or set in pixels, the inspector panel width (default 400; clamped to the window).
 ---@field demo fun()
 
 ---@class HollowUiLayoutContext

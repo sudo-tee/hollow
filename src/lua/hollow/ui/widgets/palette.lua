@@ -18,6 +18,7 @@ local CATEGORIES = {
   copy_mode = { label = "Copy Mode", order = 6 },
   general = { label = "General", order = 7 },
   user = { label = "User", order = 8 },
+  debug = { label = "Debug", order = 9 },
 }
 
 local function category_label(cat)

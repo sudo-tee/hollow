@@ -557,3 +557,162 @@ test "Clay paint snapping rounds edges, not origin plus size" {
     try std.testing.expectEqual(@as(f32, 21), b.width);
     try std.testing.expectEqual(@as(f32, 0), b.height);
 }
+
+fn debugRect(label: []const u8, index: u32, children: c_int, x: f32, y: f32, w: f32, h: f32) c.HollowClayDebugRect {
+    var r = std.mem.zeroes(c.HollowClayDebugRect);
+    r.id = .{ .chars = label.ptr, .length = @intCast(label.len), .isStaticallyAllocated = true };
+    r.index = index;
+    r.children = children;
+    r.x = x;
+    r.y = y;
+    r.width = w;
+    r.height = h;
+    return r;
+}
+
+fn expectDebugBounds(r: c.HollowClayDebugRect) !void {
+    const data = c.Clay_GetElementData(c.Clay_GetElementIdWithIndex(r.id, r.index));
+    try std.testing.expect(data.found);
+    try std.testing.expectApproxEqAbs(r.x, data.boundingBox.x, 0.01);
+    try std.testing.expectApproxEqAbs(r.y, data.boundingBox.y, 0.01);
+    try std.testing.expectApproxEqAbs(r.width, data.boundingBox.width, 0.01);
+    try std.testing.expectApproxEqAbs(r.height, data.boundingBox.height, 0.01);
+}
+
+test "debug mirror reproduces externally computed split geometry" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var rects = [_]c.HollowClayDebugRect{
+        debugRect("window", 0, 3, 0, 0, 800, 600),
+        debugRect("topbar", 0, 0, 0, 0, 800, 30),
+        debugRect("content", 0, 2, 0, 30, 800, 540),
+        // Vertical split with a one-pixel divider, and a floating pane on top.
+        debugRect("split.vertical", 0, 2, 0, 30, 800, 540),
+        debugRect("pane", 1, 0, 0, 30, 399, 540),
+        debugRect("split.horizontal", 1, 2, 400, 30, 400, 540),
+        debugRect("pane", 2, 0, 400, 30, 400, 269),
+        debugRect("pane", 3, 0, 400, 300, 400, 270),
+        debugRect("pane", 4, 0, 100, 100, 200, 200),
+        debugRect("bottombar", 0, 0, 0, 580, 800, 20),
+    };
+    rects[4].detail = .{ .chars = "80x24 active", .length = 12, .isStaticallyAllocated = true };
+    rects[8].floating = true;
+    for (0..3) |_| {
+        const commands = c.hollow_clay_debug_layout(surface, &rects, rects.len, 800, 600, 8, 16, -1, -1, false, 0, 1.0 / 60.0);
+        try std.testing.expect(!c.hollow_clay_failed(surface));
+        try std.testing.expect(commands.length > 0); // The inspector panel itself.
+    }
+    for (rects) |r| try expectDebugBounds(r);
+    try std.testing.expect(!c.hollow_clay_debug_closed(surface));
+}
+
+test "debug mirror rejects malformed trees" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var rects = [_]c.HollowClayDebugRect{
+        debugRect("window", 0, 2, 0, 0, 800, 600),
+        debugRect("pane", 0, 0, 0, 0, 800, 600),
+    };
+    _ = c.hollow_clay_debug_layout(surface, &rects, rects.len, 800, 600, 8, 16, -1, -1, false, 0, 0);
+    try std.testing.expect(c.hollow_clay_failed(surface));
+}
+
+test "inspector fits a maximum-size surface" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes: [c.HOLLOW_CLAY_MAX_NODES]c.HollowClayNode = undefined;
+    nodes[0] = node(1, -1, -1, nodes.len - 1);
+    for (nodes[1..]) |*n| {
+        n.* = node(2, 0, 0, 0);
+        n.text = .{ .chars = "palette entry label", .length = 19, .isStaticallyAllocated = true };
+    }
+    c.hollow_clay_set_debug(surface, true);
+    for (0..2) |_| {
+        _ = layout(surface, &nodes, 1600, 900, 0);
+        try std.testing.expect(!c.hollow_clay_failed(surface));
+    }
+}
+
+test "surface inspector receives presses and reports its close button" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, -1, -1, 1), node(0, -1, 20, 0) };
+    c.hollow_clay_set_debug(surface, true);
+    // Clay's close button is the 20 px square at the header's right padding.
+    const x: f32 = 1200 - 10 - 10;
+    const y: f32 = 15;
+    // Hover first so Clay records the pointer over the button, then press.
+    _ = c.hollow_clay_layout(surface, &nodes, nodes.len, 1200, 800, 8, 16, x, y, 0, 1.0 / 60.0);
+    try std.testing.expect(!c.hollow_clay_debug_closed(surface));
+    c.hollow_clay_set_pointer_down(surface, true);
+    _ = c.hollow_clay_layout(surface, &nodes, nodes.len, 1200, 800, 8, 16, x, y, 0, 1.0 / 60.0);
+    try std.testing.expect(c.hollow_clay_debug_closed(surface));
+}
+
+test "grid inspector reports its close button after a click" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var rects = [_]c.HollowClayDebugRect{debugRect("window", 0, 0, 0, 0, 1200, 800)};
+    const x: f32 = 1200 - 10 - 10;
+    const y: f32 = 15;
+    var closed = false;
+    for ([_]bool{ false, true, false }) |down| {
+        _ = c.hollow_clay_debug_layout(surface, &rects, rects.len, 1200, 800, 8, 16, x, y, down, 0, 1.0 / 60.0);
+        closed = closed or c.hollow_clay_debug_closed(surface);
+    }
+    try std.testing.expect(closed);
+}
+
+test "inspector width clamps and moves the panel" {
+    const input = @import("clay_inspector_input.zig");
+    defer _ = input.setWidth(input.default_width, 2000);
+    try std.testing.expectEqual(@as(f32, 250), input.clampWidth(10, 1200));
+    try std.testing.expectEqual(@as(f32, 1100), input.clampWidth(5000, 1200));
+    try std.testing.expectEqual(@as(f32, 400), input.clampWidth(std.math.nan(f32), 1200));
+    try std.testing.expectEqual(@as(f32, 600), input.setWidth(600, 1200));
+    const area: input.Rect = .{ .width = 1200, .height = 800 };
+    try std.testing.expect(input.nearEdge(area, 602, 10));
+    try std.testing.expect(!input.inPanel(area, 590, 10));
+    try std.testing.expect(input.inPanel(area, 610, 10));
+}
+
+test "debug mirror carries styles, infers padding and paints only the inspector" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    const red: c.Clay_Color = .{ .r = 200, .g = 10, .b = 10, .a = 255 };
+    const blue: c.Clay_Color = .{ .r = 10, .g = 10, .b = 200, .a = 72 };
+    var rects = [_]c.HollowClayDebugRect{
+        debugRect("frame", 0, 2, 0, 0, 800, 30),
+        debugRect("item", 0, 0, 6, 4, 100, 22),
+        debugRect("item", 1, 0, 120, 4, 100, 22),
+    };
+    rects[0].background = red;
+    rects[0].padding = .{ .left = 99, .top = 99, .right = 3, .bottom = 4 };
+    rects[1].border_color = blue;
+    rects[1].border_width = 1;
+    rects[1].corner_radius = 5;
+    rects[1].padding = .{ .left = 8, .right = 8 };
+    rects[1].text_color = red;
+    rects[1].font_id = 1;
+    rects[1].detail = .{ .chars = "tab", .length = 3, .isStaticallyAllocated = true };
+    var commands: c.Clay_RenderCommandArray = undefined;
+    for (0..3) |_| {
+        commands = c.hollow_clay_debug_layout(surface, &rects, rects.len, 800, 600, 8, 16, -1, -1, false, 0, 1.0 / 60.0);
+        try std.testing.expect(!c.hollow_clay_failed(surface));
+    }
+    for (rects) |r| try expectDebugBounds(r);
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        try std.testing.expect(command.userData == null);
+        if (command.commandType == c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE) {
+            const bg = command.renderData.rectangle.backgroundColor;
+            try std.testing.expect(!(bg.r == red.r and bg.g == red.g and bg.b == red.b));
+        }
+        if (command.commandType == c.CLAY_RENDER_COMMAND_TYPE_TEXT) {
+            const text = command.renderData.text;
+            try std.testing.expect(!(text.fontId == 1 and text.textColor.r == red.r and text.textColor.b == red.b));
+        }
+        if (command.commandType == c.CLAY_RENDER_COMMAND_TYPE_BORDER) {
+            try std.testing.expect(command.renderData.border.color.b != blue.b or command.renderData.border.color.a != blue.a);
+        }
+    }
+}

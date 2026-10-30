@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("clay_c");
 const lua = @import("../lua_bridge.zig");
+const inspector = @import("clay_inspector_input.zig");
 
 /// Snapshot node fields. Lua omits defaults, so absent keys keep their zero value
 /// except `alpha` (255) and `scrollbar_thumb_size` (1).
@@ -53,9 +54,15 @@ pub const Surface = struct {
     nodes: [c.HOLLOW_CLAY_MAX_NODES]c.HollowClayNode = undefined,
     len: usize = 0,
     active: bool = false,
+    debug: bool = false,
     mouse_x: f32 = -1,
     mouse_y: f32 = -1,
     scroll_y: f32 = 0,
+    /// Inspector button state and the window area of the latest layout.
+    inspector_button: inspector.Latch = .{},
+    /// Set when the inspector closed itself; prepare clears the Lua flag.
+    debug_closed: bool = false,
+    area: inspector.Rect = .{},
     pressed_id: [128]u8 = undefined,
     pressed_len: usize = 0,
     click_id: [128]u8 = undefined,
@@ -215,6 +222,12 @@ pub const Surface = struct {
             return;
         }
         self.owner_index = @intFromFloat(@max(0, number(api, state, ui_idx, "_layout_owner")));
+        if (self.debug_closed) {
+            self.debug_closed = false;
+            api.push_boolean(state, 0);
+            api.set_field(state, ui_idx, "_layout_debug");
+        }
+        self.debug = boolean(api, state, ui_idx, "_layout_debug");
         const revision = counter(api, state, ui_idx, "_layout_revision");
         const surface_id = counter(api, state, ui_idx, "_layout_surface_id");
         self.frame = std.mem.zeroes(c.HollowClayFrame);
@@ -278,10 +291,18 @@ pub const Surface = struct {
 
     pub fn layout(self: *Surface, width: f32, height: f32, cell_w: f32, cell_h: f32, dt: f32) c.Clay_RenderCommandArray {
         c.hollow_clay_frame(self.context, self.frame);
+        c.hollow_clay_set_debug(self.context, self.debug);
+        if (!self.debug) self.inspector_button = .{};
+        c.hollow_clay_set_pointer_down(self.context, self.inspector_button.down);
         // Clay scales wheel deltas by 10 px; one notch scrolls one cell row.
         const scroll = self.scroll_y * cell_h / 10;
         const commands = c.hollow_clay_layout(self.context, &self.nodes, @intCast(self.len), width, height, cell_w, cell_h, self.mouse_x, self.mouse_y, scroll, dt);
         self.scroll_y = 0;
+        self.inspector_button.advance();
+        if (c.hollow_clay_debug_closed(self.context)) {
+            self.debug = false;
+            self.debug_closed = true;
+        }
         if (c.hollow_clay_failed(self.context)) {
             if (self.error_logged_revision != self.revision) {
                 self.error_logged_revision = self.revision;

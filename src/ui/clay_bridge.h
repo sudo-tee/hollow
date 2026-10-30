@@ -46,6 +46,43 @@ bool hollow_clay_failed(HollowClay *surface);
 Clay_String hollow_clay_error(HollowClay *surface);
 int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y);
 void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame);
+void hollow_clay_set_debug(HollowClay *surface, bool enabled);
+// Primary button state for the inspector; ignored while debug is off.
+void hollow_clay_set_pointer_down(HollowClay *surface, bool down);
 Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index);
 Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index);
+
+// Externally laid-out geometry mirrored into Clay so its inspector can show it.
+// A bounded preorder tree in window pixels. Children that tile their parent
+// along one axis become a Clay row/column (gaps become "gap" spacers); others,
+// and those marked floating, are attached to their parent at their offset.
+//
+// Style fields only feed the inspector's element info. A row/column takes its
+// left/top padding from where its first child starts and right/bottom from
+// `padding`; other rects use `padding` as given.
+typedef struct HollowClayDebugRect {
+    Clay_String id;     // Inspector label; combined with `index` for the element id.
+    uint32_t index;
+    Clay_String detail; // Leaf-only, shown as an unpainted text child.
+    int children;
+    bool floating;
+    float x, y, width, height;
+    Clay_Color background;   // Alpha 0: none.
+    Clay_Color border_color; // Drawn with `border_width` on every side.
+    uint16_t border_width;
+    float corner_radius;
+    Clay_Padding padding;
+    Clay_Color text_color;   // Detail text.
+    uint16_t font_id;        // Detail text; 1 is bold.
+} HollowClayDebugRect;
+
+// Lays out `rects` with Clay's inspector open. Returns commands for the
+// inspector panel and its highlight only; mirrored rects are never painted.
+Clay_RenderCommandArray hollow_clay_debug_layout(HollowClay *surface,
+    HollowClayDebugRect *rects, int count, float width, float height,
+    float cell_w, float cell_h, float mouse_x, float mouse_y, bool mouse_down,
+    float scroll_y, float delta_time);
+// True when the inspector's close button was pressed during the last layout
+// (hollow_clay_layout or hollow_clay_debug_layout).
+bool hollow_clay_debug_closed(HollowClay *surface);
 #endif

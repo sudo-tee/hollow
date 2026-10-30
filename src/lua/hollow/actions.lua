@@ -229,6 +229,7 @@ function M.setup(hollow, host_api)
           copy_mode = 6,
           general = 7,
           user = 8,
+          debug = 9,
         }
         return (cat_order[a.category] or 99) < (cat_order[b.category] or 99)
       end
@@ -903,6 +904,38 @@ function M.setup(hollow, host_api)
     end,
     desc = "Open session notification and activity history",
     category = "general",
+  })
+
+  register(hollow, "toggle_layout_inspector", {
+    run = function()
+      hollow.ui.layout.debug(not hollow.ui._layout_debug)
+    end,
+    desc = "Toggle Clay inspector for the active layout surface",
+    category = "debug",
+  })
+
+  register(hollow, "toggle_grid_inspector", {
+    run = function()
+      hollow.ui.layout.debug_grid(not hollow.ui._layout_debug_grid)
+    end,
+    desc = "Toggle Clay inspector for bars, sidebar and panes",
+    category = "debug",
+  })
+
+  register(hollow, "inspector_wider", {
+    run = function()
+      hollow.ui.layout.debug_width(hollow.ui.layout.debug_width() + 100)
+    end,
+    desc = "Widen the Clay inspector panel by 100 px",
+    category = "debug",
+  })
+
+  register(hollow, "inspector_narrower", {
+    run = function()
+      hollow.ui.layout.debug_width(hollow.ui.layout.debug_width() - 100)
+    end,
+    desc = "Narrow the Clay inspector panel by 100 px",
+    category = "debug",
   })
 
   local palette = hollow.ui.command_palette

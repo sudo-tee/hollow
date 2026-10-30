@@ -252,6 +252,51 @@ Overlay invalidation (`layout_events`, timed refreshes) calls the host's
 `request_redraw`, which wakes the frame loop without recomputing pane layout.
 Legacy overlays register no layout listeners.
 
+`ui.layout.debug(true)` enables Clay's built-in inspector for the active surface;
+the framed panel paint clip is lifted while it is open. The inspector adds
+several Clay elements per inspected element, so a context is rebuilt with a
+16384-element capacity (about 11 MB) the first time an inspector opens on it;
+plain layouts keep the 2048-element default. Pointer input over the panel goes
+to the inspector before the surface or the overlay owning it, so it stays
+usable while overlays capture input; its close button clears the flag. Keyboard
+input still belongs to the overlay.
+
+Both inspectors share one panel width, `ui.layout.debug_width(px)` (default 400).
+Dragging the panel's left edge resizes it. The host clamps the width to at least
+250 px while leaving 100 px of layout, and writes the applied width back to Lua.
+
+`ui.layout.debug_grid(true)` opens the same inspector over Hollow's own window
+geometry, which is not laid out by Clay. Each frame the top bar, sidebar, bottom
+bar, the active tab's split tree and its floating panes are mirrored into a
+dedicated Clay context using the same split math as the renderer
+(`mux.splitChildBounds`). The mirror is never painted; only the inspector panel
+and its hover highlight are.
+
+- Elements: `window`, `topbar`, `body`, `sidebar`, `tab`, `bottombar`,
+  `split.vertical`/`split.horizontal` (numbered in preorder) and `pane:<id>`,
+  where `<id>` matches Lua `pane.id`. Pane text shows `colsxrows`, state flags
+  (`active`, `floating`, `maximized`) and the title.
+- Bars: `topbar.frame`/`bottombar.frame` (the bar box inside its margin) holds
+  `<bar>.segment` (numbered by item position) and `<bar>.tab` (numbered by tab)
+  margin boxes, recorded by the bar renderer while the inspector is open. Each
+  margin box holds a `<bar>.segment.box`/`<bar>.tab.box` painted box with its
+  displayed text. At most 64 items per bar.
+- Bar frames and item boxes carry the paint the renderer resolved, shown in the
+  inspector's element info: background, border (1 px, alpha 72), corner radius,
+  padding, and the text's color and font (font id 1 is bold). Tabs show their
+  active/inactive fallbacks; segments fall back to their segment colors. Panes,
+  the sidebar and the window carry no style.
+- Children that tile their parent along one axis become a Clay row or column.
+  The first child's offset becomes the parent's left/top padding (right/bottom
+  come from its style); dividers and other gaps between children appear as `gap`
+  spacers. Floating panes, an unreserved
+  sidebar and a maximized pane shown over its background are attached as Clay
+  floating elements, so they appear as separate roots in the inspector.
+- Granularity stops at panes; rows and cells are not mirrored.
+- Pointer input over the panel on the right goes to the inspector only;
+  elsewhere it still reaches panes and bars. The close button clears the flag.
+- It takes precedence over `ui.layout.debug` while both are enabled.
+
 Static surfaces do not call their Lua render function while idle. Snapshot
 revisions gate copying/parsing into retained native nodes. Native layout still runs on each rendered frame;
 dirty-layout and texture caching are not implemented. Glyph prerasterization is

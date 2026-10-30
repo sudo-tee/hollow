@@ -251,6 +251,24 @@ function ui._layout_click(id)
   end
 end
 
+--- Toggles Clay's built-in inspector over the active layout surface.
+---@param enabled boolean
+function M.debug(enabled)
+  ui._layout_debug = enabled == true
+end
+
+function M.debug_grid(enabled)
+  ui._layout_debug_grid = enabled == true
+end
+
+-- Inspector panel width in pixels, shared by both inspectors. The host clamps
+-- it to the window and writes the applied width back, including after drags.
+function M.debug_width(width)
+  if width == nil then return ui._layout_debug_width or 400 end
+  assert(type(width) == "number" and width == width, "inspector width must be a number")
+  ui._layout_debug_width = width
+end
+
 function M.demo()
   return require("hollow.ui.layout_demo").open()
 end

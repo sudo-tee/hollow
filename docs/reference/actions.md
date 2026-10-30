@@ -134,6 +134,15 @@ Bind these with `{ mode = "copy_mode" }`. See [Copy mode](../copy-mode.md).
 | `font_size_decrease` | Decrease font size by 0.5 |
 | `font_size_reset` | Reset font size to the default |
 
+## Debug actions
+
+| Action | Description |
+| --- | --- |
+| `toggle_layout_inspector` | Toggle Clay's inspector for the active layout surface (`ui.layout.debug`) |
+| `toggle_grid_inspector` | Toggle Clay's inspector for bars, sidebar and panes (`ui.layout.debug_grid`) |
+| `inspector_wider` | Widen the inspector panel by 100 px (`ui.layout.debug_width`) |
+| `inspector_narrower` | Narrow the inspector panel by 100 px |
+
 ## Custom actions
 
 There are two ways to define custom actions.

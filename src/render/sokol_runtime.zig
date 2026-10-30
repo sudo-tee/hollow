@@ -36,10 +36,143 @@ const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
 const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
+const clay_grid_debug = @import("../ui/clay_grid_debug.zig");
+const clay_inspector_input = @import("../ui/clay_inspector_input.zig");
+var g_grid_debug: clay_grid_debug.GridDebug = .{};
 
 fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_pre_raster_ctx orelse return;
     g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+    g_grid_debug.sync(runtime);
+    syncInspectorWidth(runtime);
+    // Both inspectors dock on the right edge; the grid one takes precedence.
+    if (g_grid_debug.enabled) g_clay_surface.debug = false;
+    // Inspector labels are produced during the swapchain pass, after the atlas flush.
+    if (g_grid_debug.enabled or (g_clay_surface.active and g_clay_surface.debug))
+        ctx.renderer.preRasterizeLabelFace(&clay_grid_debug.inspector_glyphs, 0);
+}
+
+/// True while the inspector panel's left edge is being dragged.
+var g_inspector_resizing = false;
+/// Set by a drag so the next Lua sync publishes the new width.
+var g_inspector_width_dirty = false;
+
+/// `hollow.ui._layout_debug_width` drives the inspector panel width; drags and
+/// clamping are written back so Lua always reads the applied width.
+fn syncInspectorWidth(runtime: *lua_mod.Runtime) void {
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    api.get_field(state, -1, "ui");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    const ui_idx = lua_mod.absoluteIndex(api, state, -1);
+    var applied = clay_inspector_input.width();
+    if (!g_inspector_width_dirty) {
+        api.get_field(state, ui_idx, "_layout_debug_width");
+        const requested: f32 = if (api.value_type(state, -1) == @backingInt(LuaType.number)) @floatCast(api.to_number(state, -1)) else clay_inspector_input.default_width;
+        applied = clay_inspector_input.setWidth(requested, c.sapp_widthf());
+        if (applied == requested) return;
+    }
+    g_inspector_width_dirty = false;
+    api.push_number(state, applied);
+    api.set_field(state, ui_idx, "_layout_debug_width");
+}
+
+/// Window area of the inspector that currently owns the panel, if any.
+fn activeInspectorArea() ?clay_inspector_input.Rect {
+    if (g_grid_debug.enabled) return .{ .width = c.sapp_widthf(), .height = c.sapp_heightf() };
+    if (g_clay_surface.active and g_clay_surface.debug) return g_clay_surface.area;
+    return null;
+}
+
+/// Dragging the panel's left edge resizes the inspector.
+fn inspectorResizeEvent(app: *App, event: c.sapp_event) bool {
+    const area = activeInspectorArea() orelse {
+        g_inspector_resizing = false;
+        return false;
+    };
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => {
+            if (event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT or !clay_inspector_input.nearEdge(area, event.mouse_x, event.mouse_y)) return false;
+            g_inspector_resizing = true;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            if (g_inspector_resizing) {
+                _ = clay_inspector_input.setWidth(area.x + area.width - event.mouse_x, area.width);
+                g_inspector_width_dirty = true;
+                app.requestRedraw();
+            } else if (!clay_inspector_input.nearEdge(area, event.mouse_x, event.mouse_y)) return false;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_UP => {
+            if (!g_inspector_resizing or event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT) return false;
+            g_inspector_resizing = false;
+        },
+        else => return false,
+    }
+    g_mouse_x = event.mouse_x;
+    g_mouse_y = event.mouse_y;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_RESIZE_EW);
+    c.sapp_consume_event();
+    return true;
+}
+
+/// Clay inspector over the window's bars, sidebar and pane layout.
+fn drawGridDebug(app: *App, renderer: *FtRenderer, width: f32, height: f32) void {
+    if (!g_grid_debug.enabled) return;
+    g_grid_debug.collect(app, width, height, renderer.cell_w);
+    const commands = g_grid_debug.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+    paintClayCommands(renderer, commands, 0, 0, .{ .x = 0, .y = 0, .width = width, .height = height }, null);
+}
+
+fn gridDebugEvent(app: *App, event: c.sapp_event) bool {
+    if (!g_grid_debug.enabled) return false;
+    const area: clay_inspector_input.Rect = .{ .width = c.sapp_widthf(), .height = c.sapp_heightf() };
+    const consumed = switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => g_grid_debug.pointer(.move, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and g_grid_debug.pointer(.down, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_UP => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and g_grid_debug.pointer(.up, event.mouse_x, event.mouse_y, 0, area),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => g_grid_debug.pointer(.scroll, event.mouse_x, event.mouse_y, event.scroll_y, area),
+        else => return false,
+    };
+    app.requestRedraw();
+    if (!consumed) return false;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+    c.sapp_consume_event();
+    return true;
+}
+
+/// Pointer input over the active surface's inspector panel goes to Clay
+/// before the surface or the overlay owning it can claim it.
+fn surfaceInspectorEvent(app: *App, event: c.sapp_event) bool {
+    const surface = &g_clay_surface;
+    if (!surface.active or !surface.debug) return false;
+    const over = clay_inspector_input.inPanel(surface.area, event.mouse_x, event.mouse_y);
+    const left = event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT;
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {},
+        c.SAPP_EVENTTYPE_MOUSE_DOWN => if (over and left) surface.inspector_button.press(),
+        c.SAPP_EVENTTYPE_MOUSE_UP => if (!(left and surface.inspector_button.release()) and !over) return false,
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => if (over) {
+            surface.scroll_y += event.scroll_y;
+        },
+        else => return false,
+    }
+    // Overlay layouts read the window pointer; standalone ones the local one.
+    g_mouse_x = event.mouse_x;
+    g_mouse_y = event.mouse_y;
+    surface.mouse_x = event.mouse_x - surface.area.x;
+    surface.mouse_y = event.mouse_y - surface.area.y;
+    app.requestRedraw();
+    if (!over and event.type != c.SAPP_EVENTTYPE_MOUSE_UP) return false;
+    setMouseCursorHidden(false);
+    setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+    c.sapp_consume_event();
+    return true;
 }
 
 fn reportClayMeasurements(runtime: *lua_mod.Runtime, ui_idx: c_int) void {
@@ -118,7 +251,7 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
             clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
                 const text = command.renderData.text;
                 const color = text.textColor;
-                if (text.stringContents.length > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
+                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
                 c.sgl_load_default_pipeline();
             },
             clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
@@ -152,6 +285,7 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
 
 fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
     if (!g_clay_surface.active) return;
+    g_clay_surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
     if (g_clay_surface.owner_index > 0) {
         g_clay_surface.mouse_x = g_mouse_x - offset_x;
         g_clay_surface.mouse_y = g_mouse_y - offset_y;
@@ -167,8 +301,9 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
     panel.x += offset_x;
     panel.y += offset_y;
     var clip = clay_paint.snap(.{ .x = offset_x, .y = offset_y, .width = width, .height = height });
-    // Paint clipping must not enable Clay's horizontal overflow sizing.
-    if (framed) {
+    // Paint clipping must not enable Clay's horizontal overflow sizing. The
+    // inspector draws beside the panel, so it keeps the whole host clip.
+    if (framed and !g_clay_surface.debug) {
         const x = @max(offset_x, panel.x);
         const y = @max(offset_y, panel.y);
         clip = clay_paint.snap(.{
@@ -1943,6 +2078,24 @@ fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
     return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(tabViewCodepoints(view))) * renderer.cell_w;
 }
 
+fn debugRgb(value: ?ghostty.ColorRgb) ?clay_grid_debug.Rgb {
+    const rgb = value orelse return null;
+    return .{ .r = rgb.r, .g = rgb.g, .b = rgb.b };
+}
+
+/// Inspector view of a bar paint, matching `drawBarBackground`.
+fn debugBarStyle(style: BarStyle, padding: BarBox) clay_grid_debug.Style {
+    return .{
+        .bg = debugRgb(style.bg),
+        .fg = debugRgb(style.fg),
+        .border = debugRgb(style.border),
+        .border_alpha = 72,
+        .radius = style.radius,
+        .bold = style.bold,
+        .padding = .{ padding.top, padding.right, padding.bottom, padding.left },
+    };
+}
+
 fn barItemHeight(renderer: *FtRenderer, style: BarStyle) f32 {
     return renderer.cell_h + style.padding.top + style.padding.bottom;
 }
@@ -1965,6 +2118,8 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
     const content_w = @max(@as(f32, 0.0), frame_w - widget.layout.padding.horizontal());
     const content_h = @max(@as(f32, 0.0), frame_h - widget.layout.padding.vertical());
     const content_right = content_x + content_w;
+    const debug_record: ?*clay_grid_debug.BarRecord = if (g_grid_debug.enabled) &g_grid_debug.bars[@intFromEnum(surface)] else null;
+    if (debug_record) |record| record.begin(.{ .x = frame_x, .y = frame_y, .width = frame_w, .height = frame_h }, debugBarStyle(widget.style, widget.layout.padding), content_y, content_h);
 
     var right_reserved: f32 = 0.0;
     var saw_spacer = false;
@@ -1985,7 +2140,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
     var cursor_x = content_x;
     var on_right_side = false;
     const active_idx = mux_ops.activeTabIndex(app);
-    for (widget.items[0..widget.len]) |*item| {
+    for (widget.items[0..widget.len], 0..) |*item, item_index| {
         switch (item.kind) {
             .spacer => {
                 cursor_x = @max(content_x, content_right - right_reserved);
@@ -2023,6 +2178,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 if (bg_style.bg == null) bg_style.bg = view.segment.bg;
                 if (bg_style.fg == null) bg_style.fg = view.segment.fg;
                 if (view.segment.id) |id| cacheBarHitRegion(cache, cursor_x, view.style.margin.horizontal() + bg_w, null, 0.0, null, id);
+                if (debug_record) |record| {
+                    var paint = debugBarStyle(bg_style, view.style.padding);
+                    paint.fg = debugRgb(bg_style.fg orelse default_fg);
+                    paint.bold = view.segment.bold or view.style.bold;
+                    record.add(.segment, item_index, cursor_x, view.style.margin.horizontal() + bg_w, .{ .x = bg_x, .y = bg_y, .width = bg_w, .height = bg_h }, paint, false, display);
+                }
                 if (bg_style.bg != null or bg_style.border != null) {
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                 }
@@ -2066,6 +2227,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     const bg_style = resolvedTabPaint(tab, ti == active_idx);
 
                     cacheBarHitRegion(cache, tx, tab_w, null, 0.0, ti, tab.segment.id);
+                    if (debug_record) |record| {
+                        var paint = debugBarStyle(bg_style, tab.style.padding);
+                        paint.fg = debugRgb(bg_style.fg orelse default_fg);
+                        paint.bold = tab.segment.bold or tab.style.bold;
+                        record.add(.tab, ti, tx, tab_w, .{ .x = bg_x, .y = bg_y, .width = bg_w, .height = bg_h }, paint, ti == active_idx, tab.segment.text);
+                    }
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                     if (tab.style.radius <= 0 and tab.style.bg == null and tab.segment.bg == null and ti == active_idx) {
                         const accent = bg_style.selection_accent.?;
@@ -4532,6 +4699,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             lua.withLockedState(void, renderLuaWidgets);
         }
         if (g_clay_surface.owner_index == 0) drawClaySurface(renderer, width, height, 0, 0);
+        drawGridDebug(app, renderer, width, height);
     }
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
         app.invalidateUiSemanticFrame();
@@ -4899,6 +5067,7 @@ const ShutdownWatchdog = struct {
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     g_clay_surface.deinit();
+    g_grid_debug.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window
@@ -5165,6 +5334,9 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (inspectorResizeEvent(app, event)) return;
+    if (gridDebugEvent(app, event)) return;
+    if (surfaceInspectorEvent(app, event)) return;
     if (claySurfaceEvent(event)) return;
 
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE) {

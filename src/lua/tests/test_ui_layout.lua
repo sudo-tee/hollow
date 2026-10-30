@@ -8,6 +8,29 @@ describe("experimental hierarchical layout", function()
     layout = ui.layout
   end)
 
+  it("toggles the surface and grid inspectors independently", function()
+    layout.debug(true)
+    layout.debug_grid(1)
+    assert.is_true(ui._layout_debug)
+    assert.is_false(ui._layout_debug_grid)
+    layout.debug_grid(true)
+    layout.debug(false)
+    assert.is_false(ui._layout_debug)
+    assert.is_true(ui._layout_debug_grid)
+    layout.debug_grid(false)
+    assert.is_false(ui._layout_debug_grid)
+  end)
+
+  it("stores the inspector width and rejects non-numbers", function()
+    ui._layout_debug_width = nil
+    assert.equals(400, layout.debug_width())
+    layout.debug_width(640)
+    assert.equals(640, layout.debug_width())
+    assert.has_error(function() layout.debug_width("wide") end)
+    assert.has_error(function() layout.debug_width(0 / 0) end)
+    ui._layout_debug_width = nil
+  end)
+
   it("preserves invalidations raised while constructing a snapshot", function()
     local surface, renders
     renders = 0
