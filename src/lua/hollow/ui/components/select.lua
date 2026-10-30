@@ -284,9 +284,6 @@ function M.render(opts, theme, ctx)
   local reveal = entries[target]
       and ((opts.id_prefix or "select") .. ":item:" .. entries[target].source_index)
     or nil
-  local scrollbar = viewport.show_scrollbar
-      and shared.serialize_row_paint({ scrollbar_track = true }, theme)
-    or {}
   local children = {
     c.row({
       c.text((opts.prompt or "Select") .. ":", s.title, { wrap = "none" }),
@@ -300,22 +297,23 @@ function M.render(opts, theme, ctx)
       c.text("Filter: ", s.title, { wrap = "none" }),
       input_field(opts.filter, theme, ctx, true),
     }, { width = "grow" }),
-    c.column(rows, {
+    c.scroll({
       id = "select:viewport",
+      theme = theme,
+      ctx = ctx,
+      _legacy_paint = true,
       width = "grow",
       height = "grow",
-      scroll = true,
-      scroll_x = true,
+      axis = "both",
       reveal = reveal,
       reveal_start = opts.reveal_start,
       measure = true,
-      -- Box shorthand mirrors right onto left unless left is explicit.
-      padding = { left = 0, right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0 },
-      scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
-      scrollbar_thumb_ratio = viewport.thumb_ratio,
-      scrollbar_thumb_size = viewport.thumb_size,
-      scrollbar_track_color = scrollbar.scrollbar_track_color,
-      scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+      scrollbar = viewport.show_scrollbar and {
+        id = viewport.scrollbar_id,
+        ratio = viewport.thumb_ratio,
+        size = viewport.thumb_size,
+      } or nil,
+      rows,
     }),
   }
   if opts.hints then

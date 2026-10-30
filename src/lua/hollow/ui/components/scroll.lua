@@ -3,6 +3,7 @@ local box = require("hollow.ui.style.box")
 local c = require("hollow.ui.components")
 local list_row = require("hollow.ui.recipes.list_row")
 local props = require("hollow.ui.components.props")
+local shared = require("hollow.ui.shared")
 
 local function padding_right(value, ctx)
   if value == nil then
@@ -30,7 +31,11 @@ return function(value)
       "scrollbar requires an id"
     )
     local scope = props.scope()
-    local paint = list_row(options.theme or scope.theme).paint
+    local ctx = options.ctx or scope.ctx
+    local theme = options.theme or scope.theme
+    local paint = options._legacy_paint
+        and shared.serialize_row_paint({ scrollbar_track = true }, theme)
+      or list_row(theme).paint
     options.scrollbar_id = bar.id
     options.scrollbar_thumb_ratio = bar.ratio
     options.scrollbar_thumb_size = bar.size
@@ -47,8 +52,8 @@ return function(value)
     end
     -- Box shorthand mirrors right onto left; capture that before adding the gutter.
     padding.left = padding.left or padding.right or padding.top or 0
-    local right = padding_right(padding.right or padding.top, scope.ctx)
-    padding.right = right + math.max(8, scope.ctx.cell_w or 8)
+    local right = padding_right(padding.right or padding.top, ctx)
+    padding.right = right + math.max(8, ctx.cell_w or 8)
     options.padding = padding
   end
   if options.disabled then

@@ -362,3 +362,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   total cost is `1 + 2/tab + 2/badge`, not `2/tab`.
 - REPL hints currently use one text node. A plain hints mode preserves that
   snapshot; colored key/description runs remain a separate visual change.
+- Select scrollbar track uses `list_row.raw_paint`, not `paint`; retain its
+  legacy fallback during migration to avoid an unreviewed color change.
