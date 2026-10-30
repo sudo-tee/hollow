@@ -412,13 +412,11 @@ function ui.command_palette.open(opts)
         reveal_start = reveal_start,
         styles = s,
         hints = {
-          ui.divider(render_theme.divider),
-          ui.row({
-            ui.text("<CR>", s.key_hint),
-            ui.text(" execute  ", s.muted),
-            ui.text("<Esc>", s.key_hint),
-            ui.text(" dismiss", s.muted),
-          }),
+          { "<CR>", "execute" },
+          { "<Esc>", "dismiss" },
+          _component = true,
+          key_style = s.key_hint,
+          description_style = s.muted,
         },
         render_item = function(adapted, index, id, plain)
           local entry = adapted.item
