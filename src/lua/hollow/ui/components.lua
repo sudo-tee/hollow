@@ -17,6 +17,7 @@ local lazy = {
   label = "hollow.ui.components.label",
   pill = "hollow.ui.components.pill",
   select = "hollow.ui.components.select",
+  tabs = "hollow.ui.components.tabs",
   title = "hollow.ui.components.title",
 }
 setmetatable(M, {

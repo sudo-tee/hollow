@@ -137,6 +137,49 @@ describe("unified component styling", function()
     assert.equals(9, nodes[6].radius)
   end)
 
+  it("renders tabs with selected paint, badges and isolated callbacks", function()
+    local selected
+    local palette = {
+      fg = "#111111",
+      muted = "#222222",
+      panel_bg = "#333333",
+      selection_fg = "#eeeeee",
+      selection_bg = "#444444",
+      styles = { tab = { root = { radius = 7 } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.tabs({
+          width = "grow",
+          active = "one",
+          on_select = function(id)
+            selected = id
+          end,
+          tabs = {
+            { id = "one", label = "First" },
+            { id = "two", label = "Second", badge = { text = "3", color = "#555555" } },
+            { id = "three", label = "Third", disabled = true },
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(9, #nodes)
+    assert.equals(-1, nodes[1].width)
+    assert.equals("First", nodes[2].label)
+    assert.equals("#444444", nodes[2].bg)
+    assert.equals(7, nodes[2].radius)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#555555", nodes[6].bg)
+    assert.equals("3", nodes[7].text)
+    assert.is_nil(nodes[8].clickable)
+    surface:dispatch(nodes[4].id)
+    assert.equals("two", selected)
+    surface:dispatch(nodes[2].id)
+    assert.equals("one", selected)
+  end)
+
   it("does not retain disabled overlay callbacks from a previous enabled render", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({

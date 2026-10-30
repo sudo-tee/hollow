@@ -358,3 +358,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
 - Select hints use a separately colored separator node. `hints` accepts a
   separator style to preserve those nodes during the refactor; compact hints
   retain the planned two-nodes-per-hint cost.
+- `tabs` needs a containing row and painted badges need two additional nodes;
+  total cost is `1 + 2/tab + 2/badge`, not `2/tab`.
