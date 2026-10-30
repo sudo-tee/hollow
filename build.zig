@@ -91,13 +91,21 @@ fn luaModulePaths(b: *std.Build) []const []const u8 {
 pub fn build(b: *std.Build) void {
     const lua_modules = luaModulePaths(b);
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const requested_optimize = b.standardOptimizeOption(.{});
+    // Fast edit loop: app code in Debug (about 3.5x faster to rebuild than
+    // ReleaseFast), while cached C dependencies stay ReleaseFast at runtime.
+    const dev = b.option(bool, "dev", "Build app code in Debug and C dependencies in ReleaseFast") orelse false;
+    const optimize: std.builtin.OptimizeMode = if (dev) .Debug else requested_optimize;
+    const dep_optimize: std.builtin.OptimizeMode = if (dev) .ReleaseFast else optimize;
     @import("src/cli_build_steps.zig").add(b, target, optimize);
     addAgentSteps(b, target, optimize);
     // Skip GUI graph configuration. build-agent.zig also avoids resolving the
     // main package's GUI dependency manifest on a minimal checkout.
     if (b.option(bool, "agent-only", "Configure only the standalone Linux agent") orelse false) return;
     const emit_pdb = b.option(bool, "pdb", "Emit PDB debug symbols (enables profiling ReleaseFast builds)") orelse false;
+    // ReleaseFast otherwise still generates CodeView/PDB information. Avoid
+    // that LLVM work for normal builds without changing optimization settings.
+    const strip: ?bool = if (emit_pdb) false else if (optimize == .fast) true else null;
     const ghostty_optimize = ghosttyOptimizeMode(optimize);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -112,11 +120,11 @@ pub fn build(b: *std.Build) void {
     // missing sub-deps and re-run configure with the full graph available.
     const fontdeps_dep = b.lazyDependency("fontdeps", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = dep_optimize,
     }) orelse return;
     const zluajit_dep = b.dependency("zluajit", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = dep_optimize,
         .system = false,
         .shared = false,
         .@"lua52-compat" = false,
@@ -147,6 +155,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
@@ -161,13 +170,13 @@ pub fn build(b: *std.Build) void {
     launcher_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     launcher_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     @import("src/c_build.zig").addPosix(b, launcher_root_module, target, optimize);
-    if (emit_pdb) launcher_root_module.strip = false;
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
@@ -216,7 +225,6 @@ pub fn build(b: *std.Build) void {
     ft_translate.addIncludePath(fontdeps_dep.artifact("freetype").getEmittedIncludeTree());
     ft_translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("ft_c", ft_translate.createModule());
-    if (emit_pdb) root_module.strip = false;
 
     // Isolated renderer benchmark graph. The dummy Sokol backend exposes only
     // sokol_gfx and sokol_gl, so this target never pulls in a window backend.
@@ -268,6 +276,9 @@ pub fn build(b: *std.Build) void {
     bench_root_module.addImport("ft_c", ft_translate.createModule());
     @import("src/c_build.zig").addTextWidth(b, bench_root_module, ghostty_dep.artifact("ghostty-vt-static"));
 
+    // Only the app executables; skips the standalone CLI and guest agent
+    // bundles that the install step also cross-builds.
+    const gui_step = b.step("gui", "Build and install only the app executables (no CLI/agent bundles)");
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
         const res_obj = b.addSystemCommand(&.{
@@ -281,6 +292,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .strip = strip,
         });
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
@@ -297,7 +309,6 @@ pub fn build(b: *std.Build) void {
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
         @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
-        if (emit_pdb) gui_root_module.strip = false;
 
         const gui_exe = b.addExecutable(.{
             .name = "hollow-native",
@@ -311,6 +322,7 @@ pub fn build(b: *std.Build) void {
         addNativeRuntime(b, root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_gui_exe = b.addInstallArtifact(gui_exe, .{});
         b.getInstallStep().dependOn(&install_gui_exe.step);
+        gui_step.dependOn(&install_gui_exe.step);
 
         const launcher_exe = b.addExecutable(.{
             .name = "hollow",
@@ -327,23 +339,7 @@ pub fn build(b: *std.Build) void {
         launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
         const install_launcher_exe = b.addInstallArtifact(launcher_exe, .{});
         b.getInstallStep().dependOn(&install_launcher_exe.step);
-
-        const gui_launcher_exe = b.addExecutable(.{
-            .name = "hollow-gui",
-            .root_module = launcher_root_module,
-        });
-        gui_launcher_exe.root_module.addObjectFile(res_file);
-        gui_launcher_exe.subsystem = .windows;
-        gui_launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        gui_launcher_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        gui_launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
-        gui_launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
-        gui_launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
-        const install_gui_launcher_exe = b.addInstallArtifact(gui_launcher_exe, .{});
-        b.getInstallStep().dependOn(&install_gui_launcher_exe.step);
+        gui_step.dependOn(&install_launcher_exe.step);
 
         run_artifact = gui_exe;
     } else {
@@ -354,6 +350,7 @@ pub fn build(b: *std.Build) void {
         addNativeRuntime(b, exe.root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_exe = b.addInstallArtifact(exe, .{});
         b.getInstallStep().dependOn(&install_exe.step);
+        gui_step.dependOn(&install_exe.step);
         run_artifact = exe;
     }
 

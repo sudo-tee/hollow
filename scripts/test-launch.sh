@@ -38,7 +38,6 @@ EOF
 chmod +x "$TEST_DIR/bin/"* "$REPO/zig-out/bin/hollow.exe"
 export PATH="$TEST_DIR/bin:$PATH"
 printf 'native\n' > "$REPO/zig-out/bin/hollow-native.exe"
-printf 'gui\n' > "$REPO/zig-out/bin/hollow-gui.exe"
 printf 'cli\n' > "$REPO/zig-out/bin/hollow-cli.exe"
 printf 'symbols\n' > "$REPO/zig-out/bin/hollow.pdb"
 printf 'lua\n' > "$REPO/src/lua/init.lua"
@@ -58,6 +57,24 @@ grep -q '^build build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast$' "$TES
 ! grep -Eq 'wslpath|powershell|^run ' "$TEST_LOG"
 [[ ! -e "$INSTALL_DEST" ]]
 
+# Debug and profiling builds retain their explicit build flags.
+: > "$TEST_LOG"
+bash "$REPO/launch.sh" --build-only --debug
+grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Doptimize=Debug' "$TEST_LOG"
+: > "$TEST_LOG"
+bash "$REPO/launch.sh" --build-only --pdb
+grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast -Dpdb' "$TEST_LOG"
+
+# Dev builds only the app executables, except when installing full bundles.
+: > "$TEST_LOG"
+bash "$REPO/launch.sh" --build-only --dev
+grep -Fxq 'build build gui -Dtarget=x86_64-windows-gnu -Ddev' "$TEST_LOG"
+grep -Fxq 'x86_64-windows-gnu dev' "$REPO/zig-out/.launch-build-mode"
+: > "$TEST_LOG"
+bash "$REPO/launch.sh" --build-only --dev --install
+grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Ddev' "$TEST_LOG"
+rm -rf "$INSTALL_DEST"
+
 # Normal development launches directly from zig-out/bin and forwards arguments.
 : > "$TEST_LOG"
 bash "$REPO/launch.sh" --no-build --app-arg='hello world'
@@ -67,9 +84,10 @@ grep -Fxq "run $REPO/zig-out/bin/hollow.exe hello world" "$TEST_LOG"
 # Installation remains possible without building or running.
 : > "$TEST_LOG"
 bash "$REPO/launch.sh" --install --no-build --build-only
-for name in hollow.exe hollow-native.exe hollow-gui.exe hollow-cli.exe hollow.pdb; do
+for name in hollow.exe hollow-native.exe hollow-cli.exe hollow.pdb; do
   cmp "$REPO/zig-out/bin/$name" "$INSTALL_DEST/$name"
 done
+[[ ! -e "$INSTALL_DEST/hollow-gui.exe" ]]
 for name in SHA256SUMS linux-x86_64/hollow-cli linux-aarch64/hollow-cli; do
   cmp "$REPO/zig-out/cli/$name" "$INSTALL_DEST/cli/$name"
 done

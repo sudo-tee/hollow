@@ -64,6 +64,8 @@ Re-run it any time dependency pins change or `zig-pkg/` is regenerated.
 ./launch.sh --build-only   # build only
 ./launch.sh --install --build-only # build and copy to C:\Applications\Hollow
 ./launch.sh --debug        # Debug build instead of ReleaseFast
+./launch.sh --pdb          # ReleaseFast with debug symbols for profiling/crashes
+./launch.sh --dev          # Debug app + ReleaseFast C deps, app executables only
 ./launch.sh --safe-render  # disable swapchain glyphs + multi-pane cache
 ./launch.sh --no-swapchain-glyphs
 ./launch.sh --no-multi-pane-cache
@@ -83,6 +85,77 @@ Pass `--app-arg=...` to forward args the wrapper does not understand.
 
 Lua dev loop: after one build, Lua files under `src/lua/` are loaded
 from disk when present, so `--no-build` is enough for Lua-only changes.
+
+### Build-time diagnostics
+
+Keep `ReleaseFast` when measuring the build used day to day:
+
+```bash
+zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast --summary new
+```
+
+The compile step includes semantic analysis, LLVM optimization/code generation,
+and linking. A long "linking" progress label does not establish which phase is
+expensive. For detailed compiler and LLVM pass timings, use:
+
+```bash
+zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast --time-report
+```
+
+This forces recompilation and opens Zig's build web UI, so it is not a normal
+incremental-build timing. Dependencies that are normally cached are rebuilt too.
+
+Normal `ReleaseFast` application builds omit debug information to reduce LLVM
+work, but retain the same optimization level. Use `-Dpdb` with `zig build`, or
+`--pdb` with `launch.sh`, when you need matching symbols for a profiler or crash
+report. Debug builds keep their default debug information.
+
+Windows builds produce `hollow.exe` (console launcher) and `hollow-native.exe`
+(GUI), plus the standalone CLI and guest bundles. The redundant console-less
+`hollow-gui.exe` launcher is no longer built or installed; existing shortcuts can
+point directly to `hollow-native.exe` instead.
+Old output/install directories may still contain the former shim or PDBs from
+previous builds; they are not deleted automatically. Stage releases from the
+current artifact list rather than copying every file from an old output directory.
+
+#### Dev mode
+
+`./dev.sh` (and `make dev`) builds with `launch.sh --dev` by default, which runs
+`zig build gui -Ddev`:
+
+- `-Ddev` compiles the app's Zig code in Debug, while freetype, harfbuzz, LuaJIT
+  and ghostty stay ReleaseFast, so they are fast at runtime and stay cached.
+- The `gui` step installs only `hollow-native.exe` and `hollow.exe` (or `hollow`
+  on Linux). It skips the standalone CLI and the musl CLI and agent bundles, so
+  edits to shared code don't trigger cross-builds. Existing bundles in `zig-out`
+  are left as they are; run a full `zig build` when you change CLI or agent code.
+
+Pass `--release` to `dev.sh` for a ReleaseFast build. `--debug`, `--pdb` and
+`--install` also leave dev mode, and `--install` always runs the full install
+step. `dev.sh` rebuilds when you switch modes (it tracks the mode in
+`zig-out/.launch-build-mode`).
+
+The same `src/main.zig` comment-only edit rebuilds in about 15 s in dev mode,
+compared with about 60 s for ReleaseFast. Profile and benchmark with ReleaseFast
+builds, not dev mode.
+
+#### Initial measurements (2026-10-30)
+
+Zig 0.17.0, WSL, `x86_64-windows-gnu`, ReleaseFast, warm dependency caches.
+Each measurement invalidated `src/main.zig` with the same comment-only edit;
+these are single-run observations, not a statistical benchmark.
+
+| Configuration | Source-edit rebuild wall time |
+| --- | ---: |
+| Original: symbols enabled, two launchers | 83.72 s |
+| Symbols omitted, redundant launcher removed | 59.72 s |
+
+The combined change reduced this rebuild by about 29%, without lowering the
+optimization level. Separate instrumented app compilations measured LLVM at
+87.69 s with debug information versus 64.26 s without it, while link flush was
+0.42 s versus 0.16 s. Instrumented runs are not directly comparable to normal
+build wall times. The first stripped build also had cold runtime artifacts, so
+its total wall time was excluded from the warm-cache comparison.
 
 ### From Windows (native)
 
@@ -122,6 +195,8 @@ from WSL.
 | `--build-only`                                 | Build, then exit without running                                         |
 | `--install`                                    | Copy Windows artifacts to `C:\Applications\Hollow` from WSL; run from there unless `--build-only` |
 | `--debug`                                      | `-Doptimize=Debug`                                                       |
+| `--pdb`                                        | Retain debug symbols in a ReleaseFast build (`-Dpdb`)                    |
+| `--dev`                                        | `gui -Ddev`: Debug app, ReleaseFast deps, app executables only          |
 | `--target=TARGET`                              | Override the build target (default `x86_64-windows-gnu`)                 |
 | `--safe-render`                                | Implies `--renderer-safe-mode` and `--renderer-disable-swapchain-glyphs` |
 | `--no-swapchain-glyphs`                        | Forward `--renderer-disable-swapchain-glyphs`                            |

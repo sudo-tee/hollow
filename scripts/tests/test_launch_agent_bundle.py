@@ -24,7 +24,7 @@ class LaunchAgentBundleTests(unittest.TestCase):
         (self.root / "conf").mkdir()
         (self.root / "conf/init.lua").write_text("-- fixture\n")
         (self.root / "zig-out/bin").mkdir(parents=True)
-        for name in ("hollow.exe", "hollow-native.exe", "hollow-gui.exe", "hollow-cli.exe"):
+        for name in ("hollow.exe", "hollow-native.exe", "hollow-cli.exe"):
             (self.root / "zig-out/bin" / name).write_bytes(b"fixture exe")
         self.bundle = self.root / "zig-out/agents"
         for name in FILES:
@@ -63,7 +63,16 @@ class LaunchAgentBundleTests(unittest.TestCase):
             self.assertEqual((self.install / "cli" / name).read_bytes(), name.encode())
         self.assertTrue((self.install / "hollow-cli.exe").is_file())
         self.assertTrue((self.install / "hollow-native.exe").is_file())
+        self.assertFalse((self.install / "hollow-gui.exe").exists())
         self.assertTrue((self.install / "src/lua/core.lua").is_file())
+
+    def test_does_not_install_obsolete_gui_launcher(self):
+        for name in ("hollow-gui.exe", "hollow-gui.pdb"):
+            (self.root / "zig-out/bin" / name).write_bytes(b"old build")
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.install / "hollow-gui.exe").exists())
+        self.assertFalse((self.install / "hollow-gui.pdb").exists())
 
     def test_missing_bundle_fails_before_overwriting_installation(self):
         (self.bundle / FILES[1]).unlink()
