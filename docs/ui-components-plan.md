@@ -355,3 +355,6 @@ Done when: no widget computes scrollbar gutters or base insets, and
   use `gap { height = n }` for vertical gaps.
 - Existing input rendering costs two nodes per run (a container plus text),
   not one; its total cost is `2 + 2/runs`. Keep this structure for parity.
+- Select hints use a separately colored separator node. `hints` accepts a
+  separator style to preserve those nodes during the refactor; compact hints
+  retain the planned two-nodes-per-hint cost.

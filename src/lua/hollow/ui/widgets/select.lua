@@ -158,10 +158,7 @@ local function render_hint_rows(actions, theme)
       if not key_hint then
         return
       end
-      return {
-        ui.text(normalize_hint_chord(key_hint), s.key_hint),
-        ui.text(" " .. (action.desc or action.name or "action"), s.muted),
-      }
+      return { normalize_hint_chord(key_hint), action.desc or action.name or "action" }
     end)
     :get()
 
@@ -169,8 +166,10 @@ local function render_hint_rows(actions, theme)
     return nil
   end
 
-  local hint_nodes = ui.join(hints, ui.text("  ", s.hint_separator))
-  return { ui.divider(theme.divider), ui.row(hint_nodes) }
+  hints._component = true
+  hints.key_style, hints.description_style, hints.separator_style =
+    s.key_hint, s.muted, s.hint_separator
+  return hints
 end
 
 ---@param opts HollowUiSelectOptions|nil

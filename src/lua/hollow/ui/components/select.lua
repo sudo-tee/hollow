@@ -319,11 +319,29 @@ function M.render(opts, theme, ctx)
     }),
   }
   if opts.hints then
-    children[#children + 1] = inline(
-      opts.hints[2].children,
-      nil,
-      { id = "select:hints", width = "grow", height = cell_h, scroll_x = true }
-    )
+    if opts.hints._component then
+      local hints = {}
+      for key, value in pairs(opts.hints) do
+        hints[key] = value
+      end
+      hints.id, hints.width, hints.height, hints.scroll_x = "select:hints", "grow", cell_h, true
+      if #hints * 3 - 1 > 32 then
+        local text = {}
+        for _, hint in ipairs(hints) do
+          text[#text + 1] = hint[1] .. " " .. hint[2]
+        end
+        children[#children + 1] =
+          c.row({ c.text(table.concat(text, "  "), nil, { wrap = "none" }) }, hints)
+      else
+        children[#children + 1] = c.hints(hints)
+      end
+    else
+      children[#children + 1] = inline(
+        opts.hints[2].children,
+        nil,
+        { id = "select:hints", width = "grow", height = cell_h, scroll_x = true }
+      )
+    end
   end
   return M.sections(children, theme, cell_h)
 end

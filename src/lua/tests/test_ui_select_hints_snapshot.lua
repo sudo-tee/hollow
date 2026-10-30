@@ -28,4 +28,23 @@ describe("select hints snapshot", function()
     file:close()
     assert.same(expected, normalized)
   end)
+
+  it("keeps the plain-text fallback for more than 32 hint runs", function()
+    local ui = harness.boot().hollow.ui
+    local actions = {}
+    for i = 1, 12 do
+      actions[i] = { name = "action" .. i, key = "x", desc = "item" .. i, action = function() end }
+    end
+    ui.select.open({ items = { "one" }, actions = actions })
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local nodes = surface:snapshot({ cell_w = 8, cell_h = 19 })
+    for index, node in ipairs(nodes) do
+      if node.id and node.id:match(":select:hints$") then
+        assert.equals(1, node.children)
+        assert.matches("item12$", nodes[index + 1].text)
+        return
+      end
+    end
+    error("missing select hints")
+  end)
 end)
