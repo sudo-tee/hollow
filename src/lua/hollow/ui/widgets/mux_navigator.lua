@@ -521,9 +521,6 @@ function ui.mux_navigator.open(opts)
         ui.text(pane_filter.label, s.muted),
       })
       local target = rows[reveal_start and viewport.start_idx or nav.index]
-      local scrollbar = viewport.show_scrollbar
-          and shared.serialize_row_paint({ scrollbar_track = true }, render_theme)
-        or {}
       local cell_h = ctx.cell_h or 19
       return component.sections({
         component.inline(
@@ -531,24 +528,23 @@ function ui.mux_navigator.open(opts)
           nil,
           { width = "grow", height = cell_h, scroll_x = true }
         ),
-        c.column(nodes, {
+        c.scroll({
           id = "mux:viewport",
+          theme = render_theme,
+          ctx = ctx,
+          _legacy_paint = true,
           width = "grow",
           height = "grow",
-          scroll = true,
-          scroll_x = true,
+          axis = "both",
           measure = true,
           reveal = target and ("mux-navigator:item:" .. target.key) or nil,
           reveal_start = reveal_start,
-          padding = {
-            left = 0,
-            right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0,
-          },
-          scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
-          scrollbar_thumb_ratio = viewport.thumb_ratio,
-          scrollbar_thumb_size = viewport.thumb_size,
-          scrollbar_track_color = scrollbar.scrollbar_track_color,
-          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+          scrollbar = viewport.show_scrollbar and {
+            id = viewport.scrollbar_id,
+            ratio = viewport.thumb_ratio,
+            size = viewport.thumb_size,
+          } or nil,
+          nodes,
         }),
       }, render_theme, cell_h),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
