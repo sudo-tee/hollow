@@ -36,13 +36,12 @@ return function(opts, theme, ctx)
   if not opts.title or opts.title == "" then
     return content
   end
-  return c.column({
+  return c.stack({
+    theme = theme,
+    divided = true,
     c.text(opts.title, { fg = theme.title, bold = true }),
     content,
-  }, {
     width = "grow",
     gap = math.floor(cell_h * 0.5),
-    border_width = { between_children = 1 },
-    style = { border = theme.divider },
   })
 end

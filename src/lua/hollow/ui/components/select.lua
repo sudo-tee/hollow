@@ -213,12 +213,13 @@ end
 ---@param cell_h number
 ---@return HollowUiLayoutNode
 function M.sections(children, theme, cell_h)
-  return c.column(children, {
+  return c.stack({
+    theme = theme,
+    divided = true,
     width = "grow",
     height = "grow",
     gap = cell_h,
-    border_width = { between_children = 1 },
-    style = { border = theme.divider },
+    children,
   })
 end
 
