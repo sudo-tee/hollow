@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGET = ROOT / "src/lua/hollow/ui/repl_signatures.lua"
+TARGET = ROOT / "src/lua/hollow/ui/widgets/lua_repl/signatures.lua"
 
 
 def generate(source):

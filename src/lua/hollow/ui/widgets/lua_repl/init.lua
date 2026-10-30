@@ -3,7 +3,7 @@ local hollow = _G.hollow
 local ui, shared = hollow.ui, require("hollow.ui.shared")
 local layout = ui.layout
 local host = require("hollow.state").get().host_api
-local tools = require("hollow.ui.repl_tools")
+local tools = require("hollow.ui.widgets.lua_repl.tools")
 local console = {}
 ui.lua_repl = console
 

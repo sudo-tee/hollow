@@ -1,5 +1,5 @@
 -- REPL-only inspection/introspection. Never evaluate code or invoke metamethods.
-local signatures = require("hollow.ui.repl_signatures")
+local signatures = require("hollow.ui.widgets.lua_repl.signatures")
 local M = {}
 local keywords = {}
 for name in

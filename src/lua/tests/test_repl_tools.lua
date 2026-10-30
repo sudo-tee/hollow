@@ -1,5 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
-local tools = require("hollow.ui.repl_tools")
+local tools = require("hollow.ui.widgets.lua_repl.tools")
 
 describe("REPL introspection", function()
   it("prints nested tables, quoted keys, stable scalar ordering and empty tables", function()
