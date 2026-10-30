@@ -1,6 +1,6 @@
 # Lua REPL
 
-Open with `<leader>:` (default leader: `Ctrl+Space`), choose **Open Lua REPL
+Open with `<leader>l` (default leader: `Ctrl+Space`), choose **Open Lua REPL
 (live runtime)** in the command palette, or call `hollow.ui.lua_repl.open()`.
 The bottom-aligned console uses Clay layout and sizes itself to its content,
 with a bounded transcript instead of an empty fixed-height panel.

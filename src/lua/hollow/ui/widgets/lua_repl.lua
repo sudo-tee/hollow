@@ -478,12 +478,11 @@ function console.open(opts)
         layout.row({
           layout.text("Lua REPL", { fg = theme.title, bold = true }),
           layout.column({}, { width = "grow" }),
-          layout.text(
-            below > 0 and (below .. " more below · Ctrl+End latest")
-              or "Live runtime · trusted code only",
+          below > 0 and layout.text(
+            below .. " more below · Ctrl+End latest",
             muted,
             { wrap = "none" }
-          ),
+          ) or false,
         }, { width = "grow", height = h }),
         #lines > 0
             and layout.column(lines, {
