@@ -132,15 +132,23 @@ local function input_line(line, theme, h)
 end
 
 local function key_hints(muted, h, scrolled)
-  local hints = ui.when(
-    completion.menu,
-    "Tab/↑/↓ select · Enter insert · Esc dismiss",
-    "Enter run · Tab complete · Esc close" .. ui.when(scrolled, " · PgUp/PgDn scroll", "")
-  )
-  return c.column(
-    { text(hints, muted) },
-    { id = "repl:footer", height = h, width = "grow", scroll_x = true }
-  )
+  local hints = completion.menu
+      and {
+        { "Tab/↑/↓", "select" },
+        { "Enter", "insert" },
+        { "Esc", "dismiss" },
+      }
+    or {
+      { "Enter", "run" },
+      { "Tab", "complete" },
+      { "Esc", "close" },
+    }
+  if not completion.menu and scrolled then
+    hints[#hints + 1] = { "PgUp/PgDn", "scroll" }
+  end
+  hints.id, hints.height, hints.width, hints.scroll_x = "repl:footer", h, "grow", true
+  hints.plain, hints.separator, hints.description_style = true, " · ", muted
+  return c.hints(hints)
 end
 
 -- Transcript rows: fill an explicit modal height, otherwise show at most 12.
