@@ -59,6 +59,32 @@ Never select another user's process without permission. Raw frame capture can
 also be enabled directly by setting `HOLLOW_PROFILE_FRAMES` to a fresh absolute
 path before launch. Existing output at that path is overwritten on shutdown.
 
+## Clay-only branch run
+
+2026-10-30, Windows via WSL2, ReleaseFast crossbuild of `feat/clay-layout`,
+1200x800 client, 96 DPI, fallback embedded font, vsync off, 15 s per run. All
+eight picker/scenario runs passed the runner's checks: fixture ready, page keys
+changed selection, wheel changed the viewport, resize changed the native
+overlay panel, and one valid overlay dialog in UI semantics before and after.
+Rendered callbacks inside the measured phase, `active_wall` in ms:
+
+| Run | Frames | p50 | p95 | p99 | max | Private MB |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Palette idle | 1258 | 0.72 | 1.52 | 2.15 | 3.45 | 277 |
+| Palette selection | 1239 | 0.76 | 2.16 | 4.93 | 11.97 | 278–301 |
+| Palette scroll | 1255 | 0.77 | 2.32 | 4.36 | 6.81 | 280–302 |
+| Palette resize | 1248 | 0.78 | 2.36 | 6.52 | 11.13 | 296–321 |
+| Workspace idle | 1244 | 0.84 | 1.75 | 2.83 | 5.43 | 279–302 |
+| Workspace selection | 1255 | 0.87 | 2.93 | 5.30 | 12.12 | 279–302 |
+| Workspace scroll | 1247 | 0.89 | 2.90 | 5.30 | 12.45 | 280–304 |
+| Workspace resize | 1249 | 0.85 | 2.26 | 10.28 | 13.38 | 301–319 |
+
+Working set stayed at 143–152 MB. Private bytes jump once early in each active
+run and then stay flat for the rest of it, so this shows no growth over time.
+Logs contained only the embedded-font fallback and ConPTY broken-pipe
+(`err=109`) at shutdown. This is a single run per combination without a `main`
+comparison, since `main` has no frame profiler.
+
 ## Smoke test, not a comparison
 
 2026-10-29, Windows 10.0.26200, WSL2, ReleaseFast crossbuild, 1440x900
