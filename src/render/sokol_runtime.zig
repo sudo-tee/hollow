@@ -314,6 +314,8 @@ fn clayChannel(value: f32) u8 {
 /// Paints one Clay command array translated by the offset and clipped to
 /// `initial_clip`.
 fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArray, offset_x: f32, offset_y: f32, initial_clip: clay.Clay_BoundingBox, panel_node: ?*const clay.HollowClayNode) void {
+    // Failed layouts return a zeroed array with a null buffer.
+    if (commands.length <= 0 or commands.internalArray == null) return;
     var clips: [34]clay.Clay_BoundingBox = undefined;
     clips[0] = initial_clip;
     c.sgl_scissor_rect(@intFromFloat(initial_clip.x), @intFromFloat(initial_clip.y), @intFromFloat(initial_clip.width), @intFromFloat(initial_clip.height), true);

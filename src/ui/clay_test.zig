@@ -32,6 +32,32 @@ test "Clay workspace windows retire disjoint clipped columns within scroll capac
     }
 }
 
+test "Clay reopened surfaces with disjoint IDs fit two trees of clip containers" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    // A reopened overlay renames every node at once, so the previous tree's
+    // scroll records coexist with the new tree for one layout.
+    const clips = 120;
+    var nodes: [1 + clips * 2]c.HollowClayNode = undefined;
+    var ids: [clips][40]u8 = undefined;
+    nodes[0] = node(0, -1, -1, clips);
+    for (0..3) |open| {
+        for (0..clips) |i| {
+            nodes[1 + i * 2] = node(1, -1, 19, 1);
+            nodes[1 + i * 2].scroll_x = true;
+            const id = try std.fmt.bufPrint(&ids[i], "layout:{d}:column:{d}", .{ open, i });
+            nodes[1 + i * 2].id = .{ .chars = id.ptr, .length = @intCast(id.len), .isStaticallyAllocated = false };
+            nodes[2 + i * 2] = node(2, 0, 0, 0);
+            nodes[2 + i * 2].text = .{ .chars = "column", .length = 6, .isStaticallyAllocated = true };
+        }
+        for (0..2) |_| {
+            const commands = layout(surface, &nodes, 800, 600, 0);
+            try std.testing.expect(!c.hollow_clay_failed(surface));
+            try std.testing.expect(commands.length > 0);
+        }
+    }
+}
+
 test "Clay flexible clipped label preserves fit right binding during resize" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);
