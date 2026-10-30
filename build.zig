@@ -27,6 +27,37 @@ fn addShellIntegrationOptions(b: *std.Build, target: std.Build.ResolvedTarget, o
     }
 }
 
+// Native runtime C sources and libraries shared by the GUI executable and the
+// unit tests that compile the same root module.
+fn addNativeRuntime(b: *std.Build, module: *std.Build.Module, os_tag: std.Target.Os.Tag, fontdeps_dep: *std.Build.Dependency, zluajit_dep: *std.Build.Dependency) void {
+    module.linkLibrary(fontdeps_dep.artifact("freetype"));
+    module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+    module.linkLibrary(zluajit_dep.artifact("lua"));
+    module.addCSourceFile(.{
+        .file = b.path("src/render/sokol_app.c"),
+        .flags = &.{
+            "-Ithird_party/sokol",
+            "-Ithird_party/sokol/util",
+            "-Ithird_party/stb",
+            "-Ithird_party/fontstash",
+        },
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/render/dwrite_resolver.c"),
+        .flags = &.{},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/render/png_decode.c"),
+        .flags = &.{
+            "-Ithird_party/stb",
+            "-DGHOSTTY_STATIC",
+        },
+    });
+    for (platformSystemLibraries(os_tag)) |lib_name| {
+        module.linkSystemLibrary(lib_name, .{});
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -241,32 +272,9 @@ pub fn build(b: *std.Build) void {
 
         gui_exe.root_module.addObjectFile(res_file);
         gui_exe.subsystem = .windows;
-        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
-        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
-        gui_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/sokol_app.c"),
-            .flags = &.{
-                "-Ithird_party/sokol",
-                "-Ithird_party/sokol/util",
-                "-Ithird_party/stb",
-                "-Ithird_party/fontstash",
-            },
-        });
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        gui_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/png_decode.c"),
-            .flags = &.{
-                "-Ithird_party/stb",
-                "-DGHOSTTY_STATIC",
-            },
-        });
-        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
-            gui_exe.root_module.linkSystemLibrary(lib_name, .{});
-        }
+        addNativeRuntime(b, gui_root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
+        // Tests compile root_module, which no Windows executable links.
+        addNativeRuntime(b, root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_gui_exe = b.addInstallArtifact(gui_exe, .{});
         b.getInstallStep().dependOn(&install_gui_exe.step);
 
@@ -309,32 +317,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = if (target.result.os.tag == .windows) launcher_root_module else root_module,
         });
-        exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
-        exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
-        exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/sokol_app.c"),
-            .flags = &.{
-                "-Ithird_party/sokol",
-                "-Ithird_party/sokol/util",
-                "-Ithird_party/stb",
-                "-Ithird_party/fontstash",
-            },
-        });
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/dwrite_resolver.c"),
-            .flags = &.{},
-        });
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("src/render/png_decode.c"),
-            .flags = &.{
-                "-Ithird_party/stb",
-                "-DGHOSTTY_STATIC",
-            },
-        });
-        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
-            exe.root_module.linkSystemLibrary(lib_name, .{});
-        }
+        addNativeRuntime(b, exe.root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
         const install_exe = b.addInstallArtifact(exe, .{});
         b.getInstallStep().dependOn(&install_exe.step);
         run_artifact = exe;
@@ -506,6 +489,13 @@ pub fn build(b: *std.Build) void {
             "-DGHOSTTY_STATIC",
         },
     });
+    if (target.result.os.tag == .windows) {
+        renderer_bench_tests.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        renderer_bench_tests.root_module.linkSystemLibrary("dwrite", .{});
+    }
     const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);
     test_step.dependOn(&renderer_bench_test_cmd.step);
 
