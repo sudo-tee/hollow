@@ -10,9 +10,7 @@ local function padding_right(value, ctx)
     return 0
   end
   if type(value) == "string" then
-    local number, unit = value:match("^(%d*%.?%d+)(%a+)$")
-    assert(number and (unit == "ch" or unit == "lh"), "invalid padding.right unit: " .. value)
-    return tonumber(number) * (unit == "ch" and (ctx.cell_w or 8) or (ctx.cell_h or 19))
+    return props.unit(value, "padding.right", ctx)
   end
   assert(type(value) == "number" and value >= 0, "invalid padding.right")
   return value

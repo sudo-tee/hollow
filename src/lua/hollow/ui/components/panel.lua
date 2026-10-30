@@ -15,12 +15,7 @@ local function resolve_padding(value, ctx)
     local resolved = {}
     for side, item in pairs(value) do
       if type(item) == "string" then
-        local number, unit = item:match("^(%d*%.?%d+)(%a+)$")
-        assert(
-          number and (unit == "ch" or unit == "lh"),
-          "invalid padding." .. side .. " unit: " .. item
-        )
-        item = tonumber(number) * (unit == "ch" and (ctx.cell_w or 8) or (ctx.cell_h or 19))
+        item = props.unit(item, "padding." .. side, ctx)
       end
       resolved[side] = item
     end

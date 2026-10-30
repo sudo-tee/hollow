@@ -368,3 +368,6 @@ Done when: no widget computes scrollbar gutters or base insets, and
   when moving its viewport to `scroll`.
 - Select header metadata is inline rather than right-aligned. Preserve its
   two text nodes and widget-specific styles during the refactor.
+- Panel insets and scrollbar gutters need arithmetic before serialization;
+  shared unit resolution in `components/props.lua` keeps their rules consistent
+  with the serializer.

@@ -7,21 +7,13 @@
 -- their preorder index natively.
 local box = require("hollow.ui.style.box")
 local color = require("hollow.color")
+local unit = require("hollow.ui.components.props").unit
 local shared = require("hollow.ui.shared")
 local tokens = require("hollow.ui.style.tokens")
 local wraps = { words = 0, newlines = 1, none = 2 }
 local alignments = { start = 0, center = 1, ["end"] = 2 }
 local text_alignments = { left = 0, center = 1, right = 2 }
 local EMPTY = {}
-
-local function unit(value, field, ctx)
-  if type(value) ~= "string" then
-    return value
-  end
-  local number, suffix = value:match("^(%d*%.?%d+)(%a+)$")
-  assert(number and (suffix == "ch" or suffix == "lh"), "invalid " .. field .. " unit: " .. value)
-  return tonumber(number) * (suffix == "ch" and (ctx.cell_w or 8) or (ctx.cell_h or 19))
-end
 
 local function size(value, field, ctx)
   if value == "grow" then
