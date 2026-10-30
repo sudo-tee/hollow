@@ -9,6 +9,84 @@ describe("hierarchical Clay layout", function()
     c = ui.components
   end)
 
+  it("splits props and preserves sparse fragments and legacy options", function()
+    local props = require("hollow.ui.components.props")
+    local child = c.text("child")
+    local p, children = props.split({ [1] = child, [3] = false, width = "grow" })
+    assert.equals("grow", p.width)
+    assert.equals(child, children[1])
+    assert.is_false(children[3])
+    local old = { child }
+    local options = { width = 12 }
+    p, children = props.split(old, options)
+    assert.equals(options, p)
+    assert.equals(old, children)
+    local node = c.row({ width = "grow", child, { c.text({ "nested", wrap = "none" }) } })
+    assert.equals("grow", node.width)
+    assert.equals("nested", node.children[2][1].text)
+    assert.equals("none", node.children[2][1].wrap)
+    assert.equals(ui.each, c.each)
+    assert.equals(ui.when, c.when)
+    assert.equals(ui.join, c.join)
+  end)
+
+  it("resolves cell units and reports invalid fields", function()
+    local surface = layout.new({
+      render = function()
+        return c.column({
+          width = "2ch",
+          height = "1lh",
+          min_width = "0.5ch",
+          gap = "0.5lh",
+          padding = { x = "1ch", y = "0.5lh" },
+          c.gap({ height = "1lh" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(20, nodes[1].width)
+    assert.equals(20, nodes[1].height)
+    assert.equals(5, nodes[1].min_width)
+    assert.equals(10, nodes[1].gap)
+    assert.same({ top = 10, right = 10, bottom = 10, left = 10 }, nodes[1].padding)
+    assert.equals(20, nodes[2].height)
+    local serialize = require("hollow.ui.layout.serialize")
+    local palette = require("hollow.ui.shared").palette("select")
+    assert.has_error(function()
+      serialize(c.column({ gap = "2em" }), palette, "test:")
+    end, "invalid gap unit: 2em")
+    local defaults = serialize(c.column({ width = "1ch", height = "1lh" }), palette, "test:")
+    assert.equals(8, defaults[1].width)
+    assert.equals(19, defaults[1].height)
+  end)
+
+  it("restores render scope after nested snapshots and errors", function()
+    local props = require("hollow.ui.components.props")
+    local outer_theme, inner_theme = { fg = "#111111" }, { fg = "#222222" }
+    local inner = layout.new({
+      theme = inner_theme,
+      render = function(ctx)
+        assert.equals(inner_theme, props.scope().theme)
+        assert.equals(ctx, props.scope().ctx)
+        error("render failure")
+      end,
+    })
+    local outer = layout.new({
+      theme = outer_theme,
+      render = function()
+        assert.equals(outer_theme, props.scope().theme)
+        assert.has_error(function()
+          inner:snapshot()
+        end)
+        assert.equals(outer_theme, props.scope().theme)
+        return c.text("ok")
+      end,
+    })
+    outer:snapshot()
+    assert.is_nil(props._scope)
+    assert.not_nil(props.scope().theme)
+  end)
+
   it("toggles the surface and grid inspectors independently", function()
     layout.debug(true)
     layout.debug_grid(1)

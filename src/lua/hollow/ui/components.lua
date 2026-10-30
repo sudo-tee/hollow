@@ -2,6 +2,7 @@
 -- Render trees are built here and mounted by `hollow.ui.layout` surfaces.
 ---@type HollowUi
 local ui = _G.hollow.ui
+local props = require("hollow.ui.components.props")
 ---@type HollowUiComponents
 local M = {}
 
@@ -63,12 +64,14 @@ end
 ---@param opts HollowUiLayoutOptions|nil
 ---@return HollowUiLayoutNode
 function M.row(children, opts)
+  opts, children = props.split(children, opts)
   return container(1, children, opts)
 end
 ---@param children table
 ---@param opts HollowUiLayoutOptions|nil
 ---@return HollowUiLayoutNode
 function M.column(children, opts)
+  opts, children = props.split(children, opts)
   return container(0, children, opts)
 end
 ---@param text any
@@ -76,6 +79,10 @@ end
 ---@param opts HollowUiLayoutTextOptions|nil
 ---@return HollowUiLayoutNode
 function M.text(text, style, opts)
+  if type(text) == "table" and style == nil and opts == nil then
+    local p = text
+    text, style, opts = p.text or p[1], p.style, p
+  end
   return {
     kind = 2,
     text = tostring(text or ""),
@@ -84,6 +91,20 @@ function M.text(text, style, opts)
     text_align = opts and opts.text_align,
   }
 end
+
+-- Each spacer or gap contributes one container node.
+function M.spacer()
+  return M.column({}, { width = "grow" })
+end
+
+function M.gap(value)
+  if type(value) == "table" then
+    return M.column({}, value)
+  end
+  return M.column({}, { width = value })
+end
+
+M.when, M.each, M.join = ui.when, ui.each, ui.join
 
 -- Custom-paint demonstration; not an arbitrary Lua drawing API.
 ---@param value number

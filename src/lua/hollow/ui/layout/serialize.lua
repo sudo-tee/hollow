@@ -14,14 +14,24 @@ local alignments = { start = 0, center = 1, ["end"] = 2 }
 local text_alignments = { left = 0, center = 1, right = 2 }
 local EMPTY = {}
 
-local function size(value)
+local function unit(value, field, ctx)
+  if type(value) ~= "string" then
+    return value
+  end
+  local number, suffix = value:match("^(%d*%.?%d+)(%a+)$")
+  assert(number and (suffix == "ch" or suffix == "lh"), "invalid " .. field .. " unit: " .. value)
+  return tonumber(number) * (suffix == "ch" and (ctx.cell_w or 8) or (ctx.cell_h or 19))
+end
+
+local function size(value, field, ctx)
   if value == "grow" then
     return -1
   end
   if value == nil or value == "fit" then
     return 0
   end
-  assert(type(value) == "number" and value >= 0 and value < 65536, "invalid layout size")
+  value = unit(value, field, ctx)
+  assert(type(value) == "number" and value >= 0 and value < 65536, "invalid layout size: " .. field)
   return value
 end
 
@@ -39,7 +49,8 @@ end
 ---@return table[] nodes
 ---@return table<string, fun(event: { id: string })> callbacks
 ---@return table<string, string> local_ids
-return function(root, palette, namespace)
+return function(root, palette, namespace, ctx)
+  ctx = ctx or {}
   ---@type table[], table<string, fun(event: { id: string })>, table<string, integer>, table<string, string>, integer[]
   local nodes, callbacks, ids, local_ids, subtree_ends = {}, {}, {}, {}, {}
   -- Callers may mutate style tables between snapshots, so memoize by identity
@@ -164,6 +175,15 @@ return function(root, palette, namespace)
       if padding_value == nil then
         padding_value = style.padding
       end
+      if type(padding_value) == "string" then
+        padding_value = unit(padding_value, "padding", ctx)
+      elseif type(padding_value) == "table" then
+        local resolved = {}
+        for key, value in pairs(padding_value) do
+          resolved[key] = unit(value, "padding." .. key, ctx)
+        end
+        padding_value = resolved
+      end
       local padding = box.normalize(padding_value, true)
       if not box.is_empty(padding) then
         for _, side in ipairs(box.SIDES) do
@@ -171,18 +191,19 @@ return function(root, palette, namespace)
         end
         serialized.padding = padding
       end
-      serialized.width = nonzero(size(node.width))
-      serialized.height = nonzero(size(node.height))
+      serialized.width = nonzero(size(node.width, "width", ctx))
+      serialized.height = nonzero(size(node.height, "height", ctx))
       for _, key in ipairs({ "min_width", "max_width", "min_height", "max_height" }) do
         if node[key] ~= nil then
+          local value = unit(node[key], key, ctx)
           assert(
-            type(node[key]) == "number" and node[key] >= 0 and node[key] < 65536,
+            type(value) == "number" and value >= 0 and value < 65536,
             "invalid layout constraint"
           )
-          serialized[key] = node[key]
+          serialized[key] = value
         end
       end
-      serialized.gap = nonzero(math.min(65535, box.px(node.gap, 0, true)))
+      serialized.gap = nonzero(math.min(65535, box.px(unit(node.gap, "gap", ctx), 0, true)))
       serialized.bg = paint.bg
       if paint.bg and paint.alpha and paint.alpha ~= 255 then
         serialized.alpha = paint.alpha

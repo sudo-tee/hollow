@@ -1,5 +1,6 @@
 -- Surface engine: owned, invalidated Clay snapshots and native host hooks.
 -- Node constructors live in `hollow.ui.components`.
+local props = require("hollow.ui.components.props")
 local serialize = require("hollow.ui.layout.serialize")
 local shared = require("hollow.ui.shared")
 ---@type HollowUi
@@ -79,8 +80,15 @@ function Surface:snapshot(ctx)
       render_ctx[key] = value
     end
     render_ctx.metrics = self.metrics
-    local nodes, callbacks, local_ids =
-      serialize(self.render(render_ctx), self.palette or shared.palette("select"), self.namespace)
+    local palette = self.palette or shared.palette("select")
+    local previous = props._scope
+    props._scope = { theme = palette, ctx = render_ctx }
+    local ok, tree = pcall(self.render, render_ctx)
+    props._scope = previous
+    if not ok then
+      error(tree, 0)
+    end
+    local nodes, callbacks, local_ids = serialize(tree, palette, self.namespace, render_ctx)
     revision = revision + 1
     self.nodes, self.callbacks, self.local_ids = nodes, callbacks, local_ids
     self.revision, self.context, self.dirty =
