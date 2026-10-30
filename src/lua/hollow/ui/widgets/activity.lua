@@ -1,9 +1,9 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.activity")
+local styles = require("hollow.ui.recipes.activity")
 local util = require("hollow.util")
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -630,8 +630,8 @@ function ui.activity.open(opts)
   end
 
   local function render_layout(render_theme, state, ctx)
-    local layout = ui.layout
-    local component = require("hollow.ui.builder.components.layout_select")
+    local c = ui.components
+    local component = require("hollow.ui.components.select")
     local cell_h = ctx.cell_h or 19
     local function line(node)
       return component.inline(
@@ -648,7 +648,7 @@ function ui.activity.open(opts)
       local detail_rows = detail_view.render(theme)
       local body = {}
       for _, row in ipairs(detail_rows) do
-        body[#body + 1] = layout.text(
+        body[#body + 1] = c.text(
           shared.nodes_plain_text(row.children),
           { fg = theme.fg },
           { wrap = "none" }
@@ -658,7 +658,7 @@ function ui.activity.open(opts)
       local scrollbar = detail_rows[1] or {}
       return component.sections({
         line(header),
-        layout.column(body, {
+        c.column(body, {
           id = "activity:details",
           width = "grow",
           height = "grow",
@@ -764,7 +764,7 @@ function ui.activity.open(opts)
       items[farthest], costs[farthest], simplified[farthest] = item, count(item), true
     end
     if #rows == 0 then
-      items[1] = layout.text(
+      items[1] = c.text(
         filter.value ~= "" and "No matching activity"
           or view == "inbox" and "All caught up"
           or "No activity recorded",
@@ -777,12 +777,12 @@ function ui.activity.open(opts)
       or {}
     local children = { line(render_header()) }
     if searching then
-      children[#children + 1] = layout.row({
-        layout.text("/ ", styles(theme).label),
-        require("hollow.ui.builder.components.layout_input")(filter, theme, ctx, true),
+      children[#children + 1] = c.row({
+        c.text("/ ", styles(theme).label),
+        require("hollow.ui.components.input")(filter, theme, ctx, true),
       }, { width = "grow" })
     end
-    children[#children + 1] = layout.column(items, {
+    children[#children + 1] = c.column(items, {
       id = "activity:viewport",
       width = "grow",
       height = "grow",

@@ -486,9 +486,9 @@ built-in pickers and dialogs; notifications and direct overlays remain independe
 local m = hollow.ui.modal({
   theme  = theme,              -- resolved theme table or widget name
   render = function(theme, state, ctx)
-    return hollow.ui.layout.column({
-      hollow.ui.layout.text("Custom dialog", { fg = theme.fg }),
-      hollow.ui.layout.button({ id = "save", text = "Save", on_click = save }),
+    return hollow.ui.components.column({
+      hollow.ui.components.text("Custom dialog", { fg = theme.fg }),
+      hollow.ui.components.button({ id = "save", text = "Save", on_click = save }),
     }, { width = "grow", gap = 8 })
   end,
   width   = 50,
@@ -551,8 +551,10 @@ input.handlers         -- arrow_left, arrow_right, backspace, _else
 
 ### Components
 
-Compose custom overlays with `hollow.ui.layout.column`, `row`, `text` and
-`button`. Inline `ui.row`/`ui.column` payloads remain for bars, sidebars and rich
+Compose custom overlays with `hollow.ui.components.column`, `row`, `text`,
+`button` and `progress`. The same namespace holds the composed components the
+built-in overlays use: `dialog`, `input` and `select`. `hollow.ui.layout` is the
+surface engine (`new`, `show`, `hide`, `debug`). Inline `ui.row`/`ui.column` payloads remain for bars, sidebars and rich
 list labels, not direct overlay render roots. See [Clay layout](../../clay-layout.md).
 
 ### Key composition

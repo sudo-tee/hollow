@@ -1,13 +1,13 @@
 -- Bounded list composition. Clay owns pixel layout/scrolling; the select widget
 -- keeps its existing filtering, navigation and action state.
 local box = require("hollow.ui.style.box")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.select")
+local styles = require("hollow.ui.recipes.select")
 local util = require("hollow.util")
----@type HollowUiLayout
-local layout = _G.hollow.ui.layout
-local input_field = require("hollow.ui.builder.components.layout_input")
+---@type HollowUiComponents
+local c = require("hollow.ui.components")
+local input_field = require("hollow.ui.components.input")
 
 ---@class HollowUiLayoutInlineOptions: HollowUiLayoutOptions
 ---@field prefix? string
@@ -56,19 +56,16 @@ local function inline(children, style, opts)
   opts = opts or {}
   local flat = shared.flatten_span_nodes(children, style)
   if #flat > 32 then
-    return layout.row(
-      { layout.text(shared.nodes_plain_text(children), style, { wrap = "none" }) },
-      opts
-    )
+    return c.row({ c.text(shared.nodes_plain_text(children), style, { wrap = "none" }) }, opts)
   end
   local runs = {}
   local spacer
   for index, span in ipairs(flat) do
     if span.spacer then
-      runs[#runs + 1] = layout.column({}, { width = "grow" })
+      runs[#runs + 1] = c.column({}, { width = "grow" })
       spacer = spacer or #runs
     else
-      local text = layout.text(span.text, span.style, { wrap = "none" })
+      local text = c.text(span.text, span.style, { wrap = "none" })
       local paint = span.style or {}
       if
         paint.bg
@@ -77,7 +74,7 @@ local function inline(children, style, opts)
         or type(paint.on_click) == "function"
         or not box.is_empty(box.normalize(paint.padding))
       then
-        text = layout.column({ text }, {
+        text = c.column({ text }, {
           style = paint,
           id = type(paint.on_click) == "function"
               and ((opts.prefix or "select:inline") .. ":run:" .. index)
@@ -102,12 +99,12 @@ local function inline(children, style, opts)
         right[#right + 1] = run
       end
     end
-    return layout.row({
-      layout.row(left, { width = "grow", scroll_x = true, align_y = opts.align_y }),
-      layout.row(right, { align_y = opts.align_y }),
+    return c.row({
+      c.row(left, { width = "grow", scroll_x = true, align_y = opts.align_y }),
+      c.row(right, { align_y = opts.align_y }),
     }, opts)
   end
-  return layout.row(runs, opts)
+  return c.row(runs, opts)
 end
 
 ---@param theme HollowUiTheme
@@ -125,13 +122,13 @@ local function accent_gutter(color, radius)
   local inset = box.px(radius, 0)
   local children = {}
   if color and color ~= 0 then
-    children[1] = layout.column({}, {
+    children[1] = c.column({}, {
       width = 2,
       height = "grow",
       style = { bg = color, radius = inset > 0 and 1 or 0 },
     })
   end
-  return layout.column(children, {
+  return c.column(children, {
     width = 2,
     height = "grow",
     padding = { left = 0, right = 0, top = inset, bottom = inset },
@@ -169,7 +166,7 @@ local function item(entry, index, opts, theme, ctx, plain)
       { query = opts.query, selected = selected, hovered = hovered, theme = theme, id = id }
     )
     if custom then
-      lines[1] = layout.column({ custom }, {
+      lines[1] = c.column({ custom }, {
         width = "grow",
         height = line_h,
         padding = { top = padding.top, bottom = padding.bottom },
@@ -186,9 +183,9 @@ local function item(entry, index, opts, theme, ctx, plain)
       padding = { left = ctx.cell_w or 8, top = padding.top, bottom = padding.bottom },
     })
   end
-  return layout.row({
+  return c.row({
     accent_gutter(paint.paint.accent_bar, paint.paint.fill_radius),
-    layout.column(
+    c.column(
       lines,
       { width = "grow", padding = { left = (ctx.cell_w or 8) * 2 + padding.left - 2 } }
     ),
@@ -216,7 +213,7 @@ end
 ---@param cell_h number
 ---@return HollowUiLayoutNode
 function M.sections(children, theme, cell_h)
-  return layout.column(children, {
+  return c.column(children, {
     width = "grow",
     height = "grow",
     gap = cell_h,
@@ -281,7 +278,7 @@ function M.render(opts, theme, ctx)
   end
   local s = opts.styles or styles(theme)
   if #entries == 0 then
-    rows[1] = layout.text("No matches", s.empty)
+    rows[1] = c.text("No matches", s.empty)
   end
   local target = opts.reveal_start and viewport.start_idx or opts.selected
   local reveal = entries[target]
@@ -291,19 +288,19 @@ function M.render(opts, theme, ctx)
       and shared.serialize_row_paint({ scrollbar_track = true }, theme)
     or {}
   local children = {
-    layout.row({
-      layout.text((opts.prompt or "Select") .. ":", s.title, { wrap = "none" }),
-      layout.text(
+    c.row({
+      c.text((opts.prompt or "Select") .. ":", s.title, { wrap = "none" }),
+      c.text(
         opts.counter or (#entries > 0 and string.format("   %d/%d", opts.selected, #entries) or ""),
         s.counter,
         { wrap = "none" }
       ),
     }, { id = "select:header", width = "grow", height = cell_h, scroll_x = true }),
-    layout.row({
-      layout.text("Filter: ", s.title, { wrap = "none" }),
+    c.row({
+      c.text("Filter: ", s.title, { wrap = "none" }),
       input_field(opts.filter, theme, ctx, true),
     }, { width = "grow" }),
-    layout.column(rows, {
+    c.column(rows, {
       id = "select:viewport",
       width = "grow",
       height = "grow",
@@ -360,8 +357,8 @@ function M.from_row(row, id, label, theme, ctx, on_click, plain)
   end
   local content
   if plain then
-    content = layout.row(
-      { layout.text(label, { fg = theme.fg }, { wrap = "none" }) },
+    content = c.row(
+      { c.text(label, { fg = theme.fg }, { wrap = "none" }) },
       { width = "grow", padding = { top = top, bottom = bottom } }
     )
   else
@@ -372,7 +369,7 @@ function M.from_row(row, id, label, theme, ctx, on_click, plain)
       align_y = center and "center" or "start",
     })
   end
-  return layout.row({
+  return c.row({
     accent_gutter(serialized.accent_bar, serialized.fill_radius),
     content,
   }, {

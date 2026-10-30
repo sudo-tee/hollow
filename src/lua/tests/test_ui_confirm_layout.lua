@@ -121,7 +121,7 @@ describe("Clay confirmation overlay", function()
   end)
 
   it("suspends standalone demo behind a Clay modal", function()
-    ui.layout.show(ui.layout.text("demo"))
+    ui.layout.show(ui.components.text("demo"))
     ui.confirm.open({ prompt = "Confirmation" })
     prepare()
     assert.is_not_nil(ui._layout_tree)

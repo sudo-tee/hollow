@@ -38,9 +38,9 @@ function ui.input.open(opts)
     title = opts.prompt or "Text input",
     theme = base_theme,
     render = function(theme, _, ctx)
-      return require("hollow.ui.builder.components.layout_dialog")({
+      return require("hollow.ui.components.dialog")({
         title = opts.prompt,
-        body = require("hollow.ui.builder.components.layout_input")(input, theme, ctx),
+        body = require("hollow.ui.components.input")(input, theme, ctx),
       }, theme, ctx)
     end,
     width = opts.width,

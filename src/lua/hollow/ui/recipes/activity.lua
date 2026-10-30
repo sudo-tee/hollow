@@ -1,5 +1,5 @@
-local common = require("hollow.ui.styles.common")
-local list_row = require("hollow.ui.styles.list_row")
+local common = require("hollow.ui.recipes.common")
+local list_row = require("hollow.ui.recipes.list_row")
 local sheet = require("hollow.ui.style.sheet")
 
 local PILL_PADDING = { left = 8, right = 8, top = 3, bottom = 3 }

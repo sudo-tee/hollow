@@ -26,12 +26,12 @@ palettes and caller style tables are not mutated.
 ## Stylesheets
 
 A component's visual policy lives in a plain Lua table of named slots under
-`src/lua/hollow/ui/styles/<component>.lua`. Slot colors are palette tokens.
+`src/lua/hollow/ui/recipes/<component>.lua`. Slot colors are palette tokens.
 Slots can nest state layers (`hovered`, `selected`, `pressed`,
 `focus_visible`, `disabled`), `variants` and `sizes`:
 
 ```lua
-local common = require("hollow.ui.styles.common")
+local common = require("hollow.ui.recipes.common")
 local sheet = require("hollow.ui.style.sheet")
 
 return sheet.define("select", {
@@ -57,7 +57,7 @@ Resolution order is base, variant, size, then each state in the order above
 palette resolve to nil, matching old optional-field reads. A palette is
 required. `sheet:check(palette)` strictly validates every token; tests run it
 against the bundled themes. `hollow.ui.styles` exposes the shared presets from
-`styles/common.lua`.
+`recipes/common.lua`.
 
 Sheets hold tokens; call sites only layer concrete hex colors. Keep layout
 math, node construction, dynamic colors (workspace hashes, program status) and
@@ -88,7 +88,7 @@ layers follow both. Theme sections are validated strictly the first time a
 sheet resolves against a palette.
 
 Partial dialog palettes lacking `button_emphasis_bg` get it derived in
-`builder/components/dialog.lua` before resolving. Sheets compose through
+`components/dialog.lua` before resolving. Sheets compose through
 `other.slots.<slot>` (e.g. `list_row.slots.section_gap`).
 
 ## Recipes and states

@@ -13,7 +13,7 @@ local function row_paint(options, selected, hovered)
   if has_list_style then
     return list_style.row(options, palette, selected, hovered)
   end
-  local paint = require("hollow.ui.styles.list_row")(palette, {
+  local paint = require("hollow.ui.recipes.list_row")(palette, {
     selected = selected,
     hovered = hovered,
   }).paint

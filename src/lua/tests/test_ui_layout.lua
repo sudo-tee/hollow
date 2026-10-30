@@ -2,10 +2,11 @@ package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
 describe("hierarchical Clay layout", function()
-  local ui, layout
+  local ui, layout, c
   before_each(function()
     ui = harness.boot().hollow.ui
     layout = ui.layout
+    c = ui.components
   end)
 
   it("toggles the surface and grid inspectors independently", function()
@@ -44,7 +45,7 @@ describe("hierarchical Clay layout", function()
         if renders == 1 then
           surface:invalidate()
         end
-        return layout.text("snapshot " .. renders)
+        return c.text("snapshot " .. renders)
       end,
     })
     local first = surface:snapshot()
@@ -56,10 +57,10 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("preserves nested containers and splices fragments without flattening boxes", function()
-    layout.show(layout.row({
-      layout.column({ layout.text("left") }, { width = 120 }),
+    layout.show(c.row({
+      c.column({ c.text("left") }, { width = 120 }),
       false,
-      { layout.column({ layout.text("right") }, { width = "grow" }) },
+      { c.column({ c.text("right") }, { width = "grow" }) },
     }, { width = "grow", height = "grow" }))
     local tree = ui._layout_tree
     assert.equals(5, #tree)
@@ -72,8 +73,8 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("serializes fit/grow bounds, per-side borders and text alignment", function()
-    layout.show(layout.column({
-      layout.text("Aligned", nil, { text_align = "right" }),
+    layout.show(c.column({
+      c.text("Aligned", nil, { text_align = "right" }),
     }, {
       width = "grow",
       height = "fit",
@@ -99,7 +100,7 @@ describe("hierarchical Clay layout", function()
   it("serializes scrollbar metadata and maps its event ID to the local ID", function()
     local surface = layout.new({
       render = function()
-        return layout.column({}, {
+        return c.column({}, {
           scrollbar_id = "picker:scrollbar",
           scrollbar_thumb_ratio = 0.25,
           scrollbar_thumb_size = 0.5,
@@ -118,7 +119,7 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("resolves scrollbar defaults per snapshot and preserves nested overrides", function()
-    local serialize = require("hollow.ui.layout_serialize")
+    local serialize = require("hollow.ui.layout.serialize")
     local palette = {
       fg = "#111111",
       panel_border = "#222222",
@@ -126,12 +127,12 @@ describe("hierarchical Clay layout", function()
         scrollbar = { track = "#333333", thumb = "#444444" },
       },
     }
-    local root = layout.column({
-      layout.column(
+    local root = c.column({
+      c.column(
         {},
         { scrollbar_id = "bar", scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }
       ),
-      layout.text("label", { fg = "fg" }),
+      c.text("label", { fg = "fg" }),
     }, { scrollbar_id = "root" })
     local first = serialize(root, palette, "test:")
     assert.equals("#333333", first[1].scrollbar_track_color)
@@ -149,7 +150,7 @@ describe("hierarchical Clay layout", function()
 
   it("reuses button recipes, padding, tokens and click callbacks", function()
     local clicked
-    layout.show(layout.button({
+    layout.show(c.button({
       id = "save",
       text = "Save",
       size = "md",
@@ -168,7 +169,7 @@ describe("hierarchical Clay layout", function()
 
   it("does not register disabled buttons and clears callbacks on hide", function()
     local clicks = 0
-    layout.show(layout.button({
+    layout.show(c.button({
       id = "disabled",
       disabled = true,
       text = "No",
@@ -178,7 +179,7 @@ describe("hierarchical Clay layout", function()
     }))
     ui._layout_click("disabled")
     assert.equals(0, clicks)
-    layout.show(layout.button({
+    layout.show(c.button({
       id = "enabled",
       text = "Yes",
       on_click = function()
@@ -192,29 +193,27 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("rejects duplicate IDs, invalid sizes and oversized trees atomically", function()
-    layout.show(layout.text("previous"))
+    layout.show(c.text("previous"))
     local previous = ui._layout_tree
     assert.has_error(function()
-      layout.show(
-        layout.row({ layout.column({}, { id = "same" }), layout.column({}, { id = "same" }) })
-      )
+      layout.show(c.row({ c.column({}, { id = "same" }), c.column({}, { id = "same" }) }))
     end)
     assert.equals(previous, ui._layout_tree)
     assert.has_error(function()
-      layout.show(layout.column({}, { width = math.huge }))
+      layout.show(c.column({}, { width = math.huge }))
     end)
     local nodes = {}
     for i = 1, 512 do
-      nodes[i] = layout.text(i)
+      nodes[i] = c.text(i)
     end
     assert.has_error(function()
-      layout.show(layout.column(nodes))
+      layout.show(c.column(nodes))
     end)
     assert.equals(previous, ui._layout_tree)
   end)
 
   it("caches demo until interaction and keeps custom paint and scroll nodes", function()
-    layout.demo()
+    c.demo()
     local tree = ui._layout_tree
     local scrolls, custom = 0, 0
     for _, node in ipairs(tree) do
@@ -247,7 +246,7 @@ describe("hierarchical Clay layout", function()
       surfaces[i] = layout.new({
         render = function()
           renders[i] = renders[i] + 1
-          return layout.button({
+          return c.button({
             id = "same",
             text = "Action",
             on_click = function(event)
@@ -282,7 +281,7 @@ describe("hierarchical Clay layout", function()
     local surface = layout.new({
       render = function()
         renders = renders + 1
-        return layout.column({ layout.text("Hello") })
+        return c.column({ c.text("Hello") })
       end,
     })
     surface:snapshot({ width = 800, cell_w = 8 })
@@ -297,7 +296,7 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("namespaces reveal targets and rejects targets outside the scroll subtree", function()
-    layout.show(layout.row({ layout.column({}, { id = "caret", width = 8, height = 19 }) }, {
+    layout.show(c.row({ c.column({}, { id = "caret", width = 8, height = 19 }) }, {
       scroll_x = true,
       reveal = "caret",
       width = "grow",
@@ -305,16 +304,16 @@ describe("hierarchical Clay layout", function()
     }))
     assert.equals(ui._layout_tree[2].id, ui._layout_tree[1].reveal)
     assert.has_error(function()
-      layout.show(layout.column({}, { scroll_x = true, reveal = "missing" }))
+      layout.show(c.column({}, { scroll_x = true, reveal = "missing" }))
     end)
     assert.has_error(function()
-      layout.show(layout.column({
-        layout.column({}, { id = "sibling" }),
-        layout.column({}, { scroll_x = true, reveal = "sibling" }),
+      layout.show(c.column({
+        c.column({}, { id = "sibling" }),
+        c.column({}, { scroll_x = true, reveal = "sibling" }),
       }))
     end)
     assert.has_error(function()
-      layout.show(layout.text("Bad", {}, { wrap = "invalid" }))
+      layout.show(c.text("Bad", {}, { wrap = "invalid" }))
     end)
   end)
 end)

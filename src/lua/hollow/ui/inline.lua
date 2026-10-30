@@ -1,6 +1,6 @@
-local button_styles = require("hollow.ui.styles.button")
+local button_styles = require("hollow.ui.recipes.button")
 local shared = require("hollow.ui.shared")
-local tab_styles = require("hollow.ui.styles.tab")
+local tab_styles = require("hollow.ui.recipes.tab")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -9,7 +9,7 @@ local hollow = _G.hollow
 local ui = hollow.ui
 ui.style = shared.merge_styles
 
-ui.styles = require("hollow.ui.styles.common")
+ui.styles = require("hollow.ui.recipes.common")
 
 local bar = ui.bar or {}
 ui.bar = bar

@@ -45,7 +45,7 @@ describe("UI hover", function()
     local function widget(id, bg)
       return ui.overlay.new({
         render = function()
-          return ui.layout.button({
+          return ui.components.button({
             id = id,
             text = id,
             style = { hover = { bg = bg } },
@@ -78,7 +78,7 @@ describe("UI hover", function()
       semantic_hover = true,
       render = function(_, state)
         seen = state.hovered_id
-        return ui.layout.button({ id = "row-id", text = "row" })
+        return ui.components.button({ id = "row-id", text = "row" })
       end,
     })
     modal.widget.on_event("overlay:hover", { id = clay.find(ui, ":row-id").id })

@@ -4,7 +4,7 @@ local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
-local styles = require("hollow.ui.styles.workspace")
+local styles = require("hollow.ui.recipes.workspace")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
@@ -128,14 +128,14 @@ end
 -- Native counterpart of the default formatter: retain column settings/paint,
 -- but let Clay allocate the remaining cwd width instead of padding strings.
 local function layout_format_item(workspace, domain_width, ctx, view)
-  local layout = ui.layout
-  local component = require("hollow.ui.builder.components.layout_select")
+  local c = ui.components
+  local component = require("hollow.ui.components.select")
   local switcher = switcher_state()
   ctx._workspace_palette = ctx._workspace_palette or derived_palette()
   local palette = ctx._workspace_palette
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
   local s = styles(palette, { variant = variant })
-  local match = require("hollow.ui.styles.select")(view.theme).match
+  local match = require("hollow.ui.recipes.select")(view.theme).match
   local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
@@ -162,20 +162,20 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     )
   end
   local columns = {
-    layout.column({
-      layout.text(
+    c.column({
+      c.text(
         attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
         ui.style(s.status, attention and { fg = bell, bold = true }),
         { wrap = "none" }
       ),
     }, { width = status_width * cell_w }),
-    layout.column({}, { width = gap }),
+    c.column({}, { width = gap }),
     column(util.truncate_end(workspace.name, name_width), s.name, name_width * cell_w, "name"),
-    layout.column({}, { width = gap }),
+    c.column({}, { width = gap }),
   }
   local badge = workspace.program_status_badge or ""
   if badge ~= "" then
-    columns[#columns + 1] = layout.text(
+    columns[#columns + 1] = c.text(
       badge,
       ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
       { wrap = "none" }
@@ -185,8 +185,8 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   local domain = source.normalize_domain(workspace.domain)
   if domain and domain_width > 0 then
     local colors = workspace_name_color(domain)
-    columns[#columns + 1] = layout.column({
-      layout.text(
+    columns[#columns + 1] = c.column({
+      c.text(
         " " .. util.truncate_end(domain, domain_width - 3) .. " ",
         { fg = colors.fg },
         { wrap = "none" }
@@ -195,7 +195,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
       style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
     })
   end
-  return layout.row(columns, { width = "grow", height = cell_h, align_y = "center" })
+  return c.row(columns, { width = "grow", height = cell_h, align_y = "center" })
 end
 
 ---@param items HollowUiWorkspaceItem[]

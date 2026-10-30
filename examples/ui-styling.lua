@@ -11,12 +11,12 @@ return function()
     theme = "select",
     width = 44,
     render = function(theme)
-      local layout = ui.layout
-      return layout.column({
-        layout.text("Choose workspace", { fg = theme.title, bold = true }),
-        layout.row(
+      local c = ui.components
+      return c.column({
+        c.text("Choose workspace", { fg = theme.title, bold = true }),
+        c.row(
           ui.each({ "Projects", "Recent" }, function(name)
-            return layout.button({
+            return c.button({
               id = "styling:tab:" .. name,
               text = name,
               theme = theme,
@@ -29,7 +29,7 @@ return function()
           { gap = 8 }
         ),
         ui.each(groups[active], function(name)
-          return layout.button({
+          return c.button({
             id = "styling:choice:" .. name,
             text = name,
             theme = theme,
@@ -40,8 +40,8 @@ return function()
             end,
           })
         end),
-        layout.row({
-          layout.button({
+        c.row({
+          c.button({
             id = "styling:done",
             text = "Done",
             variant = "primary",

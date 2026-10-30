@@ -172,7 +172,7 @@ function M.modal(spec)
           widget._layout_surface.frame.height = (preferred_height + padding.top + padding.bottom)
             / cell_h
         end
-        return ui.layout.column({ content }, {
+        return ui.components.column({ content }, {
           id = "dialog",
           label = spec.title or "Confirmation",
           padding = padding,

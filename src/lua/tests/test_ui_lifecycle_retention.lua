@@ -38,7 +38,7 @@ describe("overlay lifecycle retention", function()
     local clicks = 0
     local surface = ui.layout.new({
       render = function()
-        return ui.layout.button({
+        return ui.components.button({
           id = "existing",
           text = "Existing",
           on_click = function()
@@ -52,7 +52,7 @@ describe("overlay lifecycle retention", function()
     local id = surface.namespace .. "existing"
     local modal = ui.modal({
       render = function()
-        return ui.layout.row({})
+        return ui.components.row({})
       end,
     })
     modal.close()

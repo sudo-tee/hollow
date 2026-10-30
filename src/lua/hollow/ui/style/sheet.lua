@@ -145,7 +145,7 @@ local checked_sections = setmetatable({}, { __mode = "kv" })
 
 local function check_sheet_names(styles)
   for name, section in pairs(styles) do
-    local ok, target = pcall(require, "hollow.ui.styles." .. tostring(name))
+    local ok, target = pcall(require, "hollow.ui.recipes." .. tostring(name))
     if not ok or getmetatable(target) ~= Sheet then
       error(string.format("hollow.ui: unknown theme style sheet %q", tostring(name)))
     end

@@ -1,6 +1,6 @@
 -- REPL layout, top to bottom: title, transcript, completion, input, key hints.
 local ui = _G.hollow.ui
-local layout = ui.layout
+local c = ui.components
 local completion = require("hollow.ui.widgets.lua_repl.completion")
 local editor = require("hollow.ui.widgets.lua_repl.editor")
 local eval = require("hollow.ui.widgets.lua_repl.eval")
@@ -14,16 +14,16 @@ local MAX_INPUT_ROWS = 7
 local KIND_LABELS = { ["function"] = "fn", boolean = "bool" }
 
 local function text(value, style)
-  return layout.text(value, style, { wrap = "none" })
+  return c.text(value, style, { wrap = "none" })
 end
 
 local function spacer()
-  return layout.column({}, { width = "grow" })
+  return c.column({}, { width = "grow" })
 end
 
 local function title_bar(theme, h, muted, below)
-  return layout.row({
-    layout.text("Lua REPL", { fg = theme.title, bold = true }),
+  return c.row({
+    c.text("Lua REPL", { fg = theme.title, bold = true }),
     spacer(),
     ui.when(below > 0, function()
       return text(below .. " more below · Ctrl+End latest", muted)
@@ -35,14 +35,14 @@ local function output_view(theme, h, ctx, opts, rows)
   local first, last, hidden = transcript.window(rows)
   local scrolled = hidden > 0
   local lines = ui.each({ unpack(transcript.lines, first, last) }, function(entry, i)
-    return layout.column({
+    return c.column({
       text(ui.when(entry.text == "", " ", entry.text), {
         fg = ui.when(entry.kind == "error", theme.error or "#ff7777", theme.fg),
         bold = entry.kind == "command",
       }),
     }, { id = "output:" .. (first + i - 1), height = h })
   end)
-  return layout.column(lines, {
+  return c.column(lines, {
     id = "repl:output",
     width = "grow",
     height = opts.height and "grow" or #lines * h,
@@ -62,7 +62,7 @@ local function candidate_rows(menu, theme, h, muted)
   local first = math.min(math.max(1, menu.index - math.floor(shown / 2)), count - shown + 1)
   local last = first + shown - 1
   local typed = #menu.query
-  local header = layout.row({
+  local header = c.row({
     text(ui.when(menu.path ~= "", menu.path, "globals"), { fg = theme.title, bold = true }),
     spacer(),
     text(
@@ -79,7 +79,7 @@ local function candidate_rows(menu, theme, h, muted)
     local index = first + i - 1
     local selected = index == menu.index
     local kind = menu.kinds[name] or "?"
-    return layout.row({
+    return c.row({
       text(ui.when(selected, "▌ ", "  "), { fg = theme.title }),
       ui.when(typed > 0, function()
         return text(name:sub(1, typed), { fg = theme.title, bold = true })
@@ -112,15 +112,15 @@ local function input_line(line, theme, h)
   local value, offset = line.text, line.offset
   local plain = { fg = theme.input_fg }
   local has_cursor = editor.cursor >= offset and editor.cursor <= offset + #value
-  return layout.row({
-    layout.text(ui.when(offset == 0, "> ", ".. "), { fg = theme.title }),
+  return c.row({
+    c.text(ui.when(offset == 0, "> ", ".. "), { fg = theme.title }),
     ui.when(has_cursor, function()
       local col = editor.cursor - offset
       local next_col = editor.next(editor.cursor) - offset
       local under = value:sub(col + 1, next_col)
       return {
         text(value:sub(1, col), plain),
-        layout.column({
+        c.column({
           text(ui.when(under ~= "", under, " "), { fg = theme.cursor_fg }),
         }, { id = "repl:caret", style = { bg = theme.cursor_bg }, height = h }),
         text(value:sub(next_col + 1), plain),
@@ -137,7 +137,7 @@ local function key_hints(muted, h, scrolled)
     "Tab/↑/↓ select · Enter insert · Esc dismiss",
     "Enter run · Tab complete · Esc close" .. ui.when(scrolled, " · PgUp/PgDn scroll", "")
   )
-  return layout.column(
+  return c.column(
     { text(hints, muted) },
     { id = "repl:footer", height = h, width = "grow", scroll_x = true }
   )
@@ -175,13 +175,13 @@ function M.render(theme, ctx, opts)
   local sections = 3 + (output_rows > 0 and 1 or 0) + (assist_rows > 0 and 1 or 0)
   local height = (2 + output_rows + assist_rows + input_rows) * h + (sections - 1) * GAP
 
-  return layout.column({
+  return c.column({
     title_bar(theme, h, muted, #transcript.lines - last),
     ui.when(output_rows > 0, function()
       return output_view(theme, h, ctx, opts, rows)
     end),
     ui.when(assist_rows > 0, function()
-      return layout.column({
+      return c.column({
         menu,
         ui.when(hint, function()
           return text(hint, { fg = theme.title })
@@ -194,7 +194,7 @@ function M.render(theme, ctx, opts)
         style = { bg = theme.input_bg },
       })
     end),
-    layout.column(
+    c.column(
       ui.each(lines, function(line)
         return input_line(line, theme, h)
       end),

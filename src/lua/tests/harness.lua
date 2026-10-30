@@ -786,7 +786,7 @@ end
 
 -- Compose a one-button Clay dialog and inspect its paint style.
 function harness.dialog_button_style(theme, kind, selected, hovered)
-  local dialog = require("hollow.ui.builder.components.layout_dialog")
+  local dialog = require("hollow.ui.components.dialog")
   local tree = dialog({
     footer = { { text = "B", kind = kind } },
     selected = selected and 1 or nil,

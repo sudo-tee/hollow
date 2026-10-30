@@ -62,7 +62,7 @@ See [surface and native part paint](reference/lua/ui.md#surface-and-native-part-
   sheet's rule first, then the theme's, so a themed base color does not mask
   state colors. Call-site paint (status colors, workspace hashes, explicit
   `style` options) stays final. Unknown sheets, slots, variants and tokens raise.
-  Sheets and slots are listed in `src/lua/hollow/ui/styles/`; the workspace
+  Sheets and slots are listed in `src/lua/hollow/ui/recipes/`; the workspace
   switcher and bottom bar resolve against their derived palettes and read
   `widgets.select.styles` and `widgets.all.styles` respectively.
 

@@ -2,8 +2,9 @@
 -- Modules mutate `hollow.ui` directly, so loading them is enough.
 
 require("hollow.ui.shared")
-require("hollow.ui.primitives")
+require("hollow.ui.inline")
 require("hollow.ui.layout")
+require("hollow.ui.components")
 require("hollow.ui.widgets.core")
 require("hollow.ui.widgets.bars.init")
 require("hollow.ui.widgets.overlay")

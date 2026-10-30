@@ -38,9 +38,13 @@ describe("Clay dialog button styles", function()
   it("preserves footer callback identity and ignores false body children", function()
     local ui = hollow.ui
     local clicked
-    local dialog = require("hollow.ui.builder.components.layout_dialog")
+    local dialog = require("hollow.ui.components.dialog")
     local tree = dialog({
-      body = ui.layout.column({ ui.layout.text("first"), false, ui.layout.text("last") }),
+      body = ui.components.column({
+        ui.components.text("first"),
+        false,
+        ui.components.text("last"),
+      }),
       footer = {
         {
           id = "first",

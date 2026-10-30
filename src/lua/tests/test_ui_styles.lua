@@ -261,7 +261,7 @@ describe("UI styles", function()
     hollow.config.set({ theme = { ui = { widgets = { select = { muted = "#142536" } } } } })
     local widget = ui.overlay.new({
       render = function()
-        return ui.layout.row({ ui.layout.text("detail", { fg = "muted" }) })
+        return ui.components.row({ ui.components.text("detail", { fg = "muted" }) })
       end,
     })
     widget._kind = "select"

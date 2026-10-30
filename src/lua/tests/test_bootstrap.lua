@@ -14,7 +14,7 @@ describe("bootstrap test suite", function()
   local term
   local theme_api
   local ui
-  local ui_primitives
+  local ui_inline
   local ui_runtime
   local ui_widgets_bars
   local ui_widgets_core
@@ -38,7 +38,7 @@ describe("bootstrap test suite", function()
     term = require("hollow.term")
     theme_api = require("hollow.theme")
     ui = require("hollow.ui")
-    ui_primitives = require("hollow.ui.primitives")
+    ui_inline = require("hollow.ui.inline")
     ui_runtime = require("hollow.ui.runtime")
     ui_widgets_bars = require("hollow.ui.widgets.bars")
     ui_widgets_core = require("hollow.ui.widgets.core")
@@ -102,8 +102,8 @@ describe("bootstrap test suite", function()
       harness.assert_true(ui_runtime == true, "ui runtime should be loadable")
     end)
 
-    it("loads ui primitives", function()
-      harness.assert_true(ui_primitives == true, "ui primitives should be loadable")
+    it("loads ui inline nodes", function()
+      harness.assert_true(ui_inline == true, "ui inline nodes should be loadable")
     end)
 
     it("loads widget core helpers", function()

@@ -1,4 +1,4 @@
-local scroll_nav = require("hollow.ui.builder.behaviors.scroll_nav").scroll_nav
+local scroll_nav = require("hollow.ui.behaviors.scroll_nav").scroll_nav
 
 local M = {}
 local next_instance_id = 0

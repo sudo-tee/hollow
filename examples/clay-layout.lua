@@ -10,4 +10,4 @@ hollow.config.set({
   top_bar_mode = "never",
   fonts = { family = "JetBrains Mono", size = 14 },
 })
-hollow.ui.layout.demo()
+hollow.ui.components.demo()

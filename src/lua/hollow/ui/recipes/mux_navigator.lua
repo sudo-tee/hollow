@@ -1,4 +1,4 @@
-local common = require("hollow.ui.styles.common")
+local common = require("hollow.ui.recipes.common")
 local sheet = require("hollow.ui.style.sheet")
 
 -- Rows resolve with `variant = row.kind` ("workspace", "tab" or "pane").

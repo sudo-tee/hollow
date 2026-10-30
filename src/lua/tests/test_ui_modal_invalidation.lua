@@ -28,7 +28,7 @@ describe("modal layout invalidation", function()
 
   it("reuses snapshots and invalidates on events, cleaning listeners on close", function()
     local renders, unmounted = 0, 0
-    local handle = require("hollow.ui.builder.modal").modal({
+    local handle = require("hollow.ui.modal").modal({
       render = function()
         return {}
       end,
@@ -38,7 +38,7 @@ describe("modal layout invalidation", function()
       end,
       render = function()
         renders = renders + 1
-        return ui.layout.text("value")
+        return ui.components.text("value")
       end,
     })
     local tree = prepare()
@@ -56,7 +56,7 @@ describe("modal layout invalidation", function()
 
   it("schedules one refresh and ignores stale callbacks after close", function()
     local delay, renders = 100, 0
-    local handle = require("hollow.ui.builder.modal").modal({
+    local handle = require("hollow.ui.modal").modal({
       render = function()
         return {}
       end,
@@ -65,7 +65,7 @@ describe("modal layout invalidation", function()
       end,
       render = function()
         renders = renders + 1
-        return ui.layout.text("timer")
+        return ui.components.text("timer")
       end,
     })
     prepare()

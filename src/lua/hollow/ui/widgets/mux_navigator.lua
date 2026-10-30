@@ -1,9 +1,9 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.mux_navigator")
+local styles = require("hollow.ui.recipes.mux_navigator")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -457,8 +457,8 @@ function ui.mux_navigator.open(opts)
       return refresh_after
     end,
     render = function(render_theme, state, ctx)
-      local component = require("hollow.ui.builder.components.layout_select")
-      local layout = ui.layout
+      local component = require("hollow.ui.components.select")
+      local c = ui.components
       tree = hollow.term.mux_tree()
       local rows = current_rows()
       refresh_after = nil
@@ -508,7 +508,7 @@ function ui.mux_navigator.open(opts)
       end
       local s = styles(render_theme)
       if #rows == 0 then
-        nodes[1] = layout.text("No matching panes", s.empty)
+        nodes[1] = c.text("No matching panes", s.empty)
       end
       local search = ui.row({
         ui.text("/ ", s.title),
@@ -531,7 +531,7 @@ function ui.mux_navigator.open(opts)
           nil,
           { width = "grow", height = cell_h, scroll_x = true }
         ),
-        layout.column(nodes, {
+        c.column(nodes, {
           id = "mux:viewport",
           width = "grow",
           height = "grow",

@@ -2293,18 +2293,25 @@ local workspace = {}
 ---@field text? string
 ---@field value? number Progress value.
 
+--- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
 ---@class HollowUiLayout
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
----@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
----@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
----@field text fun(value: any, style?: HollowUiNodeStyle, opts?: HollowUiLayoutTextOptions): HollowUiLayoutNode
----@field button fun(opts?: HollowUiButtonOptions): HollowUiLayoutNode
----@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
 ---@field hide fun()
 ---@field debug fun(enabled: boolean) Toggle Clay's built-in inspector for the active surface.
 ---@field debug_grid fun(enabled: boolean) Toggle Clay's inspector over the window's bars, sidebar and pane layout.
 ---@field debug_width fun(width?: number): number? Get, or set in pixels, the inspector panel width (default 400; clamped to the window).
+
+--- Clay node constructors and composed components.
+---@class HollowUiComponents
+---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field text fun(value: any, style?: HollowUiNodeStyle, opts?: HollowUiLayoutTextOptions): HollowUiLayoutNode
+---@field button fun(opts?: HollowUiButtonOptions): HollowUiLayoutNode
+---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
+---@field dialog fun(opts: table, theme: HollowUiTheme, ctx: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
+---@field input fun(input: HollowUiTextInput, theme: HollowUiTheme, ctx: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
+---@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
 ---@field demo fun()
 
 ---@class HollowUiLayoutContext
@@ -2336,7 +2343,8 @@ local workspace = {}
 ---@field snapshot fun(self: HollowUiLayoutSurface, ctx?: HollowUiLayoutContext): table[] Validate and serialize only when dirty.
 
 ---@class HollowUi
----@field layout HollowUiLayout Experimental Clay-backed hierarchical surface API.
+---@field layout HollowUiLayout Experimental Clay-backed surface engine.
+---@field components HollowUiComponents Experimental Clay node constructors and components.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 

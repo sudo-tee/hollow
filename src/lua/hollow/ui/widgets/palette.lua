@@ -1,7 +1,7 @@
 local icons = require("hollow.ui.icons")
-local list_row = require("hollow.ui.styles.list_row")
+local list_row = require("hollow.ui.recipes.list_row")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.palette")
+local styles = require("hollow.ui.recipes.palette")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -371,7 +371,7 @@ function ui.command_palette.open(opts)
     title = opts.prompt or "Command Palette",
     theme = theme,
     render = function(render_theme, state, ctx)
-      local component = require("hollow.ui.builder.components.layout_select")
+      local component = require("hollow.ui.components.select")
       local flat = current_flat()
       nav.index = math.max(1, math.min(#flat, nav.index or 1))
       local item_idx, total_items = item_position(flat, nav.index)

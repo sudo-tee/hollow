@@ -1,6 +1,6 @@
 -- Existing text_input behavior owns editing; these are ordinary layout boxes.
----@type HollowUiLayout
-local layout = _G.hollow.ui.layout
+---@type HollowUiComponents
+local c = require("hollow.ui.components")
 
 ---@param input HollowUiTextInput
 ---@param theme HollowUiTheme
@@ -11,14 +11,14 @@ return function(input, theme, ctx, inline)
   local cell_h = ctx.cell_h or 19
   local runs = {}
   for index, span in ipairs(input.render(theme)) do
-    runs[index] = layout.column({ layout.text(span.text, span.style, { wrap = "none" }) }, {
+    runs[index] = c.column({ c.text(span.text, span.style, { wrap = "none" }) }, {
       id = index == 2 and "input:caret" or nil,
       height = cell_h,
       style = span.style,
     })
   end
-  return layout.column({
-    layout.row(runs, {
+  return c.column({
+    c.row(runs, {
       id = "input:viewport",
       width = "grow",
       height = cell_h,

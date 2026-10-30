@@ -81,7 +81,7 @@ function ui.confirm.open(opts)
     title = opts.title,
     theme = base_theme,
     render = function(theme, state, ctx)
-      return require("hollow.ui.builder.components.layout_dialog")({
+      return require("hollow.ui.components.dialog")({
         title = opts.title,
         prompt = opts.prompt,
         footer = footer_buttons,

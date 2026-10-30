@@ -41,7 +41,7 @@ Hollow's existing style recipes, a scrollable task list, and custom-painted
 progress bars. Resize the window, scroll over the list, and click the counter.
 Close or Escape dismisses the experimental surface; close the window afterward.
 
-An existing configuration can bind `hollow.ui.layout.demo` to an action instead.
+An existing configuration can bind `hollow.ui.components.demo` to an action instead.
 The running executable must include the new native adapter; Lua-only reload is
 not sufficient when upgrading from an older binary.
 
@@ -130,16 +130,19 @@ text and default search behavior. `view.id` supplies a stable row-local ID prefi
 
 ## Components are functions
 
-`hollow.ui.layout` preserves geometry hierarchy. Inline `ui.row` / `ui.column`
-helpers remain available for bar/sidebar content and rich label adapters.
+`hollow.ui.components` builds trees that preserve geometry hierarchy;
+`hollow.ui.layout` is the surface engine that mounts them (`new`, `show`,
+`hide`, `debug`). Inline `ui.row` / `ui.column` helpers remain available for
+bar/sidebar content and rich label adapters.
 
 ```lua
 local layout = hollow.ui.layout
+local c = hollow.ui.components
 
 local function Card(title, body)
-  return layout.column({
-    layout.text(title, { bold = true }),
-    layout.text(body),
+  return c.column({
+    c.text(title, { bold = true }),
+    c.text(body),
   }, {
     width = "grow",
     padding = 16,
@@ -148,7 +151,7 @@ local function Card(title, body)
   })
 end
 
-layout.show(layout.row({
+layout.show(c.row({
   Card("One", "A composed Lua component."),
   Card("Two", "Clay owns the child placement."),
 }, { width = "grow", height = "grow", padding = 24, gap = 16 }))
@@ -186,7 +189,7 @@ from inside Clay traversal.
 ```lua
 local surface = layout.new({
   render = function(ctx)
-    return layout.column({ layout.text("Host width: " .. tostring(ctx.width)) })
+    return c.column({ c.text("Host width: " .. tostring(ctx.width)) })
   end,
 })
 surface:show()
@@ -204,8 +207,8 @@ schedule timed refreshes only for changing spinner or age labels. Modal listener
 are removed on close; pending callbacks become inert without retaining widgets.
 Modal surfaces are mounted and destroyed by the existing overlay shell. The
 native adapter currently renders one active Clay surface at a time; this is not
-yet a simultaneous multi-pane renderer. Demo content lives in `layout_demo.lua`,
-while validation/serialization lives in `layout_serialize.lua`.
+yet a simultaneous multi-pane renderer. Demo content lives in `ui/components/demo.lua`,
+while validation/serialization lives in `ui/layout/serialize.lua`.
 
 ## Ownership boundary
 

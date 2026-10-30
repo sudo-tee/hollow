@@ -197,7 +197,7 @@ hollow.ui.overlay.push(hollow.ui.overlay.new({
   chrome = { bg = "#1f1f28", border = "#3a3a52", radius = 6 },
   width = 60,
   render = function(ctx)
-    return hollow.ui.layout.column({ hollow.ui.layout.text("Custom overlay") })
+    return hollow.ui.components.column({ hollow.ui.components.text("Custom overlay") })
   end,
   on_key = function(key, mods)
     if key == "<Esc>" then
@@ -215,10 +215,10 @@ helpers from the same `hollow.ui` namespace:
 local m
 m = hollow.ui.modal({
   render = function(theme)
-    return hollow.ui.layout.column({
-      hollow.ui.layout.text("Pick one", { fg = theme.title, bold = true }),
-      hollow.ui.layout.text("Choose an option:", { fg = theme.fg }),
-      hollow.ui.layout.button({ id = "choose", text = "Choose", variant = "primary", on_click = function()
+    return hollow.ui.components.column({
+      hollow.ui.components.text("Pick one", { fg = theme.title, bold = true }),
+      hollow.ui.components.text("Choose an option:", { fg = theme.fg }),
+      hollow.ui.components.button({ id = "choose", text = "Choose", variant = "primary", on_click = function()
           choose(items[nav.index]); m.close()
         end }),
     }, { width = "grow", gap = 8 })

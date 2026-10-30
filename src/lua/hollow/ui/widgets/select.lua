@@ -1,5 +1,5 @@
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.select")
+local styles = require("hollow.ui.recipes.select")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -273,7 +273,7 @@ function ui.select.open(opts)
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-      local component = require("hollow.ui.builder.components.layout_select")
+      local component = require("hollow.ui.components.select")
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
         clay_row_budget = math.max(

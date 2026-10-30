@@ -108,8 +108,8 @@ describe("UI notify test suite", function()
       local direct_overlay_event = false
       local direct_overlay = hollow.ui.overlay.new({
         render = function()
-          return hollow.ui.layout.row({
-            hollow.ui.layout.button({
+          return hollow.ui.components.row({
+            hollow.ui.components.button({
               id = "direct-overlay-button",
               text = "Run",
               on_click = function()

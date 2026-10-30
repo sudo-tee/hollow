@@ -102,7 +102,7 @@ function ui.overlay.push(widget)
         local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
         padding.left, padding.right = padding.left + cell_w * 0.5, padding.right + cell_w * 0.5
         padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-        return ui.layout.column({ widget.render(ctx) }, {
+        return ui.components.column({ widget.render(ctx) }, {
           id = "dialog",
           padding = padding,
           -- Notification groups provide their own per-toast chrome.

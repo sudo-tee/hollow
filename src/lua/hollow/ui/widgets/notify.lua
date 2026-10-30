@@ -1,6 +1,6 @@
 local box = require("hollow.ui.style.box")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.styles.notify")
+local styles = require("hollow.ui.recipes.notify")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -112,7 +112,7 @@ function ui.notify.show(message, opts)
         local toast = group[widget.align:find("bottom") and index or (#group - index + 1)]
         children[#children + 1] = toast._toast_render(ctx)
       end
-      return ui.layout.column(children, { gap = ctx.cell_h or 19 })
+      return ui.components.column(children, { gap = ctx.cell_h or 19 })
     end,
     on_unmount = invalidate_toasts,
     align = opts.align or "top_right",
@@ -148,8 +148,8 @@ function ui.notify.show(message, opts)
     local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
     padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
     padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-    return ui.layout.column(
-      { ui.layout.text(text, notification_style(theme, level), { wrap = "none" }) },
+    return ui.components.column(
+      { ui.components.text(text, notification_style(theme, level), { wrap = "none" }) },
       {
         id = "notify:" .. tostring(widget._toast_id),
         label = text,

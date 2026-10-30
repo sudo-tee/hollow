@@ -224,8 +224,8 @@ describe("shared presentation adapters", function()
     }))
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return ui.layout.column(
-          { ui.layout.text("scroll") },
+        return ui.components.column(
+          { ui.components.text("scroll") },
           { id = "scroll", height = 20, scroll = true, scrollbar_id = "scroll:bar" }
         )
       end,
@@ -292,7 +292,7 @@ describe("shared presentation adapters", function()
       assert.equals("#161b22", shared.sidebar_surface_style(nil, palette).bg)
       assert.equals("#373a48", shared.tab_fallback_style(true, palette).bg)
       assert.equals("#23252e", shared.tab_fallback_style(false, palette).bg)
-      local list_row = require("hollow.ui.styles.list_row")
+      local list_row = require("hollow.ui.recipes.list_row")
       local row = list_row(palette, { selected = true }).paint
       assert.equals(palette.panel_border, row.accent_bar)
       assert.equals(palette.scrollbar_track, row.scrollbar_track_color)
@@ -305,7 +305,7 @@ describe("shared presentation adapters", function()
   end)
 
   it("shares accent and scrollbar parts with built-in list recipes", function()
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local palette = shared.merge_styles(shared.palette("overlay"), {
       parts = {
         list_row = { accent = "muted" },
@@ -333,7 +333,7 @@ describe("shared presentation adapters", function()
   it(
     "retains semantic list scrollbars and literal raw-track fallback on partial palettes",
     function()
-      local list_row = require("hollow.ui.styles.list_row")
+      local list_row = require("hollow.ui.recipes.list_row")
       local palette = { scrollbar_track = "#123456", scrollbar_thumb = "#234567" }
       local built = list_row(palette).paint
       assert.equals("#123456", built.scrollbar_track_color)
@@ -355,7 +355,7 @@ describe("shared presentation adapters", function()
       style = style,
       chrome = chrome,
       render = function()
-        return ui.layout.row({})
+        return ui.components.row({})
       end,
     }))
     local expected = assert(clay.find(ui, ":dialog"))

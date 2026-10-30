@@ -106,13 +106,13 @@ describe("ui stylesheets", function()
       }) do
         -- mux_navigator derives `subtle` when the theme omits it.
         local palette = setmetatable({ subtle = theme.subtle or "#808080" }, { __index = theme })
-        require("hollow.ui.styles." .. sheet_name):check(palette)
+        require("hollow.ui.recipes." .. sheet_name):check(palette)
       end
     end
   end)
 
   it("keeps the topbar sheet valid against the bar palette", function()
-    require("hollow.ui.styles.topbar"):check(shared.bar_palette())
+    require("hollow.ui.recipes.topbar"):check(shared.bar_palette())
   end)
 
   it("keeps sheets for derived palettes valid", function()
@@ -142,12 +142,12 @@ describe("ui stylesheets", function()
       for _, key in ipairs(keys) do
         palette[key] = hex[key]
       end
-      require("hollow.ui.styles." .. name):check(palette)
+      require("hollow.ui.recipes." .. name):check(palette)
     end
   end)
 
   it("matches the legacy select entry paint", function()
-    local select_sheet = require("hollow.ui.styles.select")
+    local select_sheet = require("hollow.ui.recipes.select")
     local theme = shared.palette("select")
     local util = require("hollow.util")
     for _, selected in ipairs({ false, true }) do
@@ -196,7 +196,7 @@ describe("ui stylesheets", function()
         },
       },
     })
-    local select = require("hollow.ui.styles.select")
+    local select = require("hollow.ui.recipes.select")
     local p = shared.palette("select")
     assert.same({ fg = p.title, bold = true }, select(p).label)
     assert.same(
@@ -212,7 +212,7 @@ describe("ui stylesheets", function()
   end)
 
   it("does not retain discarded palettes or their theme sections", function()
-    local button = require("hollow.ui.styles.button")
+    local button = require("hollow.ui.recipes.button")
     local refs = setmetatable({}, { __mode = "v" })
     local function resolve_palette(index)
       local section = { root = { radius = 8 } }
@@ -229,7 +229,7 @@ describe("ui stylesheets", function()
   end)
 
   it("validates a shared theme section against each palette", function()
-    local button = require("hollow.ui.styles.button")
+    local button = require("hollow.ui.recipes.button")
     local styles = { button = { root = { fg = "custom" } } }
     local first = { custom = "#abcdef", styles = styles }
     assert.equals("#abcdef", button(first).root.fg)
@@ -248,7 +248,7 @@ describe("ui stylesheets", function()
         },
       },
     })
-    local styles = require("hollow.ui.styles.palette")
+    local styles = require("hollow.ui.recipes.palette")
     local p = shared.palette("select")
     assert.equals("palette", styles.name)
     assert.same({ fg = p.title, bold = true }, styles(p).label)
@@ -256,7 +256,7 @@ describe("ui stylesheets", function()
   end)
 
   it("keeps theme base rules below built-in variant and size rules", function()
-    local button = require("hollow.ui.styles.button")
+    local button = require("hollow.ui.recipes.button")
     local p = {
       fg = "#112233",
       primary_fg = "#ffffff",
@@ -298,8 +298,8 @@ describe("ui stylesheets", function()
     local function themed(styles)
       hollow = harness.boot().hollow
       hollow.config.set({ theme = { ui = { widgets = { select = { styles = styles } } } } })
-      select = require("hollow.ui.styles.select")
-      button = require("hollow.ui.styles.button")
+      select = require("hollow.ui.recipes.select")
+      button = require("hollow.ui.recipes.button")
       return require("hollow.ui.shared").palette("select")
     end
     local p = themed({ selct = { label = { fg = "fg" } } })

@@ -11,7 +11,7 @@ describe("unified component styling", function()
   end)
 
   it("preserves legacy row states for partial themes, including missing selected paint", function()
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local partial = { hover_bg = "#112233" }
     local row = list_row(partial, { variant = "section", selected = true, hovered = true }).paint
     assert.is_nil(row.fill_bg)
@@ -28,7 +28,7 @@ describe("unified component styling", function()
       hover_bg = "#334455",
       muted = "#445566",
     }
-    local button = ui.layout.button({
+    local button = ui.components.button({
       id = "run",
       text = "Run",
       variant = "primary",
@@ -40,13 +40,13 @@ describe("unified component styling", function()
     assert.equals("#223344", button.style.bg)
     assert.same({ left = 6, right = 0, top = 2, bottom = 2 }, button.style.padding)
     assert.has_error(function()
-      ui.layout.button({ variant = "typo" })
+      ui.components.button({ variant = "typo" })
     end, "hollow.ui: unknown button variant typo")
     assert.has_error(function()
       ui.action_button({ size = "large" })
     end, "hollow.ui: unknown button size large")
     assert.has_error(function()
-      local _ = require("hollow.ui.styles.list_row")(palette, { variant = "typo" }).paint
+      local _ = require("hollow.ui.recipes.list_row")(palette, { variant = "typo" }).paint
     end, "hollow.ui: unknown list_row variant typo")
   end)
 
@@ -54,8 +54,8 @@ describe("unified component styling", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({
       render = function()
-        return ui.layout.row({
-          ui.layout.button({
+        return ui.components.row({
+          ui.components.button({
             id = "run",
             text = "Run",
             disabled = disabled,
@@ -74,7 +74,7 @@ describe("unified component styling", function()
     clay.nodes(ui)
     widget.on_event("overlay:click", { id = widget._layout_surface.namespace .. "run" })
     assert.equals(1, clicks)
-    local button = ui.layout.button({
+    local button = ui.components.button({
       id = "off",
       disabled = true,
       on_click = function() end,
@@ -189,7 +189,7 @@ describe("unified component styling", function()
       style = { bg = "panel_bg", border = "panel_border", padding = 4, radius = 7 },
       chrome = { bg = "#abcdef", padding = { left = 9 } },
       render = function()
-        return ui.layout.row({ ui.layout.text("Panel") })
+        return ui.components.row({ ui.components.text("Panel") })
       end,
     }))
     local chrome = assert(clay.find(ui, ":dialog"))
@@ -302,7 +302,7 @@ describe("unified component styling", function()
       theme = { muted = "#123456", panel_bg = "#234567" },
       chrome = { bg = "panel_bg" },
       render = function()
-        return ui.layout.row({ ui.layout.text("lazy", { fg = "muted" }) })
+        return ui.components.row({ ui.components.text("lazy", { fg = "muted" }) })
       end,
     })
     local widget = ui._overlay_state()[1]

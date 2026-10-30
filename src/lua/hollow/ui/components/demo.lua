@@ -1,5 +1,6 @@
 -- Demo content stays out of the surface engine.
 local layout = _G.hollow.ui.layout
+local c = require("hollow.ui.components")
 local M = {}
 
 function M.open()
@@ -7,8 +8,8 @@ function M.open()
   local function render()
     local rows = {}
     for i = 1, 40 do
-      rows[i] = layout.column(
-        { layout.text("Task " .. i), layout.progress(i / 40, { width = "grow", height = 10 }) },
+      rows[i] = c.column(
+        { c.text("Task " .. i), c.progress(i / 40, { width = "grow", height = 10 }) },
         {
           width = "grow",
           padding = 8,
@@ -17,19 +18,17 @@ function M.open()
         }
       )
     end
-    layout.show(layout.column({
-      layout.row({
-        layout.text("Clay layout experiment", { bold = true }),
-        layout.column({}, { width = "grow" }),
-        layout.button({ id = "clay.close", text = "Close", size = "md", on_click = layout.hide }),
+    layout.show(c.column({
+      c.row({
+        c.text("Clay layout experiment", { bold = true }),
+        c.column({}, { width = "grow" }),
+        c.button({ id = "clay.close", text = "Close", size = "md", on_click = layout.hide }),
       }, { width = "grow", gap = 12 }),
-      layout.row({
-        layout.column({
-          layout.text("Lua component"),
-          layout.text(
-            "Nested containers keep their hierarchy. Resize this window to test allocation."
-          ),
-          layout.button({
+      c.row({
+        c.column({
+          c.text("Lua component"),
+          c.text("Nested containers keep their hierarchy. Resize this window to test allocation."),
+          c.button({
             id = "clay.count",
             text = "Clicked " .. clicks .. " times",
             variant = "primary",
@@ -39,8 +38,8 @@ function M.open()
               render()
             end,
           }),
-          layout.text("Custom-painted progress:"),
-          layout.progress(0.65, { width = "grow", height = 28 }),
+          c.text("Custom-painted progress:"),
+          c.progress(0.65, { width = "grow", height = 28 }),
         }, {
           width = 260,
           height = "grow",
@@ -48,7 +47,7 @@ function M.open()
           gap = 16,
           style = { bg = "#202633" },
         }),
-        layout.column(
+        c.column(
           rows,
           { id = "clay.tasks", width = "grow", height = "grow", scroll = true, gap = 8 }
         ),

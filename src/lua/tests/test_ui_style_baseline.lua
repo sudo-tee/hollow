@@ -11,7 +11,7 @@ describe("styling unification baseline", function()
 
   it("preserves row recipe selection priority over hover in Clay", function()
     local ui = hollow.ui
-    local list_row = require("hollow.ui.styles.list_row")
+    local list_row = require("hollow.ui.recipes.list_row")
     local theme = {
       selection_bg = "#112233",
       hover_bg = "#223344",
