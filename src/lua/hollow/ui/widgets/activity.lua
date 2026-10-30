@@ -94,19 +94,20 @@ local function row_label(entry)
   return secondary and (primary .. " · " .. secondary) or primary
 end
 
-local function hint_row(theme, text)
-  local hints = {}
-  for key, label in text:gmatch("(%S+) ([^%s]+)") do
-    hints[#hints + 1] = { key = key, label = label }
-  end
-  local s = styles(theme)
-  return ui.row(ui.each(hints, function(hint)
-    return {
-      ui.text(hint.key, s.title),
-      ui.text(" " .. hint.label .. "   ", s.muted),
-    }
-  end))
-end
+local detail_hints = {
+  { "↑/↓", "scroll" },
+  { "PgUp/PgDn", "page" },
+  { "y/Ctrl-C", "copy" },
+  { "Esc", "back" },
+}
+local list_hints = {
+  { "Enter", "open" },
+  { "v", "details" },
+  { "y", "copy" },
+  { "d", "dismiss" },
+  { "/", "search" },
+  { "Tab", "views" },
+}
 
 local function marker(entry)
   if entry.source == "shell_command" and entry.category ~= "task" then
@@ -459,23 +460,17 @@ function ui.activity.open(opts)
     end,
   })
 
-  local function render_details()
-    return ui.column({
-      ui.row({
-        ui.text("Activity details", styles(theme).title),
-        ui.spacer(),
-        ui.action_button({
-          id = "activity:copy",
-          text = copy_feedback or "Copy",
-          theme = theme,
-          style = styles(theme).label,
-          on_click = copy,
-        }),
+  local function render_details_header()
+    return ui.row({
+      ui.text("Activity details", styles(theme).title),
+      ui.spacer(),
+      ui.action_button({
+        id = "activity:copy",
+        text = copy_feedback or "Copy",
+        theme = theme,
+        style = styles(theme).label,
+        on_click = copy,
       }),
-      ui.divider(theme.divider),
-      detail_view.render(theme),
-      ui.divider(theme.divider),
-      hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back"),
     })
   end
 
@@ -640,6 +635,21 @@ function ui.activity.open(opts)
         { width = "grow", height = cell_h, scroll_x = true }
       )
     end
+    local function hints(items)
+      local options = {
+        width = "grow",
+        height = cell_h,
+        scroll_x = true,
+        separator = "   ",
+        trailing_separator = true,
+        key_style = styles(theme).title,
+        description_style = styles(theme).muted,
+      }
+      for index, item in ipairs(items) do
+        options[index] = item
+      end
+      return c.hints(options)
+    end
     if details then
       local measured = ctx.metrics and ctx.metrics["activity:details"]
       if measured then
@@ -654,7 +664,7 @@ function ui.activity.open(opts)
           { wrap = "none" }
         )
       end
-      local header = render_details().children[1]
+      local header = render_details_header()
       local scrollbar = detail_rows[1] or {}
       return component.sections({
         line(header),
@@ -674,7 +684,7 @@ function ui.activity.open(opts)
           scrollbar_track_color = scrollbar.scrollbar_track_color,
           scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
         }),
-        line(hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back")),
+        hints(detail_hints),
       }, theme, cell_h),
         height * cell_h
     end
@@ -798,10 +808,9 @@ function ui.activity.open(opts)
       scrollbar_track_color = scrollbar.scrollbar_track_color,
       scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
     })
-    children[#children + 1] = line(
-      copy_feedback and ui.row({ ui.text(copy_feedback, styles(theme).success) })
-        or hint_row(theme, "Enter open   v details   y copy   d dismiss   / search   Tab views")
-    )
+    children[#children + 1] = copy_feedback
+        and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))
+      or hints(list_hints)
     return component.sections(children, theme, cell_h), height * cell_h
   end
 

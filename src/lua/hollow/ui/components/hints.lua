@@ -11,10 +11,12 @@ return function(opts)
       children[#children + 1] = c.text(separator, opts.separator_style, { wrap = "none" })
     end
     children[#children + 1] = c.text(hint[1], opts.key_style or common.key_hint, { wrap = "none" })
+    local suffix = ""
+    if (index < #opts or opts.trailing_separator) and not opts.separator_style then
+      suffix = separator
+    end
     children[#children + 1] = c.text(
-      " "
-        .. tostring(hint[2] or "")
-        .. (index < #opts and not opts.separator_style and separator or ""),
+      " " .. tostring(hint[2] or "") .. suffix,
       opts.description_style or common.muted,
       { wrap = "none" }
     )
