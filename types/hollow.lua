@@ -2275,7 +2275,6 @@ local workspace = {}
 ---@field scrollbar_track_color? string
 ---@field scrollbar_thumb_color? string
 ---@field align_y? 'start'|'center'|'end' Vertical alignment of container children.
----@field full_bleed_x? boolean Paint background to framed overlay's inner horizontal edges without changing layout.
 ---@field on_click? fun(event: { id: string })
 
 ---@class HollowUiLayoutNode

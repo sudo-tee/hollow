@@ -311,15 +311,9 @@ fn clayChannel(value: f32) u8 {
 
 /// Framed overlay panel whose paint policy (full-bleed rows, subdued rounded
 /// outline) applies while painting its Clay commands.
-const ClayPaintPanel = struct {
-    bounds: clay.Clay_BoundingBox,
-    node: *const clay.HollowClayNode,
-    owner: usize,
-};
-
 /// Paints one Clay command array translated by the offset and clipped to
 /// `initial_clip`.
-fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArray, offset_x: f32, offset_y: f32, initial_clip: clay.Clay_BoundingBox, panel: ?ClayPaintPanel) void {
+fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArray, offset_x: f32, offset_y: f32, initial_clip: clay.Clay_BoundingBox, panel_node: ?*const clay.HollowClayNode) void {
     var clips: [34]clay.Clay_BoundingBox = undefined;
     clips[0] = initial_clip;
     c.sgl_scissor_rect(@intFromFloat(initial_clip.x), @intFromFloat(initial_clip.y), @intFromFloat(initial_clip.width), @intFromFloat(initial_clip.height), true);
@@ -333,12 +327,6 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
             clay.CLAY_RENDER_COMMAND_TYPE_RECTANGLE => {
                 const rect = command.renderData.rectangle;
                 const color = rect.backgroundColor;
-                if (panel) |p| {
-                    if (command.userData) |data| {
-                        const node: *const clay.HollowClayNode = @ptrCast(@alignCast(data));
-                        b = clay_paint.rectangleBounds(b, p.bounds, @floatFromInt(p.node.border_size), p.owner, true, node.full_bleed_x);
-                    }
-                }
                 b = clay_paint.snap(b);
                 drawRoundedRect(b.x, b.y, b.width, b.height, rect.cornerRadius.topLeft, clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
             },
@@ -348,7 +336,7 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
                 // Rounded legacy overlay chrome deliberately uses a subdued
                 // outline. Preserve that paint policy for the Clay panel only,
                 // not nested component borders or standalone surfaces.
-                const is_panel = if (panel) |p| command.userData == @as(?*anyopaque, @ptrCast(@constCast(p.node))) else false;
+                const is_panel = if (panel_node) |p| command.userData == @as(?*anyopaque, @ptrCast(@constCast(p))) else false;
                 const alpha: u8 = if (is_panel and border.cornerRadius.topLeft > 0) 72 else clayChannel(color.a);
                 b = clay_paint.snap(b);
                 drawClayBorder(b, border, alpha);
@@ -413,11 +401,7 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
             .height = @max(0, @min(offset_y + height, panel.y + panel.height) - y),
         });
     }
-    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) .{
-        .bounds = panel,
-        .node = panel_node,
-        .owner = surface.owner_index,
-    } else null);
+    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) panel_node else null);
     if (overlay) {
         // Visible bounds are recorded once per layout, so these passes are linear.
         for (nodes[0..surface.len], 0..) |node, index| {

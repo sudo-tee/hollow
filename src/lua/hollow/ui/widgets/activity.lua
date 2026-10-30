@@ -640,9 +640,6 @@ function ui.activity.open(opts)
         { width = "grow", height = cell_h, scroll_x = true }
       )
     end
-    local function divider()
-      return component.divider(theme, cell_h)
-    end
     if details then
       local measured = ctx.metrics and ctx.metrics["activity:details"]
       if measured then
@@ -659,9 +656,8 @@ function ui.activity.open(opts)
       end
       local header = render_details().children[1]
       local scrollbar = detail_rows[1] or {}
-      return layout.column({
+      return component.sections({
         line(header),
-        divider(),
         layout.column(body, {
           id = "activity:details",
           width = "grow",
@@ -678,9 +674,8 @@ function ui.activity.open(opts)
           scrollbar_track_color = scrollbar.scrollbar_track_color,
           scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
         }),
-        divider(),
         line(hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back")),
-      }, { width = "grow", height = "grow" }),
+      }, theme, cell_h),
         height * cell_h
     end
     refresh()
@@ -780,13 +775,12 @@ function ui.activity.open(opts)
     local scrollbar = viewport.show_scrollbar
         and shared.serialize_row_paint({ scrollbar_track = true }, theme)
       or {}
-    local children = { line(render_header()), divider() }
+    local children = { line(render_header()) }
     if searching then
       children[#children + 1] = layout.row({
         layout.text("/ ", styles(theme).label),
         require("hollow.ui.builder.components.layout_input")(filter, theme, ctx, true),
       }, { width = "grow" })
-      children[#children + 1] = divider()
     end
     children[#children + 1] = layout.column(items, {
       id = "activity:viewport",
@@ -804,12 +798,11 @@ function ui.activity.open(opts)
       scrollbar_track_color = scrollbar.scrollbar_track_color,
       scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
     })
-    children[#children + 1] = divider()
     children[#children + 1] = line(
       copy_feedback and ui.row({ ui.text(copy_feedback, styles(theme).success) })
         or hint_row(theme, "Enter open   v details   y copy   d dismiss   / search   Tab views")
     )
-    return layout.column(children, { width = "grow", height = "grow" }), height * cell_h
+    return component.sections(children, theme, cell_h), height * cell_h
   end
 
   modal = ui.modal({

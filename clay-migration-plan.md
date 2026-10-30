@@ -279,7 +279,7 @@ Tests and docs shrink on top of this.
 | Phase 5 bars/sidebar/debug | Done as Clay geometry (`ui/native_surface.zig`); painting stays native |
 | 6.1 one truncation | Done: `fitTabSegments` (Zig); Lua `clamp_tab_segment_width` removed |
 | 6.2 columns | Workspace already Clay FIXED columns; activity keeps padding, now display-width |
-| 6.3 divider/gutter | Divider deduped into `layout_select.divider`; borders rejected (see Findings) |
+| 6.3 divider/gutter | Dividers are Clay `betweenChildren` borders (`layout_select.sections`); `full_bleed_x` removed; gutter kept (see Findings) |
 | 6.4 modal sizing | Kept `preferred_height` (see Findings) |
 | 6.5 / 6.6 | Done (`text_width.zig`/`.c`, Lua `util.display_width`) |
 
@@ -352,11 +352,14 @@ Manual visual and mouse verification is still outstanding for everything above.
   nodes, before Clay's per-element arena. Select's `row_budget` (410) already
   keeps trees under the cap, and nothing would use a higher cap while 4.4 is
   open. The cap stays at 512.
-- 6.3: Clay `betweenChildren` and per-side borders are drawn inside the
-  element's own box. They can't reach the panel padding that `full_bleed_x`
-  dividers span. A left border on a rounded row follows the corner curve,
-  whereas the accent gutter is a straight bar inset by the radius. Both stay;
-  the four divider copies now share `layout_select.divider`.
+- 6.3: Section dividers are now Clay `betweenChildren` borders.
+  `layout_select.sections` stacks select, activity and mux navigator sections
+  with `gap = cell_h` and a 1px rule, so preferred heights don't change. The
+  dialog title uses the same idea with a half-row gap. Clay draws these rules
+  inside the parent's box, so they stop at the panel padding instead of
+  running to the frame edge. `full_bleed_x` and its paint path are gone. The
+  accent gutter stays a node: a left border on a rounded row would follow the
+  corner curve instead of staying a straight inset bar.
 - 6.4: `preferred_height` reports the virtualized row budget, not the rendered
   content. Overscan renders up to 24 rows, so FIT would grow the panel, and
   pinning min and max to the budget is what the fixed `frame.height` already

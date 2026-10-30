@@ -162,22 +162,19 @@ local function item(entry, index, opts, theme, ctx, plain)
   })
 end
 
--- Clay borders cannot reach into the panel padding, so the rule stays a
--- full-bleed 1px node centred in one row.
-function M.divider(theme, cell_h)
-  return layout.column({
-    layout.column(
-      {},
-      { width = "grow", height = 1, full_bleed_x = true, style = { bg = theme.divider } }
-    ),
-  }, { width = "grow", height = cell_h, padding = { top = math.floor(cell_h * 0.5) } })
+-- Stacks sections one row apart; Clay paints a rule centred in each gap.
+function M.sections(children, theme, cell_h)
+  return layout.column(children, {
+    width = "grow",
+    height = "grow",
+    gap = cell_h,
+    border_width = { between_children = 1 },
+    style = { border = theme.divider },
+  })
 end
 
 function M.render(opts, theme, ctx)
   local cell_h = ctx.cell_h or 19
-  local function divider()
-    return M.divider(theme, cell_h)
-  end
   local entries = opts.entries
   local viewport = opts.viewport
   -- Keep column-heavy windows conservative against Clay's fixed scroll pool.
@@ -246,12 +243,10 @@ function M.render(opts, theme, ctx)
         { wrap = "none" }
       ),
     }, { id = "select:header", width = "grow", height = cell_h, scroll_x = true }),
-    divider(),
     layout.row({
       layout.text("Filter: ", s.title, { wrap = "none" }),
       input_field(opts.filter, theme, ctx, true),
     }, { width = "grow" }),
-    divider(),
     layout.column(rows, {
       id = "select:viewport",
       width = "grow",
@@ -271,14 +266,13 @@ function M.render(opts, theme, ctx)
     }),
   }
   if opts.hints then
-    children[#children + 1] = divider()
     children[#children + 1] = inline(
       opts.hints[2].children,
       nil,
       { id = "select:hints", width = "grow", height = cell_h, scroll_x = true }
     )
   end
-  return layout.column(children, { width = "grow", height = "grow" })
+  return M.sections(children, theme, cell_h)
 end
 
 -- Adapter for existing row components. Layout is rebuilt as boxes/text;

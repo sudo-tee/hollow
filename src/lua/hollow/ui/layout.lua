@@ -24,7 +24,6 @@ local function container(kind, children, opts)
     border_width = opts.border_width,
     gap = opts.gap,
     padding = opts.padding,
-    full_bleed_x = opts.full_bleed_x,
     style = opts.style,
     scroll = opts.scroll,
     scroll_x = opts.scroll_x,

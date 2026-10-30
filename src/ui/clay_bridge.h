@@ -24,7 +24,7 @@ typedef struct HollowClayNode {
     // When set, replaces border_size entirely (including explicit zero sides).
     Clay_BorderWidth border_width;
     bool border_width_set;
-    bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure, full_bleed_x;
+    bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure;
     int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
     int text_align; // Wrapped line alignment: 0 left, 1 center, 2 right.
     int align_y; // Child alignment: 0 start, 1 center, 2 end.

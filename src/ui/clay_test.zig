@@ -70,42 +70,6 @@ fn layout(surface: *c.HollowClay, nodes: []c.HollowClayNode, width: f32, height:
     return c.hollow_clay_layout(surface, nodes.ptr, @intCast(nodes.len), width, height, 8, 16, 150, 50, scroll, 1.0 / 60.0);
 }
 
-test "rectangle commands retain explicit full bleed node and padded geometry" {
-    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
-    defer c.hollow_clay_destroy(surface);
-    var nodes = [_]c.HollowClayNode{ node(0, -1, -1, 2), node(0, -1, 1, 0), node(0, -1, 1, 0) };
-    nodes[0].padding.left = 12;
-    nodes[0].padding.right = 12;
-    nodes[1].full_bleed_x = true;
-    const commands = layout(surface, &nodes, 200, 100, 0);
-    var found: usize = 0;
-    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
-        if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE) continue;
-        const payload: *const c.HollowClayNode = @ptrCast(@alignCast(command.userData orelse continue));
-        if (payload == &nodes[1] or payload == &nodes[2]) {
-            try std.testing.expectEqual(@as(f32, 12), command.boundingBox.x);
-            try std.testing.expectEqual(@as(f32, 176), command.boundingBox.width);
-            try std.testing.expectEqual(payload == &nodes[1], payload.full_bleed_x);
-            found += 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 2), found);
-}
-
-test "full bleed paint is opt-in for framed overlays only" {
-    const paint = @import("clay_paint.zig");
-    const bounds = c.Clay_BoundingBox{ .x = 32, .y = 40, .width = 76, .height = 1 };
-    const panel = c.Clay_BoundingBox{ .x = 20, .y = 10, .width = 100, .height = 80 };
-    const expanded = paint.rectangleBounds(bounds, panel, 1, 1, true, true);
-    try std.testing.expectEqual(@as(f32, 21), expanded.x);
-    try std.testing.expectEqual(@as(f32, 98), expanded.width);
-    try std.testing.expectEqual(bounds.y, expanded.y);
-    try std.testing.expectEqual(bounds.height, expanded.height);
-    try std.testing.expectEqualDeep(bounds, paint.rectangleBounds(bounds, panel, 1, 0, true, true));
-    try std.testing.expectEqualDeep(bounds, paint.rectangleBounds(bounds, panel, 1, 1, false, true));
-    try std.testing.expectEqualDeep(bounds, paint.rectangleBounds(bounds, panel, 1, 1, true, false));
-}
-
 test "Clay preserves nested rows and columns and reallocates grow space" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);

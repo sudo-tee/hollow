@@ -517,13 +517,12 @@ function ui.mux_navigator.open(opts)
           and shared.serialize_row_paint({ scrollbar_track = true }, render_theme)
         or {}
       local cell_h = ctx.cell_h or 19
-      return layout.column({
+      return component.sections({
         component.inline(
           search.children,
           nil,
           { width = "grow", height = cell_h, scroll_x = true }
         ),
-        component.divider(render_theme, cell_h),
         layout.column(nodes, {
           id = "mux:viewport",
           width = "grow",
@@ -543,7 +542,7 @@ function ui.mux_navigator.open(opts)
           scrollbar_track_color = scrollbar.scrollbar_track_color,
           scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
         }),
-      }, { width = "grow", height = "grow" }),
+      }, render_theme, cell_h),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
     end,
     keys = function(key, mods)

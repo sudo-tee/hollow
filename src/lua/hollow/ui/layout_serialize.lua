@@ -104,7 +104,6 @@ return function(root, palette, namespace)
       text_align == nil or text_align == 0 or text_align == 1 or text_align == 2,
       "invalid text alignment"
     )
-    assert(node.full_bleed_x == nil or type(node.full_bleed_x) == "boolean", "invalid full_bleed_x")
     assert(
       node.scrollbar_id == nil
         or (
@@ -170,7 +169,6 @@ return function(root, palette, namespace)
         end
       end
       serialized.gap = nonzero(math.min(65535, box.px(node.gap, 0, true)))
-      serialized.full_bleed_x = node.full_bleed_x == true or nil
       serialized.bg = paint.bg
       if paint.bg and paint.alpha and paint.alpha ~= 255 then
         serialized.alpha = paint.alpha

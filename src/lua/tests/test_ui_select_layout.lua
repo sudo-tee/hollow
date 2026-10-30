@@ -155,20 +155,24 @@ describe("Clay selectable list", function()
     assert.equals(row(1).id, viewport().reveal)
   end)
 
-  it("fits short lists, reserves divider rows, and leaves the filter unpainted", function()
+  it("fits short lists, reserves divider gaps, and leaves the filter unpainted", function()
     ui.select.open({ items = { "one" }, max_height = 24 })
     local tree = prepare()
     assert.equals((4 * 19 + 23 + 1.5 * 19) / 19, ui._layout_frame.height)
-    local divider_rows, filter_view = 0, nil
+    local sections, filter_view = nil, nil
     for _, node in ipairs(tree) do
-      if node.height == 19 and node.padding and node.padding.top == 9 then
-        divider_rows = divider_rows + 1
+      if node.border_width and node.border_width.between_children == 1 then
+        sections = node
       end
       if node.id and node.id:match(":input:viewport$") then
         filter_view = node
       end
     end
-    assert.equals(2, divider_rows)
+    assert.is_not_nil(sections)
+    assert.equals(19, sections.gap)
+    assert.equals(3, sections.children)
+    assert.is_not_nil(sections.border)
+    assert.equals(0, sections.border_width.top)
     assert.is_not_nil(filter_view)
     for index, node in ipairs(tree) do
       if node == filter_view then

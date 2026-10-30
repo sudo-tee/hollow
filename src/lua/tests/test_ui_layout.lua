@@ -72,23 +72,18 @@ describe("hierarchical Clay layout", function()
   end)
 
   it("serializes fit/grow bounds, per-side borders and text alignment", function()
-    layout.show(
-      layout.column(
-        {
-          layout.text("Aligned", nil, { text_align = "right" }),
-        },
-        {
-          width = "grow",
-          height = "fit",
-          min_width = 20,
-          max_width = 200,
-          min_height = 10,
-          max_height = 100,
-          style = { border = "#123456" },
-          border_width = { left = 1, right = 2, top = 3, bottom = 4, between_children = 5 },
-        }
-      )
-    )
+    layout.show(layout.column({
+      layout.text("Aligned", nil, { text_align = "right" }),
+    }, {
+      width = "grow",
+      height = "fit",
+      min_width = 20,
+      max_width = 200,
+      min_height = 10,
+      max_height = 100,
+      style = { border = "#123456" },
+      border_width = { left = 1, right = 2, top = 3, bottom = 4, between_children = 5 },
+    }))
     local root, text = ui._layout_tree[1], ui._layout_tree[2]
     assert.equals(20, root.min_width)
     assert.equals(200, root.max_width)
@@ -150,21 +145,6 @@ describe("hierarchical Clay layout", function()
     assert.equals("#555555", second[1].scrollbar_track_color)
     assert.equals("#666666", second[2].scrollbar_track_color)
     assert.equals("#666666", second[3].fg)
-  end)
-
-  it("serializes explicit full bleed without changing padding", function()
-    layout.show(layout.column({
-      layout.column({}, { width = "grow", height = 1, full_bleed_x = true }),
-      layout.column({}, { width = "grow", height = 1 }),
-    }, { padding = { x = 12, y = 3 } }))
-    local tree = ui._layout_tree
-    assert.equals(12, tree[1].padding.left)
-    assert.equals(12, tree[1].padding.right)
-    assert.is_true(tree[2].full_bleed_x)
-    assert.is_nil(tree[3].full_bleed_x)
-    assert.has_error(function()
-      layout.show(layout.column({}, { full_bleed_x = "yes" }))
-    end)
   end)
 
   it("reuses button recipes, padding, tokens and click callbacks", function()

@@ -207,10 +207,6 @@ native adapter currently renders one active Clay surface at a time; this is not
 yet a simultaneous multi-pane renderer. Demo content lives in `layout_demo.lua`,
 while validation/serialization lives in `layout_serialize.lua`.
 
-Container option `full_bleed_x = true` extends its background paint to the inner
-horizontal edges of a framed overlay. Layout bounds, padding, and clipping stay
-unchanged; standalone surfaces do not expand this paint.
-
 ## Ownership boundary
 
 ```text

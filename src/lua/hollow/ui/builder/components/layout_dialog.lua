@@ -7,13 +7,6 @@ local variants = { default = true, primary = true, destructive = true }
 return function(opts, theme, ctx)
   local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
   local children = {}
-  if opts.title and opts.title ~= "" then
-    children[#children + 1] = layout.text(opts.title, { fg = theme.title, bold = true })
-    children[#children + 1] = layout.column(
-      {},
-      { width = "grow", height = 1, full_bleed_x = true, style = { bg = theme.divider } }
-    )
-  end
   children[#children + 1] = opts.body or layout.text(opts.prompt, { fg = theme.fg })
   if opts.footer and #opts.footer > 0 then
     local palette = setmetatable({
@@ -49,5 +42,17 @@ return function(opts, theme, ctx)
     children[#children + 1] = layout.column({}, { height = cell_h })
     children[#children + 1] = layout.row(buttons, { width = "grow", gap = cell_w * 2 })
   end
-  return layout.column(children, { width = "grow" })
+  local content = layout.column(children, { width = "grow" })
+  if not opts.title or opts.title == "" then
+    return content
+  end
+  return layout.column({
+    layout.text(opts.title, { fg = theme.title, bold = true }),
+    content,
+  }, {
+    width = "grow",
+    gap = math.floor(cell_h * 0.5),
+    border_width = { between_children = 1 },
+    style = { border = theme.divider },
+  })
 end
