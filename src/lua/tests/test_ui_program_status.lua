@@ -83,6 +83,7 @@ describe("program status in navigation overlays", function()
     assert.same({ levels.warn, levels.error }, bell_colors(hollow))
     failed[1].attention = false
     tree[1].tabs[2].panes[2].has_bell = true
+    hollow._emit_builtin_event("term:bell", { pane_id = 103 })
     assert.same({ levels.warn, levels.warn }, bell_colors(hollow))
   end)
 
@@ -107,15 +108,20 @@ describe("program status in navigation overlays", function()
     end
     assert.equals(palette.bright_blue, indicator_color("⠹ 25% "))
     env.recorded.now_ms = env.recorded.now_ms + 100
+    env.flush_deferred()
     assert.is_truthy(overlay_text(hollow):find("⠸ 25%", 1, true))
     assert.equals(initial, discoveries)
     working[1] = { state = "done" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_green, indicator_color("✓ "))
     working[1] = { state = "error" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_red, indicator_color("✗ "))
     working[1] = { state = "blocked", kind = "auth" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.equals(palette.bright_yellow, indicator_color("󰌾 "))
     working[1] = { state = "idle" }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.is_nil(overlay_text(hollow):find("󰌾", 1, true))
   end)
 
@@ -161,8 +167,10 @@ describe("program status in navigation overlays", function()
     hollow.ui.workspace.open_switcher()
     assert.same({ levels.error }, bell_colors(hollow))
     failed[1].attention = false
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 103 })
     assert.same({ levels.warn }, bell_colors(hollow))
     blocked[1].attention = false
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
     assert.same({}, bell_colors(hollow))
   end)
 

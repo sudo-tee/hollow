@@ -505,6 +505,11 @@ pub fn luaRequestLayoutRefreshCallback(app_ptr: *anyopaque) void {
     app.requestLayoutRefresh();
 }
 
+pub fn luaRequestRedrawCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.requestRedraw();
+}
+
 pub fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_selection);

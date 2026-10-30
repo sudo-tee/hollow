@@ -879,7 +879,32 @@ function ui.activity.open(opts)
     chrome = chrome,
     backdrop = backdrop,
     theme_backdrop = opts.backdrop == nil,
-    layout_live = clay,
+    layout_events = {
+      "activity:changed", "term:program_status_changed", "term:bell", "term:pane_focused",
+      "term:pane_created", "term:pane_exited", "term:pane_closed", "term:pane_layout_changed",
+      "term:title_changed", "term:cwd_changed", "term:foreground_process_changed",
+      "term:tab_activated", "term:tab_closed", "workspace:new", "workspace:changed",
+      "workspace:closed", "term:command_started", "term:command_finished", "config:reloaded", "config:changed", "theme:changed",
+    },
+    layout_refresh_after = function()
+      if details then return nil end
+      local now = now_ms()
+      local delay
+      for _, entry in ipairs(rows) do
+        local timestamp = entry.started_ms or entry.timestamp_ms
+        if not entry.header_category and timestamp then
+          local seconds = math.max(0, math.floor((now - timestamp) / 1000))
+          local interval = seconds < 60 and (entry.started_ms and 1000 or 60000)
+            or seconds < 3600 and 60000 or 3600000
+          local next_delay = interval - math.max(0, now - timestamp) % interval
+          delay = math.min(delay or next_delay, next_delay)
+        end
+        if entry.kind == "program" and entry.state == "working" then
+          delay = math.min(delay or 100, 100 - now % 100)
+        end
+      end
+      return delay
+    end,
     layout_render = clay and render_layout or nil,
     on_event = function(name, event)
       local consumed = (details and detail_view or list).on_event(name, event)

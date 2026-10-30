@@ -1104,6 +1104,7 @@
 ---@field widget table
 ---@field close fun()
 ---@field invalidate fun()
+---@field schedule_refresh fun(delay_ms: number) Request a future refresh while mounted; callbacks become inert after close.
 
 ---@class HollowUiDialogButtonOptions
 ---@field id? string
@@ -1159,6 +1160,12 @@
 ---@field align? string
 ---@field backdrop? any
 ---@field on_event? function
+---@field layout_render? fun(theme: HollowUiTheme, state: table, ctx: HollowUiLayoutContext): HollowUiLayoutNode, number? Native tree and optional preferred content height in pixels.
+---@field layout_live? boolean Rebuild on every preparation; use only for providers without explicit invalidation.
+---@field layout_events? string[] Event names that invalidate the native snapshot while mounted.
+---@field layout_refresh_after? fun(): number|nil Delay in milliseconds until the next time-dependent update; nil schedules none.
+---@field on_mount? fun()
+---@field on_unmount? fun()
 
 ---@class HollowUiSelectState
 ---@field index integer
@@ -1176,6 +1183,11 @@
 
 ---@class HollowUiSelectOptions
 ---@field layout? 'legacy'|'clay' Opt-in bounded Clay list viewport; legacy remains default.
+---@field layout_live? boolean Callable sources default to live rebuilding; false requires explicit layout events or invalidation.
+---@field layout_events? string[] Native snapshot invalidation events while mounted.
+---@field layout_refresh_after? fun(): number|nil Native snapshot refresh delay in milliseconds.
+---@field on_mount? fun()
+---@field on_unmount? fun()
 ---@field layout_label? fun(item: any, ctx: HollowUiLayoutContext, view: { id: string, query: string, selected: boolean, hovered: boolean, theme: HollowUiTheme }): HollowUiLayoutNode|nil Optional Clay label tree; nil uses the normal label, which still supplies search/semantics.
 ---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]

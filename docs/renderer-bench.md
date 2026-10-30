@@ -81,7 +81,9 @@ Each step calls `_overlay_state` and `_layout_prepare`; selection alternates
 page down/up, filter alternates typing `1`/backspace, resize alternates host
 width 1000/1200, and idle performs neither event nor resize. Legacy overlay
 serialization has no host dimensions, so its resize result does not include
-native resize work. Clay workspace live snapshots rebuild each frame. Native
+native resize work. The original baseline rebuilt Clay workspace snapshots each
+frame; the scheduled-refresh implementation reuses unchanged snapshots instead.
+This synthetic fixture has no animated statuses or external model events. Native
 viewport feedback is not simulated.
 
 Values are median of seven batches after 20 warmup steps, process CPU time via

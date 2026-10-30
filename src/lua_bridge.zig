@@ -304,6 +304,7 @@ pub const AppCallbacks = struct {
     set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
     set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
     request_layout_refresh: *const fn (app: *anyopaque) void,
+    request_redraw: ?*const fn (app: *anyopaque) void = null,
     copy_selection: *const fn (app: *anyopaque) void,
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
@@ -2413,6 +2414,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_request_layout_refresh, 1);
         api.set_field(self.state, -2, "request_layout_refresh");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_request_redraw, 1);
+        api.set_field(self.state, -2, "request_redraw");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
@@ -6087,6 +6092,14 @@ fn l_request_layout_refresh(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const cbs = ctx.app_callbacks orelse return 0;
     cbs.request_layout_refresh(cbs.app);
+    return 0;
+}
+
+/// Wakes the frame loop for a repaint without recomputing pane layout.
+fn l_request_redraw(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    if (cbs.request_redraw) |callback| callback(cbs.app) else cbs.request_layout_refresh(cbs.app);
     return 0;
 }
 

@@ -387,26 +387,55 @@ function ui.workspace.open_switcher(opts)
   local domain_width = domain_column_width(items)
   local switcher = switcher_state()
   local host_revision = switcher.host_scan_revision or 0
+  local dirty = false
+  local deadline
+  local events = {
+    "term:program_status_changed", "term:bell", "term:pane_focused", "term:pane_created",
+    "term:pane_exited", "term:pane_closed", "term:pane_layout_changed", "term:title_changed",
+    "term:cwd_changed", "term:foreground_process_changed", "term:tab_activated", "term:tab_closed",
+    "workspace:new", "workspace:changed", "workspace:closed", "workspace:items_changed",
+    "config:reloaded", "config:changed", "theme:changed", "term:command_started", "term:command_finished",
+  }
+  local listeners = {}
   local render
   local backend = ui.layout.resolve_backend(switcher.layout, "clay")
   ui.select.open({
     layout = backend,
+    layout_live = type(switcher.format_item) == "function",
+    layout_events = events,
+    layout_refresh_after = function()
+      return deadline and math.max(1, deadline - util.host_now_ms(require("hollow.state").get().host_api))
+    end,
+    on_mount = function()
+      for _, name in ipairs(events) do
+        if name ~= "term:program_status_changed" and name ~= "term:bell" then
+          listeners[#listeners + 1] = hollow.events.on(name, function() dirty = true end)
+        end
+      end
+    end,
+    on_unmount = function()
+      for _, listener in ipairs(listeners) do hollow.events.off(listener) end
+    end,
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
       render = nil
       local current_revision = switcher_state().host_scan_revision or 0
-      if current_revision ~= host_revision then
+      if dirty or current_revision ~= host_revision then
         items = source.items()
         domain_width = domain_column_width(items)
         host_revision = current_revision
+        dirty = false
       end
       -- Read live status without rescanning local/remote discovery sources.
       local badges = {}
       local states = {}
       local attention = {}
       local attention_levels = {}
+      deadline = nil
       for _, workspace in ipairs(hollow.term.mux_tree()) do
-        badges[workspace.id], states[workspace.id] = program_status.workspace_badge(workspace)
+        local next_frame
+        badges[workspace.id], states[workspace.id], next_frame = program_status.workspace_badge(workspace)
+        if next_frame then deadline = math.min(deadline or next_frame, next_frame) end
         attention[workspace.id] = program_status.workspace_needs_attention(workspace)
         attention_levels[workspace.id] = program_status.workspace_attention_level(workspace)
       end

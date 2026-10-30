@@ -132,10 +132,14 @@ paint and pointer-drag routing, with logical full-list thumb ratios rather than
 ratios for the small native overscan window. Actions continue to decide whether
 to close the select themselves.
 
-Static item tables keep cached snapshots. Callable item sources retain their
-existing live behavior and refresh every rendered frame, so their providers and
-label/detail functions must stay inexpensive. Workspace status/bells refresh live
-without rescanning discovery sources. Its default formatter uses native columns;
+Static item tables keep cached snapshots. Generic callable select sources retain
+their existing per-frame behavior, so their providers and label/detail functions
+must stay inexpensive. Builtin workspace, mux navigator and activity snapshots
+instead invalidate on model events, input, theme/font/viewport changes, or timed
+spinner/age updates. Empty/static lists do not schedule periodic refreshes.
+Workspace status/bells refresh without rescanning discovery sources; completed
+host scans and explicit workspace configuration/cache changes invalidate the list.
+Custom workspace formatters retain live rendering. Its default formatter uses native columns;
 custom `format_item` output still uses the rich inline adapter. Advanced select
 components can supply `layout_label(item, ctx, view)` to return a native label tree
 or nil to use the existing label; the ordinary label remains required for semantic
@@ -203,9 +207,10 @@ Each instance owns callbacks and its serialized snapshot. Rendering happens only
 when dirty or when host dimensions, font metrics or the theme generation change.
 Opt-in (`measure = true`) scroll viewport measurements appear in read-only `ctx.metrics`, keyed
 by local ID. Changed dimensions invalidate once; unchanged measurements do not
-rebuild the tree. Live select providers, mux navigator and activity picker are
-explicit per-frame exceptions so terminal state and elapsed/status labels stay
-current.
+rebuild the tree. Generic live select providers and custom workspace formatters
+are explicit per-frame exceptions. Builtin pickers subscribe to model events and
+schedule timed refreshes only for changing spinner or age labels. Modal listeners
+are removed on close; pending callbacks become inert without retaining widgets.
 Modal surfaces are mounted and destroyed by the existing overlay shell. The
 native adapter currently renders one active Clay surface at a time; this is not
 yet a simultaneous multi-pane renderer. Demo content lives in `layout_demo.lua`,
@@ -230,6 +235,10 @@ Hollow owns themes, callbacks, modal input routing, glyph measurement/drawing,
 clipping implementation, custom painting and native memory lifetime. Text and
 IDs are copied out of Lua before rendering, and glyphs are prerasterized before
 the swapchain pass. Command arrays and custom payloads are consumed in that frame.
+
+Overlay invalidation (`layout_events`, timed refreshes) calls the host's
+`request_redraw`, which wakes the frame loop without recomputing pane layout.
+Legacy overlays register no layout listeners.
 
 Static surfaces do not call their Lua render function while idle. Snapshot
 revisions gate copying/parsing into retained native nodes. Native layout still runs on each rendered frame;

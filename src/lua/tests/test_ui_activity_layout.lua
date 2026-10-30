@@ -37,7 +37,7 @@ describe("Clay activity", function()
   end
   local function find(suffix)
     for _, node in ipairs(tree()) do
-      if node.id:sub(-#suffix) == suffix then
+      if node.id and node.id:sub(-#suffix) == suffix then
         return node
       end
     end
@@ -64,6 +64,62 @@ describe("Clay activity", function()
       level = "info",
     }
   end
+
+  it("keeps empty activity idle and ignores timers after close", function()
+    local queue, requests = {}, 0
+    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
+    env.host_api.request_redraw = function() requests = requests + 1 end
+    env.host_api.request_layout_refresh = function() error("overlay invalidation must not relayout panes") end
+    local handle = ui.activity.open()
+    local first = tree()
+    assert.equals(first, tree())
+    assert.equals(0, #queue)
+    running[1] = { id = "task:one", kind = "program", state = "working", started_ms = env.recorded.now_ms }
+    hollow.events.emit("activity:changed", {})
+    tree()
+    assert.equals(1, #queue)
+    handle.close()
+    local before = requests
+    queue[1].fn()
+    assert.equals(before, requests)
+  end)
+
+  it("refreshes spinner and elapsed labels only when their timer is due", function()
+    local queue = {}
+    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
+    running[1] = {
+      id = "task:one", kind = "program", state = "working", app = "Compiler",
+      started_ms = env.recorded.now_ms,
+    }
+    local handle = ui.activity.open()
+    local first, initial = tree(), text()
+    assert.is_true(queue[1].delay > 0 and queue[1].delay <= 100)
+    assert.equals(first, tree())
+    env.recorded.now_ms = env.recorded.now_ms + queue[1].delay
+    queue[1].fn()
+    assert.not_equals(first, tree())
+    assert.not_equals(initial, text())
+    handle.close()
+  end)
+
+  it("updates elapsed seconds without a spinner or continuous rebuilding", function()
+    local queue = {}
+    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
+    running[1] = {
+      id = "task:one", kind = "program", state = "blocked", app = "Compiler",
+      started_ms = env.recorded.now_ms,
+    }
+    local handle = ui.activity.open()
+    local first = tree()
+    assert.equals(1000, queue[1].delay)
+    assert.equals(first, tree())
+    assert.is_truthy(text():find("0s", 1, true))
+    env.recorded.now_ms = env.recorded.now_ms + 1000
+    queue[1].fn()
+    assert.is_truthy(text():find("1s", 1, true))
+    assert.equals(1000, queue[2].delay)
+    handle.close()
+  end)
 
   it("defaults to Clay and supports both legacy overrides", function()
     ui.activity.open()
@@ -93,6 +149,7 @@ describe("Clay activity", function()
     assert.is_nil(find(":activity:item:task:one"))
     assert.is_not_nil(find(":activity:item:task:two"))
     running[2].title = "Changed"
+    hollow.events.emit("activity:changed", {})
     assert.is_nil(find(":activity:item:task:two"))
   end)
 
@@ -109,7 +166,7 @@ describe("Clay activity", function()
     assert.is_not_nil(find(":activity:viewport"))
     local button
     for _, node in ipairs(tree()) do
-      if node.id:find("activity:item:1:run:", 1, true) then
+      if node.id and node.id:find("activity:item:1:run:", 1, true) then
         button = node
       end
     end

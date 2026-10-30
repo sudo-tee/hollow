@@ -296,7 +296,11 @@ function ui.select.open(opts)
   modal = ui.modal({
     title = opts.prompt or "Select",
     theme = theme,
-    layout_live = clay and type(opts.items) == "function",
+    layout_live = clay and (opts.layout_live == true or (opts.layout_live == nil and type(opts.items) == "function")),
+    layout_events = opts.layout_events,
+    on_mount = opts.on_mount,
+    layout_refresh_after = opts.layout_refresh_after,
+    on_unmount = opts.on_unmount,
     layout_render = clay
         and function(render_theme, state, ctx)
           if type(opts.items) == "function" then

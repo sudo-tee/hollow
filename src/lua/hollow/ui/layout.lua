@@ -97,6 +97,7 @@ end
 
 function Surface:invalidate()
   if not self.destroyed then
+    self.invalidation_revision = (self.invalidation_revision or 0) + 1
     self.dirty = true
   end
 end
@@ -115,6 +116,7 @@ function Surface:snapshot(ctx)
     end
   end
   if self.dirty then
+    local invalidation_revision = self.invalidation_revision
     local render_ctx = {}
     for key, value in pairs(ctx) do
       render_ctx[key] = value
@@ -130,7 +132,7 @@ function Surface:snapshot(ctx)
         height = ctx.height,
         cell_w = ctx.cell_w,
         cell_h = ctx.cell_h,
-      }, false
+       }, self.invalidation_revision ~= invalidation_revision
     self.palette_generation = palette_generation
   end
   return self.nodes

@@ -193,6 +193,7 @@ function ui.mux_navigator.open(opts)
   local collapsed = {}
   local nav
   local modal
+  local refresh_after
   local filter = ui.text_input({
     initial = opts.query or "",
     on_change = function()
@@ -460,13 +461,28 @@ function ui.mux_navigator.open(opts)
     title = opts.title or "Mux Navigator",
     theme = theme,
     render = render_content,
-    layout_live = clay,
+    layout_events = {
+      "term:program_status_changed", "term:bell", "term:pane_focused", "term:pane_created",
+      "term:pane_exited", "term:pane_closed", "term:pane_layout_changed", "term:title_changed",
+      "term:cwd_changed", "term:foreground_process_changed", "term:tab_activated", "term:tab_closed",
+      "workspace:new", "workspace:changed", "workspace:closed", "config:reloaded", "config:changed", "theme:changed",
+      "term:command_started", "term:command_finished",
+    },
+    layout_refresh_after = function() return refresh_after end,
     layout_render = clay
         and function(render_theme, state, ctx)
           local component = require("hollow.ui.builder.components.layout_select")
           local layout = ui.layout
           tree = hollow.term.mux_tree()
           local rows = current_rows()
+          refresh_after = nil
+          for _, row in ipairs(rows) do
+            if row.status_state == "working" then
+              local now = util.host_now_ms(require("hollow.state").get().host_api)
+              refresh_after = 100 - now % 100
+              break
+            end
+          end
           nav.index = math.max(1, math.min(#rows, nav.index or 1))
           local sample = rows[1] and render_row(rows[1], 1, false, {})
           local line_h = sample and component.row_height(sample, ctx)

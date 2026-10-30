@@ -8,6 +8,24 @@ describe("experimental hierarchical layout", function()
     layout = ui.layout
   end)
 
+  it("preserves invalidations raised while constructing a snapshot", function()
+    local surface, renders
+    renders = 0
+    surface = layout.new({
+      render = function()
+        renders = renders + 1
+        if renders == 1 then surface:invalidate() end
+        return layout.text("snapshot " .. renders)
+      end,
+    })
+    local first = surface:snapshot()
+    local second = surface:snapshot()
+    assert.not_equals(first, second)
+    assert.equals(2, renders)
+    assert.equals(second, surface:snapshot())
+    surface:destroy()
+  end)
+
   it("preserves nested containers and splices fragments without flattening boxes", function()
     layout.show(layout.row({
       layout.column({ layout.text("left") }, { width = 120 }),

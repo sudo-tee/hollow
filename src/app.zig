@@ -1188,6 +1188,7 @@ pub const App = struct {
             .set_leader_state = lua_callbacks.luaSetLeaderStateCallback,
             .set_bar_cache_state = lua_callbacks.luaSetBarCacheStateCallback,
             .request_layout_refresh = lua_callbacks.luaRequestLayoutRefreshCallback,
+            .request_redraw = lua_callbacks.luaRequestRedrawCallback,
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
@@ -1507,6 +1508,13 @@ pub const App = struct {
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
         self.invalidateCachedBarLayouts();
+        self.signalWake();
+    }
+
+    /// Repaint-only request: marks the next frame visually active and wakes the
+    /// loop, without touching pane geometry or bar layout caches.
+    pub fn requestRedraw(self: *App) void {
+        self.last_visual_activity_ns = io.nanoTimestamp();
         self.signalWake();
     }
 

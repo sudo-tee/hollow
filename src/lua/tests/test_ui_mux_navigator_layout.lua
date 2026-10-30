@@ -16,7 +16,7 @@ describe("Clay mux navigator", function()
 
   local function find(suffix)
     for _, node in ipairs(tree()) do
-      if node.id:sub(-#suffix) == suffix then
+      if node.id and node.id:sub(-#suffix) == suffix then
         return node
       end
     end
@@ -31,6 +31,25 @@ describe("Clay mux navigator", function()
     end
     return table.concat(parts, "|")
   end
+
+  it("reuses idle snapshots and coalesces event bursts", function()
+    local original, calls = hollow.term.mux_tree, 0
+    hollow.term.mux_tree = function()
+      calls = calls + 1
+      return original()
+    end
+    ui.mux_navigator.open()
+    local first = tree()
+    local initial = calls
+    assert.equals(first, tree())
+    assert.equals(initial, calls)
+    hollow._emit_builtin_event("term:title_changed", { pane_id = 101 })
+    hollow._emit_builtin_event("term:cwd_changed", { pane_id = 101 })
+    assert.equals(initial, calls)
+    tree()
+    assert.equals(initial + 1, calls)
+    ui.mux_navigator.close()
+  end)
 
   it("defaults to Clay and honors global and per-call legacy overrides", function()
     ui.mux_navigator.open()
@@ -83,6 +102,7 @@ describe("Clay mux navigator", function()
     ui.mux_navigator.open()
     local before = text()
     env.host_api.set_pane_bell(101, true)
+    hollow._emit_builtin_event("term:bell", { pane_id = 101 })
     local after = text()
     assert.not_equals(before, after)
     assert.is_truthy(after:find(require("hollow.ui.icons").bell, 1, true))
@@ -128,6 +148,7 @@ describe("Clay mux navigator", function()
     ui.dispatch_overlay_key("home", 0)
     assert.is_false(find(":mux:viewport").reveal_start)
     panes[1].foreground_process = "updated process"
+    hollow._emit_builtin_event("term:foreground_process_changed", { pane_id = 101 })
     assert.is_truthy(text():find("updated process", 1, true))
     hollow.term.mux_tree = original
   end)
