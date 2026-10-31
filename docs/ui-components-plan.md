@@ -381,3 +381,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
 - Legacy `select` budget logic can degrade visible and selected rows when the
   entire window exceeds budget. Its adapter keeps that behavior for snapshot
   parity; public `list` protects those rows as planned.
+- Mux previously rendered its entire 24-row window without budget degradation.
+  Its list adapter retains that behavior pending a separately reviewed change.

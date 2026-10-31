@@ -478,18 +478,10 @@ function ui.mux_navigator.open(opts)
         clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
       end
       local viewport = selectable.visible_range()
-      local start = math.max(
-        1,
-        viewport.start_idx - math.floor((24 - (viewport.end_idx - viewport.start_idx + 1)) / 2)
-      )
-      local finish = math.min(#rows, start + 23)
-      start = math.max(1, finish - 23)
-      local nodes = {}
-      for index = start, finish do
-        local row = rows[index]
+      local function render_item(row, index)
         local id = "mux-navigator:item:" .. row.key
         local row_node = render_row(row, index, state and state.hovered_id == id, { id = id })
-        nodes[#nodes + 1] = component.from_row(
+        return component.from_row(
           row_node,
           id,
           shared.nodes_plain_text(row_node.children),
@@ -507,14 +499,6 @@ function ui.mux_navigator.open(opts)
         )
       end
       local s = styles(render_theme)
-      if #rows == 0 then
-        nodes[1] = c.empty({
-          text = "No matching panes",
-          style = s.empty,
-          wrap = "words",
-          _legacy_style = true,
-        })
-      end
       local search = ui.row({
         ui.text("/ ", s.title),
         search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
@@ -529,23 +513,30 @@ function ui.mux_navigator.open(opts)
       local cell_h = ctx.cell_h or 19
       return component.sections({
         c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
-        c.scroll({
+        c.list({
           id = "mux:viewport",
           theme = render_theme,
           ctx = ctx,
           _legacy_paint = true,
+          _legacy_window = true,
           width = "grow",
           height = "grow",
           axis = "both",
           measure = true,
           reveal = target and ("mux-navigator:item:" .. target.key) or nil,
           reveal_start = reveal_start,
-          scrollbar = viewport.show_scrollbar and {
-            id = viewport.scrollbar_id,
-            ratio = viewport.thumb_ratio,
-            size = viewport.thumb_size,
-          } or nil,
-          nodes,
+          viewport = viewport,
+          items = rows,
+          selected = nav.index,
+          window = 24,
+          budget = math.huge,
+          render_item = render_item,
+          empty = c.empty({
+            text = "No matching panes",
+            style = s.empty,
+            wrap = "words",
+            _legacy_style = true,
+          }),
         }),
       }, render_theme, cell_h),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
