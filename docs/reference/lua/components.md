@@ -68,15 +68,15 @@ colors. Recipe-backed atoms accept component theme overrides.
 ## Controls
 
 - **`button`** — two nodes. Accepts `text`, `id`, `on_click`, `appearance`
-  (`solid` or `quiet`), `variant`, `size`, `selected`, `hovered`, and
-  `disabled`. Explicit `appearance = "solid"` applies the solid recipe;
-  calls without appearance, variant, size, or state retain legacy raw paint.
+  (`solid`, the default, or `quiet`), `variant` (`default`, `primary`,
+  `destructive`), `size` (`sm`, `md`), `selected`, `hovered`, and `disabled`.
+  Solid buttons use `styles.button.root`; quiet buttons stay text-colored until
+  hovered or selected and use `styles.button.dialog`.
 - **`hints`** — one row plus two text nodes per `{ key, description }` pair.
   `separator` defaults to two spaces. A separately styled separator adds one
   node between pairs; `plain = true` uses one column and one text node.
 - **`input`** — two containers plus two nodes per behavior run. Pass
   `{ behavior = ui.text_input(...), id = "filter", boxed = false }`.
-  The existing positional form remains supported during migration.
 - **`tabs`** — one row plus two nodes per tab and two per painted badge.
   Pass `{ tabs = { { id = "a", label = "A" } }, active = "a", on_select = fn }`.
 
@@ -89,18 +89,29 @@ colors. Recipe-backed atoms accept component theme overrides.
 - **`rich`** — one row plus inline runs. Painted or clickable runs add a
   container; a spacer adds two alignment rows. Pass inline `ui.text`,
   `ui.span`, or group nodes as children and `prefix` for generated click IDs.
+  Layout nodes such as `c.button` pass through unchanged. `style` is inherited
+  by the runs; `plain = true` (or more than 32 runs) collapses them into one
+  text node. Without an explicit `height`, padded runs grow the row to the cell
+  height plus their largest vertical padding; `c.rich.height(children)`
+  returns that height for sizing viewports.
 - **`list_item`** — two shell nodes, plus one for a painted accent and user
   content. `detail` adds a column and a text node. Accepts `selected`, `hovered`,
-  `accent`, and `on_activate`. `label` defaults to child text plus string
-  detail; set it explicitly when content needs a different accessibility label.
+  `accent` (`true`, `false`, or a color), and `on_activate`. `label` defaults
+  to child text plus string detail; set it explicitly when content needs a
+  different accessibility label. `c.list_item.line_height(theme)` returns the
+  height of one line.
 - **`list`** — one scroll viewport plus item nodes. Requires `id`, `items`, and
   `render_item(item, index, view)`. `selected`, `viewport`, `window` (24),
-  `budget` (410 item nodes), and `empty` configure windowing. Honor
-  `view.plain` to reduce overscan cost. Visible and selected rows remain rich,
-  so budget is soft if those rows alone exceed it.
+  `budget` (410 item nodes), and `empty` configure windowing. The window is
+  centred on the visible range and always includes the selected item. Over
+  budget, the off-screen rows farthest from the selection re-render with
+  `view.plain = true`; honor it to reduce overscan cost. Visible and selected
+  rows remain rich, so budget is soft if those rows alone exceed it.
 - **`picker`** — divided stack of header, optional input, list, and optional
-  hints. Requires `id` and `list` props; accepts `title`, `counter`, `filter`,
-  and `hints`. Its node cost is the stack plus its child components.
+  hints. Requires `id` and `list` props; accepts `title`, `counter`, `prompt`,
+  `filter` (a `ui.text_input` behavior), and `hints` (hint props). `header`,
+  `filter`, and `hints` also accept prebuilt layout nodes. Its node cost is the
+  stack plus its child components.
 
 ## Composites
 
@@ -110,6 +121,11 @@ colors. Recipe-backed atoms accept component theme overrides.
 - **`toast`** — two nodes. Accepts `level`, `text`, and optional
   `action = { label, on_click }`; the action shares the toast click target.
   Notification paint uses `styles.notify.message` for compatibility.
+
+## Gallery
+
+`c.demo()` opens a scrollable gallery of every component, variant, size, and
+state. It is also rendered against every bundled theme in the test suite.
 
 ## Theme overrides
 

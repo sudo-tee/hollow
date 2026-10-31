@@ -2381,14 +2381,24 @@ local workspace = {}
 ---@field scrollbar? HollowUiScrollbarProps
 
 ---@class HollowUiRichProps: HollowUiComponentProps
----@field [integer] any Inline `ui.text`, `ui.span`, groups, or fragments.
+---@field [integer] any Inline `ui.text`, `ui.span`, groups, fragments, or layout nodes (passed through).
 ---@field prefix? string Prefix for generated clickable run IDs.
+---@field plain? boolean Collapse the runs into one text node.
+---@field style? HollowUiNodeStyle Inherited by runs; the row itself stays unpainted.
+
+---@class HollowUiRich
+---@field height fun(children: table, ctx?: HollowUiLayoutContext): number Row height: cell height plus the largest run padding.
+---@overload fun(props: HollowUiRichProps): HollowUiLayoutNode
 
 ---@class HollowUiListItemProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
----@field accent? boolean|string
+---@field accent? boolean|string `true` forces the theme accent, `false` disables it, a string sets its color.
 ---@field detail? string|HollowUiLayoutNode
 ---@field on_activate? fun(event: { id: string })
+
+---@class HollowUiListItem
+---@field line_height fun(theme?: HollowUiTheme, ctx?: HollowUiLayoutContext): number One list line: cell height plus row indicator padding.
+---@overload fun(props: HollowUiListItemProps): HollowUiLayoutNode
 
 ---@class HollowUiListProps: HollowUiScrollProps
 ---@field items? any[]
@@ -2396,7 +2406,7 @@ local workspace = {}
 ---@field selected? integer
 ---@field viewport? {start_idx?: integer, end_idx?: integer, show_scrollbar?: boolean, scrollbar_id?: string, thumb_ratio?: number, thumb_size?: number}
 ---@field window? integer Defaults to 24.
----@field budget? integer Item-node budget; defaults to 410. Visible and selected rows remain rich.
+---@field budget? integer Soft item-node budget (default 410): off-screen unselected rows farthest from the selection re-render with `view.plain` until under budget. Visible and selected rows remain rich.
 ---@field empty? string|HollowUiLayoutNode
 
 ---@class HollowUiPickerProps: HollowUiComponentProps
@@ -2404,9 +2414,10 @@ local workspace = {}
 ---@field title? string
 ---@field counter? string|number
 ---@field prompt? boolean
----@field filter? HollowUiTextInput
+---@field header? HollowUiLayoutNode Replaces the title/counter header.
+---@field filter? HollowUiTextInput|HollowUiLayoutNode Text input behavior, or a prebuilt filter row.
 ---@field list HollowUiListProps
----@field hints? HollowUiHintsProps
+---@field hints? HollowUiHintsProps|HollowUiLayoutNode
 
 ---@class HollowUiPanelProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
@@ -2458,8 +2469,8 @@ local workspace = {}
 ---@field gap fun(value: HollowUiLayoutLength|HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field stack fun(props: HollowUiStackProps): HollowUiLayoutNode
 ---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
----@field rich fun(props: HollowUiRichProps): HollowUiLayoutNode
----@field list_item fun(props: HollowUiListItemProps): HollowUiLayoutNode
+---@field rich HollowUiRich
+---@field list_item HollowUiListItem
 ---@field list fun(props: HollowUiListProps): HollowUiLayoutNode
 ---@field picker fun(props: HollowUiPickerProps): HollowUiLayoutNode
 ---@field toast fun(props: HollowUiToastProps): HollowUiLayoutNode
@@ -2481,8 +2492,7 @@ local workspace = {}
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field dialog fun(props: HollowUiDialogProps): HollowUiLayoutNode Title, body and action buttons.
 ---@field input fun(props: HollowUiInputProps): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
----@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
----@field demo fun()
+---@field demo fun(): HollowUiLayoutSurface Open the component gallery.
 
 ---@class HollowUiLayoutContext
 ---@field metrics? table<string, { width: number, height: number }> Latest measured overlay viewport dimensions by local ID. Read-only; changes invalidate the surface.

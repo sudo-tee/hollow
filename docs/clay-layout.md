@@ -36,10 +36,10 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 For native Linux, use `zig build run -- --config examples/clay-layout.lua`
 (requires the normal Linux GUI build dependencies).
 
-The demo contains nested columns inside a row, wrapped text, buttons using
-Hollow's existing style recipes, a scrollable task list, and custom-painted
-progress bars. Resize the window, scroll over the list, and click the counter.
-Close or Escape dismisses the experimental surface; close the window afterward.
+The demo is the component gallery: every component, variant, size, and state
+on one scrollable surface. Resize the window, scroll, and click buttons, tabs,
+or list items to see state changes. Close dismisses the surface; close the
+window afterward.
 
 An existing configuration can bind `hollow.ui.components.demo` to an action instead.
 The running executable must include the new native adapter; Lua-only reload is
@@ -190,7 +190,7 @@ schedule timed refreshes only for changing spinner or age labels. Modal listener
 are removed on close; pending callbacks become inert without retaining widgets.
 Modal surfaces are mounted and destroyed by the existing overlay shell. The
 native adapter currently renders one active Clay surface at a time; this is not
-yet a simultaneous multi-pane renderer. Demo content lives in `ui/components/demo.lua`,
+yet a simultaneous multi-pane renderer. The gallery lives in `ui/components/demo.lua`,
 while validation/serialization lives in `ui/layout/serialize.lua`.
 
 ## Ownership boundary
