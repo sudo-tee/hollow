@@ -2297,7 +2297,8 @@ local workspace = {}
 
 ---@class HollowUiComponentProps: HollowUiLayoutOptions
 ---@field theme? HollowUiTheme Override the render-scope palette.
----@field disabled? boolean
+---@field ctx? HollowUiLayoutContext Override the render-scope cell metrics (outside a surface).
+---@field disabled? boolean Suppresses `on_click`.
 ---@field variant? string
 ---@field size? string
 ---@field selected? boolean
@@ -2345,7 +2346,7 @@ local workspace = {}
 ---@field description_style? HollowUiNodeStyle
 ---@field separator_style? HollowUiNodeStyle
 
----@class HollowUiInputComponentProps: HollowUiComponentProps
+---@class HollowUiInputProps: HollowUiComponentProps
 ---@field behavior HollowUiTextInput
 ---@field boxed? boolean Defaults to true.
 
@@ -2478,8 +2479,8 @@ local workspace = {}
 ---@field each fun(list: table|nil, fn: fun(item: any, index: integer): any): table
 ---@field join fun(items: table, sep: any): table
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
----@field dialog fun(opts: HollowUiDialogProps|table, theme?: HollowUiTheme, ctx?: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
----@field input fun(input: HollowUiInputComponentProps|HollowUiTextInput, theme?: HollowUiTheme, ctx?: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
+---@field dialog fun(props: HollowUiDialogProps): HollowUiLayoutNode Title, body and action buttons.
+---@field input fun(props: HollowUiInputProps): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
 ---@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
 ---@field demo fun()
 

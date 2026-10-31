@@ -19,10 +19,10 @@ describe("dialog component snapshot", function()
     }
     local opts = {
       title = "Confirm",
-      prompt = "Continue?",
+      body = "Continue?",
       selected = 1,
       hovered = 2,
-      footer = {
+      actions = {
         { id = "accept", text = "Accept", kind = "primary", on_click = function() end },
         { id = "delete", text = "Delete", kind = "destructive", on_click = function() end },
         { id = "cancel", text = "Cancel", on_click = function() end },
@@ -31,7 +31,8 @@ describe("dialog component snapshot", function()
     local surface = ui.layout.new({
       theme = theme,
       render = function(ctx)
-        return ui.components.dialog(opts, theme, ctx)
+        opts.theme, opts.ctx = theme, ctx
+        return ui.components.dialog(opts)
       end,
     })
     local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
