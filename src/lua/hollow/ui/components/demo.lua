@@ -108,8 +108,9 @@ end
 
 ---@param state? table
 ---@param changed? fun()
+---@param close? fun()
 ---@return HollowUiLayoutNode
-function M.render(state, changed)
+function M.render(state, changed, close)
   state = state or {}
   state.clicks = state.clicks or 0
   state.selected = state.selected or 1
@@ -130,7 +131,14 @@ function M.render(state, changed)
     width = "grow",
     height = "grow",
     c.column({
-      c.header({ title = "Component gallery", meta = "clicks: " .. state.clicks, width = "grow" }),
+      c.header({
+        title = "Component gallery",
+        width = "grow",
+        meta = line(
+          c.label({ text = "clicks: " .. state.clicks, tone = "counter" }),
+          close and c.button({ id = "gallery:close", text = "Close", on_click = close })
+        ),
+      }),
       section(
         "Text",
         line(tones),
@@ -232,7 +240,7 @@ function M.open()
         height = "grow",
         M.render(state, function()
           surface:invalidate()
-        end),
+        end, ui.layout.hide),
       })
     end,
   })

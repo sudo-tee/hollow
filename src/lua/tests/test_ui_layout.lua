@@ -925,30 +925,30 @@ describe("hierarchical Clay layout", function()
     assert.equals(previous, ui._layout_tree)
   end)
 
-  it("caches demo until interaction and keeps custom paint and scroll nodes", function()
+  it("opens the gallery and re-renders it only after interaction", function()
     c.demo()
+    ui._layout_prepare(1200, 900, 8, 19)
     local tree = ui._layout_tree
-    local scrolls, custom = 0, 0
+    local custom = 0
     for _, node in ipairs(tree) do
-      if node.scroll then
-        scrolls = scrolls + 1
-      end
       if node.kind == 3 then
         custom = custom + 1
       end
     end
-    assert.equals(1, scrolls)
-    assert.equals(41, custom)
-    ui._layout_click("clay.count")
+    assert.equals(1, custom)
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.equals(tree, ui._layout_tree)
+    ui._layout_click("gallery:button:solid:default:rest")
+    ui._layout_prepare(1200, 900, 8, 19)
     assert.not_equals(tree, ui._layout_tree)
     local found = false
     for _, node in ipairs(ui._layout_tree) do
-      if node.text == "Clicked 1 times" then
+      if node.text == "clicks: 1" then
         found = true
       end
     end
     assert.is_true(found)
-    ui._layout_click("clay.close")
+    ui._layout_click("gallery:close")
     assert.is_nil(ui._layout_tree)
   end)
 
