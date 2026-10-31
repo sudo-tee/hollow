@@ -15,6 +15,14 @@ local function count(value)
   return total
 end
 
+local function legacy_count(node)
+  local total = 1
+  for _, child in ipairs(node.children or {}) do
+    total = total + legacy_count(child)
+  end
+  return total
+end
+
 return function(options)
   options = options or {}
   assert(type(options.id) == "string" and options.id ~= "", "list requires an id")
@@ -27,24 +35,28 @@ return function(options)
   local budget = math.max(0, math.floor(options.budget or 410))
   local start =
     math.max(1, visible_start - math.floor((window - (visible_end - visible_start + 1)) / 2))
-  local finish = math.min(#items, math.max(visible_end, start + window - 1))
+  local finish = math.min(
+    #items,
+    options._legacy_window and (start + window - 1) or math.max(visible_end, start + window - 1)
+  )
   start = math.max(1, math.min(start, finish - window + 1))
   local indices = {}
   for index = start, finish do
     indices[#indices + 1] = index
   end
-  if #items > 0 and (selected < start or selected > finish) then
+  if not options._legacy_window and #items > 0 and (selected < start or selected > finish) then
     indices[#indices + 1] = selected
     table.sort(indices)
   end
   local rows, costs, plain, total = {}, {}, {}, 0
+  local node_count = options._legacy_window and legacy_count or count
   local function render(index, simplified)
     return options.render_item(items[index], index, { plain = simplified })
   end
   for offset, index in ipairs(indices) do
     local row = render(index, false)
     assert(type(row) == "table", "render_item must return a layout node or fragment")
-    rows[offset], costs[offset] = row, count(row)
+    rows[offset], costs[offset] = row, node_count(row)
     total = total + costs[offset]
   end
   while total > budget do
@@ -52,8 +64,10 @@ return function(options)
     for offset, index in ipairs(indices) do
       if
         not plain[offset]
-        and index ~= selected
-        and (index < visible_start or index > visible_end)
+        and (
+          options._legacy_window
+          or (index ~= selected and (index < visible_start or index > visible_end))
+        )
       then
         local d = math.abs(index - selected)
         if not distance or d > distance then
@@ -66,7 +80,7 @@ return function(options)
     end
     local row = render(indices[farthest], true)
     assert(type(row) == "table", "render_item must return a layout node or fragment")
-    local cost = count(row)
+    local cost = node_count(row)
     total = total - costs[farthest] + cost
     rows[farthest], costs[farthest], plain[farthest] = row, cost, true
   end
@@ -77,7 +91,7 @@ return function(options)
   for key, value in pairs(options) do
     root[key] = value
   end
-  if root.reveal == nil then
+  if root.reveal == nil and not options._legacy_window then
     for offset, index in ipairs(indices) do
       if index == selected and rows[offset].kind ~= nil then
         root.reveal = rows[offset].id

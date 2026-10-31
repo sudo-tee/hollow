@@ -234,6 +234,32 @@ describe("hierarchical Clay layout", function()
     assert.equals(surface.namespace .. "item:40", nodes[1].reveal)
   end)
 
+  it("preserves legacy select degradation when explicitly requested", function()
+    local simplified = {}
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = { "one", "two" },
+          selected = 1,
+          viewport = { start_idx = 1, end_idx = 1 },
+          window = 2,
+          budget = 0,
+          _legacy_window = true,
+          render_item = function(item, index, view)
+            if view.plain then
+              simplified[index] = true
+            end
+            return c.row({ c.text(item) }, { id = "row:" .. index })
+          end,
+        })
+      end,
+    })
+    surface:snapshot()
+    assert.is_true(simplified[1])
+    assert.is_true(simplified[2])
+  end)
+
   it("flattens sparse nested rich fragments", function()
     local surface = layout.new({
       render = function()

@@ -378,3 +378,6 @@ Done when: no widget computes scrollbar gutters or base insets, and
   its positional compatibility form retains existing behavior.
 - `list` budget is a soft item-node limit when visible and selected rich rows
   alone exceed it; those rows cannot be degraded without breaking the guarantee.
+- Legacy `select` budget logic can degrade visible and selected rows when the
+  entire window exceeds budget. Its adapter keeps that behavior for snapshot
+  parity; public `list` protects those rows as planned.

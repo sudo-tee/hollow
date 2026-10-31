@@ -39,16 +39,6 @@ local input_field = require("hollow.ui.components.input")
 ---@field render_item? fun(entry: HollowUiSelectEntry, index: integer, id: string, plain: boolean): HollowUiLayoutNode
 local M = { window_items = 24, row_budget = 410 }
 
----@param node HollowUiLayoutNode
----@return integer
-local function count(node)
-  local n = 1
-  for _, child in ipairs(node.children or {}) do
-    n = n + count(child)
-  end
-  return n
-end
-
 ---@param theme HollowUiTheme
 ---@param ctx HollowUiLayoutContext
 ---@return number
@@ -156,54 +146,18 @@ function M.render(opts, theme, ctx)
   -- Keep column-heavy windows conservative against Clay's fixed scroll pool.
   -- Native adapter also prunes retired IDs before updating scroll state.
   local window_items = opts.render_label and 23 or M.window_items
-  local start = math.max(
-    1,
-    viewport.start_idx
-      - math.floor((window_items - (viewport.end_idx - viewport.start_idx + 1)) / 2)
-  )
-  local finish = math.min(#entries, start + window_items - 1)
-  start = math.max(1, finish - window_items + 1)
-  local rows = {}
-  local costs, plain_rows, total = {}, {}, 0
-  local function make(index, plain)
+  local function make(entry, index, view)
     if opts.render_item then
       return opts.render_item(
-        entries[index],
+        entry,
         index,
-        (opts.id_prefix or "select") .. ":item:" .. entries[index].source_index,
-        plain
+        (opts.id_prefix or "select") .. ":item:" .. entry.source_index,
+        view.plain
       )
     end
-    return item(entries[index], index, opts, theme, ctx, plain)
-  end
-  for index = start, finish do
-    local row = make(index, false)
-    rows[#rows + 1] = row
-    costs[#rows] = count(row)
-    total = total + costs[#rows]
-  end
-  -- Keep visible/selected rich content first. Simplify the farthest overscan
-  -- rows only if the complete tree would exceed the bounded native arena.
-  while total > M.row_budget do
-    local farthest, distance
-    for offset = 1, #rows do
-      local d = math.abs(start + offset - 1 - opts.selected)
-      if not plain_rows[offset] and (not distance or d > distance) then
-        farthest, distance = offset, d
-      end
-    end
-    if not farthest then
-      break
-    end
-    local row = make(start + farthest - 1, true)
-    total = total - costs[farthest] + count(row)
-    costs[farthest], rows[farthest], plain_rows[farthest] = count(row), row, true
+    return item(entry, index, opts, theme, ctx, view.plain)
   end
   local s = opts.styles or styles(theme)
-  if #entries == 0 then
-    rows[1] =
-      c.empty({ text = "No matches", style = s.empty, wrap = "words", _legacy_style = true })
-  end
   local target = opts.reveal_start and viewport.start_idx or opts.selected
   local reveal = entries[target]
       and ((opts.id_prefix or "select") .. ":item:" .. entries[target].source_index)
@@ -227,23 +181,30 @@ function M.render(opts, theme, ctx)
       c.text("Filter: ", s.title, { wrap = "none" }),
       input_field(opts.filter, theme, ctx, true),
     }, { width = "grow" }),
-    c.scroll({
+    c.list({
       id = "select:viewport",
       theme = theme,
       ctx = ctx,
       _legacy_paint = true,
+      _legacy_window = true,
       width = "grow",
       height = "grow",
       axis = "both",
       reveal = reveal,
       reveal_start = opts.reveal_start,
       measure = true,
-      scrollbar = viewport.show_scrollbar and {
-        id = viewport.scrollbar_id,
-        ratio = viewport.thumb_ratio,
-        size = viewport.thumb_size,
-      } or nil,
-      rows,
+      items = entries,
+      selected = opts.selected,
+      viewport = viewport,
+      window = window_items,
+      budget = M.row_budget,
+      render_item = make,
+      empty = c.empty({
+        text = "No matches",
+        style = s.empty,
+        wrap = "words",
+        _legacy_style = true,
+      }),
     }),
   }
   if opts.hints then
