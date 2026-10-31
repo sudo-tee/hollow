@@ -371,7 +371,7 @@ function ui.command_palette.open(opts)
     title = opts.prompt or "Command Palette",
     theme = theme,
     render = function(render_theme, state, ctx)
-      local component = require("hollow.ui.components.select")
+      local component = require("hollow.ui.components.select_adapter")
       local row_adapter = require("hollow.ui.components.row_adapter")
       local flat = current_flat()
       nav.index = math.max(1, math.min(#flat, nav.index or 1))

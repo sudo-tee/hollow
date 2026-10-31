@@ -272,7 +272,7 @@ function ui.select.open(opts)
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-      local component = require("hollow.ui.components.select")
+      local component = require("hollow.ui.components.select_adapter")
       local row_adapter = require("hollow.ui.components.row_adapter")
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then

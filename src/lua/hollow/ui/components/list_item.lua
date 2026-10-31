@@ -1,4 +1,5 @@
--- Two shell nodes, plus one when an accent is painted; excludes content nodes.
+-- Two shell nodes, plus one when an accent is painted; detail adds a column and
+-- one text node. User content nodes are excluded.
 local box = require("hollow.ui.style.box")
 local c = require("hollow.ui.components")
 local list_row = require("hollow.ui.recipes.list_row")
@@ -53,5 +54,10 @@ return function(value)
   options.width = options.width or "grow"
   options.style = style
   options.on_click = not options.disabled and (options.on_activate or options.on_click) or nil
+  if options.detail ~= nil then
+    local detail = type(options.detail) == "table" and options.detail
+      or c.label({ text = options.detail, tone = "muted", theme = theme })
+    children = { c.column({ children, detail }, { width = "grow" }) }
+  end
   return c.row({ gutter(accent, style.radius), children }, options)
 end

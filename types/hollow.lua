@@ -2386,6 +2386,7 @@ local workspace = {}
 ---@class HollowUiListItemProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
 ---@field accent? boolean|string
+---@field detail? string|HollowUiLayoutNode
 ---@field on_activate? fun(event: { id: string })
 
 ---@class HollowUiListProps: HollowUiScrollProps

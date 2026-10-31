@@ -168,6 +168,27 @@ describe("hierarchical Clay layout", function()
     assert.equals("first", clicked)
   end)
 
+  it("renders optional list item detail without changing its accessibility label", function()
+    local theme = { fg = "#111111", muted = "#222222", panel_border = "#333333" }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.list_item({
+          id = "item",
+          label = " padded ",
+          detail = "secondary",
+          c.text("primary"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals(" padded ", nodes[1].label)
+    assert.equals("primary", nodes[4].text)
+    assert.equals("secondary", nodes[5].text)
+    assert.equals("#222222", nodes[5].fg)
+  end)
+
   it("keeps select row adapter aliases during migration", function()
     local adapter = require("hollow.ui.components.row_adapter")
     assert.equals(adapter.from_row, c.select.from_row)
