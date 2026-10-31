@@ -129,7 +129,6 @@ end
 -- but let Clay allocate the remaining cwd width instead of padding strings.
 local function layout_format_item(workspace, domain_width, ctx, view)
   local c = ui.components
-  local component = require("hollow.ui.components.select")
   local switcher = switcher_state()
   ctx._workspace_palette = ctx._workspace_palette or derived_palette()
   local palette = ctx._workspace_palette
@@ -149,17 +148,14 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     cwd = CWD_FALLBACK[variant]
   end
   local function column(text, style, width, suffix)
-    return component.inline(
+    return c.rich({
+      id = view.id .. ":" .. suffix,
+      width = width,
+      height = cell_h,
+      scroll_x = true,
+      align_y = "center",
       shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
-      nil,
-      {
-        id = view.id .. ":" .. suffix,
-        width = width,
-        height = cell_h,
-        scroll_x = true,
-        align_y = "center",
-      }
-    )
+    })
   end
   local columns = {
     c.column({

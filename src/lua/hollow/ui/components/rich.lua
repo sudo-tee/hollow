@@ -10,6 +10,7 @@ return function(children, style, opts)
   if style == nil and opts == nil then
     opts, children = props.split(children)
     style = opts.style
+    children = shared.collect_inline(children, "hollow.ui.components.rich", true)
   end
   opts = opts or {}
   local flat = shared.flatten_span_nodes(children, style)

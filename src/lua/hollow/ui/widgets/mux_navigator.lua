@@ -528,11 +528,7 @@ function ui.mux_navigator.open(opts)
       local target = rows[reveal_start and viewport.start_idx or nav.index]
       local cell_h = ctx.cell_h or 19
       return component.sections({
-        component.inline(
-          search.children,
-          nil,
-          { width = "grow", height = cell_h, scroll_x = true }
-        ),
+        c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
         c.scroll({
           id = "mux:viewport",
           theme = render_theme,

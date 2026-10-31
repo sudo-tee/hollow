@@ -120,6 +120,19 @@ describe("hierarchical Clay layout", function()
     assert.equals(c.rich, c.select.inline)
   end)
 
+  it("flattens sparse nested rich fragments", function()
+    local surface = layout.new({
+      render = function()
+        return c.rich({ [1] = { ui.text("left"), false, { ui.text("right") } }, [3] = "tail" })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(4, #nodes)
+    assert.equals("left", nodes[2].text)
+    assert.equals("right", nodes[3].text)
+    assert.equals("tail", nodes[4].text)
+  end)
+
   it("composes stack, header and empty state without extra wrappers", function()
     local theme = {
       fg = "#111111",

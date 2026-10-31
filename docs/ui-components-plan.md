@@ -373,3 +373,6 @@ Done when: no widget computes scrollbar gutters or base insets, and
   with the serializer.
 - Mux and activity headers contain rich inline controls, not only title/meta
   text. Extract `rich` first to preserve their structure and callbacks.
+- Existing `flatten_span_nodes` does not traverse raw fragments. The `rich`
+  props form first collects inline children so sparse nested fragments work;
+  its positional compatibility form retains existing behavior.

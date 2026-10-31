@@ -629,11 +629,7 @@ function ui.activity.open(opts)
     local component = require("hollow.ui.components.select")
     local cell_h = ctx.cell_h or 19
     local function line(node)
-      return component.inline(
-        node.children,
-        nil,
-        { width = "grow", height = cell_h, scroll_x = true }
-      )
+      return c.rich({ width = "grow", height = cell_h, scroll_x = true, node.children })
     end
     local function hints(items)
       local options = {
