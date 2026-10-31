@@ -32,6 +32,7 @@
       "children": 3,
       "gap": 19,
       "height": -1,
+      "id": "test:select:picker",
       "width": -1
     },
     {
@@ -69,14 +70,15 @@
     },
     {
       "children": 1,
+      "id": "test:select:picker:filter",
       "width": -1
     },
     {
       "children": 3,
       "height": 19,
-      "id": "test:input:viewport",
+      "id": "test:select:picker:filter:viewport",
       "kind": 1,
-      "reveal": "test:input:caret",
+      "reveal": "test:select:picker:filter:caret",
       "scroll_x": true,
       "width": -1
     },
@@ -95,7 +97,7 @@
       "bg": "#d8dee9",
       "children": 1,
       "height": 19,
-      "id": "test:input:caret"
+      "id": "test:select:picker:filter:caret"
     },
     {
       "bold": true,
@@ -163,6 +165,7 @@
       "children": 2,
       "gap": 19,
       "height": -1,
+      "id": "test:mux:picker",
       "width": -1
     },
     {
@@ -285,6 +288,7 @@
       "children": 3,
       "gap": 19,
       "height": -1,
+      "id": "test:activity:picker",
       "width": -1
     },
     {
@@ -313,7 +317,7 @@
       "bg": "#3b4252",
       "children": 1,
       "clickable": true,
-      "id": "test:select:inline:run:2",
+      "id": "test:activity:header:run:2",
       "label": "Inbox",
       "padding": {
         "bottom": 3,
@@ -339,7 +343,7 @@
     {
       "children": 1,
       "clickable": true,
-      "id": "test:select:inline:run:4",
+      "id": "test:activity:header:run:4",
       "label": "History",
       "padding": {
         "bottom": 3,

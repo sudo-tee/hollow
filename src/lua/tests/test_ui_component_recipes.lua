@@ -242,18 +242,20 @@ describe("unified component styling", function()
     assert.equals(1, clicks)
   end)
 
-  it("uses row recipes without inheriting boxes or identity into text", function()
+  it("uses list item paint without inheriting boxes or identity into text", function()
     local widget = ui.overlay.new({
       render = function()
-        return clay.row(
-          ui,
-          ui.row({ ui.text("inherited", { fg = "muted" }), ui.text("child", { fg = "#abcdef" }) }, {
-            id = "choice",
-            variant = "selectable",
-            selected = true,
-            style = { radius = 9, fg = "muted" },
-          })
-        )
+        local c = ui.components
+        return c.list_item({
+          id = "choice",
+          selected = true,
+          style = { radius = 9 },
+          c.rich({
+            style = { fg = "muted" },
+            ui.text("inherited"),
+            ui.text("child", { fg = "#abcdef" }),
+          }),
+        })
       end,
     })
     ui.overlay.push(widget)
@@ -276,38 +278,11 @@ describe("unified component styling", function()
     end, "hollow.ui: unsupported row style field padding")
   end)
 
-  it("resolves row hover once and keeps explicit legacy aliases final", function()
-    local widget = ui.overlay.new({
-      render = function()
-        return clay.row(
-          ui,
-          ui.row({ ui.text("Choice") }, {
-            id = "choice",
-            style = { fg = "#111111", bg = "#222222", hover = { fg = "#333333", bg = "#444444" } },
-            fill_bg = "#555555",
-            fill_radius = 0,
-          })
-        )
-      end,
-    })
-    ui.overlay.push(widget)
-    local row = assert(clay.find(ui, ":choice"))
-    assert.equals(shared.palette("overlay").fg, clay.text_node(ui, "Choice").fg)
-    assert.equals("#555555", row.bg)
-    assert.is_nil(row.radius)
-    assert.equals(shared.palette("overlay").hover_bg, row.hover_bg)
-  end)
-
-  it("honors an explicit disabled accent part on selectable rows", function()
+  it("honors a disabled accent on selected list items", function()
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return clay.row(
-          ui,
-          ui.row(
-            { ui.text("Choice") },
-            { id = "choice", variant = "selectable", selected = true, accent_bar = false }
-          )
-        )
+        local c = ui.components
+        return c.list_item({ id = "choice", selected = true, accent = false, c.text("Choice") })
       end,
     }))
     for _, node in ipairs(clay.nodes(ui)) do
@@ -355,7 +330,7 @@ describe("unified component styling", function()
     assert.is_not.equal(before, ui.action_button({}).style.fg)
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return clay.row(ui, ui.row({ ui.text("row") }, { id = "row" }))
+        return ui.components.list_item({ id = "row", ui.components.text("row") })
       end,
     }))
     assert.equals("#654321", clay.find(ui, ":row").hover_bg)

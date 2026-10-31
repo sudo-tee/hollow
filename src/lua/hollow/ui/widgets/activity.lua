@@ -2,6 +2,8 @@ local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
+local props = require("hollow.ui.components.props")
+local rich = require("hollow.ui.components.rich")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.activity")
 local util = require("hollow.util")
@@ -461,7 +463,7 @@ function ui.activity.open(opts)
   })
 
   local function render_details_header()
-    return ui.row({
+    return {
       ui.text("Activity details", styles(theme).title),
       ui.spacer(),
       ui.action_button({
@@ -471,7 +473,7 @@ function ui.activity.open(opts)
         style = styles(theme).label,
         on_click = copy,
       }),
-    })
+    }
   end
 
   local function render_header()
@@ -482,7 +484,7 @@ function ui.activity.open(opts)
         worst = entry.level
       end
     end
-    return ui.row({
+    return {
       ui.text("Activity  ", styles(theme).title),
       ui.tab_bar({
         theme = theme,
@@ -523,7 +525,7 @@ function ui.activity.open(opts)
       end, function()
         return ui.text("")
       end),
-    })
+    }
   end
 
   local function measure_columns()
@@ -548,15 +550,15 @@ function ui.activity.open(opts)
     }
   end
 
-  local function render_category_row(entry, row_state)
-    local selected, hovered = row_state.selected, row_state.hovered
+  local function category_nodes(entry, row_state)
+    local selected = row_state.selected
     local s = styles(theme, { selected = selected })
-    return ui.row({
+    return {
       ui.text("  ", list_row(theme, { selected = selected }).section_indicator),
       ui.text((entry.expanded and icons.expanded or icons.collapsed) .. " ", s.category_arrow),
       ui.text(entry.title, s.category_title),
       ui.text(" (" .. entry.count .. ")", s.category_count),
-    }, row_state.options)
+    }
   end
 
   local function render_workspace_pill(entry, workspace, columns)
@@ -589,8 +591,8 @@ function ui.activity.open(opts)
     end)
   end
 
-  local function render_entry_row(entry, row_state, columns)
-    local selected, hovered = row_state.selected, row_state.hovered
+  local function entry_nodes(entry, row_state, columns)
+    local selected = row_state.selected
     local workspace = util.truncate_end(entry.workspace or "", columns.pill_cap)
     local time, seconds = age(entry)
     local indent = row_group[entry] and "  " or ""
@@ -605,7 +607,7 @@ function ui.activity.open(opts)
     local rest = budget - util.display_width(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
     local entry_s = entry_styles(theme, entry, row_state, columns, seconds)
-    return ui.row({
+    return {
       ui.text("  ", list_row(theme, { selected = selected }).indicator),
       ui.text(indent),
       ui.text(marker(entry), entry_s.marker),
@@ -621,16 +623,14 @@ function ui.activity.open(opts)
       ),
       ui.text("  "),
       render_dismiss_button(entry, row_state),
-    }, row_state.options)
+    }
   end
 
   local function render_layout(render_theme, state, ctx)
     local c = ui.components
-    local component_props = require("hollow.ui.components.props")
-    local row_adapter = require("hollow.ui.components.row_adapter")
-    local cell_h = ctx.cell_h or 19
-    local function line(node)
-      return c.rich({ width = "grow", height = cell_h, scroll_x = true, node.children })
+    local cell_h = props.cell_h(ctx)
+    local function line(prefix, nodes)
+      return c.rich({ prefix = prefix, width = "grow", height = cell_h, scroll_x = true, nodes })
     end
     local function hints(items)
       local options = {
@@ -669,7 +669,7 @@ function ui.activity.open(opts)
         width = "grow",
         height = "grow",
         gap = cell_h,
-        line(header),
+        line("activity:details:header", header),
         c.scroll({
           id = "activity:details",
           theme = theme,
@@ -683,7 +683,6 @@ function ui.activity.open(opts)
             size = scrollbar.scrollbar_thumb_size,
             track_color = scrollbar.scrollbar_track_color,
             thumb_color = scrollbar.scrollbar_thumb_color,
-            _raw_colors = true,
           } or nil,
           body,
         }),
@@ -694,17 +693,16 @@ function ui.activity.open(opts)
     refresh()
     local measured = ctx.metrics and ctx.metrics["activity:viewport"]
     local columns = measure_columns()
-    local sample = rows[1]
-      and (
-        rows[1].header_category
-          and render_category_row(rows[1], { selected = false, options = {} })
-        or render_entry_row(
-          rows[1],
-          { selected = false, hovered = false, options = {}, fg = theme.fg },
-          columns
+    local function row_nodes(entry, row_state)
+      return entry.header_category and category_nodes(entry, row_state)
+        or entry_nodes(entry, row_state, columns)
+    end
+    local row_height = rows[1]
+        and rich.height(
+          row_nodes(rows[1], { selected = false, hovered = false, fg = theme.fg }),
+          ctx
         )
-      )
-    local row_height = sample and row_adapter.row_height(sample, ctx) or cell_h
+      or cell_h
     if measured then
       clay_budget = math.max(1, math.min(20, math.floor(measured.height / row_height)))
     end
@@ -712,23 +710,19 @@ function ui.activity.open(opts)
     local function make_item(entry, index, item_view)
       local id = "activity:item:" .. tostring(entry.id)
       local selected, hovered = index == list.nav.index, state.hovered_id == id
-      local options = list_row(theme, { selected = selected, hovered = hovered }).paint
       local row_state = {
-        options = options,
         selected = selected,
         hovered = hovered,
         fg = styles(theme, { selected = selected, hovered = hovered }).row.fg,
       }
-      local row = entry.header_category and render_category_row(entry, row_state)
-        or render_entry_row(entry, row_state, columns)
       local entry_id = entry.id
-      return row_adapter.from_row(
-        row,
-        id,
-        entry.header_category and entry.title or row_label(entry),
-        theme,
-        ctx,
-        function()
+      return c.list_item({
+        id = id,
+        theme = theme,
+        label = entry.header_category and entry.title or row_label(entry),
+        selected = selected,
+        hovered = hovered,
+        on_activate = function()
           refresh()
           for current, candidate in ipairs(rows) do
             if candidate.id == entry_id then
@@ -738,11 +732,16 @@ function ui.activity.open(opts)
             end
           end
         end,
-        item_view.plain
-      )
+        c.rich({
+          width = "grow",
+          prefix = id,
+          plain = item_view.plain,
+          row_nodes(entry, row_state),
+        }),
+      })
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
-    local header = line(render_header())
+    local header = line("activity:header", render_header())
     local filter_node
     if searching then
       filter_node = c.row({
@@ -752,14 +751,6 @@ function ui.activity.open(opts)
     end
     local list_props = {
       id = "activity:viewport",
-      theme = theme,
-      ctx = ctx,
-      _legacy_paint = true,
-      _legacy_window = true,
-      _legacy_visible_count = clay_budget,
-      width = "grow",
-      height = "grow",
-      axis = "both",
       measure = true,
       reveal = target and ("activity:item:" .. tostring(target.id)) or nil,
       reveal_start = reveal_start,
@@ -767,7 +758,6 @@ function ui.activity.open(opts)
       items = rows,
       selected = list.nav.index,
       window = 23,
-      budget = component_props.LIST_BUDGET,
       render_item = make_item,
       empty = c.empty({
         text = filter.value ~= "" and "No matching activity"
@@ -775,21 +765,19 @@ function ui.activity.open(opts)
           or "No activity recorded",
         style = styles(theme).empty,
         wrap = "words",
-        _legacy_style = true,
       }),
     }
     local hint_node = copy_feedback
-        and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))
+        and line("activity:hints", { ui.text(copy_feedback, styles(theme).success) })
       or hints(list_hints)
     return c.picker({
       id = "activity:picker",
       theme = theme,
       gap = cell_h,
       list = list_props,
-      _legacy = true,
-      _header = header,
-      _filter = filter_node,
-      _hints = hint_node,
+      header = header,
+      filter = filter_node,
+      hints = hint_node,
     }),
       height * cell_h
   end

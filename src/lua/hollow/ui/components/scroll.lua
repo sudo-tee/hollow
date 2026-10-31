@@ -1,7 +1,7 @@
--- One viewport node, excluding children. Scrollbar metadata is native paint.
+-- One viewport node, excluding children. Scrollbar metadata is native paint;
+-- a shown scrollbar reserves a right gutter of max(8px, 1ch).
 local box = require("hollow.ui.style.box")
 local c = require("hollow.ui.components")
-local list_row = require("hollow.ui.recipes.list_row")
 local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 
@@ -28,20 +28,13 @@ return function(value)
       type(bar) == "table" and type(bar.id) == "string" and bar.id ~= "",
       "scrollbar requires an id"
     )
-    local ctx, theme = props.ctx(options), props.theme(options)
-    local paint = options._legacy_paint
-        and shared.serialize_row_paint({ scrollbar_track = true }, theme)
-      or list_row(theme).paint
+    local ctx = props.ctx(options)
     options.scrollbar_id = bar.id
     options.scrollbar_thumb_ratio = bar.ratio
     options.scrollbar_thumb_size = bar.size
-    if bar._raw_colors then
-      options.scrollbar_track_color = bar.track_color
-      options.scrollbar_thumb_color = bar.thumb_color
-    else
-      options.scrollbar_track_color = bar.track_color or paint.scrollbar_track_color
-      options.scrollbar_thumb_color = bar.thumb_color or paint.scrollbar_thumb_color
-    end
+    -- Unset colors resolve to the theme's scrollbar parts during serialization.
+    options.scrollbar_track_color = bar.track_color
+    options.scrollbar_thumb_color = bar.thumb_color
     local padding = options.padding
     if padding == nil and type(options.style) == "table" then
       padding = options.style.padding

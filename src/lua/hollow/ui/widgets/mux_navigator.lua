@@ -1,7 +1,10 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
+local list_item = require("hollow.ui.components.list_item")
 local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
+local props = require("hollow.ui.components.props")
+local rich = require("hollow.ui.components.rich")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.mux_navigator")
 local util = require("hollow.util")
@@ -303,10 +306,9 @@ function ui.mux_navigator.open(opts)
     end
   end
 
-  local function render_row(row, index, hovered, options)
+  local function row_nodes(row, index, hovered)
     local selected = index == nav.index
     local active = row.item.is_active or row.item.is_focused
-    local is_workspace = row.kind == "workspace"
     local branch = row.kind == "pane" and ""
       or (collapsed[row.key] and icons.collapsed or icons.expanded) .. " "
     local indent = string.rep("  ", row.depth)
@@ -322,7 +324,7 @@ function ui.mux_navigator.open(opts)
       or pane_value(row.item)
     local row_s = row_styles(theme, row, selected, hovered, active, pane_attention)
     local detail = row_detail(row)
-    local row_nodes = {
+    return {
       ui.text("  ", list_row(theme, { selected = selected }).indicator),
       ui.text(indent),
       ui.text(branch, row_s.prefix),
@@ -345,13 +347,6 @@ function ui.mux_navigator.open(opts)
         end)
       end),
     }
-
-    local paint = list_row(theme, {
-      variant = is_workspace and "section" or nil,
-      selected = selected,
-      hovered = hovered,
-    }).paint
-    return ui.row(row_nodes, util.merge_tables(options, paint))
   end
 
   local handlers = {
@@ -457,7 +452,6 @@ function ui.mux_navigator.open(opts)
       return refresh_after
     end,
     render = function(render_theme, state, ctx)
-      local row_adapter = require("hollow.ui.components.row_adapter")
       local c = ui.components
       tree = hollow.term.mux_tree()
       local rows = current_rows()
@@ -470,24 +464,23 @@ function ui.mux_navigator.open(opts)
         end
       end
       nav.index = math.max(1, math.min(#rows, nav.index or 1))
-      local sample = rows[1] and render_row(rows[1], 1, false, {})
-      local line_h = sample and row_adapter.row_height(sample, ctx)
-        or row_adapter.line_height(render_theme, ctx)
+      local line_h = rows[1] and rich.height(row_nodes(rows[1], 1, false), ctx)
+        or list_item.line_height(render_theme, ctx)
       local measured = ctx.metrics and ctx.metrics["mux:viewport"]
       if measured then
         clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
       end
       local viewport = selectable.visible_range()
-      local function render_item(row, index)
+      local function render_item(row, index, view)
         local id = "mux-navigator:item:" .. row.key
-        local row_node = render_row(row, index, state and state.hovered_id == id, { id = id })
-        return row_adapter.from_row(
-          row_node,
-          id,
-          shared.nodes_plain_text(row_node.children),
-          render_theme,
-          ctx,
-          function()
+        local hovered = state and state.hovered_id == id
+        return c.list_item({
+          id = id,
+          theme = theme,
+          variant = row.kind == "workspace" and "section" or nil,
+          selected = index == nav.index,
+          hovered = hovered,
+          on_activate = function()
             for current_index, current in ipairs(current_rows()) do
               if current.key == row.key then
                 nav.index, reveal_start = current_index, false
@@ -495,52 +488,44 @@ function ui.mux_navigator.open(opts)
                 return
               end
             end
-          end
-        )
+          end,
+          c.rich({
+            width = "grow",
+            prefix = id,
+            plain = view.plain,
+            row_nodes(row, index, hovered),
+          }),
+        })
       end
       local s = styles(render_theme)
-      local search = ui.row({
-        ui.text("/ ", s.title),
-        search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
-        ui.spacer(),
-        ui.text(
-          filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
-          filter_id == "pane_bell" and s.filter_bell or s.filter
-        ),
-        ui.text(pane_filter.label, s.muted),
-      })
       local target = rows[reveal_start and viewport.start_idx or nav.index]
-      local cell_h = ctx.cell_h or 19
+      local cell_h = props.cell_h(ctx)
       return c.picker({
         id = "mux:picker",
         theme = render_theme,
-        gap = cell_h,
-        _legacy = true,
-        _header = c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
+        header = c.rich({
+          width = "grow",
+          height = cell_h,
+          scroll_x = true,
+          ui.text("/ ", s.title),
+          search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
+          ui.spacer(),
+          ui.text(
+            filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
+            filter_id == "pane_bell" and s.filter_bell or s.filter
+          ),
+          ui.text(pane_filter.label, s.muted),
+        }),
         list = {
           id = "mux:viewport",
-          theme = render_theme,
-          ctx = ctx,
-          _legacy_paint = true,
-          _legacy_window = true,
-          width = "grow",
-          height = "grow",
-          axis = "both",
           measure = true,
           reveal = target and ("mux-navigator:item:" .. target.key) or nil,
           reveal_start = reveal_start,
           viewport = viewport,
           items = rows,
           selected = nav.index,
-          window = 24,
-          budget = math.huge,
           render_item = render_item,
-          empty = c.empty({
-            text = "No matching panes",
-            style = s.empty,
-            wrap = "words",
-            _legacy_style = true,
-          }),
+          empty = c.empty({ text = "No matching panes", style = s.empty, wrap = "words" }),
         },
       }),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h

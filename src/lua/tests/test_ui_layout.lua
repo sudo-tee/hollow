@@ -117,7 +117,6 @@ describe("hierarchical Clay layout", function()
     assert.equals(surface.namespace .. "sample:run:2", nodes[4].id)
     surface:dispatch(nodes[4].id)
     assert.equals("action", clicked)
-    assert.equals(c.rich, c.select.inline)
   end)
 
   it("renders list item selection, accent and padded accessibility label", function()
@@ -200,13 +199,6 @@ describe("hierarchical Clay layout", function()
       end,
     })
     assert.equals("  padded text  \ndetail", surface:snapshot()[1].label)
-  end)
-
-  it("keeps select row adapter aliases during migration", function()
-    local adapter = require("hollow.ui.components.row_adapter")
-    assert.equals(adapter.from_row, c.select.from_row)
-    assert.equals(adapter.row_height, c.select.row_height)
-    assert.equals(adapter.line_height, c.select.line_height)
   end)
 
   it("keeps visible and selected list rows rich under the node budget", function()
@@ -329,7 +321,7 @@ describe("hierarchical Clay layout", function()
     assert.equals(surface.namespace .. "item:40", nodes[1].reveal)
   end)
 
-  it("preserves legacy select degradation when explicitly requested", function()
+  it("re-renders only off-screen unselected items plain over budget", function()
     local simplified = {}
     local surface = layout.new({
       render = function()
@@ -340,7 +332,6 @@ describe("hierarchical Clay layout", function()
           viewport = { start_idx = 1, end_idx = 1 },
           window = 2,
           budget = 0,
-          _legacy_window = true,
           render_item = function(item, index, view)
             if view.plain then
               simplified[index] = true
@@ -351,34 +342,8 @@ describe("hierarchical Clay layout", function()
       end,
     })
     surface:snapshot()
-    assert.is_true(simplified[1])
+    assert.is_nil(simplified[1])
     assert.is_true(simplified[2])
-  end)
-
-  it("preserves activity overscan based on measured capacity", function()
-    local items, rendered = {}, {}
-    for i = 1, 30 do
-      items[i] = i
-    end
-    local surface = layout.new({
-      render = function()
-        return c.list({
-          id = "list",
-          items = items,
-          selected = 10,
-          viewport = { start_idx = 10, end_idx = 10 },
-          window = 5,
-          _legacy_window = true,
-          _legacy_visible_count = 3,
-          render_item = function(item, index)
-            rendered[#rendered + 1] = index
-            return c.text(item)
-          end,
-        })
-      end,
-    })
-    surface:snapshot()
-    assert.same({ 9, 10, 11, 12, 13 }, rendered)
   end)
 
   it("flattens sparse nested rich fragments", function()
@@ -432,30 +397,7 @@ describe("hierarchical Clay layout", function()
     end, "invalid stack direction")
   end)
 
-  it("preserves legacy empty paint under label theme overrides", function()
-    local theme = {
-      fg = "#111111",
-      empty = "#222222",
-      styles = { label = { root = { bold = true, variants = { empty = { fg = "#333333" } } } } },
-    }
-    local surface = layout.new({
-      theme = theme,
-      render = function()
-        return c.empty({
-          text = "Empty",
-          style = { fg = "#444444" },
-          wrap = "words",
-          _legacy_style = true,
-        })
-      end,
-    })
-    local node = surface:snapshot()[1]
-    assert.equals("#444444", node.fg)
-    assert.is_nil(node.bold)
-    assert.is_nil(node.wrap)
-  end)
-
-  it("supports inline header metadata without adding a spacer or theme paint", function()
+  it("supports inline header metadata without adding a spacer", function()
     local theme = { fg = "#111111", styles = { label = { root = { bold = true } } } }
     local surface = layout.new({
       theme = theme,
@@ -467,7 +409,6 @@ describe("hierarchical Clay layout", function()
           meta_align = "inline",
           title_style = { fg = "#222222" },
           meta_style = { fg = "#333333" },
-          _legacy_style = true,
         })
       end,
     })
@@ -475,7 +416,6 @@ describe("hierarchical Clay layout", function()
     assert.equals(3, #nodes)
     assert.equals("Filter:", nodes[2].text)
     assert.equals("#222222", nodes[2].fg)
-    assert.is_nil(nodes[2].bold)
     assert.equals(" 1/2", nodes[3].text)
     assert.equals("#333333", nodes[3].fg)
   end)

@@ -24,7 +24,6 @@ local lazy = {
   pill = "hollow.ui.components.pill",
   rich = "hollow.ui.components.rich",
   scroll = "hollow.ui.components.scroll",
-  select = "hollow.ui.components.select_adapter",
   stack = "hollow.ui.components.stack",
   tabs = "hollow.ui.components.tabs",
   title = "hollow.ui.components.title",

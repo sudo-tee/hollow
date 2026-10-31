@@ -6,6 +6,7 @@ local list_row = require("hollow.ui.recipes.list_row")
 local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
+local M = {}
 
 local function text_content(node, parts, depth)
   if type(node) ~= "table" or depth > 32 then
@@ -38,28 +39,25 @@ local function gutter(color, radius)
   })
 end
 
-return function(value)
+local function render(value)
   local options, children = props.split(value)
   local theme = props.theme(options)
   local paint = list_row(theme, options).paint
-  local style = options._style
-    or {
+  local style = shared.resolve_tokens(
+    sheet.merge({
       bg = paint.fill_bg,
       radius = paint.fill_radius,
       hover = {
         bg = list_row(theme, { selected = options.selected, hovered = true }).paint.fill_bg,
       },
-    }
-  style = shared.resolve_tokens(sheet.merge(style, options.style), theme)
-  local accent = options._accent
-  if accent == nil then
-    if options.accent == true then
-      accent = paint.accent_bar or theme.panel_border
-    elseif options.accent ~= nil then
-      accent = options.accent
-    else
-      accent = paint.accent_bar
-    end
+    }, options.style),
+    theme
+  )
+  local accent = paint.accent_bar
+  if options.accent == true then
+    accent = paint.accent_bar or theme.panel_border
+  elseif options.accent ~= nil then
+    accent = options.accent
   end
   if accent then
     accent = shared.resolve_tokens({ bg = accent }, theme).bg
@@ -85,3 +83,18 @@ return function(value)
   end
   return c.row({ gutter(accent, style.radius), children }, options)
 end
+
+--- Height of one list line: cell height plus the row indicator padding.
+---@param theme? HollowUiTheme
+---@param ctx? HollowUiLayoutContext
+---@return number
+function M.line_height(theme, ctx)
+  local padding = box.normalize(list_row(theme or props.theme()).indicator.padding)
+  return props.cell_h(ctx) + padding.top + padding.bottom
+end
+
+return setmetatable(M, {
+  __call = function(_, value)
+    return render(value)
+  end,
+})

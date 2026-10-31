@@ -54,7 +54,6 @@ local function output_view(theme, h, ctx, opts, rows)
       id = M.SCROLLBAR,
       ratio = (last - rows) / hidden,
       size = rows / #transcript.lines,
-      _raw_colors = true,
     } or nil,
     lines,
   })

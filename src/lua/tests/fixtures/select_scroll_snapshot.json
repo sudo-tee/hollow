@@ -31,6 +31,7 @@
     "children": 3,
     "gap": 20,
     "height": -1,
+    "id": "test:select:picker",
     "width": -1
   },
   {
@@ -68,14 +69,15 @@
   },
   {
     "children": 1,
+    "id": "test:select:picker:filter",
     "width": -1
   },
   {
     "children": 3,
     "height": 20,
-    "id": "test:input:viewport",
+    "id": "test:select:picker:filter:viewport",
     "kind": 1,
-    "reveal": "test:input:caret",
+    "reveal": "test:select:picker:filter:caret",
     "scroll_x": true,
     "width": -1
   },
@@ -94,7 +96,7 @@
     "bg": "#d8dee9",
     "children": 1,
     "height": 20,
-    "id": "test:input:caret"
+    "id": "test:select:picker:filter:caret"
   },
   {
     "bold": true,
@@ -131,7 +133,7 @@
     "scrollbar_id": "test:select:scrollbar:1",
     "scrollbar_thumb_color": "#f7d794",
     "scrollbar_thumb_size": 0.066666666666666999,
-    "scrollbar_track_color": "#5a6375",
+    "scrollbar_track_color": "#81a1c1",
     "width": -1
   },
   {

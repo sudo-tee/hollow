@@ -31,6 +31,7 @@
     "children": 4,
     "gap": 19,
     "height": -1,
+    "id": "test:palette:picker",
     "width": -1
   },
   {
@@ -68,14 +69,15 @@
   },
   {
     "children": 1,
+    "id": "test:palette:picker:filter",
     "width": -1
   },
   {
     "children": 3,
     "height": 19,
-    "id": "test:input:viewport",
+    "id": "test:palette:picker:filter:viewport",
     "kind": 1,
-    "reveal": "test:input:caret",
+    "reveal": "test:palette:picker:filter:caret",
     "scroll_x": true,
     "width": -1
   },
@@ -94,7 +96,7 @@
     "bg": "#d8dee9",
     "children": 1,
     "height": 19,
-    "id": "test:input:caret"
+    "id": "test:palette:picker:filter:caret"
   },
   {
     "bold": true,
@@ -128,7 +130,6 @@
     "bg": "#3b4252",
     "children": 2,
     "clickable": true,
-    "height": 35,
     "hover_bg": "#3b4252",
     "id": "test:palette:item:section:1",
     "kind": 1,
@@ -196,7 +197,6 @@
   {
     "children": 2,
     "clickable": true,
-    "height": 23,
     "hover_bg": "#2a2d38",
     "id": "test:palette:item:entry:1",
     "kind": 1,
@@ -247,7 +247,6 @@
   {
     "children": 2,
     "clickable": true,
-    "height": 23,
     "hover_bg": "#2a2d38",
     "id": "test:palette:item:entry:2",
     "kind": 1,

@@ -31,6 +31,7 @@
     "children": 4,
     "gap": 19,
     "height": -1,
+    "id": "test:select:picker",
     "width": -1
   },
   {
@@ -68,14 +69,15 @@
   },
   {
     "children": 1,
+    "id": "test:select:picker:filter",
     "width": -1
   },
   {
     "children": 3,
     "height": 19,
-    "id": "test:input:viewport",
+    "id": "test:select:picker:filter:viewport",
     "kind": 1,
-    "reveal": "test:input:caret",
+    "reveal": "test:select:picker:filter:caret",
     "scroll_x": true,
     "width": -1
   },
@@ -94,7 +96,7 @@
     "bg": "#d8dee9",
     "children": 1,
     "height": 19,
-    "id": "test:input:caret"
+    "id": "test:select:picker:filter:caret"
   },
   {
     "bold": true,

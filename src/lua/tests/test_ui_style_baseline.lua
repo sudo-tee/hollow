@@ -11,7 +11,6 @@ describe("styling unification baseline", function()
 
   it("preserves row recipe selection priority over hover in Clay", function()
     local ui = hollow.ui
-    local list_row = require("hollow.ui.recipes.list_row")
     local theme = {
       selection_bg = "#112233",
       hover_bg = "#223344",
@@ -22,12 +21,16 @@ describe("styling unification baseline", function()
     }
     for _, selected in ipairs({ false, true }) do
       for _, hovered in ipairs({ false, true }) do
-        local paint =
-          list_row(theme, { variant = "section", selected = selected, hovered = hovered })
-        local options = hollow.util.merge_tables({ id = "row" }, paint.paint)
         ui.overlay.push(ui.overlay.new({
           render = function()
-            return clay.row(ui, ui.row({ ui.text("Choice", { fg = "#abcdef" }) }, options))
+            return ui.components.list_item({
+              id = "row",
+              theme = theme,
+              variant = "section",
+              selected = selected,
+              hovered = hovered,
+              ui.components.text("Choice", { fg = "#abcdef" }),
+            })
           end,
         }))
         local row = assert(clay.find(ui, ":row"))
@@ -47,7 +50,7 @@ describe("styling unification baseline", function()
     end
     local widget = ui.overlay.new({
       render = function()
-        return clay.row(ui, ui.row({ action() }))
+        return ui.components.rich({ action() })
       end,
     })
     ui.overlay.push(widget)
@@ -68,7 +71,7 @@ describe("styling unification baseline", function()
         padding = { left = 4, right = 4, top = 0, bottom = 0 },
       }
       local action_box = assert(clay.label(ui, "Run"))
-      assert.equals(hollow.theme.resolve_widget("overlay").hover_bg, action_box.hover_bg)
+      assert.equals("#334455", action_box.hover_bg)
       assert.equals(4, action().style.radius)
       assert.equals("#112233", clay.text_node(ui, "Run").fg)
       assert.same(expected, ui._topbar_state().items[1].segments[1])
