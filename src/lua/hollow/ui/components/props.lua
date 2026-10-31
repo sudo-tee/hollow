@@ -1,6 +1,7 @@
 -- Shared props and render scope for component constructors.
 local shared = require("hollow.ui.shared")
 local M = {}
+M.LIST_BUDGET = 410
 
 function M.split(value, opts)
   value = value or {}

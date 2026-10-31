@@ -7,6 +7,11 @@ local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local M = {}
 
+function M.line_height(theme, ctx)
+  local padding = box.normalize(list_row(theme).indicator.padding)
+  return props.cell_h(ctx) + padding.top + padding.bottom
+end
+
 function M.from_row(row, id, label, theme, ctx, on_click, plain)
   local serialized = shared.serialize_row_paint(row, theme)
   local flat = shared.flatten_span_nodes(row.children)

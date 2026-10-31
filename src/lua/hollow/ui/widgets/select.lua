@@ -273,11 +273,12 @@ function ui.select.open(opts)
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
       local component = require("hollow.ui.components.select")
+      local row_adapter = require("hollow.ui.components.row_adapter")
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
         clay_row_budget = math.max(
           1,
-          math.min(20, math.floor(measured.height / component.line_height(render_theme, ctx)))
+          math.min(20, math.floor(measured.height / row_adapter.line_height(render_theme, ctx)))
         )
       end
       local hints = render_hint_rows(actions, render_theme)
@@ -289,7 +290,7 @@ function ui.select.open(opts)
         end
       end
       local list_height = #entries == 0 and (ctx.cell_h or 19)
-        or units * component.line_height(render_theme, ctx)
+        or units * row_adapter.line_height(render_theme, ctx)
       local content_height = (4 + (hints and 2 or 0)) * (ctx.cell_h or 19) + list_height
       return component.render({
         prompt = opts.prompt,

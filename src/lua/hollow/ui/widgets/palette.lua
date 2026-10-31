@@ -376,7 +376,7 @@ function ui.command_palette.open(opts)
       local flat = current_flat()
       nav.index = math.max(1, math.min(#flat, nav.index or 1))
       local item_idx, total_items = item_position(flat, nav.index)
-      local line_h = component.line_height(render_theme, ctx)
+      local line_h = row_adapter.line_height(render_theme, ctx)
       section_units = row_adapter.row_height(
         render_section_header(render_theme, "", false, false, false, {}),
         ctx

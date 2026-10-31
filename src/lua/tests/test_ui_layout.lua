@@ -172,6 +172,7 @@ describe("hierarchical Clay layout", function()
     local adapter = require("hollow.ui.components.row_adapter")
     assert.equals(adapter.from_row, c.select.from_row)
     assert.equals(adapter.row_height, c.select.row_height)
+    assert.equals(adapter.line_height, c.select.line_height)
   end)
 
   it("keeps visible and selected list rows rich under the node budget", function()

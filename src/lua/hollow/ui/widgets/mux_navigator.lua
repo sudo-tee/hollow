@@ -457,7 +457,6 @@ function ui.mux_navigator.open(opts)
       return refresh_after
     end,
     render = function(render_theme, state, ctx)
-      local component = require("hollow.ui.components.select")
       local row_adapter = require("hollow.ui.components.row_adapter")
       local c = ui.components
       tree = hollow.term.mux_tree()
@@ -473,7 +472,7 @@ function ui.mux_navigator.open(opts)
       nav.index = math.max(1, math.min(#rows, nav.index or 1))
       local sample = rows[1] and render_row(rows[1], 1, false, {})
       local line_h = sample and row_adapter.row_height(sample, ctx)
-        or component.line_height(render_theme, ctx)
+        or row_adapter.line_height(render_theme, ctx)
       local measured = ctx.metrics and ctx.metrics["mux:viewport"]
       if measured then
         clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
@@ -512,7 +511,12 @@ function ui.mux_navigator.open(opts)
       })
       local target = rows[reveal_start and viewport.start_idx or nav.index]
       local cell_h = ctx.cell_h or 19
-      return component.sections({
+      return c.stack({
+        theme = render_theme,
+        divided = true,
+        width = "grow",
+        height = "grow",
+        gap = cell_h,
         c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
         c.list({
           id = "mux:viewport",
@@ -539,7 +543,7 @@ function ui.mux_navigator.open(opts)
             _legacy_style = true,
           }),
         }),
-      }, render_theme, cell_h),
+      }),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
     end,
     keys = function(key, mods)

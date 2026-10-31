@@ -1,5 +1,6 @@
 -- One scroll viewport plus rendered item nodes; no extra list wrapper.
 local c = require("hollow.ui.components")
+local props = require("hollow.ui.components.props")
 
 local function count(value)
   if type(value) ~= "table" then
@@ -32,7 +33,7 @@ return function(options)
   local visible_start = math.max(1, math.min(#items, viewport.start_idx or selected))
   local visible_end = math.max(visible_start, math.min(#items, viewport.end_idx or visible_start))
   local window = math.max(1, math.floor(options.window or 24))
-  local budget = math.max(0, math.floor(options.budget or 410))
+  local budget = math.max(0, math.floor(options.budget or props.LIST_BUDGET))
   local visible_count = options._legacy_visible_count or (visible_end - visible_start + 1)
   local start = math.max(1, visible_start - math.floor((window - visible_count) / 2))
   local finish = math.min(

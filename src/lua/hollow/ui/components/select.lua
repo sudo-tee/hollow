@@ -38,15 +38,12 @@ local row_adapter = require("hollow.ui.components.row_adapter")
 ---@field hints? HollowUiRowNode[]
 ---@field render_label? fun(item: any, ctx: HollowUiLayoutContext, view: { query: string, selected: boolean, hovered: boolean, theme: HollowUiTheme, id: string }): HollowUiLayoutNode|nil
 ---@field render_item? fun(entry: HollowUiSelectEntry, index: integer, id: string, plain: boolean): HollowUiLayoutNode
-local M = { window_items = 24, row_budget = 410 }
+local M = { window_items = 24, row_budget = props.LIST_BUDGET }
 
 ---@param theme HollowUiTheme
 ---@param ctx HollowUiLayoutContext
 ---@return number
-function M.line_height(theme, ctx)
-  local padding = box.normalize(list_row(theme).indicator.padding)
-  return (ctx.cell_h or 19) + padding.top + padding.bottom
-end
+M.line_height = row_adapter.line_height
 
 ---@param entry HollowUiSelectEntry
 ---@param index integer

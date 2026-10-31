@@ -626,7 +626,7 @@ function ui.activity.open(opts)
 
   local function render_layout(render_theme, state, ctx)
     local c = ui.components
-    local component = require("hollow.ui.components.select")
+    local component_props = require("hollow.ui.components.props")
     local row_adapter = require("hollow.ui.components.row_adapter")
     local cell_h = ctx.cell_h or 19
     local function line(node)
@@ -663,7 +663,12 @@ function ui.activity.open(opts)
       end
       local header = render_details_header()
       local scrollbar = detail_rows[1] or {}
-      return component.sections({
+      return c.stack({
+        theme = theme,
+        divided = true,
+        width = "grow",
+        height = "grow",
+        gap = cell_h,
         line(header),
         c.scroll({
           id = "activity:details",
@@ -683,7 +688,7 @@ function ui.activity.open(opts)
           body,
         }),
         hints(detail_hints),
-      }, theme, cell_h),
+      }),
         height * cell_h
     end
     refresh()
@@ -761,7 +766,7 @@ function ui.activity.open(opts)
       items = rows,
       selected = list.nav.index,
       window = 23,
-      budget = component.row_budget,
+      budget = component_props.LIST_BUDGET,
       render_item = make_item,
       empty = c.empty({
         text = filter.value ~= "" and "No matching activity"
@@ -775,7 +780,15 @@ function ui.activity.open(opts)
     children[#children + 1] = copy_feedback
         and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))
       or hints(list_hints)
-    return component.sections(children, theme, cell_h), height * cell_h
+    return c.stack({
+      theme = theme,
+      divided = true,
+      width = "grow",
+      height = "grow",
+      gap = cell_h,
+      children,
+    }),
+      height * cell_h
   end
 
   modal = ui.modal({
