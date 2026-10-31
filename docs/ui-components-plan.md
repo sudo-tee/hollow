@@ -383,3 +383,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   parity; public `list` protects those rows as planned.
 - Mux previously rendered its entire 24-row window without budget degradation.
   Its list adapter retains that behavior pending a separately reviewed change.
+- Activity centers overscan using measured row capacity, rather than the current
+  visible-range length; its list adapter preserves that calculation.

@@ -33,8 +33,8 @@ return function(options)
   local visible_end = math.max(visible_start, math.min(#items, viewport.end_idx or visible_start))
   local window = math.max(1, math.floor(options.window or 24))
   local budget = math.max(0, math.floor(options.budget or 410))
-  local start =
-    math.max(1, visible_start - math.floor((window - (visible_end - visible_start + 1)) / 2))
+  local visible_count = options._legacy_visible_count or (visible_end - visible_start + 1)
+  local start = math.max(1, visible_start - math.floor((window - visible_count) / 2))
   local finish = math.min(
     #items,
     options._legacy_window and (start + window - 1) or math.max(visible_end, start + window - 1)

@@ -703,19 +703,7 @@ function ui.activity.open(opts)
       clay_budget = math.max(1, math.min(20, math.floor(measured.height / row_height)))
     end
     local viewport = list.visible_range()
-    local first = math.max(1, viewport.start_idx - math.floor((23 - clay_budget) / 2))
-    local last = math.min(#rows, first + 22)
-    first = math.max(1, last - 22)
-    local items, costs, total = {}, {}, 0
-    local function count(node)
-      local result = 1
-      for _, child in ipairs(node.children or {}) do
-        result = result + count(child)
-      end
-      return result
-    end
-    local function make_item(index, plain)
-      local entry = rows[index]
+    local function make_item(entry, index, item_view)
       local id = "activity:item:" .. tostring(entry.id)
       local selected, hovered = index == list.nav.index, state.hovered_id == id
       local options = list_row(theme, { selected = selected, hovered = hovered }).paint
@@ -744,41 +732,8 @@ function ui.activity.open(opts)
             end
           end
         end,
-        plain
+        item_view.plain
       )
-    end
-    for index = first, last do
-      local item = make_item(index, false)
-      items[#items + 1] = item
-      costs[#costs + 1] = count(item)
-      total = total + costs[#costs]
-    end
-    local simplified = {}
-    while total > component.row_budget do
-      local farthest, distance
-      for offset = 1, #items do
-        local index = first + offset - 1
-        local d = math.abs(index - list.nav.index)
-        if not simplified[offset] and (not distance or d > distance) then
-          farthest, distance = offset, d
-        end
-      end
-      if not farthest then
-        break
-      end
-      local item = make_item(first + farthest - 1, true)
-      total = total - costs[farthest] + count(item)
-      items[farthest], costs[farthest], simplified[farthest] = item, count(item), true
-    end
-    if #rows == 0 then
-      items[1] = c.empty({
-        text = filter.value ~= "" and "No matching activity"
-          or view == "inbox" and "All caught up"
-          or "No activity recorded",
-        style = styles(theme).empty,
-        wrap = "words",
-        _legacy_style = true,
-      })
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
     local children = { line(render_header()) }
@@ -788,23 +743,33 @@ function ui.activity.open(opts)
         require("hollow.ui.components.input")(filter, theme, ctx, true),
       }, { width = "grow" })
     end
-    children[#children + 1] = c.scroll({
+    children[#children + 1] = c.list({
       id = "activity:viewport",
       theme = theme,
       ctx = ctx,
       _legacy_paint = true,
+      _legacy_window = true,
+      _legacy_visible_count = clay_budget,
       width = "grow",
       height = "grow",
       axis = "both",
       measure = true,
       reveal = target and ("activity:item:" .. tostring(target.id)) or nil,
       reveal_start = reveal_start,
-      scrollbar = viewport.show_scrollbar and {
-        id = viewport.scrollbar_id,
-        ratio = viewport.thumb_ratio,
-        size = viewport.thumb_size,
-      } or nil,
-      items,
+      viewport = viewport,
+      items = rows,
+      selected = list.nav.index,
+      window = 23,
+      budget = component.row_budget,
+      render_item = make_item,
+      empty = c.empty({
+        text = filter.value ~= "" and "No matching activity"
+          or view == "inbox" and "All caught up"
+          or "No activity recorded",
+        style = styles(theme).empty,
+        wrap = "words",
+        _legacy_style = true,
+      }),
     })
     children[#children + 1] = copy_feedback
         and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))

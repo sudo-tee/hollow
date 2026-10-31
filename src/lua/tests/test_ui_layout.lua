@@ -260,6 +260,32 @@ describe("hierarchical Clay layout", function()
     assert.is_true(simplified[2])
   end)
 
+  it("preserves activity overscan based on measured capacity", function()
+    local items, rendered = {}, {}
+    for i = 1, 30 do
+      items[i] = i
+    end
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = items,
+          selected = 10,
+          viewport = { start_idx = 10, end_idx = 10 },
+          window = 5,
+          _legacy_window = true,
+          _legacy_visible_count = 3,
+          render_item = function(item, index)
+            rendered[#rendered + 1] = index
+            return c.text(item)
+          end,
+        })
+      end,
+    })
+    surface:snapshot()
+    assert.same({ 9, 10, 11, 12, 13 }, rendered)
+  end)
+
   it("flattens sparse nested rich fragments", function()
     local surface = layout.new({
       render = function()
