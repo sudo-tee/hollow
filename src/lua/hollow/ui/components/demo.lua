@@ -118,6 +118,10 @@ function M.render(state, changed, close)
   state.tab = state.tab or "gallery:tab:one"
   state.filter = state.filter or ui.text_input({ initial = "query" })
   changed = changed or function() end
+  local numbers = {}
+  for index = 1, 12 do
+    numbers[index] = "Row " .. index
+  end
   local tones = {}
   for _, tone in ipairs({ "default", "muted", "title", "empty", "counter" }) do
     tones[#tones + 1] = c.label({ text = tone, tone = tone })
@@ -195,6 +199,38 @@ function M.render(state, changed, close)
         })
       ),
       section("List items", list_items(state, changed)),
+      section(
+        "List",
+        c.list({
+          id = "gallery:list",
+          height = "5lh",
+          items = numbers,
+          selected = state.picker,
+          window = #numbers,
+          viewport = {
+            start_idx = 1,
+            end_idx = 5,
+            show_scrollbar = true,
+            scrollbar_id = "gallery:list:scrollbar",
+            thumb_ratio = 0,
+            thumb_size = 5 / #numbers,
+          },
+          render_item = function(entry, index, view)
+            return c.list_item({
+              id = "gallery:list:item:" .. index,
+              selected = index == state.picker,
+              c.rich({ plain = view.plain, ui.text(entry) }),
+            })
+          end,
+        }),
+        c.list({
+          id = "gallery:list:empty",
+          height = "fit",
+          items = {},
+          render_item = function() end,
+          empty = "Empty list",
+        })
+      ),
       section("Picker", picker(state)),
       section(
         "Dialog",
@@ -227,6 +263,25 @@ function M.render(state, changed, close)
             c.empty("third"),
           }),
         })
+      ),
+      section(
+        "Spacer and gap",
+        c.row({
+          c.label("left"),
+          c.gap("2ch"),
+          c.label({ text = "gap(2ch)", tone = "muted" }),
+          c.spacer(),
+          c.label("right"),
+        }, { width = "grow" }),
+        c.row(
+          c.join(
+            { c.label("each"), c.label("join"), c.label("when") },
+            c.label({ text = " · ", tone = "muted" })
+          )
+        ),
+        c.when(state.clicks > 0, function()
+          return c.label({ text = "shown after a button click", tone = "muted" })
+        end)
       ),
     }, { width = "grow", padding = "1ch", gap = "1lh" }),
   })
