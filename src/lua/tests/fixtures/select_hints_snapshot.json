@@ -1,241 +1,275 @@
-[{
-    "id":"test:dialog",
-    "radius":8,
-    "bg":"#1c202b",
-    "border":"#b48ead",
-    "label":"Choose",
-    "children":1,
-    "border_width":{
-      "bottom":1,
-      "right":1,
-      "left":1,
-      "top":1
+[
+  {
+    "bg": "#1c202b",
+    "border": "#b48ead",
+    "border_width": {
+      "bottom": 1,
+      "left": 1,
+      "right": 1,
+      "top": 1
     },
-    "padding":{
-      "bottom":9,
-      "right":13,
-      "top":19,
-      "left":13
-    }
-  },{
-    "border":"#4c566a",
-    "width":-1,
-    "height":-1,
-    "gap":19,
-    "children":4,
-    "border_width":{
-      "between_children":1,
-      "left":0,
-      "bottom":0,
-      "right":0,
-      "top":0
-    }
-  },{
-    "kind":1,
-    "width":-1,
-    "height":19,
-    "children":2,
-    "id":"test:select:header",
-    "scroll_x":true
-  },{
-    "kind":2,
-    "text":"Choose:",
-    "fg":"#8fbcdf",
-    "bold":true,
-    "wrap":2
-  },{
-    "kind":2,
-    "text":"   1/2",
-    "wrap":2,
-    "fg":"#81a1c1"
-  },{
-    "kind":1,
-    "width":-1,
-    "children":2
-  },{
-    "kind":2,
-    "text":"Filter: ",
-    "fg":"#8fbcdf",
-    "bold":true,
-    "wrap":2
-  },{
-    "width":-1,
-    "children":1
-  },{
-    "kind":1,
-    "width":-1,
-    "height":19,
-    "id":"test:input:viewport",
-    "children":3,
-    "scroll_x":true,
-    "reveal":"test:input:caret"
-  },{
-    "children":1,
-    "height":19,
-    "bg":"#16161d"
-  },{
-    "kind":2,
-    "text":"",
-    "wrap":2,
-    "fg":"#d8dee9"
-  },{
-    "id":"test:input:caret",
-    "children":1,
-    "height":19,
-    "bg":"#d8dee9"
-  },{
-    "kind":2,
-    "text":" ",
-    "fg":"#1f2430",
-    "bold":true,
-    "wrap":2
-  },{
-    "children":1,
-    "height":19,
-    "bg":"#16161d"
-  },{
-    "kind":2,
-    "text":"",
-    "wrap":2,
-    "fg":"#d8dee9"
-  },{
-    "id":"test:select:viewport",
-    "width":-1,
-    "height":-1,
-    "reveal":"test:select:item:1",
-    "scroll_x":true,
-    "children":2,
-    "scroll":true,
-    "measure":true
-  },{
-    "kind":1,
-    "children":2,
-    "label":"one",
-    "id":"test:select:item:1",
-    "width":-1,
-    "height":23,
-    "bg":"#3b4252",
-    "hover_bg":"#3b4252",
-    "list_item":true,
-    "radius":4,
-    "clickable":true
-  },{
-    "children":1,
-    "width":2,
-    "height":-1,
-    "padding":{
-      "bottom":4,
-      "right":0,
-      "top":4,
-      "left":0
-    }
-  },{
-    "bg":"#b48ead",
-    "width":2,
-    "height":-1,
-    "radius":1
-  },{
-    "children":1,
-    "width":-1,
-    "padding":{
-      "bottom":0,
-      "right":0,
-      "top":0,
-      "left":18
-    }
-  },{
-    "kind":1,
-    "width":-1,
-    "height":23,
-    "children":1,
-    "padding":{
-      "bottom":2,
-      "right":2,
-      "top":2,
-      "left":2
-    }
-  },{
-    "kind":2,
-    "text":"one",
-    "wrap":2,
-    "fg":"#eceff4"
-  },{
-    "kind":1,
-    "children":2,
-    "hover_bg":"#2a2d38",
-    "id":"test:select:item:2",
-    "width":-1,
-    "height":23,
-    "list_item":true,
-    "label":"two",
-    "radius":4,
-    "clickable":true
-  },{
-    "width":2,
-    "height":-1,
-    "padding":{
-      "bottom":4,
-      "right":0,
-      "top":4,
-      "left":0
-    }
-  },{
-    "children":1,
-    "width":-1,
-    "padding":{
-      "bottom":0,
-      "right":0,
-      "top":0,
-      "left":18
-    }
-  },{
-    "kind":1,
-    "width":-1,
-    "height":23,
-    "children":1,
-    "padding":{
-      "bottom":2,
-      "right":2,
-      "top":2,
-      "left":2
-    }
-  },{
-    "kind":2,
-    "text":"two",
-    "wrap":2,
-    "fg":"#d8dee9"
-  },{
-    "kind":1,
-    "width":-1,
-    "height":19,
-    "children":5,
-    "id":"test:select:hints",
-    "scroll_x":true
-  },{
-    "kind":2,
-    "text":"<CR>",
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2
-  },{
-    "kind":2,
-    "text":" open",
-    "wrap":2,
-    "fg":"#81a1c1"
-  },{
-    "kind":2,
-    "text":"  ",
-    "wrap":2,
-    "fg":"#4c566a"
-  },{
-    "kind":2,
-    "text":"<C-d>",
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2
-  },{
-    "kind":2,
-    "text":" remove",
-    "wrap":2,
-    "fg":"#81a1c1"
-  }]
+    "children": 1,
+    "id": "test:dialog",
+    "label": "Choose",
+    "padding": {
+      "bottom": 9,
+      "left": 13,
+      "right": 13,
+      "top": 19
+    },
+    "radius": 8
+  },
+  {
+    "border": "#4c566a",
+    "border_width": {
+      "between_children": 1,
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "children": 4,
+    "gap": 19,
+    "height": -1,
+    "width": -1
+  },
+  {
+    "children": 2,
+    "height": 19,
+    "id": "test:select:header",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Choose:",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "   1/2",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Filter: ",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "width": -1
+  },
+  {
+    "children": 3,
+    "height": 19,
+    "id": "test:input:viewport",
+    "kind": 1,
+    "reveal": "test:input:caret",
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 19
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "bg": "#d8dee9",
+    "children": 1,
+    "height": 19,
+    "id": "test:input:caret"
+  },
+  {
+    "bold": true,
+    "fg": "#1f2430",
+    "kind": 2,
+    "text": " ",
+    "wrap": 2
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 19
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "height": -1,
+    "id": "test:select:viewport",
+    "measure": true,
+    "reveal": "test:select:item:1",
+    "scroll": true,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#3b4252",
+    "children": 2,
+    "clickable": true,
+    "height": 23,
+    "hover_bg": "#3b4252",
+    "id": "test:select:item:1",
+    "kind": 1,
+    "label": "one",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "bg": "#b48ead",
+    "height": -1,
+    "radius": 1,
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 18,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 23,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#eceff4",
+    "kind": 2,
+    "text": "one",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 23,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:2",
+    "kind": 1,
+    "label": "two",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 18,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 23,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "two",
+    "wrap": 2
+  },
+  {
+    "children": 5,
+    "height": 19,
+    "id": "test:select:hints",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<CR>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " open",
+    "wrap": 2
+  },
+  {
+    "fg": "#4c566a",
+    "kind": 2,
+    "text": "  ",
+    "wrap": 2
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<C-d>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " remove",
+    "wrap": 2
+  }
+]

@@ -1,1837 +1,2116 @@
-[[{
-      "border_width":{
-        "left":1,
-        "bottom":1,
-        "right":1,
-        "top":1
+[
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
       },
-      "id":"test:dialog",
-      "bg":"#1c202b",
-      "padding":{
-        "top":20,
-        "bottom":10,
-        "right":16,
-        "left":16
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Mux Navigator",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
       },
-      "children":1,
-      "label":"Mux Navigator",
-      "radius":8,
-      "border":"#b48ead"
-    },{
-      "width":-1,
-      "height":-1,
-      "border_width":{
-        "right":0,
-        "top":0,
-        "bottom":0,
-        "between_children":1,
-        "left":0
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
       },
-      "gap":20,
-      "border":"#4c566a",
-      "children":2
-    },{
-      "scroll_x":true,
-      "id":"test:auto:3",
-      "height":20,
-      "children":2,
-      "kind":1,
-      "width":-1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:4",
-      "children":2,
-      "kind":1,
-      "width":-1
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"/ "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"search panes"
-    },{
-      "kind":1,
-      "children":2
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"All panes"
-    },{
-      "scroll_x":true,
-      "width":-1,
-      "scroll":true,
-      "reveal":"test:mux-navigator:item:workspace:41",
-      "children":10,
-      "height":-1,
-      "id":"test:mux:viewport",
-      "measure":true
-    },{
-      "id":"test:mux-navigator:item:workspace:41",
-      "kind":1,
-      "label":"  ▼ main· 8 panes",
-      "clickable":true,
-      "width":-1,
-      "height":24,
-      "radius":4,
-      "children":2,
-      "hover_bg":"#3b4252",
-      "list_item":true,
-      "bg":"#3b4252"
-    },{
-      "children":1,
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "height":-1,
-      "width":2,
-      "radius":1,
-      "bg":"#b48ead"
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:15",
-      "align_y":1,
-      "children":5,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#b48ead",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"▼ "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"main"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"· 8 panes"
-    },{
-      "id":"test:mux-navigator:item:tab:201",
-      "kind":1,
-      "label":"    ▼ Tab 1: shell",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":6,
-      "kind":1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"▼ "
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Tab 1"
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": shell"
-    },{
-      "id":"test:mux-navigator:item:pane:1",
-      "kind":1,
-      "label":"      ● Pane 1: pane 1/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:37",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 1"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 1"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:2",
-      "kind":1,
-      "label":"      ● Pane 2: pane 2/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:50",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 2"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 2"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:3",
-      "kind":1,
-      "label":"      ● Pane 3: pane 3/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:63",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 3"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 3"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:4",
-      "kind":1,
-      "label":"      ● Pane 4: pane 4/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:76",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 4"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 4"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:5",
-      "kind":1,
-      "label":"      ● Pane 5: pane 5/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:89",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 5"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 5"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:6",
-      "kind":1,
-      "label":"      ● Pane 6: pane 6/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:102",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 6"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 6"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:7",
-      "kind":1,
-      "label":"      ● Pane 7: pane 7/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:115",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 7"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 7"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:8",
-      "kind":1,
-      "label":"      ● Pane 8: pane 8/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:128",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 8"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 8"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    }],[{
-      "border_width":{
-        "left":1,
-        "bottom":1,
-        "right":1,
-        "top":1
+      "children": 2,
+      "gap": 20,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 20,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "/ ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "search panes",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "kind": 1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "All panes",
+      "wrap": 2
+    },
+    {
+      "children": 10,
+      "height": -1,
+      "id": "test:mux:viewport",
+      "measure": true,
+      "reveal": "test:mux-navigator:item:workspace:41",
+      "scroll": true,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#3b4252",
+      "id": "test:mux-navigator:item:workspace:41",
+      "kind": 1,
+      "label": "  ▼ main· 8 panes",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
       },
-      "id":"test:dialog",
-      "bg":"#1c202b",
-      "padding":{
-        "top":20,
-        "bottom":10,
-        "right":16,
-        "left":16
+      "width": 2
+    },
+    {
+      "bg": "#b48ead",
+      "height": -1,
+      "radius": 1,
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 5,
+      "id": "test:auto:15",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "▼ ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "main",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "· 8 panes",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:tab:201",
+      "kind": 1,
+      "label": "    ▼ Tab 1: shell",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
       },
-      "children":1,
-      "label":"Mux Navigator",
-      "radius":8,
-      "border":"#b48ead"
-    },{
-      "width":-1,
-      "height":-1,
-      "border_width":{
-        "right":0,
-        "top":0,
-        "bottom":0,
-        "between_children":1,
-        "left":0
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "▼ ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Tab 1",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": ": shell",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:1",
+      "kind": 1,
+      "label": "      ● Pane 1: pane 1/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
       },
-      "gap":20,
-      "border":"#4c566a",
-      "children":2
-    },{
-      "scroll_x":true,
-      "id":"test:auto:3",
-      "height":20,
-      "children":2,
-      "kind":1,
-      "width":-1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:4",
-      "children":2,
-      "kind":1,
-      "width":-1
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"/ "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"search panes"
-    },{
-      "kind":1,
-      "children":2
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"All panes"
-    },{
-      "scroll_x":true,
-      "reveal":"test:mux-navigator:item:workspace:41",
-      "scroll":true,
-      "scrollbar_thumb_size":0.2,
-      "scrollbar_track_color":"#5a6375",
-      "scrollbar_thumb_color":"#f7d794",
-      "width":-1,
-      "height":-1,
-      "padding":{
-        "top":0,
-        "bottom":0,
-        "right":10,
-        "left":0
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:37",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 1",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 1",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:2",
+      "kind": 1,
+      "label": "      ● Pane 2: pane 2/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
       },
-      "children":10,
-      "scrollbar_id":"test:mux-navigator:scrollbar:1",
-      "id":"test:mux:viewport",
-      "measure":true
-    },{
-      "id":"test:mux-navigator:item:workspace:41",
-      "kind":1,
-      "label":"  ▼ main· 8 panes",
-      "clickable":true,
-      "width":-1,
-      "height":24,
-      "radius":4,
-      "children":2,
-      "hover_bg":"#3b4252",
-      "list_item":true,
-      "bg":"#3b4252"
-    },{
-      "children":1,
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:50",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "height":-1,
-      "width":2,
-      "radius":1,
-      "bg":"#b48ead"
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:15",
-      "align_y":1,
-      "children":5,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 2",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 2",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:3",
+      "kind": 1,
+      "label": "      ● Pane 3: pane 3/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:63",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#b48ead",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"▼ "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"main"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"· 8 panes"
-    },{
-      "id":"test:mux-navigator:item:tab:201",
-      "kind":1,
-      "label":"    ▼ Tab 1: shell",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 3",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 3",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:4",
+      "kind": 1,
+      "label": "      ● Pane 4: pane 4/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:76",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":6,
-      "kind":1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 4",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 4",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:5",
+      "kind": 1,
+      "label": "      ● Pane 5: pane 5/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:89",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"▼ "
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#8fbcdf",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Tab 1"
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": shell"
-    },{
-      "id":"test:mux-navigator:item:pane:1",
-      "kind":1,
-      "label":"      ● Pane 1: pane 1/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 5",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 5",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:6",
+      "kind": 1,
+      "label": "      ● Pane 6: pane 6/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:102",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:37",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 6",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 6",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:7",
+      "kind": 1,
+      "label": "      ● Pane 7: pane 7/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:115",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 1"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 1"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:2",
-      "kind":1,
-      "label":"      ● Pane 2: pane 2/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 7",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 7",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:8",
+      "kind": 1,
+      "label": "      ● Pane 8: pane 8/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:128",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:50",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 8",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 8",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    }
+  ],
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Mux Navigator",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
+      },
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "children": 2,
+      "gap": 20,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 20,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "/ ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "search panes",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "kind": 1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "All panes",
+      "wrap": 2
+    },
+    {
+      "children": 10,
+      "height": -1,
+      "id": "test:mux:viewport",
+      "measure": true,
+      "padding": {
+        "bottom": 0,
+        "left": 0,
+        "right": 10,
+        "top": 0
+      },
+      "reveal": "test:mux-navigator:item:workspace:41",
+      "scroll": true,
+      "scroll_x": true,
+      "scrollbar_id": "test:mux-navigator:scrollbar:1",
+      "scrollbar_thumb_color": "#f7d794",
+      "scrollbar_thumb_size": 0.20000000000000001,
+      "scrollbar_track_color": "#5a6375",
+      "width": -1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#3b4252",
+      "id": "test:mux-navigator:item:workspace:41",
+      "kind": 1,
+      "label": "  ▼ main· 8 panes",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "bg": "#b48ead",
+      "height": -1,
+      "radius": 1,
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 5,
+      "id": "test:auto:15",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 2"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 2"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:3",
-      "kind":1,
-      "label":"      ● Pane 3: pane 3/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "▼ ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "main",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "· 8 panes",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:tab:201",
+      "kind": 1,
+      "label": "    ▼ Tab 1: shell",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:63",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "▼ ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Tab 1",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": ": shell",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:1",
+      "kind": 1,
+      "label": "      ● Pane 1: pane 1/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:37",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 3"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 3"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:4",
-      "kind":1,
-      "label":"      ● Pane 4: pane 4/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 1",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 1",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:2",
+      "kind": 1,
+      "label": "      ● Pane 2: pane 2/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:50",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:76",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 2",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 2",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:3",
+      "kind": 1,
+      "label": "      ● Pane 3: pane 3/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:63",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 4"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 4"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:5",
-      "kind":1,
-      "label":"      ● Pane 5: pane 5/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 3",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 3",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:4",
+      "kind": 1,
+      "label": "      ● Pane 4: pane 4/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:76",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:89",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 4",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 4",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:5",
+      "kind": 1,
+      "label": "      ● Pane 5: pane 5/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:89",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 5"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 5"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:6",
-      "kind":1,
-      "label":"      ● Pane 6: pane 6/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 5",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 5",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:6",
+      "kind": 1,
+      "label": "      ● Pane 6: pane 6/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:102",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:102",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 6",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 6",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:7",
+      "kind": 1,
+      "label": "      ● Pane 7: pane 7/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:115",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 6"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 6"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:7",
-      "kind":1,
-      "label":"      ● Pane 7: pane 7/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 7",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 7",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "height": 24,
+      "hover_bg": "#2a2d38",
+      "id": "test:mux-navigator:item:pane:8",
+      "kind": 1,
+      "label": "      ● Pane 8: pane 8/tmp/project",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:128",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
       }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:115",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 7"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 7"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    },{
-      "id":"test:mux-navigator:item:pane:8",
-      "kind":1,
-      "label":"      ● Pane 8: pane 8/tmp/project",
-      "width":-1,
-      "radius":4,
-      "clickable":true,
-      "children":2,
-      "hover_bg":"#2a2d38",
-      "list_item":true,
-      "height":24
-    },{
-      "width":2,
-      "height":-1,
-      "padding":{
-        "top":4,
-        "bottom":4,
-        "right":0,
-        "left":0
-      }
-    },{
-      "width":-1,
-      "height":24,
-      "align_y":1,
-      "children":2,
-      "kind":1
-    },{
-      "scroll_x":true,
-      "id":"test:auto:128",
-      "align_y":1,
-      "children":6,
-      "kind":1,
-      "width":-1
-    },{
-      "children":1,
-      "label":"  ",
-      "padding":{
-        "top":2,
-        "bottom":2,
-        "right":2,
-        "left":4
-      }
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "kind":2,
-      "text":"  "
-    },{
-      "fg":"#d8dee9",
-      "wrap":2,
-      "kind":2,
-      "text":"    "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":""
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"● "
-    },{
-      "fg":"#81a1c1",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":"Pane 8"
-    },{
-      "fg":"#b4d7a7",
-      "wrap":2,
-      "bold":true,
-      "kind":2,
-      "text":": pane 8"
-    },{
-      "children":1,
-      "kind":1,
-      "align_y":1
-    },{
-      "fg":"#6d7178",
-      "wrap":2,
-      "kind":2,
-      "text":"/tmp/project"
-    }]]
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "    ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Pane 8",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#b4d7a7",
+      "kind": 2,
+      "text": ": pane 8",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "fg": "#6d7178",
+      "kind": 2,
+      "text": "/tmp/project",
+      "wrap": 2
+    }
+  ]
+]

@@ -1,268 +1,311 @@
-[{
-    "border":"#b48ead",
-    "border_width":{
-      "bottom":1,
-      "right":1,
-      "left":1,
-      "top":1
+[
+  {
+    "bg": "#1c202b",
+    "border": "#b48ead",
+    "border_width": {
+      "bottom": 1,
+      "left": 1,
+      "right": 1,
+      "top": 1
     },
-    "label":"Workspaces",
-    "radius":8,
-    "padding":{
-      "bottom":10,
-      "right":16,
-      "left":16,
-      "top":20
+    "children": 1,
+    "id": "test:dialog",
+    "label": "Workspaces",
+    "padding": {
+      "bottom": 10,
+      "left": 16,
+      "right": 16,
+      "top": 20
     },
-    "id":"test:dialog",
-    "bg":"#1c202b",
-    "children":1
-  },{
-    "gap":20,
-    "children":4,
-    "width":-1,
-    "height":-1,
-    "border_width":{
-      "between_children":1,
-      "bottom":0,
-      "left":0,
-      "right":0,
-      "top":0
+    "radius": 8
+  },
+  {
+    "border": "#4c566a",
+    "border_width": {
+      "between_children": 1,
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
     },
-    "border":"#4c566a"
-  },{
-    "kind":1,
-    "children":2,
-    "width":-1,
-    "height":20,
-    "id":"test:select:header",
-    "scroll_x":true
-  },{
-    "kind":2,
-    "fg":"#8fbcdf",
-    "bold":true,
-    "wrap":2,
-    "text":"Workspaces:"
-  },{
-    "fg":"#81a1c1",
-    "wrap":2,
-    "kind":2,
-    "text":"   1/1"
-  },{
-    "width":-1,
-    "kind":1,
-    "children":2
-  },{
-    "kind":2,
-    "fg":"#8fbcdf",
-    "bold":true,
-    "wrap":2,
-    "text":"Filter: "
-  },{
-    "width":-1,
-    "children":1
-  },{
-    "scroll_x":true,
-    "kind":1,
-    "children":3,
-    "width":-1,
-    "height":20,
-    "id":"test:input:viewport",
-    "reveal":"test:input:caret"
-  },{
-    "height":20,
-    "bg":"#16161d",
-    "children":1
-  },{
-    "fg":"#d8dee9",
-    "wrap":2,
-    "kind":2,
-    "text":""
-  },{
-    "bg":"#d8dee9",
-    "height":20,
-    "id":"test:input:caret",
-    "children":1
-  },{
-    "kind":2,
-    "fg":"#1f2430",
-    "bold":true,
-    "wrap":2,
-    "text":" "
-  },{
-    "height":20,
-    "bg":"#16161d",
-    "children":1
-  },{
-    "fg":"#d8dee9",
-    "wrap":2,
-    "kind":2,
-    "text":""
-  },{
-    "scroll_x":true,
-    "measure":true,
-    "scroll":true,
-    "children":1,
-    "width":-1,
-    "height":-1,
-    "id":"test:select:viewport",
-    "reveal":"test:select:item:1"
-  },{
-    "clickable":true,
-    "label":"•   main                      /tmp/project                                            ",
-    "radius":4,
-    "width":-1,
-    "height":24,
-    "list_item":true,
-    "children":2,
-    "id":"test:select:item:1",
-    "bg":"#3b4252",
-    "hover_bg":"#3b4252",
-    "kind":1
-  },{
-    "padding":{
-      "bottom":4,
-      "right":0,
-      "left":0,
-      "top":4
+    "children": 4,
+    "gap": 20,
+    "height": -1,
+    "width": -1
+  },
+  {
+    "children": 2,
+    "height": 20,
+    "id": "test:select:header",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Workspaces:",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "   1/1",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Filter: ",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "width": -1
+  },
+  {
+    "children": 3,
+    "height": 20,
+    "id": "test:input:viewport",
+    "kind": 1,
+    "reveal": "test:input:caret",
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 20
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "bg": "#d8dee9",
+    "children": 1,
+    "height": 20,
+    "id": "test:input:caret"
+  },
+  {
+    "bold": true,
+    "fg": "#1f2430",
+    "kind": 2,
+    "text": " ",
+    "wrap": 2
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 20
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "height": -1,
+    "id": "test:select:viewport",
+    "measure": true,
+    "reveal": "test:select:item:1",
+    "scroll": true,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#3b4252",
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#3b4252",
+    "id": "test:select:item:1",
+    "kind": 1,
+    "label": "•   main                      /tmp/project                                            ",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
     },
-    "height":-1,
-    "width":2,
-    "children":1
-  },{
-    "width":2,
-    "height":-1,
-    "bg":"#b48ead",
-    "radius":1
-  },{
-    "padding":{
-      "bottom":0,
-      "right":0,
-      "left":22,
-      "top":0
+    "width": 2
+  },
+  {
+    "bg": "#b48ead",
+    "height": -1,
+    "radius": 1,
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
     },
-    "width":-1,
-    "children":1
-  },{
-    "padding":{
-      "bottom":2,
-      "right":2,
-      "left":2,
-      "top":2
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
     },
-    "height":24,
-    "width":-1,
-    "children":1
-  },{
-    "kind":1,
-    "children":5,
-    "width":-1,
-    "height":20,
-    "align_y":1
-  },{
-    "width":20,
-    "children":1
-  },{
-    "kind":2,
-    "fg":"#b4d7a7",
-    "bold":true,
-    "wrap":2,
-    "text":"•"
-  },{
-    "width":20
-  },{
-    "scroll_x":true,
-    "kind":1,
-    "children":1,
-    "width":240,
-    "height":20,
-    "id":"test:select:item:1:name",
-    "align_y":1
-  },{
-    "kind":2,
-    "fg":"#b4d7a7",
-    "bold":true,
-    "wrap":2,
-    "text":"main"
-  },{
-    "width":20
-  },{
-    "scroll_x":true,
-    "kind":1,
-    "children":1,
-    "width":-1,
-    "height":20,
-    "id":"test:select:item:1:cwd",
-    "align_y":1
-  },{
-    "fg":"#6d7178",
-    "wrap":2,
-    "kind":2,
-    "text":"/tmp/project"
-  },{
-    "kind":1,
-    "children":11,
-    "width":-1,
-    "height":20,
-    "id":"test:select:hints",
-    "scroll_x":true
-  },{
-    "kind":2,
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2,
-    "text":"<CR>"
-  },{
-    "fg":"#81a1c1",
-    "wrap":2,
-    "kind":2,
-    "text":" switch"
-  },{
-    "fg":"#4c566a",
-    "wrap":2,
-    "kind":2,
-    "text":"  "
-  },{
-    "kind":2,
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2,
-    "text":"<C-r>"
-  },{
-    "fg":"#81a1c1",
-    "wrap":2,
-    "kind":2,
-    "text":" rename"
-  },{
-    "fg":"#4c566a",
-    "wrap":2,
-    "kind":2,
-    "text":"  "
-  },{
-    "kind":2,
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2,
-    "text":"<C-x>"
-  },{
-    "fg":"#81a1c1",
-    "wrap":2,
-    "kind":2,
-    "text":" close"
-  },{
-    "fg":"#4c566a",
-    "wrap":2,
-    "kind":2,
-    "text":"  "
-  },{
-    "kind":2,
-    "fg":"#b48ead",
-    "bold":true,
-    "wrap":2,
-    "text":"<C-n>"
-  },{
-    "fg":"#81a1c1",
-    "wrap":2,
-    "kind":2,
-    "text":" new"
-  }]
+    "width": -1
+  },
+  {
+    "align_y": 1,
+    "children": 5,
+    "height": 20,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "width": 20
+  },
+  {
+    "bold": true,
+    "fg": "#b4d7a7",
+    "kind": 2,
+    "text": "•",
+    "wrap": 2
+  },
+  {
+    "width": 20
+  },
+  {
+    "align_y": 1,
+    "children": 1,
+    "height": 20,
+    "id": "test:select:item:1:name",
+    "kind": 1,
+    "scroll_x": true,
+    "width": 240
+  },
+  {
+    "bold": true,
+    "fg": "#b4d7a7",
+    "kind": 2,
+    "text": "main",
+    "wrap": 2
+  },
+  {
+    "width": 20
+  },
+  {
+    "align_y": 1,
+    "children": 1,
+    "height": 20,
+    "id": "test:select:item:1:cwd",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "fg": "#6d7178",
+    "kind": 2,
+    "text": "/tmp/project",
+    "wrap": 2
+  },
+  {
+    "children": 11,
+    "height": 20,
+    "id": "test:select:hints",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<CR>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " switch",
+    "wrap": 2
+  },
+  {
+    "fg": "#4c566a",
+    "kind": 2,
+    "text": "  ",
+    "wrap": 2
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<C-r>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " rename",
+    "wrap": 2
+  },
+  {
+    "fg": "#4c566a",
+    "kind": 2,
+    "text": "  ",
+    "wrap": 2
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<C-x>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " close",
+    "wrap": 2
+  },
+  {
+    "fg": "#4c566a",
+    "kind": 2,
+    "text": "  ",
+    "wrap": 2
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<C-n>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " new",
+    "wrap": 2
+  }
+]

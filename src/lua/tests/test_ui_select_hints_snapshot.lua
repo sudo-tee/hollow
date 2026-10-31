@@ -23,10 +23,7 @@ describe("select hints snapshot", function()
         end
       end
     end
-    local file = assert(io.open("src/lua/tests/fixtures/select_hints_snapshot.json", "r"))
-    local expected = json.decode(file:read("*a"))
-    file:close()
-    assert.same(expected, normalized)
+    harness.fixture("src/lua/tests/fixtures/select_hints_snapshot.json", normalized)
   end)
 
   it("keeps the plain-text fallback for more than 32 hint runs", function()
@@ -73,9 +70,6 @@ describe("select hints snapshot", function()
       end
     end
     assert.is_true(found)
-    local file = assert(io.open("src/lua/tests/fixtures/select_scroll_snapshot.json", "r"))
-    local expected = json.decode(file:read("*a"))
-    file:close()
-    assert.same(expected, normalized)
+    harness.fixture("src/lua/tests/fixtures/select_scroll_snapshot.json", normalized)
   end)
 end)

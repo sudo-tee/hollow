@@ -22,6 +22,68 @@ end
 
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
 
+local function encode_fixture(value, indent, out)
+  local kind = type(value)
+  if kind == "table" then
+    local keys, count = {}, 0
+    for key in pairs(value) do
+      count = count + 1
+      keys[count] = key
+    end
+    local is_array = count == #value
+    if count == 0 then
+      out[#out + 1] = "[]"
+      return
+    end
+    local inner = indent .. "  "
+    if is_array then
+      out[#out + 1] = "[\n"
+      for index = 1, count do
+        out[#out + 1] = inner
+        encode_fixture(value[index], inner, out)
+        out[#out + 1] = index < count and ",\n" or "\n"
+      end
+      out[#out + 1] = indent .. "]"
+      return
+    end
+    table.sort(keys, function(a, b)
+      return tostring(a) < tostring(b)
+    end)
+    out[#out + 1] = "{\n"
+    for index, key in ipairs(keys) do
+      out[#out + 1] = inner .. require("dkjson").quotestring(tostring(key)) .. ": "
+      encode_fixture(value[key], inner, out)
+      out[#out + 1] = index < count and ",\n" or "\n"
+    end
+    out[#out + 1] = indent .. "}"
+  elseif kind == "string" then
+    out[#out + 1] = require("dkjson").quotestring(value)
+  elseif kind == "number" then
+    out[#out + 1] = value == math.floor(value) and string.format("%d", value)
+      or string.format("%.17g", value)
+  else
+    out[#out + 1] = tostring(value)
+  end
+end
+
+-- Compares `value` with a JSON fixture; `UPDATE_FIXTURES=1` rewrites it instead.
+function harness.fixture(path, value)
+  local json = require("dkjson")
+  local normalized = json.decode(json.encode(value))
+  if os.getenv("UPDATE_FIXTURES") == "1" then
+    local out = {}
+    encode_fixture(normalized, "", out)
+    local file = assert(io.open(path, "w"))
+    file:write(table.concat(out), "\n")
+    file:close()
+    return
+  end
+  local file = assert(io.open(path, "r"))
+  local expected = json.decode(file:read("*a"))
+  file:close()
+  luassert.same(expected, normalized)
+end
+
 local function make_host_api()
   local key_handler = nil
   local file_drop_handler = nil

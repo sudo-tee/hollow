@@ -1,156 +1,183 @@
-[[{
-      "bg":"#1c202b",
-      "padding":{
-        "top":20,
-        "right":16,
-        "bottom":10,
-        "left":16
+[
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
       },
-      "border":"#b48ead",
-      "radius":8,
-      "children":1,
-      "label":"Rename",
-      "border_width":{
-        "top":1,
-        "right":1,
-        "bottom":1,
-        "left":1
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Rename",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
       },
-      "id":"test:dialog"
-    },{
-      "border":"#4c566a",
-      "border_width":{
-        "left":0,
-        "top":0,
-        "between_children":1,
-        "bottom":0,
-        "right":0
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
       },
-      "children":2,
-      "gap":10,
-      "width":-1
-    },{
-      "kind":2,
-      "bold":true,
-      "fg":"#8fbcdf",
-      "text":"Rename"
-    },{
-      "width":-1,
-      "children":1
-    },{
-      "bg":"#16161d",
-      "padding":{
-        "top":2,
-        "right":5,
-        "bottom":2,
-        "left":5
+      "children": 2,
+      "gap": 10,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Rename"
+    },
+    {
+      "children": 1,
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "padding": {
+        "bottom": 2,
+        "left": 5,
+        "right": 5,
+        "top": 2
       },
-      "width":-1,
-      "children":1
-    },{
-      "kind":1,
-      "reveal":"test:input:caret",
-      "id":"test:input:viewport",
-      "children":3,
-      "height":20,
-      "width":-1,
-      "scroll_x":true
-    },{
-      "bg":"#16161d",
-      "children":1,
-      "height":20
-    },{
-      "kind":2,
-      "fg":"#d8dee9",
-      "wrap":2,
-      "text":"workspace"
-    },{
-      "bg":"#d8dee9",
-      "id":"test:input:caret",
-      "children":1,
-      "height":20
-    },{
-      "wrap":2,
-      "text":" ",
-      "bold":true,
-      "fg":"#1f2430",
-      "kind":2
-    },{
-      "bg":"#16161d",
-      "children":1,
-      "height":20
-    },{
-      "kind":2,
-      "fg":"#d8dee9",
-      "wrap":2,
-      "text":""
-    }],[{
-      "bg":"#1c202b",
-      "padding":{
-        "top":20,
-        "right":16,
-        "bottom":10,
-        "left":16
+      "width": -1
+    },
+    {
+      "children": 3,
+      "height": 20,
+      "id": "test:input:viewport",
+      "kind": 1,
+      "reveal": "test:input:caret",
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 20
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "workspace",
+      "wrap": 2
+    },
+    {
+      "bg": "#d8dee9",
+      "children": 1,
+      "height": 20,
+      "id": "test:input:caret"
+    },
+    {
+      "bold": true,
+      "fg": "#1f2430",
+      "kind": 2,
+      "text": " ",
+      "wrap": 2
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 20
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    }
+  ],
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
       },
-      "border":"#b48ead",
-      "radius":8,
-      "children":1,
-      "label":"Text input",
-      "border_width":{
-        "top":1,
-        "right":1,
-        "bottom":1,
-        "left":1
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Text input",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
       },
-      "id":"test:dialog"
-    },{
-      "width":-1,
-      "children":1
-    },{
-      "bg":"#16161d",
-      "padding":{
-        "top":2,
-        "right":5,
-        "bottom":2,
-        "left":5
+      "radius": 8
+    },
+    {
+      "children": 1,
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "padding": {
+        "bottom": 2,
+        "left": 5,
+        "right": 5,
+        "top": 2
       },
-      "width":-1,
-      "children":1
-    },{
-      "kind":1,
-      "reveal":"test:input:caret",
-      "id":"test:input:viewport",
-      "children":3,
-      "height":20,
-      "width":-1,
-      "scroll_x":true
-    },{
-      "bg":"#16161d",
-      "children":1,
-      "height":20
-    },{
-      "kind":2,
-      "fg":"#d8dee9",
-      "wrap":2,
-      "text":"value"
-    },{
-      "bg":"#d8dee9",
-      "id":"test:input:caret",
-      "children":1,
-      "height":20
-    },{
-      "wrap":2,
-      "text":" ",
-      "bold":true,
-      "fg":"#1f2430",
-      "kind":2
-    },{
-      "bg":"#16161d",
-      "children":1,
-      "height":20
-    },{
-      "kind":2,
-      "fg":"#d8dee9",
-      "wrap":2,
-      "text":""
-    }]]
+      "width": -1
+    },
+    {
+      "children": 3,
+      "height": 20,
+      "id": "test:input:viewport",
+      "kind": 1,
+      "reveal": "test:input:caret",
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 20
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "value",
+      "wrap": 2
+    },
+    {
+      "bg": "#d8dee9",
+      "children": 1,
+      "height": 20,
+      "id": "test:input:caret"
+    },
+    {
+      "bold": true,
+      "fg": "#1f2430",
+      "kind": 2,
+      "text": " ",
+      "wrap": 2
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 20
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    }
+  ]
+]

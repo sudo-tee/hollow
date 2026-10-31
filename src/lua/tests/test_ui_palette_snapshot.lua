@@ -35,9 +35,6 @@ describe("command palette snapshot", function()
         end
       end
     end
-    local file = assert(io.open("src/lua/tests/fixtures/palette_snapshot.json", "r"))
-    local expected = json.decode(file:read("*a"))
-    file:close()
-    assert.same(expected, normalized)
+    harness.fixture("src/lua/tests/fixtures/palette_snapshot.json", normalized)
   end)
 end)

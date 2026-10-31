@@ -22,9 +22,6 @@ describe("workspace switcher snapshot", function()
       end
     end
     assert.is_true(found)
-    local file = assert(io.open("src/lua/tests/fixtures/workspace_snapshot.json", "r"))
-    local expected = json.decode(file:read("*a"))
-    file:close()
-    assert.same(expected, nodes)
+    harness.fixture("src/lua/tests/fixtures/workspace_snapshot.json", nodes)
   end)
 end)
