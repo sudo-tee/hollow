@@ -88,6 +88,38 @@ describe("hierarchical Clay layout", function()
     assert.equals(" close", nodes[5].text)
   end)
 
+  it("renders rich inline nodes and dispatches their original local IDs", function()
+    local clicked
+    local surface = layout.new({
+      render = function()
+        return c.rich({
+          id = "rich",
+          prefix = "sample",
+          width = "grow",
+          ui.text("left"),
+          ui.button({
+            id = "action",
+            text = "run",
+            on_click = function(event)
+              clicked = event.id
+            end,
+          }),
+          ui.spacer(),
+          ui.text("right"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals("left", nodes[3].text)
+    assert.equals("run", nodes[5].text)
+    assert.equals("right", nodes[7].text)
+    assert.equals(surface.namespace .. "sample:run:2", nodes[4].id)
+    surface:dispatch(nodes[4].id)
+    assert.equals("action", clicked)
+    assert.equals(c.rich, c.select.inline)
+  end)
+
   it("composes stack, header and empty state without extra wrappers", function()
     local theme = {
       fg = "#111111",

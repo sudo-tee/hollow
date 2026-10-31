@@ -2379,6 +2379,10 @@ local workspace = {}
 ---@field axis? 'x'|'y'|'both'
 ---@field scrollbar? HollowUiScrollbarProps
 
+---@class HollowUiRichProps: HollowUiComponentProps
+---@field [integer] any Inline `ui.text`, `ui.span`, groups, or fragments.
+---@field prefix? string Prefix for generated clickable run IDs.
+
 ---@class HollowUiPanelProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
 ---@field chrome? HollowUiChrome|boolean
@@ -2410,6 +2414,7 @@ local workspace = {}
 ---@field gap fun(value: HollowUiLayoutLength|HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field stack fun(props: HollowUiStackProps): HollowUiLayoutNode
 ---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
+---@field rich fun(props: HollowUiRichProps): HollowUiLayoutNode
 ---@field label fun(value: string|HollowUiLabelProps): HollowUiLayoutNode
 ---@field title fun(value: string|HollowUiTitleProps): HollowUiLayoutNode
 ---@field empty fun(value: string|HollowUiEmptyProps): HollowUiLayoutNode

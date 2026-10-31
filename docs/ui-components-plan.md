@@ -344,7 +344,7 @@ Done when: no widget computes scrollbar gutters or base insets, and
 | 1 Foundations             | Implemented |
 | 2 Atoms and controls      | In progress |
 | 3 Containers              | In progress |
-| 4 Lists and picker        | Not started |
+| 4 Lists and picker        | In progress |
 | 5 Composites, cleanup     | Not started |
 
 ## Findings
@@ -371,3 +371,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
 - Panel insets and scrollbar gutters need arithmetic before serialization;
   shared unit resolution in `components/props.lua` keeps their rules consistent
   with the serializer.
+- Mux and activity headers contain rich inline controls, not only title/meta
+  text. Extract `rich` first to preserve their structure and callbacks.

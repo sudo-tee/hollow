@@ -19,6 +19,7 @@ local lazy = {
   label = "hollow.ui.components.label",
   panel = "hollow.ui.components.panel",
   pill = "hollow.ui.components.pill",
+  rich = "hollow.ui.components.rich",
   scroll = "hollow.ui.components.scroll",
   select = "hollow.ui.components.select",
   stack = "hollow.ui.components.stack",
