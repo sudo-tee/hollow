@@ -70,6 +70,31 @@ describe("Clay text-input overlay", function()
     assert.matches("second:viewport$", named[9].id)
   end)
 
+  it("resolves input override and run tokens using the explicit theme", function()
+    local outer = { fg = "#111111", input_bg = "#222222", muted = "#333333" }
+    local inner = { fg = "#aaaaaa", input_bg = "#bbbbbb", muted = "#cccccc" }
+    local behavior = {
+      render = function(theme)
+        assert.equals(inner, theme)
+        return {
+          { text = "value", style = { fg = "muted" } },
+          { text = " ", style = { bg = "muted", fg = "fg" } },
+        }
+      end,
+    }
+    local surface = ui.layout.new({
+      theme = outer,
+      render = function()
+        return ui.components.input({ behavior = behavior, theme = inner, style = { bg = "muted" } })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#cccccc", nodes[1].bg)
+    assert.equals("#cccccc", nodes[4].fg)
+    assert.equals("#cccccc", nodes[5].bg)
+    assert.equals("#aaaaaa", nodes[6].fg)
+  end)
+
   it("composes styled inline runs with a horizontal viewport and reveal target", function()
     ui.input.open({ prompt = "Rename", default = "world", width = 50 })
     assert.is_true(ui._overlay_state()[1].clay)

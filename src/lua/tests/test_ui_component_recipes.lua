@@ -53,6 +53,7 @@ describe("unified component styling", function()
   it("uses scoped quiet button paint and disables interaction", function()
     local palette = {
       fg = "#111111",
+      muted = "#555555",
       selected_fg = "#eeeeee",
       button_emphasis_bg = "#222222",
       styles = { button = { dialog = { fg = "#abcdef" } } },
@@ -83,7 +84,7 @@ describe("unified component styling", function()
     assert.equals("#222222", nodes[2].bg)
     assert.equals("#222222", nodes[2].hover_bg)
     assert.equals("#eeeeee", nodes[3].fg)
-    assert.equals("#abcdef", nodes[5].fg)
+    assert.equals("#555555", nodes[5].fg)
     assert.is_nil(nodes[4].clickable)
     assert.is_nil(nodes[4].hover_bg)
   end)
