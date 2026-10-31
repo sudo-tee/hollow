@@ -162,51 +162,50 @@ function M.render(opts, theme, ctx)
   local reveal = entries[target]
       and ((opts.id_prefix or "select") .. ":item:" .. entries[target].source_index)
     or nil
-  local children = {
-    c.header({
-      id = "select:header",
-      width = "grow",
-      height = cell_h,
-      scroll_x = true,
-      title = opts.prompt or "Select",
-      prompt = true,
-      meta = opts.counter
-        or (#entries > 0 and string.format("   %d/%d", opts.selected, #entries) or ""),
-      meta_align = "inline",
-      title_style = s.title,
-      meta_style = s.counter,
+  local header = c.header({
+    id = "select:header",
+    width = "grow",
+    height = cell_h,
+    scroll_x = true,
+    title = opts.prompt or "Select",
+    prompt = true,
+    meta = opts.counter
+      or (#entries > 0 and string.format("   %d/%d", opts.selected, #entries) or ""),
+    meta_align = "inline",
+    title_style = s.title,
+    meta_style = s.counter,
+    _legacy_style = true,
+  })
+  local filter = c.row({
+    c.text("Filter: ", s.title, { wrap = "none" }),
+    input_field(opts.filter, theme, ctx, true),
+  }, { width = "grow" })
+  local list = {
+    id = "select:viewport",
+    theme = theme,
+    ctx = ctx,
+    _legacy_paint = true,
+    _legacy_window = true,
+    width = "grow",
+    height = "grow",
+    axis = "both",
+    reveal = reveal,
+    reveal_start = opts.reveal_start,
+    measure = true,
+    items = entries,
+    selected = opts.selected,
+    viewport = viewport,
+    window = window_items,
+    budget = M.row_budget,
+    render_item = make,
+    empty = c.empty({
+      text = "No matches",
+      style = s.empty,
+      wrap = "words",
       _legacy_style = true,
     }),
-    c.row({
-      c.text("Filter: ", s.title, { wrap = "none" }),
-      input_field(opts.filter, theme, ctx, true),
-    }, { width = "grow" }),
-    c.list({
-      id = "select:viewport",
-      theme = theme,
-      ctx = ctx,
-      _legacy_paint = true,
-      _legacy_window = true,
-      width = "grow",
-      height = "grow",
-      axis = "both",
-      reveal = reveal,
-      reveal_start = opts.reveal_start,
-      measure = true,
-      items = entries,
-      selected = opts.selected,
-      viewport = viewport,
-      window = window_items,
-      budget = M.row_budget,
-      render_item = make,
-      empty = c.empty({
-        text = "No matches",
-        style = s.empty,
-        wrap = "words",
-        _legacy_style = true,
-      }),
-    }),
   }
+  local hint_node
   if opts.hints then
     if opts.hints._component then
       local hints = {}
@@ -219,20 +218,28 @@ function M.render(opts, theme, ctx)
         for _, hint in ipairs(hints) do
           text[#text + 1] = hint[1] .. " " .. hint[2]
         end
-        children[#children + 1] =
-          c.row({ c.text(table.concat(text, "  "), nil, { wrap = "none" }) }, hints)
+        hint_node = c.row({ c.text(table.concat(text, "  "), nil, { wrap = "none" }) }, hints)
       else
-        children[#children + 1] = c.hints(hints)
+        hint_node = c.hints(hints)
       end
     else
-      children[#children + 1] = inline(
+      hint_node = inline(
         opts.hints[2].children,
         nil,
         { id = "select:hints", width = "grow", height = cell_h, scroll_x = true }
       )
     end
   end
-  return M.sections(children, theme, cell_h)
+  return c.picker({
+    id = "select:picker",
+    theme = theme,
+    gap = cell_h,
+    list = list,
+    _legacy = true,
+    _header = header,
+    _filter = filter,
+    _hints = hint_node,
+  })
 end
 
 -- Adapter for existing row components. Layout is rebuilt as boxes/text;

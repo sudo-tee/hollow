@@ -23,7 +23,7 @@ return function(options)
   list.width = list.width or "grow"
   list.height = list.height or "grow"
   local children = {
-    c.header({
+    options._header or c.header({
       title = options.title or "Select",
       meta = options.counter,
       prompt = options.prompt,
@@ -31,7 +31,9 @@ return function(options)
       width = "grow",
     }),
   }
-  if options.filter then
+  if options._filter then
+    children[#children + 1] = options._filter
+  elseif options.filter then
     children[#children + 1] = c.row({
       c.title({ text = "Filter: ", theme = theme }),
       c.input({
@@ -43,12 +45,17 @@ return function(options)
     }, { width = "grow" })
   end
   children[#children + 1] = c.list(list)
-  if options.hints then
+  if options._hints then
+    children[#children + 1] = options._hints
+  elseif options.hints then
     local hints = copy(options.hints)
     hints.theme = hints.theme or theme
     children[#children + 1] = c.hints(hints)
   end
   local root = copy(options)
+  if options._legacy then
+    root.id = nil
+  end
   root.theme = theme
   root.divided = true
   root.width = root.width or "grow"
