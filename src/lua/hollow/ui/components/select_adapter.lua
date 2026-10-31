@@ -176,7 +176,7 @@ function M.render(opts, theme, ctx)
   })
   local filter = c.row({
     c.text("Filter: ", s.title, { wrap = "none" }),
-    input_field(opts.filter, theme, ctx, true),
+    input_field({ behavior = opts.filter, theme = theme, ctx = ctx, boxed = false }),
   }, { width = "grow" })
   local list = {
     id = "select:viewport",

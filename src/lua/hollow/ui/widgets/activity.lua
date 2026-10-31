@@ -747,7 +747,7 @@ function ui.activity.open(opts)
     if searching then
       filter_node = c.row({
         c.text("/ ", styles(theme).label),
-        require("hollow.ui.components.input")(filter, theme, ctx, true),
+        require("hollow.ui.components.input")({ behavior = filter, theme = theme, boxed = false }),
       }, { width = "grow" })
     end
     local list_props = {

@@ -15,7 +15,7 @@ return function(input, theme, ctx, inline)
   if input.behavior ~= nil then
     options = input
     local scope = props.scope()
-    input, theme, ctx = options.behavior, options.theme or scope.theme, scope.ctx
+    input, theme, ctx = options.behavior, options.theme or scope.theme, options.ctx or scope.ctx
     inline = options.boxed == false
   else
     options = {}

@@ -390,3 +390,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
 - `components/select.lua` is removed, but `c.select` still aliases the internal
   adapter while select and palette retain legacy row formatting. Direct
   `require("hollow.ui.components.select")` is no longer supported.
+- Select's compatibility adapter can render outside a surface, so the input
+  props form temporarily accepts explicit `ctx` for those calls.

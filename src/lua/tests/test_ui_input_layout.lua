@@ -95,6 +95,22 @@ describe("Clay text-input overlay", function()
     assert.equals("#aaaaaa", nodes[6].fg)
   end)
 
+  it("honors explicit metrics when constructing input outside a surface", function()
+    local theme = { fg = "#111111", input_bg = "#222222" }
+    local behavior = {
+      render = function()
+        return { { text = "x", style = {} }, { text = " ", style = {} } }
+      end,
+    }
+    local node = ui.components.input({
+      behavior = behavior,
+      theme = theme,
+      ctx = { cell_w = 12, cell_h = 24 },
+    })
+    assert.equals(6, node.padding.x)
+    assert.equals(24, node.children[1].height)
+  end)
+
   it("composes styled inline runs with a horizontal viewport and reveal target", function()
     ui.input.open({ prompt = "Rename", default = "world", width = 50 })
     assert.is_true(ui._overlay_state()[1].clay)
