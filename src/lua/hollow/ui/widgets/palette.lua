@@ -372,11 +372,12 @@ function ui.command_palette.open(opts)
     theme = theme,
     render = function(render_theme, state, ctx)
       local component = require("hollow.ui.components.select")
+      local row_adapter = require("hollow.ui.components.row_adapter")
       local flat = current_flat()
       nav.index = math.max(1, math.min(#flat, nav.index or 1))
       local item_idx, total_items = item_position(flat, nav.index)
       local line_h = component.line_height(render_theme, ctx)
-      section_units = component.row_height(
+      section_units = row_adapter.row_height(
         render_section_header(render_theme, "", false, false, false, {}),
         ctx
       ) / line_h
@@ -438,7 +439,7 @@ function ui.command_palette.open(opts)
               { id = id },
               filter.value
             )
-          return component.from_row(
+          return row_adapter.from_row(
             row,
             id,
             shared.nodes_plain_text(row.children),

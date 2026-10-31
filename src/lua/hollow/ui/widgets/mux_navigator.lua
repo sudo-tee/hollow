@@ -458,6 +458,7 @@ function ui.mux_navigator.open(opts)
     end,
     render = function(render_theme, state, ctx)
       local component = require("hollow.ui.components.select")
+      local row_adapter = require("hollow.ui.components.row_adapter")
       local c = ui.components
       tree = hollow.term.mux_tree()
       local rows = current_rows()
@@ -471,7 +472,7 @@ function ui.mux_navigator.open(opts)
       end
       nav.index = math.max(1, math.min(#rows, nav.index or 1))
       local sample = rows[1] and render_row(rows[1], 1, false, {})
-      local line_h = sample and component.row_height(sample, ctx)
+      local line_h = sample and row_adapter.row_height(sample, ctx)
         or component.line_height(render_theme, ctx)
       local measured = ctx.metrics and ctx.metrics["mux:viewport"]
       if measured then
@@ -481,7 +482,7 @@ function ui.mux_navigator.open(opts)
       local function render_item(row, index)
         local id = "mux-navigator:item:" .. row.key
         local row_node = render_row(row, index, state and state.hovered_id == id, { id = id })
-        return component.from_row(
+        return row_adapter.from_row(
           row_node,
           id,
           shared.nodes_plain_text(row_node.children),

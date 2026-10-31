@@ -168,6 +168,12 @@ describe("hierarchical Clay layout", function()
     assert.equals("first", clicked)
   end)
 
+  it("keeps select row adapter aliases during migration", function()
+    local adapter = require("hollow.ui.components.row_adapter")
+    assert.equals(adapter.from_row, c.select.from_row)
+    assert.equals(adapter.row_height, c.select.row_height)
+  end)
+
   it("keeps visible and selected list rows rich under the node budget", function()
     local items, simplified = {}, {}
     for i = 1, 100 do

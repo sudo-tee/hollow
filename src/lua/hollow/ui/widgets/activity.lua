@@ -627,6 +627,7 @@ function ui.activity.open(opts)
   local function render_layout(render_theme, state, ctx)
     local c = ui.components
     local component = require("hollow.ui.components.select")
+    local row_adapter = require("hollow.ui.components.row_adapter")
     local cell_h = ctx.cell_h or 19
     local function line(node)
       return c.rich({ width = "grow", height = cell_h, scroll_x = true, node.children })
@@ -698,7 +699,7 @@ function ui.activity.open(opts)
           columns
         )
       )
-    local row_height = sample and component.row_height(sample, ctx) or cell_h
+    local row_height = sample and row_adapter.row_height(sample, ctx) or cell_h
     if measured then
       clay_budget = math.max(1, math.min(20, math.floor(measured.height / row_height)))
     end
@@ -716,7 +717,7 @@ function ui.activity.open(opts)
       local row = entry.header_category and render_category_row(entry, row_state)
         or render_entry_row(entry, row_state, columns)
       local entry_id = entry.id
-      return component.from_row(
+      return row_adapter.from_row(
         row,
         id,
         entry.header_category and entry.title or row_label(entry),

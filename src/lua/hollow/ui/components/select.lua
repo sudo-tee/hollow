@@ -9,6 +9,7 @@ local styles = require("hollow.ui.recipes.select")
 local c = require("hollow.ui.components")
 local inline = require("hollow.ui.components.rich")
 local input_field = require("hollow.ui.components.input")
+local row_adapter = require("hollow.ui.components.row_adapter")
 
 ---@class HollowUiLayoutInlineOptions: HollowUiLayoutOptions
 ---@field prefix? string
@@ -242,80 +243,8 @@ function M.render(opts, theme, ctx)
   })
 end
 
--- Adapter for existing row components. Layout is rebuilt as boxes/text;
--- Segment serialization and native row positioning are not involved.
----@param row HollowUiRowNode
----@param id string
----@param label string
----@param theme HollowUiTheme
----@param ctx HollowUiLayoutContext
----@param on_click fun(event: { id: string })|nil
----@param plain boolean|nil
----@return HollowUiLayoutNode
-function M.from_row(row, id, label, theme, ctx, on_click, plain)
-  local serialized = shared.serialize_row_paint(row, theme)
-  local flat = shared.flatten_span_nodes(row.children)
-  local top, bottom, center = 0, 0, false
-  for _, span in ipairs(flat) do
-    local padding = box.normalize(span.style and span.style.padding)
-    top, bottom = math.max(top, padding.top), math.max(bottom, padding.bottom)
-  end
-  for _, span in ipairs(flat) do
-    if
-      not span.spacer
-      and tostring(span.text or ""):match("%S")
-      and box.normalize(span.style and span.style.padding).top < top
-    then
-      center = true
-    end
-  end
-  local content
-  if plain then
-    content = c.row(
-      { c.text(label, { fg = theme.fg }, { wrap = "none" }) },
-      { width = "grow", padding = { top = top, bottom = bottom } }
-    )
-  else
-    content = inline(row.children, nil, {
-      width = "grow",
-      prefix = id,
-      height = (ctx.cell_h or 19) + top + bottom,
-      align_y = center and "center" or "start",
-    })
-  end
-  return c.list_item({
-    content,
-    id = id,
-    theme = theme,
-    role = "listitem",
-    label = label,
-    width = "grow",
-    height = (ctx.cell_h or 19) + top + bottom,
-    _accent = serialized.accent_bar or false,
-    _style = {
-      bg = serialized.fill_bg,
-      radius = serialized.fill_radius,
-      hover = {
-        bg = serialized.accent_bar and serialized.fill_bg
-          or list_row(theme, { hovered = true }).paint.fill_bg,
-      },
-    },
-    on_click = on_click,
-  })
-end
-
----@param row HollowUiRowNode
----@param ctx HollowUiLayoutContext
----@return number
-function M.row_height(row, ctx)
-  local top, bottom = 0, 0
-  for _, span in ipairs(shared.flatten_span_nodes(row.children)) do
-    local padding = box.normalize(span.style and span.style.padding)
-    top, bottom = math.max(top, padding.top), math.max(bottom, padding.bottom)
-  end
-  return (ctx.cell_h or 19) + top + bottom
-end
-
+M.from_row = row_adapter.from_row
+M.row_height = row_adapter.row_height
 M.inline = inline
 
 return M
