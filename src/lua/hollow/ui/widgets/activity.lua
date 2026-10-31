@@ -466,7 +466,7 @@ function ui.activity.open(opts)
     return {
       ui.text("Activity details", styles(theme).title),
       ui.spacer(),
-      ui.action_button({
+      ui.components.button({
         id = "activity:copy",
         text = copy_feedback or "Copy",
         theme = theme,
@@ -486,34 +486,28 @@ function ui.activity.open(opts)
     end
     return {
       ui.text("Activity  ", styles(theme).title),
-      ui.tab_bar({
+      ui.components.tabs({
         theme = theme,
+        gap = "1ch",
+        active = "activity:" .. view,
+        on_select = function(id)
+          return set_view(id:match("^activity:(.+)$"))
+        end,
         tabs = {
           {
             id = "activity:inbox",
             label = "Inbox",
-            active = view == "inbox",
             badge = summary.count > 0 and {
               text = tostring(summary.count),
               color = BADGE_LEVELS[worst] and theme.notify_levels[worst] or theme.title,
             } or nil,
-            on_click = function()
-              return set_view("inbox")
-            end,
           },
-          {
-            id = "activity:history",
-            label = "History",
-            active = view == "history",
-            on_click = function()
-              return set_view("history")
-            end,
-          },
+          { id = "activity:history", label = "History" },
         },
       }),
       ui.spacer(),
       ui.when(summary.count > 0, function()
-        return ui.action_button({
+        return ui.components.button({
           id = "activity:dismiss-all",
           text = "Dismiss all",
           theme = theme,
@@ -577,7 +571,7 @@ function ui.activity.open(opts)
 
   local function render_dismiss_button(entry, row_state)
     return ui.when(entry.pending, function()
-      return ui.action_button({
+      return ui.components.button({
         id = "activity:dismiss:" .. entry.id,
         text = "×",
         theme = theme,

@@ -44,7 +44,7 @@
       "width": -1
     },
     {
-      "children": 6,
+      "children": 2,
       "id": "test:auto:4",
       "kind": 1,
       "scroll_x": true,
@@ -58,15 +58,22 @@
       "wrap": 2
     },
     {
+      "children": 2,
+      "gap": 10,
+      "kind": 1
+    },
+    {
       "bg": "#3b4252",
-      "children": 1,
+      "children": 2,
       "clickable": true,
-      "id": "test:activity:header:run:2",
-      "label": "Inbox ",
+      "gap": 4,
+      "id": "test:activity:inbox",
+      "kind": 1,
+      "label": "Inbox",
       "padding": {
         "bottom": 3,
         "left": 8,
-        "right": 0,
+        "right": 8,
         "top": 3
       },
       "radius": 4
@@ -75,15 +82,12 @@
       "bold": true,
       "fg": "#eceff4",
       "kind": 2,
-      "text": "Inbox ",
+      "text": "Inbox",
       "wrap": 2
     },
     {
       "bg": "#8fbcdf",
       "children": 1,
-      "clickable": true,
-      "id": "test:activity:header:run:3",
-      "label": "30",
       "padding": {
         "bottom": 1,
         "left": 5,
@@ -100,21 +104,10 @@
       "wrap": 2
     },
     {
-      "fg": "#d8dee9",
-      "kind": 2,
-      "text": " ",
-      "wrap": 2
-    },
-    {
-      "fg": "#d8dee9",
-      "kind": 2,
-      "text": "  ",
-      "wrap": 2
-    },
-    {
       "children": 1,
       "clickable": true,
-      "id": "test:activity:header:run:6",
+      "id": "test:activity:history",
+      "kind": 1,
       "label": "History",
       "padding": {
         "bottom": 3,
@@ -138,7 +131,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:header:run:8",
+      "id": "test:activity:dismiss-all",
       "label": "Dismiss all",
       "padding": {
         "bottom": 0,
@@ -213,7 +206,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:22",
+      "id": "test:auto:21",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -292,7 +285,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:1:run:11",
+      "id": "test:activity:dismiss:1",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -339,7 +332,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:39",
+      "id": "test:auto:38",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -418,7 +411,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:2:run:11",
+      "id": "test:activity:dismiss:2",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -465,7 +458,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:56",
+      "id": "test:auto:55",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -544,7 +537,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:3:run:11",
+      "id": "test:activity:dismiss:3",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -591,7 +584,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:73",
+      "id": "test:auto:72",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -670,7 +663,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:4:run:11",
+      "id": "test:activity:dismiss:4",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -717,7 +710,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:90",
+      "id": "test:auto:89",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -796,7 +789,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:5:run:11",
+      "id": "test:activity:dismiss:5",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -843,7 +836,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:107",
+      "id": "test:auto:106",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -922,7 +915,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:6:run:11",
+      "id": "test:activity:dismiss:6",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -969,7 +962,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:124",
+      "id": "test:auto:123",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1048,7 +1041,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:7:run:11",
+      "id": "test:activity:dismiss:7",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1095,7 +1088,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:141",
+      "id": "test:auto:140",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1174,7 +1167,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:8:run:11",
+      "id": "test:activity:dismiss:8",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1221,7 +1214,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:158",
+      "id": "test:auto:157",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1300,7 +1293,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:9:run:11",
+      "id": "test:activity:dismiss:9",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1347,7 +1340,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:175",
+      "id": "test:auto:174",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1426,7 +1419,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:10:run:11",
+      "id": "test:activity:dismiss:10",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1473,7 +1466,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:192",
+      "id": "test:auto:191",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1552,7 +1545,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:11:run:11",
+      "id": "test:activity:dismiss:11",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1599,7 +1592,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:209",
+      "id": "test:auto:208",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1678,7 +1671,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:12:run:11",
+      "id": "test:activity:dismiss:12",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1725,7 +1718,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:226",
+      "id": "test:auto:225",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1804,7 +1797,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:13:run:11",
+      "id": "test:activity:dismiss:13",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1851,7 +1844,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:243",
+      "id": "test:auto:242",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -1930,7 +1923,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:14:run:11",
+      "id": "test:activity:dismiss:14",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -1977,7 +1970,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:260",
+      "id": "test:auto:259",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2056,7 +2049,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:15:run:11",
+      "id": "test:activity:dismiss:15",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2103,7 +2096,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:277",
+      "id": "test:auto:276",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2182,7 +2175,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:16:run:11",
+      "id": "test:activity:dismiss:16",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2229,7 +2222,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:294",
+      "id": "test:auto:293",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2308,7 +2301,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:17:run:11",
+      "id": "test:activity:dismiss:17",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2355,7 +2348,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:311",
+      "id": "test:auto:310",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2434,7 +2427,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:18:run:11",
+      "id": "test:activity:dismiss:18",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2481,7 +2474,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:328",
+      "id": "test:auto:327",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2560,7 +2553,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:19:run:11",
+      "id": "test:activity:dismiss:19",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2607,7 +2600,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:345",
+      "id": "test:auto:344",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2686,7 +2679,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:20:run:11",
+      "id": "test:activity:dismiss:20",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2733,7 +2726,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:362",
+      "id": "test:auto:361",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2812,7 +2805,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:21:run:11",
+      "id": "test:activity:dismiss:21",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2859,7 +2852,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:379",
+      "id": "test:auto:378",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -2938,7 +2931,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:22:run:11",
+      "id": "test:activity:dismiss:22",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -2985,7 +2978,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:396",
+      "id": "test:auto:395",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -3064,7 +3057,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:23:run:11",
+      "id": "test:activity:dismiss:23",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -3083,7 +3076,7 @@
     {
       "children": 12,
       "height": 20,
-      "id": "test:auto:410",
+      "id": "test:auto:409",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -3232,7 +3225,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:details:header:run:3",
+      "id": "test:activity:copy",
       "label": "Copy",
       "padding": {
         "bottom": 0,

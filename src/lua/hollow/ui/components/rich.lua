@@ -1,6 +1,7 @@
 -- One row plus inline runs (`ui.text`, `ui.span`, groups or fragments). Painted
 -- or clickable runs need a container, and a spacer splits the content into two
--- additional rows for left/right alignment. `plain` (or more than 32 runs)
+-- additional rows for left/right alignment. Layout nodes (such as `c.button`)
+-- among the children pass through unchanged. `plain` (or more than 32 runs)
 -- collapses the content into one text node. `style` is inherited by the runs;
 -- the row itself is unpainted.
 --
@@ -42,11 +43,42 @@ local function extents(flat)
   return top, bottom, center
 end
 
+local function is_node(value)
+  return type(value) == "table" and value.kind ~= nil and value._type == nil
+end
+
 local function flatten(children, style)
-  return shared.flatten_span_nodes(
-    shared.collect_inline(children, "hollow.ui.components.rich", true),
-    style
-  )
+  local flat, pending = {}, {}
+  local function flush()
+    if #pending > 0 then
+      shared.flatten_span_nodes(
+        shared.collect_inline(pending, "hollow.ui.components.rich", true),
+        style,
+        flat
+      )
+      pending = {}
+    end
+  end
+  local function walk(list)
+    for index = 1, table.maxn(list) do
+      local child = list[index]
+      if is_node(child) then
+        flush()
+        flat[#flat + 1] = { node = child }
+      elseif
+        type(child) == "table"
+        and child._type == nil
+        and not shared.is_text_shorthand(child)
+      then
+        walk(child)
+      elseif child ~= nil and type(child) ~= "boolean" then
+        pending[#pending + 1] = child
+      end
+    end
+  end
+  walk(children)
+  flush()
+  return flat
 end
 
 --- Row height for inline content: cell height plus the largest run padding.
@@ -59,6 +91,9 @@ function M.height(children, ctx)
 end
 
 local function run(span, index, prefix)
+  if span.node then
+    return span.node
+  end
   local text = c.text(span.text, span.style, { wrap = "none" })
   local paint = span.style or {}
   if not painted(paint) then
@@ -90,7 +125,11 @@ local function render(value)
   if opts.plain or #flat > MAX_RUNS then
     local parts = {}
     for _, span in ipairs(flat) do
-      parts[#parts + 1] = not span.spacer and span.text or nil
+      if span.node then
+        parts[#parts + 1] = span.node.label
+      elseif not span.spacer then
+        parts[#parts + 1] = span.text
+      end
     end
     return c.row({ c.text(table.concat(parts), style, { wrap = "none" }) }, opts)
   end

@@ -44,7 +44,7 @@
       "width": -1
     },
     {
-      "children": 6,
+      "children": 2,
       "id": "test:auto:4",
       "kind": 1,
       "scroll_x": true,
@@ -58,15 +58,22 @@
       "wrap": 2
     },
     {
+      "children": 2,
+      "gap": 8,
+      "kind": 1
+    },
+    {
       "bg": "#3b4252",
-      "children": 1,
+      "children": 2,
       "clickable": true,
-      "id": "test:activity:header:run:2",
-      "label": "Inbox ",
+      "gap": 4,
+      "id": "test:activity:inbox",
+      "kind": 1,
+      "label": "Inbox",
       "padding": {
         "bottom": 3,
         "left": 8,
-        "right": 0,
+        "right": 8,
         "top": 3
       },
       "radius": 4
@@ -75,15 +82,12 @@
       "bold": true,
       "fg": "#eceff4",
       "kind": 2,
-      "text": "Inbox ",
+      "text": "Inbox",
       "wrap": 2
     },
     {
       "bg": "#8fbcdf",
       "children": 1,
-      "clickable": true,
-      "id": "test:activity:header:run:3",
-      "label": "1",
       "padding": {
         "bottom": 1,
         "left": 5,
@@ -100,21 +104,10 @@
       "wrap": 2
     },
     {
-      "fg": "#d8dee9",
-      "kind": 2,
-      "text": " ",
-      "wrap": 2
-    },
-    {
-      "fg": "#d8dee9",
-      "kind": 2,
-      "text": "  ",
-      "wrap": 2
-    },
-    {
       "children": 1,
       "clickable": true,
-      "id": "test:activity:header:run:6",
+      "id": "test:activity:history",
+      "kind": 1,
       "label": "History",
       "padding": {
         "bottom": 3,
@@ -138,7 +131,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:header:run:8",
+      "id": "test:activity:dismiss-all",
       "label": "Dismiss all",
       "padding": {
         "bottom": 0,
@@ -203,7 +196,7 @@
     {
       "align_y": 1,
       "children": 6,
-      "id": "test:auto:22",
+      "id": "test:auto:21",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -282,7 +275,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:item:one:run:11",
+      "id": "test:activity:dismiss:one",
       "label": "×",
       "padding": {
         "bottom": 0,
@@ -301,7 +294,7 @@
     {
       "children": 12,
       "height": 19,
-      "id": "test:auto:36",
+      "id": "test:auto:35",
       "kind": 1,
       "scroll_x": true,
       "width": -1
@@ -450,7 +443,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
-      "id": "test:activity:details:header:run:3",
+      "id": "test:activity:copy",
       "label": "Copy",
       "padding": {
         "bottom": 0,
