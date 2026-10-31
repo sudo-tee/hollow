@@ -210,6 +210,60 @@ describe("hierarchical Clay layout", function()
     assert.equals(20, rich[surface.namespace .. "item:13"])
   end)
 
+  it("composes a picker from header, filter, list and hints", function()
+    local theme = {
+      fg = "#111111",
+      muted = "#222222",
+      title = "#333333",
+      counter = "#444444",
+      panel_border = "#555555",
+      divider = "#666666",
+      input_bg = "#777777",
+    }
+    local filter = {
+      render = function()
+        return {
+          { text = "abc", style = { fg = "#111111" } },
+          { text = " ", style = { bg = "#777777" } },
+        }
+      end,
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.picker({
+          id = "picker",
+          title = "Choose",
+          counter = "1/1",
+          filter = filter,
+          list = {
+            items = { "one" },
+            render_item = function(item)
+              return c.list_item({ id = "item:1", label = item, c.text(item) })
+            end,
+          },
+          hints = { { "Enter", "open" } },
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(4, nodes[1].children)
+    assert.equals(20, nodes[1].gap)
+    assert.equals("#666666", nodes[1].border)
+    local ids = {}
+    for _, node in ipairs(nodes) do
+      if node.id then
+        ids[node.id] = node
+      end
+    end
+    assert.is_not_nil(ids[surface.namespace .. "picker:filter:caret"])
+    assert.is_not_nil(ids[surface.namespace .. "picker:list"])
+    assert.equals(surface.namespace .. "item:1", ids[surface.namespace .. "picker:list"].reveal)
+    assert.has_error(function()
+      c.picker({})
+    end, "picker requires an id")
+  end)
+
   it("retains a selected list item outside the visible window", function()
     local items = {}
     for i = 1, 50 do

@@ -20,6 +20,7 @@ local lazy = {
   list = "hollow.ui.components.list",
   list_item = "hollow.ui.components.list_item",
   panel = "hollow.ui.components.panel",
+  picker = "hollow.ui.components.picker",
   pill = "hollow.ui.components.pill",
   rich = "hollow.ui.components.rich",
   scroll = "hollow.ui.components.scroll",
