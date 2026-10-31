@@ -62,7 +62,7 @@ describe("component gallery", function()
     surface:dispatch(surface.namespace .. "gallery:item:2")
     surface:dispatch(surface.namespace .. "gallery:tab:two")
     assert.equals(1, state.clicks)
-    assert.equals(2, state.selected)
+    assert.equals(2, state.item)
     assert.equals("gallery:tab:two", state.tab)
     local text = {}
     for _, node in ipairs(surface:snapshot(CTX)) do

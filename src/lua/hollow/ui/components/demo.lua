@@ -67,12 +67,12 @@ local function list_items(state, changed)
       id = "gallery:item:" .. index,
       variant = item.variant,
       hovered = item.hovered,
-      selected = item.selected or state.selected == index,
+      selected = item.selected or state.item == index,
       detail = item.detail,
       accent = item.accent,
       disabled = item.disabled,
       on_activate = function()
-        state.selected = index
+        state.item = index
         changed()
       end,
       c.label(item.label),
@@ -86,7 +86,7 @@ local function picker(state)
   return c.picker({
     id = "gallery:picker",
     title = "Picker",
-    counter = state.selected .. "/" .. #entries,
+    counter = state.picker .. "/" .. #entries,
     prompt = true,
     filter = state.filter,
     height = "fit",
@@ -94,11 +94,11 @@ local function picker(state)
     list = {
       height = "fit",
       items = entries,
-      selected = state.selected,
+      selected = state.picker,
       render_item = function(entry, index, view)
         return c.list_item({
           id = "gallery:picker:item:" .. entry,
-          selected = index == state.selected,
+          selected = index == state.picker,
           c.rich({ plain = view.plain, ui.text(entry) }),
         })
       end,
@@ -113,7 +113,8 @@ end
 function M.render(state, changed, close)
   state = state or {}
   state.clicks = state.clicks or 0
-  state.selected = state.selected or 1
+  state.item = state.item or 1
+  state.picker = state.picker or 1
   state.tab = state.tab or "gallery:tab:one"
   state.filter = state.filter or ui.text_input({ initial = "query" })
   changed = changed or function() end
