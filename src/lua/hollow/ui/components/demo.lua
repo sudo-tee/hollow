@@ -1,60 +1,242 @@
--- Demo content stays out of the surface engine.
-local layout = _G.hollow.ui.layout
+-- Component gallery: every component, variant, size and state on one
+-- scrollable surface. Used for screenshots and as a theme-check fixture.
 local c = require("hollow.ui.components")
+local hollow = _G.hollow
+local ui = hollow.ui
 local M = {}
 
-function M.open()
-  local clicks = 0
-  local function render()
-    local rows = {}
-    for i = 1, 40 do
-      rows[i] = c.column(
-        { c.text("Task " .. i), c.progress(i / 40, { width = "grow", height = 10 }) },
-        {
-          width = "grow",
-          padding = 8,
-          gap = 6,
-          style = { bg = "#242b38", radius = 4 },
-        }
-      )
+local VARIANTS = { "default", "primary", "destructive" }
+local STATES = {
+  { label = "rest" },
+  { label = "hovered", hovered = true },
+  { label = "selected", selected = true },
+  { label = "disabled", disabled = true },
+}
+
+local function section(title, ...)
+  return c.column({ c.title(title), ... }, { width = "grow", gap = "0.5lh" })
+end
+
+local function line(...)
+  return c.row({ ... }, { gap = "1ch", align_y = "center" })
+end
+
+local function buttons(appearance, state, changed)
+  local rows = {}
+  for _, variant in ipairs(VARIANTS) do
+    local items = { c.label({ text = string.format("%-12s", variant), tone = "muted" }) }
+    for _, mode in ipairs(STATES) do
+      items[#items + 1] = c.button({
+        id = "gallery:button:" .. appearance .. ":" .. variant .. ":" .. mode.label,
+        text = mode.label,
+        appearance = appearance,
+        variant = variant,
+        hovered = mode.hovered,
+        selected = mode.selected,
+        disabled = mode.disabled,
+        on_click = function()
+          state.clicks = state.clicks + 1
+          changed()
+        end,
+      })
     end
-    layout.show(c.column({
-      c.row({
-        c.text("Clay layout experiment", { bold = true }),
-        c.column({}, { width = "grow" }),
-        c.button({ id = "clay.close", text = "Close", size = "md", on_click = layout.hide }),
-      }, { width = "grow", gap = 12 }),
-      c.row({
-        c.column({
-          c.text("Lua component"),
-          c.text("Nested containers keep their hierarchy. Resize this window to test allocation."),
-          c.button({
-            id = "clay.count",
-            text = "Clicked " .. clicks .. " times",
-            variant = "primary",
-            size = "md",
-            on_click = function()
-              clicks = clicks + 1
-              render()
-            end,
-          }),
-          c.text("Custom-painted progress:"),
-          c.progress(0.65, { width = "grow", height = 28 }),
-        }, {
-          width = 260,
-          height = "grow",
-          padding = 16,
-          gap = 16,
-          style = { bg = "#202633" },
-        }),
-        c.column(
-          rows,
-          { id = "clay.tasks", width = "grow", height = "grow", scroll = true, gap = 8 }
-        ),
-      }, { width = "grow", height = "grow", gap = 16 }),
-    }, { width = "grow", height = "grow", padding = 24, gap = 16, style = { bg = "#141923" } }))
+    rows[#rows + 1] = line(items)
   end
-  render()
+  local sizes = { c.label({ text = string.format("%-12s", "sizes"), tone = "muted" }) }
+  for _, size in ipairs({ "sm", "md" }) do
+    sizes[#sizes + 1] = c.button({ text = size, appearance = appearance, size = size })
+  end
+  rows[#rows + 1] = line(sizes)
+  return c.column(rows, { gap = "0.5lh" })
+end
+
+local function list_items(state, changed)
+  local items = {
+    { label = "Default item" },
+    { label = "Hovered item", hovered = true },
+    { label = "Selected item", selected = true },
+    { label = "Section header", variant = "section" },
+    { label = "Selected section", variant = "section", selected = true },
+    { label = "With detail", detail = "Secondary detail line" },
+    { label = "Explicit accent", accent = true },
+    { label = "Disabled item", disabled = true },
+  }
+  local rows = {}
+  for index, item in ipairs(items) do
+    rows[index] = c.list_item({
+      id = "gallery:item:" .. index,
+      variant = item.variant,
+      hovered = item.hovered,
+      selected = item.selected or state.selected == index,
+      detail = item.detail,
+      accent = item.accent,
+      disabled = item.disabled,
+      on_activate = function()
+        state.selected = index
+        changed()
+      end,
+      c.label(item.label),
+    })
+  end
+  return c.column(rows, { width = "grow" })
+end
+
+local function picker(state)
+  local entries = { "alpha", "beta", "gamma", "delta", "epsilon" }
+  return c.picker({
+    id = "gallery:picker",
+    title = "Picker",
+    counter = state.selected .. "/" .. #entries,
+    prompt = true,
+    filter = state.filter,
+    height = "fit",
+    hints = { { "Enter", "open" }, { "Esc", "close" } },
+    list = {
+      height = "fit",
+      items = entries,
+      selected = state.selected,
+      render_item = function(entry, index, view)
+        return c.list_item({
+          id = "gallery:picker:item:" .. entry,
+          selected = index == state.selected,
+          c.rich({ plain = view.plain, ui.text(entry) }),
+        })
+      end,
+    },
+  })
+end
+
+---@param state? table
+---@param changed? fun()
+---@return HollowUiLayoutNode
+function M.render(state, changed)
+  state = state or {}
+  state.clicks = state.clicks or 0
+  state.selected = state.selected or 1
+  state.tab = state.tab or "gallery:tab:one"
+  state.filter = state.filter or ui.text_input({ initial = "query" })
+  changed = changed or function() end
+  local tones = {}
+  for _, tone in ipairs({ "default", "muted", "title", "empty", "counter" }) do
+    tones[#tones + 1] = c.label({ text = tone, tone = tone })
+  end
+  local toasts = {}
+  for _, level in ipairs({ "info", "success", "warn", "error" }) do
+    toasts[#toasts + 1] = c.toast({ level = level, text = level .. " notification" })
+  end
+  return c.scroll({
+    id = "gallery",
+    axis = "y",
+    width = "grow",
+    height = "grow",
+    c.column({
+      c.header({ title = "Component gallery", meta = "clicks: " .. state.clicks, width = "grow" }),
+      section(
+        "Text",
+        line(tones),
+        line(c.title("title"), c.empty("empty"), c.icon("bell"), c.text("plain text"))
+      ),
+      section(
+        "Painted atoms",
+        line(
+          c.badge({ text = "3" }),
+          c.badge({ text = "warn", color = "notify_levels.warn" }),
+          c.pill({ text = "workspace" }),
+          c.kbd({ key = "<C-k>" }),
+          c.kbd({ key = "Enter" })
+        ),
+        c.progress(0.65, { width = "grow", height = "0.5lh" })
+      ),
+      section("Solid buttons", buttons("solid", state, changed)),
+      section("Quiet buttons", buttons("quiet", state, changed)),
+      section(
+        "Tabs",
+        c.tabs({
+          active = state.tab,
+          on_select = function(id)
+            state.tab = id
+            changed()
+          end,
+          tabs = {
+            { id = "gallery:tab:one", label = "One" },
+            { id = "gallery:tab:two", label = "Two", badge = "2" },
+            { id = "gallery:tab:three", label = "Three", disabled = true },
+          },
+        })
+      ),
+      section(
+        "Hints",
+        c.hints({ { "Enter", "open" }, { "Tab", "next" }, { "Esc", "close" } }),
+        c.hints({ plain = true, { "Enter", "open" }, { "Esc", "close" } })
+      ),
+      section(
+        "Input",
+        c.input({ id = "gallery:input", behavior = state.filter }),
+        c.input({ id = "gallery:input:bare", behavior = state.filter, boxed = false })
+      ),
+      section(
+        "Rich",
+        c.rich({
+          width = "grow",
+          ui.text("bold ", { bold = true }),
+          ui.text("muted ", { fg = "muted" }),
+          ui.text("painted", { bg = "selection_bg", padding = { x = 4 } }),
+          ui.spacer(),
+          ui.text("right aligned", { fg = "title" }),
+        })
+      ),
+      section("List items", list_items(state, changed)),
+      section("Picker", picker(state)),
+      section(
+        "Dialog",
+        c.panel({
+          c.dialog({
+            id = "gallery:dialog",
+            title = "Discard changes?",
+            body = "Unsaved edits will be lost.",
+            selected = 1,
+            actions = {
+              { text = "Cancel" },
+              { text = "Save", kind = "primary" },
+              { text = "Discard", kind = "destructive" },
+              { text = "Later", disabled = true },
+            },
+          }),
+        })
+      ),
+      section("Toasts", c.column(toasts, { gap = "0.5lh" })),
+      section(
+        "Panel and stack",
+        c.panel({
+          inset = "modal",
+          c.stack({
+            divided = true,
+            gap = "1lh",
+            width = "grow",
+            c.label("first"),
+            c.label("second"),
+            c.empty("third"),
+          }),
+        })
+      ),
+    }, { width = "grow", padding = "1ch", gap = "1lh" }),
+  })
+end
+
+function M.open()
+  local state, surface = {}, nil
+  surface = ui.layout.new({
+    render = function()
+      return c.panel({
+        width = "grow",
+        height = "grow",
+        M.render(state, function()
+          surface:invalidate()
+        end),
+      })
+    end,
+  })
+  return surface:show()
 end
 
 return M
