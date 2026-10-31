@@ -1,6 +1,7 @@
 -- One container node, excluding children.
 local c = require("hollow.ui.components")
 local props = require("hollow.ui.components.props")
+local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
 
 return function(value)
@@ -21,6 +22,9 @@ return function(value)
   end
   if options.disabled then
     options.on_click = nil
+  end
+  if options.theme and options.style then
+    options.style = shared.resolve_tokens(options.style, options.theme)
   end
   return (direction == "row" and c.row or c.column)(children, options)
 end

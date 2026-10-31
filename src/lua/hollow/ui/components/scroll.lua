@@ -62,5 +62,8 @@ return function(value)
   if options.disabled then
     options.on_click = nil
   end
+  if options.theme and options.style then
+    options.style = shared.resolve_tokens(options.style, options.theme)
+  end
   return c.column(children, options)
 end

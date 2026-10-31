@@ -334,6 +334,31 @@ describe("hierarchical Clay layout", function()
     assert.equals("#bbbbbb", nodes[6].fg)
   end)
 
+  it("honors explicit themes for hints, stack and scroll style tokens", function()
+    local outer =
+      { fg = "#111111", muted = "#222222", panel_border = "#333333", divider = "#444444" }
+    local inner =
+      { fg = "#aaaaaa", muted = "#bbbbbb", panel_border = "#cccccc", divider = "#dddddd" }
+    local surface = layout.new({
+      theme = outer,
+      render = function()
+        return c.stack({
+          theme = inner,
+          divided = true,
+          style = { bg = "muted" },
+          c.hints({ theme = inner, { "Enter", "open" } }),
+          c.scroll({ id = "view", theme = inner, style = { bg = "muted" } }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#bbbbbb", nodes[1].bg)
+    assert.equals("#dddddd", nodes[1].border)
+    assert.equals("#cccccc", nodes[3].fg)
+    assert.equals("#bbbbbb", nodes[4].fg)
+    assert.equals("#bbbbbb", nodes[5].bg)
+  end)
+
   it("resolves cell units and reports invalid fields", function()
     local surface = layout.new({
       render = function()
