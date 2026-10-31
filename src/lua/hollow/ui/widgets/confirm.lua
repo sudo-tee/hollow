@@ -80,14 +80,15 @@ function ui.confirm.open(opts)
   m = ui.modal({
     title = opts.title,
     theme = base_theme,
-    render = function(theme, state, ctx)
+    render = function(theme, state)
       return require("hollow.ui.components.dialog")({
         title = opts.title,
-        prompt = opts.prompt,
-        footer = footer_buttons,
+        body = opts.prompt,
+        actions = footer_buttons,
+        theme = theme,
         selected = nav.index,
         hovered = state and find_hovered_index(state.hovered_id, footer_buttons),
-      }, theme, ctx)
+      })
     end,
     width = opts.width or 50,
     height = opts.height,
