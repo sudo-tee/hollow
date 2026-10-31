@@ -544,6 +544,26 @@ describe("hierarchical Clay layout", function()
     assert.equals(1, clicked)
   end)
 
+  it("preserves notification theme sheet overrides in toast", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      panel_bg = "#333333",
+      panel_border = "#444444",
+      notify_levels = { info = "#555555" },
+      styles = { notify = { message = { variants = { info = { fg = "title", bold = false } } } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.toast({ text = "notice", level = "info", inset = "none" })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#222222", nodes[2].fg)
+    assert.is_nil(nodes[2].bold)
+  end)
+
   it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()
     local theme = {
       fg = "#111111",

@@ -1,6 +1,5 @@
 local box = require("hollow.ui.style.box")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.recipes.notify")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -11,11 +10,6 @@ local ui = hollow.ui
 local overlay_stack = state.ui.overlay_stack
 
 ui.notify = ui.notify or {}
-
-local function notification_style(theme, level)
-  local variant = styles.slots.message.variants[level] and level or nil
-  return styles(theme, { variant = variant }).message
-end
 
 local function notification_border(theme, level)
   local foreground = theme.notify_levels[level] or theme.title
@@ -153,7 +147,6 @@ function ui.notify.show(message, opts)
       chrome = chrome,
       level = level,
       text = text,
-      text_style = notification_style(theme, level),
       on_click = function()
         if action and type(action.fn) == "function" then
           action.fn()

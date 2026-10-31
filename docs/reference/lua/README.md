@@ -32,6 +32,7 @@ namespace you need. The full type schema lives in
 | `hollow.keymap` | [keymap.md](keymap.md) |
 | `hollow.route` | [route.md](route.md) |
 | `hollow.ui` | [ui.md](ui.md) |
+| `hollow.ui.components` | [components.md](components.md) |
 | `hollow.ui.workspace` | [workspace.md](workspace.md) |
 | `hollow.theme` | [theme.md](theme.md) |
 | `hollow.htp` | [htp.md](htp.md) |
