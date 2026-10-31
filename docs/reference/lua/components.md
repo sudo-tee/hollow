@@ -91,7 +91,8 @@ colors. Recipe-backed atoms accept component theme overrides.
   `ui.span`, or group nodes as children and `prefix` for generated click IDs.
 - **`list_item`** — two shell nodes, plus one for a painted accent and user
   content. `detail` adds a column and a text node. Accepts `selected`, `hovered`,
-  `accent`, and `on_activate`; supply `label` for accessibility.
+  `accent`, and `on_activate`. `label` defaults to child text plus string
+  detail; set it explicitly when content needs a different accessibility label.
 - **`list`** — one scroll viewport plus item nodes. Requires `id`, `items`, and
   `render_item(item, index, view)`. `selected`, `viewport`, `window` (24),
   `budget` (410 item nodes), and `empty` configure windowing. Honor

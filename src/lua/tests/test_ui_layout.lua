@@ -189,6 +189,19 @@ describe("hierarchical Clay layout", function()
     assert.equals("#222222", nodes[5].fg)
   end)
 
+  it("derives list item labels from nested text and optional detail", function()
+    local surface = layout.new({
+      render = function()
+        return c.list_item({
+          id = "item",
+          detail = "detail",
+          [1] = { c.text("  padded"), false, { c.text(" text  ") } },
+        })
+      end,
+    })
+    assert.equals("  padded text  \ndetail", surface:snapshot()[1].label)
+  end)
+
   it("keeps select row adapter aliases during migration", function()
     local adapter = require("hollow.ui.components.row_adapter")
     assert.equals(adapter.from_row, c.select.from_row)
