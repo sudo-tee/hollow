@@ -1,10 +1,11 @@
 -- Two nodes: painted container and normalized key text.
 local chip = require("hollow.ui.components.chip")
+local props = require("hollow.ui.components.props")
 local recipe = require("hollow.ui.recipes.kbd")
 
 return function(value)
-  local p = type(value) == "table" and value or { key = value }
-  local key = p.key or p[1] or ""
+  local p = props.text(value, "key")
+  local key = p.key or ""
   local keymap = _G.hollow.keymap or {}
   if type(keymap.parse_chord) == "function" and type(keymap.format_chord) == "function" then
     local ok, parsed, mods = pcall(keymap.parse_chord, key)

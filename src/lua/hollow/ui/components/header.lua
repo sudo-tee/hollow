@@ -1,8 +1,9 @@
 -- One row plus title, optional spacer and meta; meta nodes are user children.
 local c = require("hollow.ui.components")
+local props = require("hollow.ui.components.props")
 
-return function(options)
-  options = options or {}
+return function(value)
+  local options = props.split(value)
   local title = tostring(options.title or "") .. (options.prompt and ":" or "")
   local children = {
     options._legacy_style and c.text(title, options.title_style, { wrap = "none" })
@@ -25,12 +26,5 @@ return function(options)
         })
     end
   end
-  local root = {}
-  for key, value in pairs(options) do
-    root[key] = value
-  end
-  if options.disabled then
-    root.on_click = nil
-  end
-  return c.row(children, root)
+  return c.row(children, options)
 end

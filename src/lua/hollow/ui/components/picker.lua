@@ -3,21 +3,12 @@
 local c = require("hollow.ui.components")
 local props = require("hollow.ui.components.props")
 
-local function copy(source)
-  local result = {}
-  for key, value in pairs(source or {}) do
-    result[key] = value
-  end
-  return result
-end
-
-return function(options)
-  options = options or {}
+return function(value)
+  local options = props.split(value)
   assert(type(options.id) == "string" and options.id ~= "", "picker requires an id")
   assert(type(options.list) == "table", "picker requires list props")
-  local scope = props.scope()
-  local theme = options.theme or scope.theme
-  local list = copy(options.list)
+  local theme = props.theme(options)
+  local list = props.copy(options.list)
   list.id = list.id or (options.id .. ":list")
   list.theme = list.theme or theme
   list.width = list.width or "grow"
@@ -48,11 +39,11 @@ return function(options)
   if options._hints then
     children[#children + 1] = options._hints
   elseif options.hints then
-    local hints = copy(options.hints)
+    local hints = props.copy(options.hints)
     hints.theme = hints.theme or theme
     children[#children + 1] = c.hints(hints)
   end
-  local root = copy(options)
+  local root = options
   if options._legacy then
     root.id = nil
   end

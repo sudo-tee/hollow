@@ -74,7 +74,7 @@ local function container(kind, children, opts)
     reveal_start = opts.reveal_start,
     measure = opts.measure,
     align_y = opts.align_y,
-    on_click = opts.on_click,
+    on_click = not opts.disabled and opts.on_click or nil,
   }
 end
 

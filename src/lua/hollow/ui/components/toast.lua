@@ -5,9 +5,9 @@ local recipe = require("hollow.ui.recipes.notify")
 local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
 
-return function(options)
-  options = options or {}
-  local theme = options.theme or props.scope().theme
+return function(value)
+  local options = props.split(value)
+  local theme = props.theme(options)
   local level = options.level or "info"
   local variant = recipe.slots.message.variants[level] and level or nil
   local style = shared.resolve_tokens(
@@ -18,19 +18,12 @@ return function(options)
   if options.action and options.action.label then
     text = text .. "  [" .. options.action.label .. "]"
   end
-  local root = {}
-  for key, value in pairs(options) do
-    root[key] = value
+  options.theme = theme
+  options.inset = options.inset or "modal"
+  options.label = options.label or text
+  if not options.on_click and options.action then
+    options.on_click = options.action.on_click or options.action.fn
   end
-  root.theme = theme
-  root.inset = root.inset or "modal"
-  root.label = root.label or text
-  if not root.on_click and options.action then
-    root.on_click = options.action.on_click or options.action.fn
-  end
-  if root.disabled then
-    root.on_click = nil
-  end
-  root[1] = c.text(text, style, { wrap = "none" })
-  return c.panel(root)
+  options[1] = c.text(text, style, { wrap = "none" })
+  return c.panel(options)
 end

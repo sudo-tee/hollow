@@ -5,18 +5,9 @@ local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
 
 return function(recipe, p, text, overrides)
-  local theme = p.theme or props.scope().theme
-  local style = shared.resolve_tokens(sheet.merge(recipe(theme, p).root, overrides, p.style), theme)
-  local root = {}
-  for key, value in pairs(p) do
-    root[key] = value
-  end
-  root.style = style
-  if p.disabled then
-    root.on_click = nil
-  end
-  return c.column(
-    { c.text(text, { fg = style.fg, bold = style.bold }, { wrap = p.wrap or "none" }) },
-    root
-  )
+  local theme = props.theme(p)
+  p.style = shared.resolve_tokens(sheet.merge(recipe(theme, p).root, overrides, p.style), theme)
+  return c.column({
+    c.text(text, { fg = p.style.fg, bold = p.style.bold }, { wrap = p.wrap or "none" }),
+  }, p)
 end

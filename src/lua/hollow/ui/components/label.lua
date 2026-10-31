@@ -6,10 +6,10 @@ local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
 
 return function(value)
-  local p = type(value) == "table" and value or { text = value }
-  local theme = p.theme or props.scope().theme
+  local p = props.text(value)
+  local theme = props.theme(p)
   local style = recipe(theme, { variant = p.tone or "default" }).root
-  return c.text(p.text or p[1], shared.resolve_tokens(sheet.merge(style, p.style), theme), {
+  return c.text(p.text, shared.resolve_tokens(sheet.merge(style, p.style), theme), {
     wrap = p.wrap or "none",
     text_align = p.text_align,
   })

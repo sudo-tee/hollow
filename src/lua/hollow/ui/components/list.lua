@@ -24,8 +24,8 @@ local function legacy_count(node)
   return total
 end
 
-return function(options)
-  options = options or {}
+return function(value)
+  local options = props.split(value)
   assert(type(options.id) == "string" and options.id ~= "", "list requires an id")
   assert(type(options.render_item) == "function", "list requires render_item")
   local items, viewport = options.items or {}, options.viewport or {}
@@ -88,10 +88,7 @@ return function(options)
   if #items == 0 and options.empty ~= nil then
     rows[1] = type(options.empty) == "string" and c.empty(options.empty) or options.empty
   end
-  local root = {}
-  for key, value in pairs(options) do
-    root[key] = value
-  end
+  local root = options
   if root.reveal == nil and not options._legacy_window then
     for offset, index in ipairs(indices) do
       if index == selected and rows[offset].kind ~= nil then

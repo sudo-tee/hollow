@@ -26,8 +26,7 @@ end
 
 return function(value)
   local options, children = props.split(value)
-  local scope = props.scope()
-  local theme, ctx = options.theme or scope.theme, options.ctx or scope.ctx
+  local theme, ctx = props.theme(options), props.ctx(options)
   local inset = options.inset or "overlay"
   assert(inset == "overlay" or inset == "modal" or inset == "none", "invalid panel inset")
   local chrome = options.chrome
@@ -43,8 +42,5 @@ return function(value)
     padding.top, padding.bottom = padding.top + h, padding.bottom + h * 0.5
   end
   options.style, options.padding = style, padding
-  if options.disabled then
-    options.on_click = nil
-  end
   return c.column(children, options)
 end

@@ -40,7 +40,7 @@ end
 
 return function(value)
   local options, children = props.split(value)
-  local theme = options.theme or props.scope().theme
+  local theme = props.theme(options)
   local paint = list_row(theme, options).paint
   local style = options._style
     or {

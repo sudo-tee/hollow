@@ -28,9 +28,7 @@ return function(value)
       type(bar) == "table" and type(bar.id) == "string" and bar.id ~= "",
       "scrollbar requires an id"
     )
-    local scope = props.scope()
-    local ctx = options.ctx or scope.ctx
-    local theme = options.theme or scope.theme
+    local ctx, theme = props.ctx(options), props.theme(options)
     local paint = options._legacy_paint
         and shared.serialize_row_paint({ scrollbar_track = true }, theme)
       or list_row(theme).paint
@@ -58,9 +56,6 @@ return function(value)
     local right = padding_right(padding.right or padding.top, ctx)
     padding.right = right + math.max(8, props.cell_w(ctx))
     options.padding = padding
-  end
-  if options.disabled then
-    options.on_click = nil
   end
   if options.theme and options.style then
     options.style = shared.resolve_tokens(options.style, options.theme)
