@@ -4,6 +4,7 @@ local c = ui.components
 local completion = require("hollow.ui.widgets.lua_repl.completion")
 local editor = require("hollow.ui.widgets.lua_repl.editor")
 local eval = require("hollow.ui.widgets.lua_repl.eval")
+local props = require("hollow.ui.components.props")
 local tools = require("hollow.ui.widgets.lua_repl.tools")
 local transcript = require("hollow.ui.widgets.lua_repl.transcript")
 local M = { SCROLLBAR = "repl:output:scrollbar" }
@@ -167,7 +168,7 @@ end
 
 -- Returns the layout and the height it needs when the modal has no fixed height.
 function M.render(theme, ctx, opts)
-  local h = ctx.cell_h or 19
+  local h = props.cell_h(ctx)
   local muted = { fg = theme.muted or theme.fg }
 
   local menu, menu_rows = {}, 0

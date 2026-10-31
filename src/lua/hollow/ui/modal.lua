@@ -2,6 +2,7 @@
 ---
 --- Creates an overlay widget, pushes it, returns a handle with close/invalidate.
 
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -178,7 +179,7 @@ function M.modal(spec)
             preferred_height
             + panel.padding.top
             + panel.padding.bottom
-          ) / (ctx.cell_h or 19)
+          ) / props.cell_h(ctx)
         end
         return panel
       end,

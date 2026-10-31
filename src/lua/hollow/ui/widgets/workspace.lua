@@ -2,6 +2,7 @@ local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 local styles = require("hollow.ui.recipes.workspace")
@@ -135,7 +136,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
   local s = styles(palette, { variant = variant })
   local match = require("hollow.ui.recipes.select")(view.theme).match
-  local cell_h = ctx.cell_h or 19
+  local cell_h = props.cell_h(ctx)
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)

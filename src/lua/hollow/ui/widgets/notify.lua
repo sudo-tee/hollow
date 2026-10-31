@@ -1,4 +1,5 @@
 local box = require("hollow.ui.style.box")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local util = require("hollow.util")
 
@@ -106,7 +107,7 @@ function ui.notify.show(message, opts)
         local toast = group[widget.align:find("bottom") and index or (#group - index + 1)]
         children[#children + 1] = toast._toast_render(ctx)
       end
-      return ui.components.column(children, { gap = ctx.cell_h or 19 })
+      return ui.components.column(children, { gap = props.cell_h(ctx) })
     end,
     on_unmount = invalidate_toasts,
     align = opts.align or "top_right",
