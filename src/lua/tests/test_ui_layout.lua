@@ -509,6 +509,41 @@ describe("hierarchical Clay layout", function()
     end, "invalid panel inset")
   end)
 
+  it("renders toast level and action in two nodes", function()
+    local clicked = 0
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      panel_bg = "#333333",
+      panel_border = "#444444",
+      notify_levels = { info = "#555555", warn = "#666666" },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.toast({
+          id = "toast",
+          level = "warn",
+          text = "Warning",
+          inset = "none",
+          action = {
+            label = "Open",
+            on_click = function()
+              clicked = clicked + 1
+            end,
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(2, #nodes)
+    assert.equals("Warning  [Open]", nodes[1].label)
+    assert.equals("Warning  [Open]", nodes[2].text)
+    assert.equals("#666666", nodes[2].fg)
+    surface:dispatch(nodes[1].id)
+    assert.equals(1, clicked)
+  end)
+
   it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()
     local theme = {
       fg = "#111111",

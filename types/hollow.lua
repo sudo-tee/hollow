@@ -2433,6 +2433,12 @@ local workspace = {}
 ---@field actions? HollowUiDialogAction[]
 ---@field selected? integer|string Selected action index or ID.
 
+---@class HollowUiToastProps: HollowUiPanelProps
+---@field level? 'info'|'success'|'warn'|'error'|string
+---@field text? string
+---@field text_style? HollowUiNodeStyle
+---@field action? {label: string, on_click?: fun(event: {id: string}), fn?: fun()}
+
 --- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
 ---@class HollowUiLayout
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
@@ -2455,6 +2461,7 @@ local workspace = {}
 ---@field list_item fun(props: HollowUiListItemProps): HollowUiLayoutNode
 ---@field list fun(props: HollowUiListProps): HollowUiLayoutNode
 ---@field picker fun(props: HollowUiPickerProps): HollowUiLayoutNode
+---@field toast fun(props: HollowUiToastProps): HollowUiLayoutNode
 ---@field label fun(value: string|HollowUiLabelProps): HollowUiLayoutNode
 ---@field title fun(value: string|HollowUiTitleProps): HollowUiLayoutNode
 ---@field empty fun(value: string|HollowUiEmptyProps): HollowUiLayoutNode

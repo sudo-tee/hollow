@@ -144,13 +144,16 @@ function ui.notify.show(message, opts)
     if not opts.chrome then
       chrome.border = notification_border(theme, level)
     end
-    return ui.components.panel({
+    return ui.components.toast({
       id = "notify:" .. tostring(widget._toast_id),
       label = text,
       theme = theme,
       ctx = ctx,
       inset = "modal",
       chrome = chrome,
+      level = level,
+      text = text,
+      text_style = notification_style(theme, level),
       on_click = function()
         if action and type(action.fn) == "function" then
           action.fn()
@@ -160,7 +163,6 @@ function ui.notify.show(message, opts)
         end
         ui.close_overlay_widget(widget)
       end,
-      ui.components.text(text, notification_style(theme, level), { wrap = "none" }),
     })
   end
   ui.notify._next_toast_id = (ui.notify._next_toast_id or 0) + 1

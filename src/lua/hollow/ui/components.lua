@@ -28,6 +28,7 @@ local lazy = {
   stack = "hollow.ui.components.stack",
   tabs = "hollow.ui.components.tabs",
   title = "hollow.ui.components.title",
+  toast = "hollow.ui.components.toast",
 }
 setmetatable(M, {
   __index = function(self, key)

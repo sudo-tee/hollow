@@ -385,3 +385,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
   Its list adapter retains that behavior pending a separately reviewed change.
 - Activity centers overscan using measured row capacity, rather than the current
   visible-range length; its list adapter preserves that calculation.
+- `toast` currently uses `styles.notify.message` so existing notification theme
+  overrides remain effective; a separate toast sheet needs an alias strategy.
