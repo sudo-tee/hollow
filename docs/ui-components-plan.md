@@ -173,9 +173,10 @@ Node cost is per instance, excluding user children.
 | `scroll`             | `id` (required), `reveal`, `reveal_start`, `scrollbar` = `{ id, ratio, size }`, `axis` = `"y"\|"x"\|"both"`, `measure` | 1 | viewport blocks in select, mux, activity ×2 |
 | `when`, `each`, `join` | re-exports of `ui.when` / `ui.each` / `ui.join`        | 0     | — |
 
-`scroll` owns the right gutter (`max(8, 1ch)` when the scrollbar shows) and the
-track/thumb colors from `recipes/list_row` `paint`, so callers pass only the
-logical thumb ratio/size from `selectable_list.visible_range()`.
+`scroll` owns the right gutter (`max(8, 1ch)` when the scrollbar shows), so
+callers pass only the logical thumb ratio/size from
+`selectable_list.visible_range()`. Track and thumb colors resolve from the theme
+scrollbar parts unless `track_color`/`thumb_color` are given explicitly.
 
 ### Atoms
 
@@ -326,69 +327,91 @@ Done when: no widget computes scrollbar gutters or base insets, and
 
 ---
 
-## 7. Open questions
+## 7. Resolved questions
 
-1. `appearance` vs `variant` naming for solid/quiet buttons?
-2. Should `hints` use `kbd` chips (nicer, +1 node per hint) or tone labels?
-3. Expose `picker` publicly in Phase 4, or keep it internal until its props
-   settle?
-4. Keep `c.row(children, opts)` forever, or deprecate it once the props form
-   is everywhere?
+1. **`appearance` vs `variant`:** `appearance` (`"solid"`, the default, or
+   `"quiet"`) selects the look; `variant` stays the recipe color layer
+   (`default`, `primary`, `destructive`).
+2. **Hint keys:** tone labels, not `kbd` chips. Hints sit in every picker
+   footer, and `kbd` costs an extra node per hint.
+3. **`picker` visibility:** public. `header`, `filter` and `hints` accept
+   prebuilt nodes, which covered every built-in shell without private flags.
+4. **`c.row(children, opts)`:** kept permanently. It is unambiguous and used
+   throughout widgets and user configs; the props form is the alternative,
+   not a replacement.
 
 ---
 
 ## Status
 
-| Phase                     | State       |
-| ------------------------- | ----------- |
-| 1 Foundations             | Implemented |
-| 2 Atoms and controls      | In progress |
-| 3 Containers              | In progress |
-| 4 Lists and picker        | In progress |
-| 5 Composites, cleanup     | In progress |
+| Phase                     | State |
+| ------------------------- | ----- |
+| 1 Foundations             | Done  |
+| 2 Atoms and controls      | Done  |
+| 3 Containers              | Done  |
+| 4 Lists and picker        | Done  |
+| 5 Composites, cleanup     | Done  |
+
+Every built-in overlay (select, palette, workspace, mux navigator, activity,
+REPL, dialogs, notifications) is composed from public components. No adapters
+or private compatibility flags remain; `c.demo()` opens the gallery, which
+`test_ui_gallery.lua` renders against every bundled theme.
 
 ## Findings
+
+Engine and cost notes:
 
 - `box.normalize` silently ignores string values, including scalar padding;
   resolve units before normalization rather than modifying shared box behavior.
 - A scalar `gap(n)` has no parent-axis information. It defaults to width;
   use `gap { height = n }` for vertical gaps.
-- Existing input rendering costs two nodes per run (a container plus text),
-  not one; its total cost is `2 + 2/runs`. Keep this structure for parity.
-- Select hints use a separately colored separator node. `hints` accepts a
-  separator style to preserve those nodes during the refactor; compact hints
-  retain the planned two-nodes-per-hint cost.
+- Input rendering costs two nodes per run (a container plus text), not one; its
+  total cost is `2 + 2/runs`.
 - `tabs` needs a containing row and painted badges need two additional nodes;
   total cost is `1 + 2/tab + 2/badge`, not `2/tab`.
-- REPL hints currently use one text node. A plain hints mode preserves that
-  snapshot; colored key/description runs remain a separate visual change.
-- Select scrollbar track uses `list_row.raw_paint`, not `paint`; retain its
-  legacy fallback during migration to avoid an unreviewed color change.
-- Activity details supplies its own scrollbar colors; preserve those overrides
-  when moving its viewport to `scroll`.
-- Select header metadata is inline rather than right-aligned. Preserve its
-  two text nodes and widget-specific styles during the refactor.
+- Select hints use a separately colored separator node, so `hints` accepts a
+  separator style; compact hints keep two nodes per hint. REPL hints use
+  `plain = true` (one text node).
 - Panel insets and scrollbar gutters need arithmetic before serialization;
   shared unit resolution in `components/props.lua` keeps their rules consistent
   with the serializer.
-- Mux and activity headers contain rich inline controls, not only title/meta
-  text. Extract `rich` first to preserve their structure and callbacks.
-- Existing `flatten_span_nodes` does not traverse raw fragments. The `rich`
-  props form first collects inline children so sparse nested fragments work;
-  its positional compatibility form retains existing behavior.
+- `flatten_span_nodes` does not traverse raw fragments, so `rich` collects
+  inline children first. Mux and activity headers contain clickable inline
+  controls; `rich` also passes layout nodes (such as `c.button` or `c.tabs`)
+  through so overlays need no `ui.action_button`/`ui.tab_bar`.
 - `list` budget is a soft item-node limit when visible and selected rich rows
   alone exceed it; those rows cannot be degraded without breaking the guarantee.
-- Legacy `select` budget logic can degrade visible and selected rows when the
-  entire window exceeds budget. Its adapter keeps that behavior for snapshot
-  parity; public `list` protects those rows as planned.
-- Mux previously rendered its entire 24-row window without budget degradation.
-  Its list adapter retains that behavior pending a separately reviewed change.
-- Activity centers overscan using measured row capacity, rather than the current
-  visible-range length; its list adapter preserves that calculation.
-- `toast` currently uses `styles.notify.message` so existing notification theme
-  overrides remain effective; a separate toast sheet needs an alias strategy.
-- `components/select.lua` is removed, but `c.select` still aliases the internal
-  adapter while select and palette retain legacy row formatting. Direct
-  `require("hollow.ui.components.select")` is no longer supported.
-- Select's compatibility adapter can render outside a surface, so the input
-  props form temporarily accepts explicit `ctx` for those calls.
+- `toast` uses `styles.notify.message` so existing notification theme overrides
+  remain effective; a separate toast sheet would need an alias strategy.
+
+Decisions that deviate from the plan:
+
+- `appearance = "quiet"` reads the existing `styles.button.dialog` slot rather
+  than a renamed one, so user overrides keep working with no alias layer (the
+  Risks entry about slot aliases no longer applies). The `ghost` variant also
+  stays in the sheet as a no-op alias of `default`.
+- Positional `dialog(opts, theme, ctx)` and `input(...)` forms and the `c.select`
+  composite are removed rather than deprecated; `dialog` takes `actions` only.
+
+Accepted visual and structural changes (reviewed snapshot diffs):
+
+- Snapshot fixtures are written with sorted keys through `harness.fixture`;
+  `UPDATE_FIXTURES=1 ./scripts/test-lua.sh <file>` regenerates them.
+- Select, mux and activity scrollbar tracks use the theme `scrollbar_track`
+  (e.g. `#81a1c1` on nord) instead of the hard-coded `#5a6375` fallback.
+  Activity details keeps its explicit track/thumb colors.
+- List items size to their content instead of carrying an explicit height.
+- Mux uses the default list window (24) and 410-node budget instead of an
+  unbounded budget; activity overscan is centred on the visible range rather
+  than on measured capacity. Legacy select degradation of visible rows is gone.
+- Pickers, filters and inputs now carry derived IDs (`<picker>`,
+  `<picker>:filter`, `<picker>:filter:viewport`/`:caret`); rich run IDs follow
+  their `prefix` (e.g. `activity:header:run:N`), and activity buttons use their
+  own IDs (`activity:dismiss:<id>`, `activity:copy`).
+- Activity tabs render through `c.tabs`: the badge sits inside the tab's click
+  target with a 4px gap, tabs are separated by a `1ch` row gap instead of space
+  text nodes, and the tab label no longer carries a trailing space.
+- Clickable inline runs in overlays keep their own hover paint (an action's
+  theme `hover_bg`) rather than the overlay palette's.
+- Workspace and select items keep their padded accessibility labels through an
+  explicit `label`, preserving the ground rule above.
