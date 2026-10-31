@@ -17,6 +17,7 @@ local lazy = {
   input = "hollow.ui.components.input",
   kbd = "hollow.ui.components.kbd",
   label = "hollow.ui.components.label",
+  list_item = "hollow.ui.components.list_item",
   panel = "hollow.ui.components.panel",
   pill = "hollow.ui.components.pill",
   rich = "hollow.ui.components.rich",

@@ -57,26 +57,6 @@ function M.line_height(theme, ctx)
   return (ctx.cell_h or 19) + padding.top + padding.bottom
 end
 
----@param color HollowStyleColor|number|nil
----@param radius number|nil
----@return HollowUiLayoutNode
-local function accent_gutter(color, radius)
-  local inset = box.px(radius, 0)
-  local children = {}
-  if color and color ~= 0 then
-    children[1] = c.column({}, {
-      width = 2,
-      height = "grow",
-      style = { bg = color, radius = inset > 0 and 1 or 0 },
-    })
-  end
-  return c.column(children, {
-    width = 2,
-    height = "grow",
-    padding = { left = 0, right = 0, top = inset, bottom = inset },
-  })
-end
-
 ---@param entry HollowUiSelectEntry
 ---@param index integer
 ---@param opts HollowUiLayoutSelectOptions
@@ -125,20 +105,20 @@ local function item(entry, index, opts, theme, ctx, plain)
       padding = { left = props.cell_w(ctx), top = padding.top, bottom = padding.bottom },
     })
   end
-  return c.row({
-    accent_gutter(paint.paint.accent_bar, paint.paint.fill_radius),
+  return c.list_item({
     c.column(
       lines,
       { width = "grow", padding = { left = props.cell_w(ctx) * 2 + padding.left - 2 } }
     ),
-  }, {
     id = id,
+    theme = theme,
     role = "listitem",
     label = entry.detail_text and (entry.label_text .. "\n" .. entry.detail_text)
       or entry.label_text,
     width = "grow",
     height = line_h * #lines,
-    style = {
+    _accent = paint.paint.accent_bar or false,
+    _style = {
       bg = paint.paint.fill_bg,
       radius = paint.paint.fill_radius,
       hover = { bg = list_row(theme, { selected = selected, hovered = true }).paint.fill_bg },
@@ -335,16 +315,16 @@ function M.from_row(row, id, label, theme, ctx, on_click, plain)
       align_y = center and "center" or "start",
     })
   end
-  return c.row({
-    accent_gutter(serialized.accent_bar, serialized.fill_radius),
+  return c.list_item({
     content,
-  }, {
     id = id,
+    theme = theme,
     role = "listitem",
     label = label,
     width = "grow",
     height = (ctx.cell_h or 19) + top + bottom,
-    style = {
+    _accent = serialized.accent_bar or false,
+    _style = {
       bg = serialized.fill_bg,
       radius = serialized.fill_radius,
       hover = {

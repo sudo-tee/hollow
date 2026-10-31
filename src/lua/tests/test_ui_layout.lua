@@ -120,6 +120,54 @@ describe("hierarchical Clay layout", function()
     assert.equals(c.rich, c.select.inline)
   end)
 
+  it("renders list item selection, accent and padded accessibility label", function()
+    local clicked
+    local theme = {
+      fg = "#111111",
+      panel_border = "#222222",
+      selection_bg = "#333333",
+      hover_bg = "#444444",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.list_item({
+            id = "first",
+            label = " padded ",
+            selected = true,
+            accent = "panel_border",
+            on_activate = function(event)
+              clicked = event.id
+            end,
+            c.text("One"),
+          }),
+          c.list_item({
+            id = "disabled",
+            label = "Disabled",
+            selected = true,
+            accent = false,
+            disabled = true,
+            on_activate = function()
+              error("disabled")
+            end,
+            c.text("Two"),
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(8, #nodes)
+    assert.equals(" padded ", nodes[2].label)
+    assert.is_true(nodes[2].list_item)
+    assert.equals("#333333", nodes[2].bg)
+    assert.equals("#222222", nodes[4].bg)
+    assert.is_nil(nodes[6].clickable)
+    assert.equals("Two", nodes[8].text)
+    surface:dispatch(nodes[2].id)
+    assert.equals("first", clicked)
+  end)
+
   it("flattens sparse nested rich fragments", function()
     local surface = layout.new({
       render = function()
