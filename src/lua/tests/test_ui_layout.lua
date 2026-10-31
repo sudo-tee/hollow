@@ -313,6 +313,27 @@ describe("hierarchical Clay layout", function()
     assert.equals(1, clicked)
   end)
 
+  it("resolves atom style tokens against an explicit theme, not the surface", function()
+    local outer = { fg = "#111111", muted = "#222222", panel_bg = "#333333" }
+    local inner = { fg = "#aaaaaa", muted = "#bbbbbb", panel_bg = "#cccccc" }
+    local surface = layout.new({
+      theme = outer,
+      render = function()
+        return c.column({
+          c.label({ text = "label", theme = inner, style = { fg = "muted" } }),
+          c.badge({ text = "badge", theme = inner, color = "muted", style = { fg = "fg" } }),
+          c.pill({ text = "pill", theme = inner, fg = "muted", bg = "panel_bg" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#bbbbbb", nodes[2].fg)
+    assert.equals("#bbbbbb", nodes[3].bg)
+    assert.equals("#aaaaaa", nodes[4].fg)
+    assert.equals("#cccccc", nodes[5].bg)
+    assert.equals("#bbbbbb", nodes[6].fg)
+  end)
+
   it("resolves cell units and reports invalid fields", function()
     local surface = layout.new({
       render = function()
