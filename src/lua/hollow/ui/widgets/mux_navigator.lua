@@ -511,14 +511,13 @@ function ui.mux_navigator.open(opts)
       })
       local target = rows[reveal_start and viewport.start_idx or nav.index]
       local cell_h = ctx.cell_h or 19
-      return c.stack({
+      return c.picker({
+        id = "mux:picker",
         theme = render_theme,
-        divided = true,
-        width = "grow",
-        height = "grow",
         gap = cell_h,
-        c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
-        c.list({
+        _legacy = true,
+        _header = c.rich({ width = "grow", height = cell_h, scroll_x = true, search.children }),
+        list = {
           id = "mux:viewport",
           theme = render_theme,
           ctx = ctx,
@@ -542,7 +541,7 @@ function ui.mux_navigator.open(opts)
             wrap = "words",
             _legacy_style = true,
           }),
-        }),
+        },
       }),
         2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
     end,
