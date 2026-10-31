@@ -345,7 +345,7 @@ Done when: no widget computes scrollbar gutters or base insets, and
 | 2 Atoms and controls      | In progress |
 | 3 Containers              | In progress |
 | 4 Lists and picker        | In progress |
-| 5 Composites, cleanup     | Not started |
+| 5 Composites, cleanup     | In progress |
 
 ## Findings
 

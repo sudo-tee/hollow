@@ -90,4 +90,59 @@ describe("dialog component snapshot", function()
       { wrap = 2, kind = 2, fg = "#111111", text = "Cancel" },
     }, nodes)
   end)
+
+  it("supports scoped props, string body, and action IDs", function()
+    local ui = harness.boot().hollow.ui
+    local selected
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      divider = "#333333",
+      panel_bg = "#444444",
+      selected_bg = "#555555",
+      selected_fg = "#eeeeee",
+      muted = "#777777",
+      radius = 3,
+    }
+    local surface = ui.layout.new({
+      theme = theme,
+      render = function()
+        return ui.components.dialog({
+          id = "dialog",
+          title = "Choose",
+          body = "Body",
+          selected = "dialog:action:1",
+          actions = {
+            {
+              text = "Accept",
+              on_click = function(event)
+                selected = event.id
+              end,
+            },
+            {
+              id = "disabled",
+              text = "Disabled",
+              disabled = true,
+              on_click = function()
+                error("disabled")
+              end,
+            },
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    local by_id = {}
+    for _, node in ipairs(nodes) do
+      if node.id then
+        by_id[node.id] = node
+      end
+    end
+    local action = assert(by_id[surface.namespace .. "dialog:action:1"])
+    assert.equals("Accept", action.label)
+    assert.is_not_nil(action.bg)
+    assert.is_nil(by_id[surface.namespace .. "disabled"].clickable)
+    surface:dispatch(action.id)
+    assert.equals("dialog:action:1", selected)
+  end)
 end)

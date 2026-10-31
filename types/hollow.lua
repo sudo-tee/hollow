@@ -2420,6 +2420,19 @@ local workspace = {}
 ---@field title_style? HollowUiNodeStyle
 ---@field meta_style? HollowUiNodeStyle
 
+---@class HollowUiDialogAction
+---@field id? string Defaults to the dialog ID plus an action index.
+---@field text string
+---@field kind? 'default'|'primary'|'destructive'
+---@field disabled? boolean
+---@field on_click? fun(event: {id: string})
+
+---@class HollowUiDialogProps: HollowUiComponentProps
+---@field title? string
+---@field body? string|HollowUiLayoutNode|table
+---@field actions? HollowUiDialogAction[]
+---@field selected? integer|string Selected action index or ID.
+
 --- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
 ---@class HollowUiLayout
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
@@ -2458,7 +2471,7 @@ local workspace = {}
 ---@field each fun(list: table|nil, fn: fun(item: any, index: integer): any): table
 ---@field join fun(items: table, sep: any): table
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
----@field dialog fun(opts: table, theme: HollowUiTheme, ctx: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
+---@field dialog fun(opts: HollowUiDialogProps|table, theme?: HollowUiTheme, ctx?: HollowUiLayoutContext): HollowUiLayoutNode Title, body and footer buttons.
 ---@field input fun(input: HollowUiInputComponentProps|HollowUiTextInput, theme?: HollowUiTheme, ctx?: HollowUiLayoutContext, inline?: boolean): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
 ---@field select table Bounded selectable-list composition (`render`, `sections`, `inline`, `from_row`).
 ---@field demo fun()
