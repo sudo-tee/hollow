@@ -2388,6 +2388,15 @@ local workspace = {}
 ---@field accent? boolean|string
 ---@field on_activate? fun(event: { id: string })
 
+---@class HollowUiListProps: HollowUiScrollProps
+---@field items? any[]
+---@field render_item fun(item: any, index: integer, view: {plain: boolean}): HollowUiLayoutNode|table
+---@field selected? integer
+---@field viewport? {start_idx?: integer, end_idx?: integer, show_scrollbar?: boolean, scrollbar_id?: string, thumb_ratio?: number, thumb_size?: number}
+---@field window? integer Defaults to 24.
+---@field budget? integer Item-node budget; defaults to 410. Visible and selected rows remain rich.
+---@field empty? string|HollowUiLayoutNode
+
 ---@class HollowUiPanelProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
 ---@field chrome? HollowUiChrome|boolean
@@ -2421,6 +2430,7 @@ local workspace = {}
 ---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
 ---@field rich fun(props: HollowUiRichProps): HollowUiLayoutNode
 ---@field list_item fun(props: HollowUiListItemProps): HollowUiLayoutNode
+---@field list fun(props: HollowUiListProps): HollowUiLayoutNode
 ---@field label fun(value: string|HollowUiLabelProps): HollowUiLayoutNode
 ---@field title fun(value: string|HollowUiTitleProps): HollowUiLayoutNode
 ---@field empty fun(value: string|HollowUiEmptyProps): HollowUiLayoutNode

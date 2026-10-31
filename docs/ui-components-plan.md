@@ -376,3 +376,5 @@ Done when: no widget computes scrollbar gutters or base insets, and
 - Existing `flatten_span_nodes` does not traverse raw fragments. The `rich`
   props form first collects inline children so sparse nested fragments work;
   its positional compatibility form retains existing behavior.
+- `list` budget is a soft item-node limit when visible and selected rich rows
+  alone exceed it; those rows cannot be degraded without breaking the guarantee.

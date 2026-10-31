@@ -168,6 +168,72 @@ describe("hierarchical Clay layout", function()
     assert.equals("first", clicked)
   end)
 
+  it("keeps visible and selected list rows rich under the node budget", function()
+    local items, simplified = {}, {}
+    for i = 1, 100 do
+      items[i] = i
+    end
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = items,
+          selected = 12,
+          viewport = { start_idx = 12, end_idx = 13 },
+          render_item = function(item, index, view)
+            if view.plain then
+              simplified[index] = true
+            end
+            local children = {}
+            for run = 1, view.plain and 1 or 20 do
+              children[run] = c.text(item .. ":" .. run)
+            end
+            return c.row(children, { id = "item:" .. index })
+          end,
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.is_true(#nodes <= 411)
+    assert.is_true(#nodes < 512)
+    assert.is_not_nil(next(simplified))
+    assert.is_nil(simplified[12])
+    assert.is_nil(simplified[13])
+    assert.equals(surface.namespace .. "item:12", nodes[1].reveal)
+    local rich = {}
+    for _, node in ipairs(nodes) do
+      if node.id then
+        rich[node.id] = node.children
+      end
+    end
+    assert.equals(20, rich[surface.namespace .. "item:12"])
+    assert.equals(20, rich[surface.namespace .. "item:13"])
+  end)
+
+  it("retains a selected list item outside the visible window", function()
+    local items = {}
+    for i = 1, 50 do
+      items[i] = i
+    end
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = items,
+          selected = 40,
+          window = 4,
+          viewport = { start_idx = 1, end_idx = 2 },
+          render_item = function(item, index, view)
+            assert.is_false(index == 40 and view.plain)
+            return c.column({ c.text(item) }, { id = "item:" .. index })
+          end,
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(surface.namespace .. "item:40", nodes[1].reveal)
+  end)
+
   it("flattens sparse nested rich fragments", function()
     local surface = layout.new({
       render = function()
