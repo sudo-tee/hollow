@@ -37,11 +37,12 @@ function ui.input.open(opts)
   m = ui.modal({
     title = opts.prompt or "Text input",
     theme = base_theme,
-    render = function(theme, _, ctx)
+    render = function(theme)
       return require("hollow.ui.components.dialog")({
         title = opts.prompt,
-        body = require("hollow.ui.components.input")(input, theme, ctx),
-      }, theme, ctx)
+        body = require("hollow.ui.components.input")({ behavior = input, theme = theme }),
+        theme = theme,
+      })
     end,
     width = opts.width,
     height = opts.height,
