@@ -77,7 +77,7 @@ describe("Clay selectable list", function()
     assert.is_nil(tree[other + 1].bg)
     assert.equals(content.padding.left, tree[other + 2].padding.left)
 
-    local adapter = require("hollow.ui.components.select")
+    local adapter = require("hollow.ui.components.row_adapter")
     local theme = require("hollow.ui.shared").palette("select")
     local function adapted(radius, color)
       return adapter.from_row(

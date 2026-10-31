@@ -2,7 +2,7 @@ local M = {}
 
 function M.row(ui, row, theme)
   local shared = require("hollow.ui.shared")
-  return require("hollow.ui.components.select").from_row(
+  return require("hollow.ui.components.row_adapter").from_row(
     row,
     row.id or "row",
     shared.nodes_plain_text(row.children),

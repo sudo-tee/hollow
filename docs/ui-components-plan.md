@@ -387,3 +387,6 @@ Done when: no widget computes scrollbar gutters or base insets, and
   visible-range length; its list adapter preserves that calculation.
 - `toast` currently uses `styles.notify.message` so existing notification theme
   overrides remain effective; a separate toast sheet needs an alias strategy.
+- `components/select.lua` is removed, but `c.select` still aliases the internal
+  adapter while select and palette retain legacy row formatting. Direct
+  `require("hollow.ui.components.select")` is no longer supported.
