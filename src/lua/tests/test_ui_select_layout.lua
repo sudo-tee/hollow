@@ -283,6 +283,16 @@ describe("Clay selectable list", function()
     end
     assert.is_true(found_label)
     assert.is_true(found_detail)
+    -- Detail lines are indented one cell past the label.
+    local nodes, indented = prepare(), false
+    for index, node in ipairs(nodes) do
+      if node.padding and node.padding.left == 8 then
+        for offset = 1, 3 do
+          indented = indented or (nodes[index + offset] or {}).text == "details"
+        end
+      end
+    end
+    assert.is_true(indented)
     local beta = row(2)
     ui.dispatch_widget_event("overlay:hover", { id = beta.id, index = 1 })
     prepare()

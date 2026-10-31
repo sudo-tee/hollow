@@ -222,10 +222,10 @@ local function render_entry(entry, index, view, plain)
   if entry.detail_text and entry.detail_text ~= "" then
     local detail = plain and { ui.text(entry.detail_text) }
       or shared.highlight_inline_nodes(entry.detail_nodes, view.query, s.match)
-    lines[2] =
-      c.rich(util.merge_tables({ prefix = id .. ":detail", style = s.detail, detail }, line, {
-        padding = { left = props.cell_w(ctx), top = padding.top, bottom = padding.bottom },
-      }))
+    local detail_line =
+      util.merge_tables({ prefix = id .. ":detail", style = s.detail, detail }, line)
+    detail_line.padding.left = props.cell_w(ctx)
+    lines[2] = c.rich(detail_line)
   end
   return c.list_item({
     id = id,
