@@ -742,14 +742,15 @@ function ui.activity.open(opts)
       )
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
-    local children = { line(render_header()) }
+    local header = line(render_header())
+    local filter_node
     if searching then
-      children[#children + 1] = c.row({
+      filter_node = c.row({
         c.text("/ ", styles(theme).label),
         require("hollow.ui.components.input")(filter, theme, ctx, true),
       }, { width = "grow" })
     end
-    children[#children + 1] = c.list({
+    local list_props = {
       id = "activity:viewport",
       theme = theme,
       ctx = ctx,
@@ -776,17 +777,19 @@ function ui.activity.open(opts)
         wrap = "words",
         _legacy_style = true,
       }),
-    })
-    children[#children + 1] = copy_feedback
+    }
+    local hint_node = copy_feedback
         and line(ui.row({ ui.text(copy_feedback, styles(theme).success) }))
       or hints(list_hints)
-    return c.stack({
+    return c.picker({
+      id = "activity:picker",
       theme = theme,
-      divided = true,
-      width = "grow",
-      height = "grow",
       gap = cell_h,
-      children,
+      list = list_props,
+      _legacy = true,
+      _header = header,
+      _filter = filter_node,
+      _hints = hint_node,
     }),
       height * cell_h
   end
