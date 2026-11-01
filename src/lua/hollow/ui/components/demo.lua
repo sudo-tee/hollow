@@ -287,20 +287,34 @@ function M.render(state, changed, close)
   })
 end
 
+-- Opens as a non-modal overlay so it stacks above other overlays, such as the
+-- REPL. Esc or q closes it.
+---@return HollowUiWidget
 function M.open()
-  local state, surface = {}, nil
-  surface = ui.layout.new({
+  local host_api = require("hollow.state").get().host_api
+  local state, widget = {}, nil
+  local function changed()
+    if widget and widget._layout_surface then
+      widget._layout_surface:invalidate()
+    end
+    if type(host_api.request_redraw) == "function" then
+      host_api.request_redraw()
+    end
+  end
+  local function close()
+    ui.close_overlay_widget(widget)
+  end
+  widget = ui.overlay.new({
+    width = 120,
+    height = 40,
+    backdrop = true,
     render = function()
-      return c.panel({
-        width = "grow",
-        height = "grow",
-        M.render(state, function()
-          surface:invalidate()
-        end, ui.layout.hide),
-      })
+      return c.column({ M.render(state, changed, close) }, { width = "grow", height = "grow" })
     end,
+    on_key = require("hollow.ui.keys").keys({ escape = close, q = close }),
   })
-  return surface:show()
+  ui.overlay.push(widget)
+  return widget
 end
 
 return M

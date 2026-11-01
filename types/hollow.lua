@@ -2492,7 +2492,7 @@ local workspace = {}
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field dialog fun(props: HollowUiDialogProps): HollowUiLayoutNode Title, body and action buttons.
 ---@field input fun(props: HollowUiInputProps): HollowUiLayoutNode Text field for a `ui.text_input` behavior.
----@field demo fun(): HollowUiLayoutSurface Open the component gallery.
+---@field demo fun(): HollowUiWidget Open the component gallery overlay (Esc or q closes it).
 
 ---@class HollowUiLayoutContext
 ---@field metrics? table<string, { width: number, height: number }> Latest measured overlay viewport dimensions by local ID. Read-only; changes invalidate the surface.

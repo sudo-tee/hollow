@@ -125,7 +125,8 @@ colors. Recipe-backed atoms accept component theme overrides.
 ## Gallery
 
 `c.demo()` opens a scrollable gallery of every component, variant, size, and
-state. It is also rendered against every bundled theme in the test suite.
+state as an overlay above any open overlay (including the Lua REPL); Esc or q
+closes it. It is also rendered against every bundled theme in the test suite.
 
 ## Theme overrides
 

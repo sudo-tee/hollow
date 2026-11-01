@@ -925,10 +925,27 @@ describe("hierarchical Clay layout", function()
     assert.equals(previous, ui._layout_tree)
   end)
 
-  it("opens the gallery and re-renders it only after interaction", function()
-    c.demo()
+  it("opens the gallery above an open modal and re-renders only after interaction", function()
+    local function has_text(text)
+      for _, node in ipairs(ui._layout_tree or {}) do
+        if node.text == text then
+          return true
+        end
+      end
+      return false
+    end
+    ui.modal({
+      title = "Below",
+      render = function()
+        return c.text("modal below")
+      end,
+    })
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    local gallery = c.demo()
     ui._layout_prepare(1200, 900, 8, 19)
     local tree = ui._layout_tree
+    assert.is_true(has_text("Component gallery"))
     local custom = 0
     for _, node in ipairs(tree) do
       if node.kind == 3 then
@@ -941,15 +958,15 @@ describe("hierarchical Clay layout", function()
     ui._layout_click("gallery:button:solid:default:rest")
     ui._layout_prepare(1200, 900, 8, 19)
     assert.not_equals(tree, ui._layout_tree)
-    local found = false
-    for _, node in ipairs(ui._layout_tree) do
-      if node.text == "clicks: 1" then
-        found = true
-      end
-    end
-    assert.is_true(found)
+    assert.is_true(has_text("clicks: 1"))
     ui._layout_click("gallery:close")
-    assert.is_nil(ui._layout_tree)
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    c.demo()
+    assert.is_true(ui.dispatch_overlay_key("escape", {}))
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    assert.is_not_nil(gallery)
   end)
 
   it("isolates identical local IDs and invalidates only the owning snapshot", function()
