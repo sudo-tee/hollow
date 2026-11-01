@@ -78,4 +78,25 @@ describe("component gallery", function()
     hollow.ui.dispatch_overlay_key("q", {})
     assert.equals(depth, hollow.ui.overlay.depth())
   end)
+
+  it("opens opaque and scrolls by section", function()
+    local widget = hollow.ui.components.demo()
+    assert.equals(255, widget.chrome.alpha)
+    assert.is_true(widget._theme_backdrop)
+    local function reveal()
+      for _, node in ipairs(widget._layout_surface:snapshot(CTX)) do
+        if node.reveal then
+          return node.reveal
+        end
+      end
+    end
+    assert.matches("gallery:section:top$", reveal())
+    widget.on_event("overlay:scroll", { delta = -1 })
+    assert.matches("gallery:section:Text$", reveal())
+    hollow.ui.dispatch_overlay_key("end", {})
+    assert.matches("gallery:section:Spacer and gap$", reveal())
+    widget.on_event("overlay:scroll", { delta = 1 })
+    assert.matches("gallery:section:Panel and stack$", reveal())
+    hollow.ui.close_overlay_widget(widget)
+  end)
 end)
