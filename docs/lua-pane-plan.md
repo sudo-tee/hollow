@@ -87,13 +87,13 @@ non-terminal nodes.
 | `5024e8d` | Copy mode, quick select, screen/text queries narrowed; `TerminalPane.beginRead` borrows render helpers |
 | `3d65006` | B1: input, paste, HTP, jobs, native callbacks, app frame loop, resize, renderer, mux and Lua callbacks narrowed. Only tests read `pane.term` outside `src/term/` and `src/pane.zig`. Adds `Pane.domainName()`; fixes the missed HTP guard |
 | `2b80845` | B2: terminal pass-through methods removed from `Pane`. Callers use `TerminalPane` methods after narrowing; `pollPty`, `bootstrap` and `nudgeTerminal` take the node explicitly. `Pane` keeps only content-dispatching operations: `deinit`, `invalidate`, `resize`, `applyTerminalTheme`, `refreshTitle`, `refreshCwd`, `setCwd`, `setManualTitle`, `domainName` |
-| (next) | B3: `kind`/`term`/`lua_surface` replaced by `content: Content` (`terminal: TerminalPane`, `lua: *LuaSurface`); `Pane.initLua` takes surface ownership; `asLua()` added. Inactive-arm access now panics in safe builds, so tests that flipped `kind` in place use separate Lua panes. Remaining `isTerminal()` calls are behaviour gates (reject, skip, return early) and stay |
+| `bfb6722` | B3: `kind`/`term`/`lua_surface` replaced by `content: Content` (`terminal: TerminalPane`, `lua: *LuaSurface`); `Pane.initLua` takes surface ownership; `asLua()` added. Inactive-arm access now panics in safe builds, so tests that flipped `kind` in place use separate Lua panes. Remaining `isTerminal()` calls are behaviour gates (reject, skip, return early) and stay |
+| (next) | B4: Windows GUI A/B, `5024e8d` vs `bfb6722`; no regression (see §8) |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| B4 | GUI benchmarks for B1 to B3 (none measured yet) |
 | P1 | Clay surface ownership by a pane: draw into the pane rect, reuse `PaneCacheEntry` texture, render only when dirty |
 | P2 | Lua API (§4): `split`/`float`/`invalidate`/`close`/`set_title`, `on_mount`/`on_unmount`, error row on render failure |
 | P3 | Keys and focus: `on_key`, `on_focus`; unhandled keys fall through to global bindings |
@@ -205,7 +205,26 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
 - `make test-lua` baseline: 785 successes. Unchanged at every checkpoint so far
   (no Lua changes yet).
 - The headless renderer benchmark owns a separate `Session`, so it can't
-  measure the pane-ownership refactor. GUI benchmarks are still pending.
+  measure the pane-ownership refactor. Use the Windows GUI A/B instead:
+  cross-build ReleaseFast for both commits (a baseline worktree needs
+  `third_party/*` symlinked and `zig-pkg` copied, not symlinked), run each
+  `hollow-native.exe` as a separate instance with a minimal `--config`
+  (1280x800, WSL mux domain), and type the workload driver into its first
+  pane via `hollow-cli` using the shell's `HOLLOW_*` env. The mux agent
+  ignores the domain `shell` and starts the login shell. GUI CPU comes from
+  `Get-Process` filtered by exe path.
+- B4 result (mean of 3 interleaved runs, 143x44 grid, mux mode):
+
+  | Workload | `5024e8d` | `bfb6722` |
+  | --- | ---: | ---: |
+  | repaint 20k, frames/s | 5743 | 5893 |
+  | repaint, GUI CPU s | 4.29 | 4.16 |
+  | scroll 500k, lines/s | 72754 | 74953 |
+  | scroll, GUI CPU s | 8.34 | 8.09 |
+  | split-scroll 1000 @100 Hz, GUI CPU s | 1.34 | 1.38 |
+  | sync-output 1000 @100 Hz, GUI CPU s | 3.09 | 2.96 |
+
+  Differences are within run-to-run spread (about 5%).
 - Leave the modified submodules (`third_party/*`) alone.
 - `make test` failed once in 9 runs during B1, with no assertion output; the
   log just before it showed agent-PTY/`signal=9` warnings. It looks like an
