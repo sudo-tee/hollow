@@ -312,7 +312,7 @@ fn capture(self: *App, pane: *Pane) !void {
     clearCandidates(self);
     const runtime = if (self.ghostty) |*rt| rt else return;
     if (!App.paneRenderHelpersReady(pane)) return;
-    if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
+    if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return;
 
     const col_capacity = @max(@as(usize, 1), @as(usize, pane.cols));
     const ascii_cols = try self.allocator.alloc(u8, col_capacity);
@@ -321,13 +321,13 @@ fn capture(self: *App, pane: *Pane) !void {
     defer self.allocator.free(covered);
 
     var row: usize = 0;
-    while (runtime.nextRow(pane.row_iterator) and self.quick_select_candidates.items.len < max_candidates) : (row += 1) {
-        if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) continue;
+    while (runtime.nextRow(pane.term.row_iterator) and self.quick_select_candidates.items.len < max_candidates) : (row += 1) {
+        if (!runtime.populateRowCells(pane.term.row_iterator, &pane.term.row_cells)) continue;
         var col_count: usize = 0;
-        while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
+        while (runtime.nextCell(pane.term.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
             var cell_buf: [16]u8 = undefined;
             var cell_len: usize = 0;
-            text_helpers.appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
+            text_helpers.appendCellText(runtime, pane.term.row_cells, &cell_buf, &cell_len);
             ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
         }
         try captureRow(self, pane, row, ascii_cols[0..col_count], covered[0..col_count]);

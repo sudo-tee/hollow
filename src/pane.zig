@@ -135,28 +135,16 @@ pub const Pane = struct {
     spawn_filter: @import("pty/spawn_spec.zig").Filter = .{},
     pty_host: @import("pty/spawn_spec.zig").HostResolver = .{},
     term: TerminalPane = .{},
-    terminal: ?*anyopaque = null,
-    terminal_runtime: ?*GhosttyRuntime = null,
-    render_state: ?*anyopaque = null,
-    row_iterator: ?*anyopaque = null,
     foreground_process: ?[]u8 = null,
-    row_cells: ?*anyopaque = null,
     title: []u8 = &.{},
     cwd: []u8 = &.{},
     pending_cwd: ?[]u8 = null,
     program_status: @import("term/program_status.zig").State = .{},
-    paste_output: ?*ghostty.PasteOutput = null,
     image_storage_generation: u64 = 0,
     image_animation_deadline_ns: i128 = 0,
     /// Actual terminal dimensions in characters (updated on every resize).
     cols: u16 = 0,
     rows: u16 = 0,
-    /// Set to true after the first updateRenderState call so the renderer
-    /// can skip rendering panes whose ghostty state is not yet initialized.
-    render_state_ready: bool = false,
-    /// First layout completed. Unlike rendering helpers, parser readiness
-    /// survives tab/workspace switches so background OSC callbacks stay live.
-    terminal_output_ready: bool = false,
     /// Dirty level set by tickPanes after updateRenderState computes the latest
     /// render-state dirty result for the pane.
     ///   .false_value  → nothing changed, skip re-render entirely
@@ -239,9 +227,6 @@ pub const Pane = struct {
     /// data we call updateRenderState at most once per ~16 ms so that cursor
     /// blink (managed by ghostty's internal timer) still fires.
     last_render_state_update_ns: i128 = 0,
-    /// Set when pollPty already refreshed render_state after draining PTY data.
-    /// tickPanes consumes this to avoid doing the same update twice.
-    render_state_fresh: bool = false,
     compression_activity: ?u64 = null,
     compression_deadline_ns: i128 = 0,
     child_alive_cached: bool = true,
@@ -297,7 +282,7 @@ pub const Pane = struct {
             return;
         }
         runtime.setTerminalDefaultColors(
-            self.terminal,
+            self.term.terminal,
             theme.foreground,
             theme.background,
             theme.cursor,
@@ -322,13 +307,7 @@ pub const Pane = struct {
         self.pending_terminal_inject.deinit(self.allocator);
         if (self.htp_osc_buf.len > 0) self.allocator.free(self.htp_osc_buf);
         if (self.isTerminal()) {
-            self.term.deinitInput(runtime);
-            runtime.freeRowCells(self.row_cells);
-            runtime.freeRowIterator(self.row_iterator);
-            runtime.freeRenderState(self.render_state);
-            runtime.setTerminalUserdata(self.terminal, null);
-            runtime.freeTerminal(self.terminal);
-            self.term.deinitPty();
+            self.term.deinit(runtime);
         }
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
@@ -356,7 +335,7 @@ pub const Pane = struct {
         );
 
         runtime.setTerminalUserdata(terminal, self);
-        self.terminal_runtime = runtime;
+        self.term.terminal_runtime = runtime;
         self.synchronized_output_enabled = cfg.synchronized_output;
 
         runtime.setKittyImageStorageLimit(terminal, 64 * 1024 * 1024);
@@ -516,19 +495,15 @@ pub const Pane = struct {
         agent_pty = null;
         errdefer pty.deinit();
 
-        self.terminal = terminal;
-        self.render_state = render_state;
-        self.row_iterator = row_iterator;
-        self.row_cells = row_cells;
         self.term = input_resources;
+        self.term.terminal = terminal;
+        self.term.render_state = render_state;
+        self.term.row_iterator = row_iterator;
+        self.term.row_cells = row_cells;
         self.term.pty = pty;
 
         // Bootstrap locals own these resources until every fallible step succeeds.
         errdefer {
-            self.terminal = null;
-            self.render_state = null;
-            self.row_iterator = null;
-            self.row_cells = null;
             self.term = .{};
         }
 
@@ -581,7 +556,7 @@ pub const Pane = struct {
 
             var wrote_terminal = false;
             var can_read = true;
-            if (self.terminal_output_ready) {
+            if (self.term.terminal_output_ready) {
                 can_read = self.writeBufferedTerminalOutput(runtime, &self.boot_output, deadline_ns, debug_overlay, &wrote_terminal);
                 if (can_read) can_read = self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal);
             }
@@ -590,7 +565,7 @@ pub const Pane = struct {
             const read_chunk_bytes = @min(parse_chunk_bytes, PTY_READ_BUFFER_SIZE);
             var read_loops: usize = 0;
             while (can_read and read_chunk_bytes > 0 and budget_ns > 0 and io.nanoTimestamp() < deadline_ns and read_loops < max_read_loops and total_read < read_limit_total and
-                (self.terminal_output_ready or self.boot_output.items.len +| self.pending_terminal_inject.items.len < PTY_DEFERRED_OUTPUT_LIMIT - PTY_PRESSURE_PARSE_CHUNK_BYTES))
+                (self.term.terminal_output_ready or self.boot_output.items.len +| self.pending_terminal_inject.items.len < PTY_DEFERRED_OUTPUT_LIMIT - PTY_PRESSURE_PARSE_CHUNK_BYTES))
             {
                 const read_limit = @min(read_chunk_bytes, read_limit_total - total_read);
                 const read_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
@@ -611,7 +586,7 @@ pub const Pane = struct {
                 const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
                 if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
                 if (pty_bytes.len > 0) {
-                    if (self.terminal_output_ready) {
+                    if (self.term.terminal_output_ready) {
                         self.writeTerminalChunk(runtime, pty_bytes, debug_overlay);
                         wrote_terminal = true;
                     } else {
@@ -619,7 +594,7 @@ pub const Pane = struct {
                     }
                 }
                 if (self.pending_terminal_inject.items.len > 0) {
-                    if (self.terminal_output_ready) {
+                    if (self.term.terminal_output_ready) {
                         if (!self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal)) {
                             break;
                         }
@@ -667,12 +642,12 @@ pub const Pane = struct {
             // idle tick still crosses the Ghostty FFI boundary and adds up.
             // Fresh terminal mode changes arrive via PTY output, and resize/
             // focus paths already perform their own explicit syncs.
-            if (self.terminal_output_ready and wrote_terminal) {
+            if (self.term.terminal_output_ready and wrote_terminal) {
                 const encoder_sync_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                self.term.syncInput(runtime, self.terminal);
+                self.term.syncInput(runtime, self.term.terminal);
                 // Log mouse tracking state changes for diagnostics.
                 var mouse_tracking: u32 = 0;
-                const mt_result = runtime.terminal_get(self.terminal, @backingInt(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
+                const mt_result = runtime.terminal_get(self.term.terminal, @backingInt(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
                 if (mouse_tracking != self.last_mouse_tracking) {
                     std.log.info("pane mouse_tracking changed {d} -> {d} (get_result={d})", .{ self.last_mouse_tracking, mouse_tracking, mt_result });
                     self.last_mouse_tracking = mouse_tracking;
@@ -684,21 +659,21 @@ pub const Pane = struct {
 
                 {
                     var active_screen: u32 = 0;
-                    _ = runtime.terminal_get(self.terminal, @backingInt(ghostty.TerminalData.active_screen), &active_screen);
+                    _ = runtime.terminal_get(self.term.terminal, @backingInt(ghostty.TerminalData.active_screen), &active_screen);
                     self.active_screen = active_screen;
                 }
 
                 if (debug_overlay) self.last_encoder_sync_ns += io.nanoTimestamp() - encoder_sync_start_ns;
 
-                if (!self.render_state_ready or self.synchronized_output_active) return total_read;
+                if (!self.term.render_state_ready or self.synchronized_output_active) return total_read;
                 const now_ns = io.nanoTimestamp();
-                runtime.clearRenderStateDirty(self.render_state);
-                runtime.updateRenderState(self.render_state, self.terminal) catch |err| {
+                runtime.clearRenderStateDirty(self.term.render_state);
+                runtime.updateRenderState(self.term.render_state, self.term.terminal) catch |err| {
                     std.log.err("pane updateRenderState after PTY drain failed: {s}", .{@errorName(err)});
                     return total_read;
                 };
                 self.last_render_state_update_ns = now_ns;
-                self.render_state_fresh = true;
+                self.term.render_state_fresh = true;
             }
         }
         return total_read;
@@ -706,7 +681,7 @@ pub const Pane = struct {
 
     fn writeTerminalChunk(self: *Pane, runtime: *GhosttyRuntime, bytes: []const u8, debug_overlay: bool) void {
         const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-        runtime.terminalWrite(self.terminal, bytes);
+        runtime.terminalWrite(self.term.terminal, bytes);
         if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
         self.last_terminal_write_bytes += bytes.len;
         self.last_terminal_write_chunks += 1;
@@ -751,7 +726,7 @@ pub const Pane = struct {
     pub fn tickImageAnimation(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128) void {
         std.debug.assert(self.isTerminal());
         if (self.synchronized_output_active) return;
-        const graphics = runtime.terminalKittyGraphics(self.terminal) orelse {
+        const graphics = runtime.terminalKittyGraphics(self.term.terminal) orelse {
             self.image_animation_deadline_ns = 0;
             return;
         };
@@ -763,7 +738,7 @@ pub const Pane = struct {
         const after = runtime.kittyStorageGeneration(graphics);
         if (after != self.image_storage_generation) {
             self.render_dirty = .full;
-            self.render_state_fresh = false;
+            self.term.render_state_fresh = false;
         }
         self.image_storage_generation = after;
     }
@@ -772,10 +747,10 @@ pub const Pane = struct {
         std.debug.assert(self.isTerminal());
         if (!self.synchronized_output_active or now_ns - self.synchronized_output_started_ns < timeout_ns) return false;
         // Setting a mode through the API intentionally does not call render_hold.
-        _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
+        _ = runtime.setTerminalMode(self.term.terminal, .synchronized_output, false);
         self.synchronized_output_active = false;
         self.synchronized_output_started_ns = 0;
-        self.render_state_fresh = false;
+        self.term.render_state_fresh = false;
         self.render_dirty = .full;
         return true;
     }
@@ -920,18 +895,18 @@ pub const Pane = struct {
             // Resizing the terminal/PTY here can trigger shell reflow or prompt
             // redraw glitches even though the terminal cell grid did not change.
             self.render_dirty = .full;
-            self.term.syncInput(runtime, self.terminal);
+            self.term.syncInput(runtime, self.term.terminal);
             return;
         }
 
         // Guard against null terminal — can happen if bootstrap partially failed
-        // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
-        if (self.terminal) |terminal| {
+        // (e.g. PTY spawn error left self.term.terminal pointing at a freed handle).
+        if (self.term.terminal) |terminal| {
             runtime.resizeTerminal(terminal, cols, rows, cell_width_px, cell_height_px);
         }
-        runtime.updateRenderState(self.render_state, self.terminal) catch {};
+        runtime.updateRenderState(self.term.render_state, self.term.terminal) catch {};
         self.render_dirty = .full;
-        self.term.syncInput(runtime, self.terminal);
+        self.term.syncInput(runtime, self.term.terminal);
         if (self.term.pty) |*pty| {
             if (pty.isAlive()) {
                 pty.resize(cols, rows);
@@ -950,13 +925,13 @@ pub const Pane = struct {
             if (pty.isAlive()) {
                 std.log.info("pane.nudgeTerminal: cols={d} rows={d}->{}->{}", .{ self.cols, original_rows, bump_rows, original_rows });
                 self.rows = bump_rows;
-                runtime.resizeTerminal(self.terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
-                runtime.updateRenderState(self.render_state, self.terminal) catch {};
+                runtime.resizeTerminal(self.term.terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
+                runtime.updateRenderState(self.term.render_state, self.term.terminal) catch {};
                 pty.resize(self.cols, bump_rows);
 
                 self.rows = original_rows;
-                runtime.resizeTerminal(self.terminal, self.cols, original_rows, cell_width_px, cell_height_px);
-                runtime.updateRenderState(self.render_state, self.terminal) catch {};
+                runtime.resizeTerminal(self.term.terminal, self.cols, original_rows, cell_width_px, cell_height_px);
+                runtime.updateRenderState(self.term.render_state, self.term.terminal) catch {};
                 pty.resize(self.cols, original_rows);
                 self.synchronized_output_active = false;
                 self.synchronized_output_started_ns = 0;
@@ -1003,59 +978,22 @@ pub const Pane = struct {
 
     pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
         if (!self.isTerminal()) return;
-        const new_render_state = runtime.createRenderState() catch |err| {
-            std.log.err("pane: recreate render_state failed: {s}", .{@errorName(err)});
-            return;
-        };
-        errdefer runtime.freeRenderState(new_render_state);
-
-        const new_row_iterator = runtime.createRowIterator() catch |err| {
-            std.log.err("pane: recreate row_iterator failed: {s}", .{@errorName(err)});
-            return;
-        };
-        errdefer runtime.freeRowIterator(new_row_iterator);
-
-        const new_row_cells = runtime.createRowCells() catch |err| {
-            std.log.err("pane: recreate row_cells failed: {s}", .{@errorName(err)});
-            return;
-        };
-
-        // Free OLD objects, then immediately null out fields before assigning new ones.
-        // If anything goes wrong between free and assign, fields are null (safe for deinit).
-        runtime.freeRowCells(self.row_cells);
-        self.row_cells = null;
-        runtime.freeRowIterator(self.row_iterator);
-        self.row_iterator = null;
-        runtime.freeRenderState(self.render_state);
-        self.render_state = null;
-
-        self.render_state = new_render_state;
-        self.row_iterator = new_row_iterator;
-        self.row_cells = new_row_cells;
-        // New render_state needs at least one updateRenderState before rendering.
-        self.render_state_ready = false;
+        self.term.recreateRenderHelpers(runtime);
     }
 
     pub fn releaseRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
         if (!self.isTerminal()) return;
-        runtime.freeRowCells(self.row_cells);
-        self.row_cells = null;
-        runtime.freeRowIterator(self.row_iterator);
-        self.row_iterator = null;
-        runtime.freeRenderState(self.render_state);
-        self.render_state = null;
-        self.render_state_ready = false;
-        self.render_state_fresh = false;
+        self.term.releaseRenderHelpers(runtime);
     }
 
     pub fn hasRenderHelpers(self: *const Pane) bool {
-        return self.render_state != null and self.row_iterator != null and self.row_cells != null;
+        return self.isTerminal() and self.term.hasRenderHelpers();
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
         if (!self.isTerminal()) return;
         if (self.title_is_manual) {
-            if (runtime.terminalTitle(self.allocator, self.terminal) catch null) |title| {
+            if (runtime.terminalTitle(self.allocator, self.term.terminal) catch null) |title| {
                 self.allocator.free(title);
             }
             self.title_dirty = false;
@@ -1066,7 +1004,7 @@ pub const Pane = struct {
             self.allocator.free(self.title);
             self.title = &.{};
         }
-        const maybe_title = runtime.terminalTitle(self.allocator, self.terminal) catch null;
+        const maybe_title = runtime.terminalTitle(self.allocator, self.term.terminal) catch null;
         if (maybe_title) |title| {
             if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command, self.usesAgent())) {
                 self.allocator.free(title);
@@ -1863,11 +1801,11 @@ test "background PTY parses blocked and error after rendering helpers are releas
     var runtime = try GhosttyRuntime.init(a, null);
     defer runtime.deinit();
     var pane = Pane.init(a);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
     pane.term.pty = try @import("pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
         .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007'; read -r reply; printf '\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
     }, .{});
@@ -1893,13 +1831,13 @@ test "background PTY parses blocked and error after rendering helpers are releas
     try Wait.poll(&pane, &runtime, .startup);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     pane.recreateRenderHelpers(&runtime);
-    pane.render_state_ready = true;
-    pane.terminal_output_ready = true;
+    pane.term.render_state_ready = true;
+    pane.term.terminal_output_ready = true;
     try Wait.poll(&pane, &runtime, .{ .state = .working });
 
     // This is the resource transition used when switching tabs/workspaces.
     pane.releaseRenderHelpers(&runtime);
-    try std.testing.expect(!pane.render_state_ready);
+    try std.testing.expect(!pane.term.render_state_ready);
     pane.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .blocked });
     try std.testing.expectEqual(@import("term/program_status.zig").BlockKind.permission, pane.program_status.records.items[0].kind);
@@ -2005,22 +1943,22 @@ test "image animation invalidates fresh snapshots and schedules next frame" {
     var runtime = try GhosttyRuntime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal = try runtime.createTerminal(20, 6, 0);
+    pane.term.terminal = try runtime.createTerminal(20, 6, 0);
     defer pane.deinit(&runtime);
-    runtime.terminalWrite(pane.terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
+    runtime.terminalWrite(pane.term.terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
         "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\" ++
         "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
-    pane.render_state_fresh = true;
+    pane.term.render_state_fresh = true;
     pane.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms);
-    try std.testing.expect(!pane.render_state_fresh);
+    try std.testing.expect(!pane.term.render_state_fresh);
     try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
     try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.image_animation_deadline_ns);
     pane.render_dirty = .false_value;
-    pane.render_state_fresh = true;
+    pane.term.render_state_fresh = true;
     pane.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms);
-    try std.testing.expect(pane.render_state_fresh);
+    try std.testing.expect(pane.term.render_state_fresh);
     pane.tickImageAnimation(&runtime, pane.image_animation_deadline_ns);
-    try std.testing.expect(!pane.render_state_fresh);
+    try std.testing.expect(!pane.term.render_state_fresh);
     try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
 }
 

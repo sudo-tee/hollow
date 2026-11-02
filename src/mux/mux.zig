@@ -383,7 +383,7 @@ pub const Mux = struct {
         if (!activate) {
             pane.retain_on_exit = true;
             // Hidden jobs must parse/drain output without waiting for first focus.
-            pane.terminal_output_ready = true;
+            pane.term.terminal_output_ready = true;
             ws.active_tab = previous_active;
         }
         self.notifyCreated(pane);

@@ -469,7 +469,7 @@ const LuaType = lua_mod.LuaType;
 
 fn paneRenderHelpersReady(pane: *const Pane) bool {
     if (!pane.isTerminal()) return false;
-    return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
+    return pane.term.renderHelpersReady();
 }
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -3485,7 +3485,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         if (app.activePane()) |pane| {
             if (paneRenderHelpersReady(pane)) {
                 if (!app.config.terminal_theme.enabled) {
-                    if (runtime.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                    if (runtime.renderStateColorsInto(pane.term.render_state, &g_render_state_colors_scratch)) {
                         clear_r = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                         clear_g = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
                         clear_b = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
@@ -3515,10 +3515,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
-                if (leaf.pane.isTerminal()) renderer.prepareKittyTextures(runtime, leaf.pane.terminal, leaf.pane.render_state);
+                if (leaf.pane.isTerminal()) renderer.prepareKittyTextures(runtime, leaf.pane.term.terminal, leaf.pane.term.render_state);
             }
         } else if (app.activePane()) |pane| {
-            if (pane.isTerminal()) renderer.prepareKittyTextures(runtime, pane.terminal, pane.render_state);
+            if (pane.isTerminal()) renderer.prepareKittyTextures(runtime, pane.term.terminal, pane.term.render_state);
         }
     };
 
@@ -3682,7 +3682,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
                     } else {
-                        if (rt.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                        if (rt.renderStateColorsInto(pane.term.render_state, &g_render_state_colors_scratch)) {
                             bg_color = g_render_state_colors_scratch.background;
                             cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                             cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
@@ -3693,19 +3693,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
-                    const cursor_pos = rt.cursorPos(pane.render_state);
+                    const cursor_pos = rt.cursorPos(pane.term.render_state);
                     const cursor_row = if (cursor_pos) |cp| @as(usize, cp.y) else std.math.maxInt(usize);
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
-                    const cursor_visible = rt.cursorVisible(pane.render_state);
-                    const cursor_blinking = rt.cursorBlinking(pane.render_state);
-                    const cursor_password_input = rt.cursorPasswordInput(pane.render_state);
+                    const cursor_visible = rt.cursorVisible(pane.term.render_state);
+                    const cursor_blinking = rt.cursorBlinking(pane.term.render_state);
+                    const cursor_password_input = rt.cursorPasswordInput(pane.term.render_state);
                     const cursor_blink_visible = cursor_pos == null or
                         !cursor_visible or
                         !cursor_blinking or
                         cursor_password_input or
                         color_math.blinkVisibleNow(io.nanoTimestamp());
-                    const cursor_wide_tail = rt.cursorWideTail(pane.render_state);
-                    const cursor_style = rt.cursorVisualStyle(pane.render_state);
+                    const cursor_wide_tail = rt.cursorWideTail(pane.term.render_state);
+                    const cursor_style = rt.cursorVisualStyle(pane.term.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
                         cache_entry.last_cursor_row != cursor_row or
                         cache_entry.last_cursor_col != cursor_col or
@@ -3860,10 +3860,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cfg,
                         app_ctx,
                         pane,
-                        pane.terminal,
-                        pane.render_state,
-                        &pane.row_iterator,
-                        &pane.row_cells,
+                        pane.term.terminal,
+                        pane.term.render_state,
+                        &pane.term.row_iterator,
+                        &pane.term.row_cells,
                         pw,
                         ph,
                         focused,
@@ -4027,10 +4027,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             leaf.pane,
-                            leaf.pane.terminal,
-                            leaf.pane.render_state,
-                            &leaf.pane.row_iterator,
-                            &leaf.pane.row_cells,
+                            leaf.pane.term.terminal,
+                            leaf.pane.term.render_state,
+                            &leaf.pane.term.row_iterator,
+                            &leaf.pane.term.row_cells,
                             ox,
                             oy,
                             pw,
@@ -4083,10 +4083,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.terminal,
-                            pane.render_state,
-                            &pane.row_iterator,
-                            &pane.row_cells,
+                            pane.term.terminal,
+                            pane.term.render_state,
+                            &pane.term.row_iterator,
+                            &pane.term.row_cells,
                             0,
                             0,
                             width,
@@ -4175,7 +4175,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // the pass. Nothing to blit here.
             } else if (do_leaves) {
                 for (leaves) |leaf| {
-                    if (!leaf.pane.render_state_ready) continue;
+                    if (!leaf.pane.term.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -4196,10 +4196,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.terminal,
-                            pane.render_state,
-                            &pane.row_iterator,
-                            &pane.row_cells,
+                            pane.term.terminal,
+                            pane.term.render_state,
+                            &pane.term.row_iterator,
+                            &pane.term.row_cells,
                             0,
                             0,
                             width,
@@ -4680,9 +4680,9 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     var scroll_len: u64 = 0;
     if (runtime) |*rt| {
         if (pane) |p| {
-            cols = rt.renderStateCols(p.render_state) orelse 0;
-            rows = rt.renderStateRows(p.render_state) orelse 0;
-            if (rt.terminalScrollbar(p.terminal)) |scrollbar| {
+            cols = rt.renderStateCols(p.term.render_state) orelse 0;
+            rows = rt.renderStateRows(p.term.render_state) orelse 0;
+            if (rt.terminalScrollbar(p.term.terminal)) |scrollbar| {
                 scroll_total = scrollbar.total;
                 scroll_offset = scrollbar.offset;
                 scroll_len = scrollbar.len;

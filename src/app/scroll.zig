@@ -47,7 +47,7 @@ pub fn pageScrollRows(pane: *const Pane) isize {
 pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) ghostty.TerminalScrollbar {
     if (!pane.isTerminal()) return .{ .total = 0, .offset = 0, .len = 0 };
     const was_visible = scrollbarVisible(self, pane.scrollbar());
-    if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
+    if (runtime.terminalScrollbar(pane.term.terminal)) |scrollbar| {
         pane.scrollbar_total = scrollbar.total;
         pane.scrollbar_offset = scrollbar.offset;
         pane.scrollbar_len = scrollbar.len;
@@ -66,10 +66,10 @@ pub fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
     if (!pane.isTerminal()) return;
     if (delta == 0) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
-    runtime.terminalScroll(pane.terminal, delta);
+    runtime.terminalScroll(pane.term.terminal, delta);
     pane.render_dirty = .full;
     pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     pane.last_render_state_update_ns = 0;
     pane.pty_received_data = true;
     self.scroll_accum = 0;
@@ -84,19 +84,19 @@ fn forceScrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
     const clamped_target = @min(top_row, max_top);
 
     if (clamped_target == 0) {
-        runtime.terminalScrollTop(pane.terminal);
+        runtime.terminalScrollTop(pane.term.terminal);
     } else if (clamped_target == max_top) {
-        runtime.terminalScrollBottom(pane.terminal);
+        runtime.terminalScrollBottom(pane.term.terminal);
     } else {
-        runtime.terminalScrollTop(pane.terminal);
+        runtime.terminalScrollTop(pane.term.terminal);
         const delta_i64: i64 = @intCast(clamped_target);
         const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.maxInt(isize);
-        runtime.terminalScroll(pane.terminal, delta);
+        runtime.terminalScroll(pane.term.terminal, delta);
     }
 
     pane.render_dirty = .full;
     pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     pane.last_render_state_update_ns = 0;
     pane.pty_received_data = true;
     self.scroll_accum = 0;
@@ -109,16 +109,16 @@ fn restorePaneViewportFromBottom(self: *App, pane: *Pane, top_row: usize) void {
     const max_top: usize = @intCast(scrollbarMaxTopRow(scrollbar));
     const clamped_target = @min(top_row, max_top);
 
-    runtime.terminalScrollBottom(pane.terminal);
+    runtime.terminalScrollBottom(pane.term.terminal);
     if (clamped_target < max_top) {
         const delta_i64: i64 = -@as(i64, @intCast(max_top - clamped_target));
         const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.minInt(isize);
-        runtime.terminalScroll(pane.terminal, delta);
+        runtime.terminalScroll(pane.term.terminal, delta);
     }
 
     pane.render_dirty = .full;
     pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     pane.last_render_state_update_ns = 0;
     pane.pty_received_data = true;
     self.scroll_accum = 0;
@@ -134,10 +134,10 @@ pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
     const current_top = scrollbarTopRow(scrollbar);
     if (clamped_target == current_top) return;
 
-    runtime.terminalScrollToRow(pane.terminal, @intCast(clamped_target));
+    runtime.terminalScrollToRow(pane.term.terminal, @intCast(clamped_target));
     pane.render_dirty = .full;
     pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     pane.last_render_state_update_ns = 0;
     pane.pty_received_data = true;
     self.scroll_accum = 0;

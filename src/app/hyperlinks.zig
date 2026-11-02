@@ -38,18 +38,18 @@ const LinkRows = struct {
     ascii: [4096]u8 = undefined,
 
     fn get(self: *LinkRows, row: usize) ?LinkRow {
-        if (!self.runtime.populateRowIterator(self.pane.render_state, &self.pane.row_iterator)) return null;
+        if (!self.runtime.populateRowIterator(self.pane.term.render_state, &self.pane.term.row_iterator)) return null;
         var index: usize = 0;
-        while (self.runtime.nextRow(self.pane.row_iterator)) : (index += 1) {
+        while (self.runtime.nextRow(self.pane.term.row_iterator)) : (index += 1) {
             if (index != row) continue;
-            const raw = self.runtime.rowRaw(self.pane.row_iterator);
-            if (!self.runtime.populateRowCells(self.pane.row_iterator, &self.pane.row_cells)) return null;
+            const raw = self.runtime.rowRaw(self.pane.term.row_iterator);
+            if (!self.runtime.populateRowCells(self.pane.term.row_iterator, &self.pane.term.row_cells)) return null;
             var len: usize = 0;
-            while (self.runtime.nextCell(self.pane.row_cells)) : (len += 1) {
+            while (self.runtime.nextCell(self.pane.term.row_cells)) : (len += 1) {
                 if (len == self.ascii.len) return null;
                 var cell_buf: [16]u8 = undefined;
                 var cell_len: usize = 0;
-                text_helpers.appendCellText(self.runtime, self.pane.row_cells, &cell_buf, &cell_len);
+                text_helpers.appendCellText(self.runtime, self.pane.term.row_cells, &cell_buf, &cell_len);
                 self.ascii[len] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
             }
             return .{
@@ -153,7 +153,7 @@ fn wrappedTokenAt(rows: anytype, point: CellPoint, cfg: Hyperlinks, out: []u8) ?
 pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]const u8 {
     if (!pane.isTerminal()) return null;
     const rt = self.ghostty orelse return null;
-    const terminal = pane.terminal orelse return null;
+    const terminal = pane.term.terminal orelse return null;
 
     var ref = ghostty.GridRef{
         .size = @sizeOf(ghostty.GridRef),

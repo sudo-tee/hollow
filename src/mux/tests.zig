@@ -141,10 +141,14 @@ test "pane IDs survive moves and floating restore and are never reused after clo
     const first = mux.activePane().?;
     const first_id = first.id;
     try std.testing.expect(first_id != 0);
+    // Input-resource transfer during bootstrap must retain the borrowed runtime
+    // used by parser callbacks after construction returns.
+    try std.testing.expectEqual(&runtime, first.term.terminal_runtime.?);
     try std.testing.expectEqual(@as(usize, 1), mux.activeWorkspace().?.id);
     try std.testing.expectEqual(@as(usize, 2), mux.activeTab().?.id);
     const second = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.4, null, null, false, null);
     const closed_id = second.id;
+    try std.testing.expectEqual(&runtime, second.term.terminal_runtime.?);
     try std.testing.expect(closed_id > first_id);
     try std.testing.expectEqual(first_id, second.restore_anchor_id);
     try std.testing.expect(mux.setPaneFloating(second, true));
@@ -291,7 +295,7 @@ test "Lua pane allocation has no terminal resources and rolls back on allocation
             defer pane.deinit(&runtime);
             try std.testing.expect(!pane.isTerminal());
             try std.testing.expect(pane.id != 0);
-            try std.testing.expect(pane.term.pty == null and pane.terminal == null);
+            try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
             try std.testing.expect(pane.term.key_encoder == null and pane.term.mouse_encoder == null);
             try std.testing.expect(!pane.hasRenderHelpers());
             try std.testing.expectEqual(@as(usize, 0), pane.domain_name.len);

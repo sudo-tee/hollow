@@ -34,7 +34,7 @@ fn writePtyCallback(_: ?*anyopaque, userdata: ?*anyopaque, bytes: ?[*]const u8, 
     if (bytes == null or len == 0) return;
     const bytes_ptr = bytes.?;
     const pane = paneFromUserdata(userdata) orelse return;
-    if (pane.paste_output) |output| {
+    if (pane.term.paste_output) |output| {
         output.append(bytes_ptr[0..len]);
         return;
     }
@@ -116,18 +116,18 @@ fn renderHoldCallback(terminal: ?*anyopaque, userdata: ?*anyopaque, held: bool) 
     const pane = paneFromUserdata(userdata) orelse return;
     if (!pane.synchronized_output_enabled) return;
     if (held) {
-        const runtime = pane.terminal_runtime orelse return;
-        if (pane.render_state) |state| {
+        const runtime = pane.term.terminal_runtime orelse return;
+        if (pane.term.render_state) |state| {
             // Runs at the exact stream boundary, before any held bytes.
             runtime.updateRenderState(state, terminal) catch return;
-            pane.render_state_fresh = true;
+            pane.term.render_state_fresh = true;
             pane.render_dirty = .full;
         }
         pane.synchronized_output_started_ns = @import("../io.zig").nanoTimestamp();
     } else {
         pane.synchronized_output_started_ns = 0;
         pane.render_dirty = .full;
-        pane.render_state_fresh = false;
+        pane.term.render_state_fresh = false;
     }
     pane.synchronized_output_active = held;
 }
@@ -176,7 +176,7 @@ fn resetCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void
 
 fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
-    const runtime = pane.terminal_runtime orelse return;
+    const runtime = pane.term.terminal_runtime orelse return;
     var pwd: ghostty.String = .{ .ptr = null, .len = 0 };
     if (runtime.terminal_get(terminal, @backingInt(ghostty.TerminalData.pwd), &pwd) != ghostty.success) return;
     var path = pwd.slice();
@@ -234,14 +234,14 @@ test "native notifications and progress retain ordering and ignore cancellation"
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
-    runtime.terminalWrite(pane.terminal, "\x1b]9;Build comp");
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
+    runtime.terminalWrite(pane.term.terminal, "\x1b]9;Build comp");
     try std.testing.expect(!pane.osc99_notifications.hasNotifications());
-    runtime.terminalWrite(pane.terminal, "lete\x07\x1b]777;notify;Build;Tests passed\x1b\\");
+    runtime.terminalWrite(pane.term.terminal, "lete\x07\x1b]777;notify;Build;Tests passed\x1b\\");
     var first = pane.osc99_notifications.popNotification().?;
     defer first.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("Build complete", first.message);
@@ -249,14 +249,14 @@ test "native notifications and progress retain ordering and ignore cancellation"
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("Build", second.title);
     try std.testing.expectEqualStrings("Tests passed", second.message);
-    runtime.terminalWrite(pane.terminal, "\x1b]9;cancelled\x18\x1b]9;1;420\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]9;cancelled\x18\x1b]9;1;420\x07");
     try std.testing.expect(!pane.osc99_notifications.hasNotifications());
-    runtime.terminalWrite(pane.terminal, "\x1b]9;4;1;42\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]9;4;1;42\x07");
     try std.testing.expectEqual(@as(usize, 1), pane.program_status.records.items.len);
     try std.testing.expectEqual(@as(i8, 42), pane.program_status.records.items[0].progress);
-    runtime.terminalWrite(pane.terminal, "\x1b]9;4;3\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]9;4;3\x07");
     try std.testing.expectEqual(@as(i8, -1), pane.program_status.records.items[0].progress);
-    runtime.terminalWrite(pane.terminal, "\x1b]9;4;0\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]9;4;0\x07");
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
 }
 
@@ -264,54 +264,54 @@ test "render hold captures each exact boundary including end and restart in one 
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    pane.render_state = try runtime.createRenderState();
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    pane.term.render_state = try runtime.createRenderState();
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
 
-    runtime.terminalWrite(pane.terminal, "A\x1b[?2026hBBBB");
+    runtime.terminalWrite(pane.term.terminal, "A\x1b[?2026hBBBB");
     try std.testing.expect(pane.synchronized_output_active);
-    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.render_state).?.x);
+    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.term.render_state).?.x);
     const started = pane.synchronized_output_started_ns;
-    runtime.terminalWrite(pane.terminal, "C\x1b[?2026h");
+    runtime.terminalWrite(pane.term.terminal, "C\x1b[?2026h");
     try std.testing.expectEqual(started, pane.synchronized_output_started_ns);
-    runtime.terminalWrite(pane.terminal, "\x1b[?2026lD\x1b[?2026hEEEE");
-    try std.testing.expectEqual(@as(u16, 7), runtime.cursorPos(pane.render_state).?.x);
-    runtime.resizeTerminal(pane.terminal, 81, 24, 8, 16);
+    runtime.terminalWrite(pane.term.terminal, "\x1b[?2026lD\x1b[?2026hEEEE");
+    try std.testing.expectEqual(@as(u16, 7), runtime.cursorPos(pane.term.render_state).?.x);
+    runtime.resizeTerminal(pane.term.terminal, 81, 24, 8, 16);
     try std.testing.expect(!pane.synchronized_output_active);
-    runtime.terminalWrite(pane.terminal, "\x1b[?2026h");
+    runtime.terminalWrite(pane.term.terminal, "\x1b[?2026h");
     const deadline = pane.synchronized_output_started_ns + std.time.ns_per_s;
     try std.testing.expect(!pane.expireRenderHold(&runtime, deadline - 1, std.time.ns_per_s));
-    runtime.terminalWrite(pane.terminal, "still busy\x1b[?2026h");
+    runtime.terminalWrite(pane.term.terminal, "still busy\x1b[?2026h");
     try std.testing.expect(pane.expireRenderHold(&runtime, deadline, std.time.ns_per_s));
-    try std.testing.expect(!runtime.terminalMode(pane.terminal, .synchronized_output));
+    try std.testing.expect(!runtime.terminalMode(pane.term.terminal, .synchronized_output));
 }
 
 test "semantic prompt and full reset clear the appropriate program status" {
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
 
-    runtime.terminalWrite(pane.terminal, "\x1b]7501;state=working:app=build\x1b\\");
-    runtime.terminalWrite(pane.terminal, "\x1b]7501;state=done:id=tests\x1b\\");
-    runtime.terminalWrite(pane.terminal, "\x1b]7501;state=blocked:kind=permission:id=approval\x07");
-    runtime.terminalWrite(pane.terminal, "\x1b]7501;state=error:id=failed\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7501;state=working:app=build\x1b\\");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7501;state=done:id=tests\x1b\\");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7501;state=blocked:kind=permission:id=approval\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7501;state=error:id=failed\x07");
     try std.testing.expectEqual(@as(usize, 4), pane.program_status.records.items.len);
     try std.testing.expectEqualStrings("build", pane.program_status.records.items[0].app);
-    runtime.terminalWrite(pane.terminal, "\x1b]133;A\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]133;A\x07");
     try std.testing.expectEqual(@as(usize, 2), pane.program_status.records.items.len);
     try std.testing.expectEqualStrings("done", pane.program_status.records.items[0].stateName());
     try std.testing.expectEqualStrings("error", pane.program_status.records.items[1].stateName());
-    runtime.terminalWrite(pane.terminal, "\x1b[?1049h\x1b[?1049l\x1b[!p");
+    runtime.terminalWrite(pane.term.terminal, "\x1b[?1049h\x1b[?1049l\x1b[!p");
     try std.testing.expectEqual(@as(usize, 2), pane.program_status.records.items.len);
-    runtime.terminalWrite(pane.terminal, "\x1bc");
+    runtime.terminalWrite(pane.term.terminal, "\x1bc");
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     try std.testing.expect(pane.title_dirty);
     try std.testing.expect(pane.cwd_dirty);
@@ -321,21 +321,21 @@ test "cwd callbacks handle split, cancelled and legacy OSC 7 without changing ol
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
     pane.setCwd("/old");
-    runtime.terminalWrite(pane.terminal, "\x1b]7;file://host/");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7;file://host/");
     try std.testing.expect(!pane.cwd_dirty);
-    runtime.terminalWrite(pane.terminal, "new\x1b\\");
+    runtime.terminalWrite(pane.term.terminal, "new\x1b\\");
     try std.testing.expectEqualStrings("/old", pane.cwd);
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/new", pane.cwd);
-    runtime.terminalWrite(pane.terminal, "\x1b]7;file:///cancelled\x18");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7;file:///cancelled\x18");
     try std.testing.expect(!pane.cwd_dirty);
-    runtime.terminalWrite(pane.terminal, "\x1b]7;cwd;/legacy\x07");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7;cwd;/legacy\x07");
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/legacy", pane.cwd);
 }
@@ -344,14 +344,14 @@ test "cwd callbacks confirm an unchanged launch cwd for workspace bootstrap" {
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.terminal_runtime = &runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = &runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
     pane.setCwd("/project");
 
-    runtime.terminalWrite(pane.terminal, "\x1b]7;file://host/project\x1b\\");
+    runtime.terminalWrite(pane.term.terminal, "\x1b]7;file://host/project\x1b\\");
     try std.testing.expect(pane.cwd_dirty);
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/project", pane.cwd);

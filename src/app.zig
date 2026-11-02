@@ -626,11 +626,11 @@ pub const App = struct {
         defer self.allocator.free(row_buffer);
 
         var iterator_index: usize = 0;
-        while (iterator_index < rows and runtime.nextRow(pane.row_iterator)) : (iterator_index += 1) {
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+        while (iterator_index < rows and runtime.nextRow(pane.term.row_iterator)) : (iterator_index += 1) {
+            if (!runtime.populateRowCells(pane.term.row_iterator, &pane.term.row_cells)) break;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.row_cells, row_buffer, &row_len);
+            while (runtime.nextCell(pane.term.row_cells)) {
+                text_helpers.appendCellText(runtime, pane.term.row_cells, row_buffer, &row_len);
             }
             while (row_len > 0 and row_buffer[row_len - 1] == ' ') row_len -= 1;
             const visual_row = viewportIteratorRowIndex(iterator_index, rows) orelse continue;
@@ -654,16 +654,16 @@ pub const App = struct {
     fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !std.json.Value {
         var cursor = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = cursor });
-        if (runtime.cursorPos(pane.render_state)) |position| {
+        if (runtime.cursorPos(pane.term.render_state)) |position| {
             try putJsonField(self.allocator, &cursor, "position", try self.cursorPositionValue(position.y, position.x));
         } else {
             try putJsonField(self.allocator, &cursor, "position", .null);
         }
-        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(pane.render_state))) });
+        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(pane.term.render_state) });
+        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(pane.term.render_state) });
+        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(pane.term.render_state) });
+        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(pane.term.render_state) });
+        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(pane.term.render_state))) });
         return .{ .object = cursor };
     }
 
@@ -673,9 +673,9 @@ pub const App = struct {
         if (!pane.isTerminal()) return error.NotATerminal;
         if (!paneRenderHelpersReady(pane)) return null;
 
-        const rows = runtime.renderStateRows(pane.render_state) orelse pane.rows;
-        const cols = runtime.renderStateCols(pane.render_state) orelse pane.cols;
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+        const rows = runtime.renderStateRows(pane.term.render_state) orelse pane.rows;
+        const cols = runtime.renderStateCols(pane.term.render_state) orelse pane.cols;
+        if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return null;
 
         var screen = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = screen });
@@ -1570,7 +1570,7 @@ pub const App = struct {
         }
         if (self.ghostty) |*runtime| {
             if (current) |pane| {
-                if (pane.isTerminal()) runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+                if (pane.isTerminal()) runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
             }
         }
     }
@@ -1579,7 +1579,7 @@ pub const App = struct {
         if (self.activePane()) |pane| {
             pane.invalidate();
             if (self.ghostty) |*runtime| {
-                if (pane.isTerminal()) runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+                if (pane.isTerminal()) runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
             }
         }
     }
@@ -1587,7 +1587,7 @@ pub const App = struct {
     pub fn refreshActivePaneDisplay(self: *App) void {
         const pane = self.activePane() orelse return;
         const runtime = if (self.ghostty) |*rt| rt else return;
-        runtime.terminalScrollBottom(pane.terminal);
+        runtime.terminalScrollBottom(pane.term.terminal);
         pane.render_dirty = .full;
         pane.last_render_state_update_ns = 0;
         pane.pty_received_data = true;
@@ -1694,7 +1694,7 @@ pub const App = struct {
 
     pub fn paneRenderHelpersReady(pane: *const Pane) bool {
         if (!pane.isTerminal()) return false;
-        return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
+        return pane.term.renderHelpersReady();
     }
 
     const PaneRead = struct {
@@ -1710,7 +1710,7 @@ pub const App = struct {
     fn beginPaneRead(runtime: *GhosttyRuntime, pane: *Pane) ?PaneRead {
         if (!pane.isTerminal()) return null;
         if (paneRenderHelpersReady(pane)) return .{ .runtime = runtime, .pane = pane, .transient = false };
-        if (pane.terminal == null) return null;
+        if (pane.term.terminal == null) return null;
 
         var transient = false;
         if (!pane.hasRenderHelpers()) {
@@ -1719,7 +1719,7 @@ pub const App = struct {
             transient = true;
         }
         const read: PaneRead = .{ .runtime = runtime, .pane = pane, .transient = transient };
-        runtime.updateRenderState(pane.render_state, pane.terminal) catch {
+        runtime.updateRenderState(pane.term.render_state, pane.term.terminal) catch {
             read.end();
             return null;
         };
@@ -1732,17 +1732,17 @@ pub const App = struct {
         if (pane.rows == 0) return "";
         const read = beginPaneRead(runtime, pane) orelse return "";
         defer read.end();
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
+        if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return "";
 
         var writer: std.Io.Writer = .fixed(out);
         var row_index: usize = 0;
-        while (runtime.nextRow(pane.row_iterator) and row_index < pane.rows) : (row_index += 1) {
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+        while (runtime.nextRow(pane.term.row_iterator) and row_index < pane.rows) : (row_index += 1) {
+            if (!runtime.populateRowCells(pane.term.row_iterator, &pane.term.row_cells)) break;
 
             var row_text: [4096]u8 = undefined;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
+            while (runtime.nextCell(pane.term.row_cells)) {
+                text_helpers.appendCellText(runtime, pane.term.row_cells, row_text[0..], &row_len);
             }
             while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
             writer.writeAll(row_text[0..row_len]) catch break;
@@ -1768,7 +1768,7 @@ pub const App = struct {
             return;
         }
         const rt = if (self.ghostty) |*r| r else return;
-        if (!rt.terminalMode(pane.terminal, .focus_event)) return;
+        if (!rt.terminalMode(pane.term.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
         const bytes = rt.encodeFocus(if (gained) .gained else .lost, &buf) orelse return;
         pane.sendUserText(bytes);
@@ -2002,7 +2002,7 @@ pub const App = struct {
                     _ = pane.refreshCwd();
                 }
                 if (mux.activePane()) |active| {
-                    if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                    if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
                 }
             }
             self.pending_renderer_refresh = self.config.backend == .sokol or self.config.backend == .webgpu;
@@ -2572,7 +2572,7 @@ pub const App = struct {
                         self.last_visual_activity_ns = now_bell_ns;
                     }
                 }
-                if (!pane.render_state_ready) {
+                if (!pane.term.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
@@ -2588,38 +2588,38 @@ pub const App = struct {
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
                 const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
                 const needs_update = if (pane.synchronized_output_active)
-                    pane.render_state_fresh
+                    pane.term.render_state_fresh
                 else
                     pane.pty_received_data or
                         pane.render_dirty != .false_value or
                         (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
-                    if (pane.render_state_fresh) {
-                        pane.render_state_fresh = false;
+                    if (pane.term.render_state_fresh) {
+                        pane.term.render_state_fresh = false;
                         pane.pty_received_data = false;
                     } else {
                         pane.pty_received_data = false;
                         pane.last_render_state_update_ns = now_ns;
-                        runtime.clearRenderStateDirty(pane.render_state);
-                        runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
+                        runtime.clearRenderStateDirty(pane.term.render_state);
+                        runtime.updateRenderState(pane.term.render_state, pane.term.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
                     }
                     if (self.config.debug_overlay) total_renderstate_ns += io.nanoTimestamp() - renderstate_start_ns;
-                    const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                    const post_dirty = runtime.getRenderStateDirty(pane.term.render_state) orelse .true_value;
                     if (self.config.debug_terminal_trace and pane_is_active) {
-                        const cursor_pos = runtime.cursorPos(pane.render_state);
+                        const cursor_pos = runtime.cursorPos(pane.term.render_state);
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
                             pane.id,
-                            pane.render_state_fresh,
+                            pane.term.render_state_fresh,
                             pane.pty_received_data,
                             @tagName(pane.render_dirty),
                             @tagName(post_dirty),
-                            runtime.cursorVisible(pane.render_state),
-                            runtime.cursorBlinking(pane.render_state),
-                            runtime.cursorPasswordInput(pane.render_state),
-                            @tagName(runtime.cursorVisualStyle(pane.render_state)),
+                            runtime.cursorVisible(pane.term.render_state),
+                            runtime.cursorBlinking(pane.term.render_state),
+                            runtime.cursorPasswordInput(pane.term.render_state),
+                            @tagName(runtime.cursorVisualStyle(pane.term.render_state)),
                             cursor_pos,
                         });
                     }
@@ -2630,12 +2630,12 @@ pub const App = struct {
                         copy_mode.refreshCopyModeVisibleSlice(self, pane) catch {};
                     }
                     if (builtin.os.tag != .windows and pane.logged_first_pty_read and pane.title.len == 0) {
-                        if (runtime.cursorPos(pane.render_state)) |cp| {
+                        if (runtime.cursorPos(pane.term.render_state)) |cp| {
                             std.log.info("linux startup cursor row={d} col={d} render_rows={d} render_cols={d}", .{
                                 cp.y,
                                 cp.x,
-                                runtime.renderStateRows(pane.render_state) orelse 0,
-                                runtime.renderStateCols(pane.render_state) orelse 0,
+                                runtime.renderStateRows(pane.term.render_state) orelse 0,
+                                runtime.renderStateCols(pane.term.render_state) orelse 0,
                             });
                         }
                     }
@@ -2727,7 +2727,7 @@ pub const App = struct {
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
-                    if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                    if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
                 }
                 self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
                 if (mux.activeTab()) |tab| {
@@ -2744,7 +2744,7 @@ pub const App = struct {
         const idle_delay_ns: i128 = 250 * std.time.ns_per_ms;
         const continuation_delay_ns: i128 = std.time.ns_per_ms;
 
-        const activity = runtime.terminalCompressionActivity(pane.terminal) catch |err| {
+        const activity = runtime.terminalCompressionActivity(pane.term.terminal) catch |err| {
             std.log.err("pane compression activity failed: {s}", .{@errorName(err)});
             pane.compression_deadline_ns = 0;
             return;
@@ -2756,7 +2756,7 @@ pub const App = struct {
         }
         if (pane.compression_deadline_ns == 0 or now_ns < pane.compression_deadline_ns) return;
 
-        pane.compression_deadline_ns = switch (runtime.terminalCompress(pane.terminal) catch |err| {
+        pane.compression_deadline_ns = switch (runtime.terminalCompress(pane.term.terminal) catch |err| {
             std.log.err("pane compression failed: {s}", .{@errorName(err)});
             pane.compression_deadline_ns = 0;
             return;
@@ -2852,8 +2852,8 @@ pub const App = struct {
                         actual_left,
                         actual_right,
                     );
-                    leaf.pane.render_state_ready = true;
-                    leaf.pane.terminal_output_ready = true;
+                    leaf.pane.term.render_state_ready = true;
+                    leaf.pane.term.terminal_output_ready = true;
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
@@ -2891,8 +2891,8 @@ pub const App = struct {
                         actual_left,
                         actual_right,
                     );
-                    pane.render_state_ready = true;
-                    pane.terminal_output_ready = true;
+                    pane.term.render_state_ready = true;
+                    pane.term.terminal_output_ready = true;
                 }
             }
             if (self.debug_split_trace_frames > 0) self.debug_split_trace_frames -|= 1;
@@ -2953,19 +2953,19 @@ test "initial pane callbacks retain the App-owned runtime after initialization r
     var pane = pane_mod.Pane.init(std.testing.allocator);
     const runtime = try app.initTerminalRuntime();
     try std.testing.expectEqual(@intFromPtr(&app.ghostty.?), @intFromPtr(runtime));
-    pane.terminal_runtime = runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.term.terminal_runtime = runtime;
+    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&app.ghostty.?);
-    pane.render_state = try runtime.createRenderState();
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+    pane.term.render_state = try runtime.createRenderState();
+    runtime.setTerminalUserdata(pane.term.terminal, &pane);
+    runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
 
     // Initial shell output invokes both callbacks after startup's stack unwinds.
-    app.ghostty.?.terminalWrite(pane.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
+    app.ghostty.?.terminalWrite(pane.term.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/startup", pane.cwd);
     try std.testing.expect(pane.synchronized_output_active);
-    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.render_state).?.x);
+    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.term.render_state).?.x);
 }
 
 test "closePaneById synchronizes surviving focus without accessing the destroyed pane" {
@@ -3032,7 +3032,7 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expect(!pane.exit_event_emitted);
     try std.testing.expect(pane.cols > 0 and pane.rows > 0);
     try std.testing.expectEqualStrings("Lua pane", pane.title);
-    try std.testing.expect(pane.term.pty == null and pane.terminal == null);
+    try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
     try std.testing.expect(!pane.hasRenderHelpers());
     try std.testing.expect(!app.pending_quit);
 
@@ -3112,17 +3112,17 @@ test "mux pane changes forward focus events to child terminals" {
     const runtime = try app.initTerminalRuntime();
     var previous = pane_mod.Pane.init(std.testing.allocator);
     defer previous.deinit(&app.ghostty.?);
-    previous.terminal_runtime = runtime;
-    previous.terminal = try runtime.createTerminal(80, 24, 0);
+    previous.term.terminal_runtime = runtime;
+    previous.term.terminal = try runtime.createTerminal(80, 24, 0);
     try previous.queueStartupInput("previous");
-    try std.testing.expect(runtime.setTerminalMode(previous.terminal, .focus_event, true));
+    try std.testing.expect(runtime.setTerminalMode(previous.term.terminal, .focus_event, true));
 
     var current = pane_mod.Pane.init(std.testing.allocator);
     defer current.deinit(&app.ghostty.?);
-    current.terminal_runtime = runtime;
-    current.terminal = try runtime.createTerminal(80, 24, 0);
+    current.term.terminal_runtime = runtime;
+    current.term.terminal = try runtime.createTerminal(80, 24, 0);
     try current.queueStartupInput("current");
-    try std.testing.expect(runtime.setTerminalMode(current.terminal, .focus_event, true));
+    try std.testing.expect(runtime.setTerminalMode(current.term.terminal, .focus_event, true));
 
     app.syncActivePaneChange(&previous, &current);
     try std.testing.expect(std.mem.endsWith(u8, previous.pending_startup_input, "\x1b[O"));

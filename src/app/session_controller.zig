@@ -129,9 +129,9 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     };
     var output: ghostty.PasteOutput = .{ .allocator = self.allocator };
     defer output.deinit();
-    pane.paste_output = &output;
-    defer pane.paste_output = null;
-    rt.pasteText(pane.terminal, text) catch |err| {
+    pane.term.paste_output = &output;
+    defer pane.term.paste_output = null;
+    rt.pasteText(pane.term.terminal, text) catch |err| {
         if (err == error.UnsafePaste) {
             try pane.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
             self.signalWake();
@@ -727,7 +727,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     }
     emitWorkspaceClosedIfRemoved(self, mux);
     if (mux.activePane()) |active| {
-        if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+        if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
     }
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     if (mux.activeTab()) |tab| {

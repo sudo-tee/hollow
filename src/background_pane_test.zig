@@ -61,7 +61,7 @@ test "background jobs: launch preserves focus, drains output, retains failure, a
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(mux.activePane() == original_pane);
     try std.testing.expect(observer.calls > 0 and !observer.changed);
-    try std.testing.expect(pane.retain_on_exit and pane.terminal_output_ready);
+    try std.testing.expect(pane.retain_on_exit and pane.term.terminal_output_ready);
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     while (pane.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
         _ = try pane.pollPty(&runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 128 * 1024, false);

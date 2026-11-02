@@ -129,11 +129,11 @@ pub fn searchHighlightForRow(self: *const App, pane: *const Pane, row: usize) ?S
 fn copyModeVisibleRows(self: *const App, pane: *const Pane) usize {
     const fallback = @max(@as(usize, 1), @as(usize, pane.rows));
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return fallback;
-    if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
+    if (runtime.terminalScrollbar(pane.term.terminal)) |scrollbar| {
         return @max(@as(usize, 1), @as(usize, @intCast(scrollbar.len)));
     }
-    if (!pane.render_state_ready or pane.render_state == null) return fallback;
-    const rows = runtime.renderStateRows(pane.render_state) orelse return fallback;
+    if (!pane.term.render_state_ready or pane.term.render_state == null) return fallback;
+    const rows = runtime.renderStateRows(pane.term.render_state) orelse return fallback;
     return @max(@as(usize, 1), @as(usize, @intCast(rows)));
 }
 
@@ -216,7 +216,7 @@ pub fn exitCopyMode(self: *App) void {
     if (pane) |value| {
         if (self.renderer) |*renderer| renderer.invalidatePaneCache(value);
         scroll.scrollPaneViewportToRow(self, value, restore_top);
-        value.render_state_fresh = false;
+        value.term.render_state_fresh = false;
         value.last_render_state_update_ns = 0;
         value.pty_received_data = true;
         value.render_dirty = .full;
@@ -287,13 +287,13 @@ pub fn refreshCopyModeVisibleSlice(self: *App, pane: *Pane) !void {
     const start_row: usize = @intCast(scroll.scrollbarTopRow(scrollbar));
     const visible_rows: usize = @intCast(@min(scrollbar.total, scrollbar.len));
     if (start_row >= self.copy_mode_history.items.len or visible_rows == 0) return;
-    if (!pane.render_state_ready or pane.render_state == null) return;
-    if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
+    if (!pane.term.render_state_ready or pane.term.render_state == null) return;
+    if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return;
 
     var row_index: usize = 0;
-    while (runtime.nextRow(pane.row_iterator) and row_index < visible_rows and start_row + row_index < self.copy_mode_history.items.len) : (row_index += 1) {
+    while (runtime.nextRow(pane.term.row_iterator) and row_index < visible_rows and start_row + row_index < self.copy_mode_history.items.len) : (row_index += 1) {
         const target_row = start_row + row_index;
-        const replacement = try captureCopyModeVisibleLine(self, pane, target_row, runtime, pane.row_iterator, &pane.row_cells);
+        const replacement = try captureCopyModeVisibleLine(self, pane, target_row, runtime, pane.term.row_iterator, &pane.term.row_cells);
         const previous = self.copy_mode_history.items[target_row];
         self.copy_mode_history.items[target_row] = replacement;
         freeCopyModeLine(self, previous);
@@ -315,12 +315,12 @@ pub fn refreshCopyModeVisibleSlice(self: *App, pane: *Pane) !void {
 }
 
 fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void {
-    if (!pane.render_state_ready or pane.render_state == null) return;
-    runtime.clearRenderStateDirty(pane.render_state);
-    try runtime.updateRenderState(pane.render_state, pane.terminal);
+    if (!pane.term.render_state_ready or pane.term.render_state == null) return;
+    runtime.clearRenderStateDirty(pane.term.render_state);
+    try runtime.updateRenderState(pane.term.render_state, pane.term.terminal);
     pane.last_render_state_update_ns = io.nanoTimestamp();
     pane.pty_received_data = false;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     _ = scroll.refreshPaneScrollbar(self, runtime, pane);
 }
 
@@ -598,7 +598,7 @@ pub fn copyModePromptJump(self: *App, direction: PromptJumpDir) void {
         .next => self.copy_mode_cursor.row +| 1,
         .prev => self.copy_mode_cursor.row -| 1,
     };
-    const target_row = findPromptJumpTarget(.{ .live = .{ .runtime = runtime, .terminal = pane.terminal } }, direction, start_row, total) orelse return;
+    const target_row = findPromptJumpTarget(.{ .live = .{ .runtime = runtime, .terminal = pane.term.terminal } }, direction, start_row, total) orelse return;
     self.copy_mode_cursor = .{ .row = target_row, .col = 0 };
     self.copy_mode_anchor = null;
     self.copy_mode_block_selection = false;
@@ -794,10 +794,10 @@ pub fn handlePromptJump(self: *App, direction: PromptJumpDir) void {
     const runtime = if (self.ghostty) |*rt| rt else return;
     // Native navigation is relative to viewport top and handles continuation
     // prompts and the active-area boundary. Copy-mode cursor movement is separate.
-    runtime.terminalScrollPrompt(pane.terminal, if (direction == .prev) -1 else 1);
+    runtime.terminalScrollPrompt(pane.term.terminal, if (direction == .prev) -1 else 1);
     pane.render_dirty = .full;
     pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
+    pane.term.render_state_fresh = false;
     pane.last_render_state_update_ns = 0;
     pane.pty_received_data = true;
     self.scroll_accum = 0;

@@ -470,7 +470,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   child environment, stable IDs across float/unfloat and workspace moves,
   restored split ratios, and rejection of closed IDs after new allocation or
   reuse of pane storage.
-- Next backend milestone implemented (not yet committed): Option A `Pane.Kind`,
+- Backend milestone committed as `0677d49`: Option A `Pane.Kind`,
   owned `LuaSurface`, content-independent split/floating insertion, and the
   terminal safety audit. Lua panes skip PTY polling, both reapers, exit events,
   terminal rendering helpers, Kitty texture preparation, encoders, selection,
@@ -495,8 +495,24 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   take `*TerminalPane`, without knowledge of Lua panes. Existing bootstrap error
   ownership and terminal destruction order are preserved. A native regression
   test checks input ownership, encoding, and repeat-safe cleanup.
-- Next B checkpoint: move the remaining Ghostty handles and terminal state into
-  `TerminalPane`, migrate the remaining consumers, then replace transitional
+- Next B checkpoint implemented (not yet committed): all remaining Ghostty
+  terminal/render handles, the borrowed runtime and paste-output pointers, and
+  render/parser readiness flags now live in `TerminalPane`. Render-helper
+  creation, release, readiness checks, and native-resource destruction take
+  `*TerminalPane`. App, renderer, selection, scrolling, copy mode, quick select,
+  and native callback consumers access terminal resources through `Pane.term`.
+  Bootstrap still installs userdata/callbacks before parsing, and transfers its
+  local resources only after successful PTY creation.
+- Extraction exposed an existing ownership bug: `recreateRenderHelpers` used
+  `errdefer` in a void function whose allocation catches returned normally.
+  Partial failures therefore leaked the already-created handles. The extracted
+  implementation uses a fallible transaction with the same error messages;
+  failure-injection tests cover all three allocations, preserve old handles and
+  readiness flags on failure, and verify cleanup. A native lifecycle test covers
+  repeated release, recreation, parser readiness across hidden tabs, and full
+  destruction.
+- Remaining B work: move terminal buffers/state and their methods into
+  `TerminalPane`, narrow terminal-only consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
   compiler-enforced content boundary replaces them.
@@ -534,3 +550,9 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   Lua remains at 785 successes. Touched Zig formatting is clean. No Lua or
   surface painting changes yet; screenshots and render benchmarks remain
   pending for the actual Clay pane renderer.
+- Ghostty-handle extraction validation: full native `make build` and `make test`
+  pass in Nix, Lua remains at 785 successes, and touched Zig formatting is clean.
+  The full executable build is necessary in addition to tests: Zig's lazy
+  analysis otherwise misses renderer-only consumers such as the debug overlay.
+  GUI performance comparisons remain pending; the headless renderer benchmark
+  owns a separate `Session`, so it cannot measure this pane-ownership refactor.

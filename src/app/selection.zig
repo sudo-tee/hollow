@@ -49,7 +49,7 @@ pub fn historySelectionRangeInViewport(history_range: selection.Range, visible_t
 pub fn selectionRange(self: *const App, pane: *const Pane) ?selection.Range {
     const history_range = selectionHistoryRange(self, pane) orelse return null;
     const scrollbar = if (self.ghostty) |*rt|
-        @constCast(rt).terminalScrollbar(pane.terminal) orelse return null
+        @constCast(rt).terminalScrollbar(pane.term.terminal) orelse return null
     else
         pane.scrollbar();
     const visible_top: usize = @intCast(scroll.scrollbarTopRow(scrollbar));
@@ -71,17 +71,17 @@ pub fn selectionPointToHistory(self: *App, pane: *Pane, point: selection.CellPoi
 pub fn gridRefForHistoryRow(self: *const App, pane: *Pane, history_row: usize) ?ghostty.GridRef {
     if (!pane.isTerminal()) return null;
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
-    const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
+    const scrollbar = runtime.terminalScrollbar(pane.term.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
-    return gridRefForHistoryPoint(runtime, pane.terminal, history_row, 0, scrollback_rows);
+    return gridRefForHistoryPoint(runtime, pane.term.terminal, history_row, 0, scrollback_rows);
 }
 
 pub fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, col: usize) ?ghostty.GridRef {
     if (!pane.isTerminal()) return null;
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
-    const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
+    const scrollbar = runtime.terminalScrollbar(pane.term.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
-    return gridRefForHistoryPoint(runtime, pane.terminal, history_row, col, scrollback_rows);
+    return gridRefForHistoryPoint(runtime, pane.term.terminal, history_row, col, scrollback_rows);
 }
 
 pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Range {
@@ -154,15 +154,15 @@ fn selectionBeginNative(self: *App, pane: *Pane, point: selection.CellPoint, lin
         self.syncActivePaneChange(previous, pane);
     }
     const runtime = if (self.ghostty) |*rt| rt else return;
-    const selected = runtime.selectAt(pane.terminal, .{
+    const selected = runtime.selectAt(pane.term.terminal, .{
         .tag = .viewport,
         .value = .{ .coordinate = .{ .x = @intCast(point.col), .y = @intCast(point.row) } },
     }, line) orelse {
         selectionBegin(self, pane, point, false);
         return;
     };
-    const start = runtime.gridRefPoint(pane.terminal, &selected.start, .screen) orelse return;
-    const end = runtime.gridRefPoint(pane.terminal, &selected.end, .screen) orelse return;
+    const start = runtime.gridRefPoint(pane.term.terminal, &selected.start, .screen) orelse return;
+    const end = runtime.gridRefPoint(pane.term.terminal, &selected.end, .screen) orelse return;
     const had_selection = hasSelection(self);
 
     if (had_selection) {
@@ -203,14 +203,14 @@ pub fn copySelectionToClipboard(self: *App) !void {
     const runtime = if (self.ghostty) |*rt| rt else return;
     var native_selection = selectionSnapshotForRange(self, pane, range) orelse return;
     var required: usize = 0;
-    const query_result = runtime.formatSelectionInto(pane.terminal, &native_selection, null, &required);
+    const query_result = runtime.formatSelectionInto(pane.term.terminal, &native_selection, null, &required);
     if (query_result != ghostty.out_of_space and query_result != ghostty.success) return;
     if (required == 0) return;
 
     const clipboard = try self.allocator.alloc(u8, required + 1);
     defer self.allocator.free(clipboard);
     var written: usize = 0;
-    if (runtime.formatSelectionInto(pane.terminal, &native_selection, clipboard[0..required], &written) != ghostty.success) return;
+    if (runtime.formatSelectionInto(pane.term.terminal, &native_selection, clipboard[0..required], &written) != ghostty.success) return;
     if (written == 0) return;
     clipboard[written] = 0;
     c.sapp_set_clipboard_string(@ptrCast(clipboard[0..written :0].ptr));
