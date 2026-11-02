@@ -94,7 +94,7 @@ non-terminal nodes.
 
 | Step | What |
 | --- | --- |
-| P1 | Clay surface ownership by a pane: draw into the pane rect, reuse `PaneCacheEntry` texture, render only when dirty |
+| P1 | Native implementation ready, uncommitted: pane-owned Clay snapshots, clipping, retained `PaneCacheEntry` texture, dirty-only Lua rendering. GUI screenshot validation waits for P2 creation API |
 | P2 | Lua API (§4): `split`/`float`/`invalidate`/`close`/`set_title`, `on_mount`/`on_unmount`, error row on render failure |
 | P3 | Keys and focus: `on_key`, `on_focus`; unhandled keys fall through to global bindings |
 | P4 | Mouse: click and hover through the pane's surface callback namespace |
@@ -250,3 +250,26 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   terminal automation state to a Lua node. Fixed, with a regression test.
 - **Sidebar/overlay row drawer.** Obsolete (see §1). The UI moved to Clay
   (`b487744`, `002392a`) after this plan was written.
+- **P1 native surface ownership.** `LuaSurface.attach` binds a registry reference
+  to a `ui.layout` surface and its Lua runtime generation. Native preparation
+  invokes `invalidate`/`snapshot(ctx)` only on invalidation or viewport/focus/cell
+  changes. It retains parsed nodes and owned strings without publishing the
+  standalone/overlay `_layout_*` globals. A stale generation disables the old
+  reference rather than resolving its registry index in a new runtime.
+- **P1 rendering.** Lua panes use the existing pane texture cache and Clay paint
+  commands clipped to their local rect. Text is pre-rasterized before atlas
+  upload/offscreen passes. Texture/atlas invalidation repaints retained nodes;
+  it does not rerun Lua when the snapshot is clean. Diagnostic terminal direct
+  paths keep Lua texture blits in layout order, including floating panes.
+- **Headless dependency boundary.** Embedding a typed Clay surface in
+  `LuaSurface` made headless background-pane tests require GUI bindings. Native
+  storage is instead allocated lazily with an erased destruction callback;
+  headless lifecycle code never imports or links Clay. Repeated destruction
+  releases both host and native ownership exactly once.
+- **P1 validation.** Native build, full Zig suite (including headless background
+  panes), 785 Lua tests, touched Zig formatting, and `git diff --check` pass.
+  Native regressions check dirty-only snapshot counts, resize/focus triggers,
+  independent Clay contexts, owned text, translated hit bounds, unchanged overlay
+  publication, Lua stack balance, stale-runtime rejection, and cleanup. No public
+  pane creation API exists yet; error-row/lifecycle/input/persistence work and
+  real GUI screenshot/performance validation remain pending.

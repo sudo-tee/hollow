@@ -38,6 +38,85 @@ const rounded_border = @import("rounded_border.zig");
 const text_width = @import("../text_width.zig");
 const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
+const LuaPaneSurface = @import("../ui/lua_surface.zig").LuaSurface;
+
+const LuaPanePrepare = struct {
+    app: *App,
+    renderer: *FtRenderer,
+    surface: *LuaPaneSurface,
+    viewport: LuaPaneSurface.Viewport,
+    changed: bool = false,
+};
+var g_lua_pane_prepare: ?*LuaPanePrepare = null;
+
+fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
+    const ctx = g_lua_pane_prepare orelse return;
+    ctx.changed = ctx.surface.prepare(ctx.app.allocator, runtime, ctx.renderer, ctx.viewport);
+}
+
+/// Lua content always uses the pane's existing retained texture, including
+/// when terminals use a diagnostic direct path. No Ghostty handles are needed.
+fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds) void {
+    const surface = pane.asLua() orelse return;
+    if (surface.ref < 0) surface.dirty = false;
+    const pw: f32 = @floatFromInt(@max(1, bounds.width));
+    const ph: f32 = @floatFromInt(@max(1, bounds.height));
+    var ctx: LuaPanePrepare = .{
+        .app = app,
+        .renderer = renderer,
+        .surface = surface,
+        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane(), .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
+    };
+    if (app.lua) |*runtime| {
+        g_lua_pane_prepare = &ctx;
+        defer g_lua_pane_prepare = null;
+        runtime.withLockedState(void, prepareLuaPane);
+    }
+    if (surface.clayState()) |tree| tree.area = .{ .x = @floatFromInt(bounds.x), .y = @floatFromInt(bounds.y), .width = pw, .height = ph };
+    const entry = getOrCreatePaneCacheEntry(pane, @intFromFloat(pw), @intFromFloat(ph)) orelse return;
+    const atlas_stale = entry.last_atlas_reset_epoch != renderer.atlas_reset_epoch or entry.atlas_repair_pending;
+    if (!ctx.changed and pane.render_dirty == .false_value and entry.validity == .valid and !entry.needs_clear and !atlas_stale) return;
+    if (surface.clayState()) |tree| tree.preRasterize(renderer);
+    renderer.flushAtlas();
+    c.sgl_set_context(entry.cache.sgl_ctx);
+    defer c.sgl_set_context(c.sgl_default_context());
+    const saved_pipeline = renderer.atlas_pip;
+    renderer.atlas_pip = entry.cache.atlas_pip;
+    defer renderer.atlas_pip = saved_pipeline;
+    c.sgl_defaults();
+    c.sgl_viewport(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
+    c.sgl_scissor_rect(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
+    c.sgl_matrix_mode_projection();
+    c.sgl_load_identity();
+    c.sgl_ortho(0, pw, ph, 0, -1, 1);
+    if (surface.clayState()) |tree| {
+        tree.mouse_x = g_mouse_x - @as(f32, @floatFromInt(bounds.x));
+        tree.mouse_y = g_mouse_y - @as(f32, @floatFromInt(bounds.y));
+        drawClaySurface(tree, renderer, pw, ph, 0, 0);
+        tree.area.x = @floatFromInt(bounds.x);
+        tree.area.y = @floatFromInt(bounds.y);
+    }
+    const bg = app.config.terminal_theme.background;
+    var pass = std.mem.zeroes(c.sg_pass);
+    pass.attachments.colors[0] = entry.cache.rt_att_view;
+    pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+    pass.action.colors[0].clear_value = .{ .r = @as(f32, @floatFromInt(bg.r)) / 255, .g = @as(f32, @floatFromInt(bg.g)) / 255, .b = @as(f32, @floatFromInt(bg.b)) / 255, .a = 1 };
+    c.sg_begin_pass(&pass);
+    c.sgl_context_draw(entry.cache.sgl_ctx);
+    c.sg_end_pass();
+    entry.validity = .valid;
+    entry.needs_clear = false;
+    entry.last_atlas_reset_epoch = renderer.atlas_reset_epoch;
+    entry.atlas_repair_pending = renderer.atlas_uploaded_this_frame and renderer.atlas_dirty;
+    // An invalidate() from render itself must survive this paint.
+    pane.render_dirty = if (surface.dirty) .full else .false_value;
+}
+
+fn blitLuaPaneCache(renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds, width: f32, height: f32) void {
+    if (getOrCreatePaneCacheEntry(pane, @max(1, bounds.width), @max(1, bounds.height))) |entry| {
+        renderer.blitCache(&entry.cache, @floatFromInt(bounds.x), @floatFromInt(bounds.y), @floatFromInt(bounds.width), @floatFromInt(bounds.height), width, height);
+    }
+}
 const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
 // Stable allocations: each lower overlay retains its Clay scroll/layout state
@@ -3626,6 +3705,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_frame_pass2_decoration_ns = 0;
         const offscreen_terminal_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
 
+        for (leaves) |leaf| renderLuaPaneToCache(app, renderer, leaf.pane, leaf.bounds);
+        if (leaves.len == 0) {
+            if (app.activePane()) |pane| renderLuaPaneToCache(app, renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) });
+        }
+
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
             const single_pane: ?*anyopaque = if (!do_leaves) blk: {
@@ -4024,6 +4108,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (leaves.len > 0) {
                     const active = app.activePane();
                     for (leaves) |leaf| {
+                        if (leaf.pane.asLua() != null) {
+                            blitLuaPaneCache(renderer, leaf.pane, leaf.bounds, width, height);
+                            continue;
+                        }
                         const term = readyTerminal(leaf.pane) orelse continue;
                         const ox: f32 = @floatFromInt(leaf.bounds.x);
                         const oy: f32 = @floatFromInt(leaf.bounds.y);
@@ -4082,6 +4170,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         term.viewport_scroll_pending = false;
                     }
                 } else if (app.activePane()) |pane| {
+                    if (pane.asLua() != null) blitLuaPaneCache(renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) }, width, height);
                     if (readyTerminal(pane)) |term| {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
@@ -4207,6 +4296,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                 }
             } else if (app.activePane()) |pane| {
+                if (pane.asLua() != null) blitLuaPaneCache(renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) }, width, height);
                 if (readyTerminal(pane)) |term| {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
