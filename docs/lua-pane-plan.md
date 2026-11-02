@@ -495,7 +495,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   take `*TerminalPane`, without knowledge of Lua panes. Existing bootstrap error
   ownership and terminal destruction order are preserved. A native regression
   test checks input ownership, encoding, and repeat-safe cleanup.
-- Next B checkpoint implemented (not yet committed): all remaining Ghostty
+- Ghostty-handle checkpoint committed as `552ea60`: all remaining Ghostty
   terminal/render handles, the borrowed runtime and paste-output pointers, and
   render/parser readiness flags now live in `TerminalPane`. Render-helper
   creation, release, readiness checks, and native-resource destruction take
@@ -511,7 +511,24 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   readiness flags on failure, and verify cleanup. A native lifecycle test covers
   repeated release, recreation, parser readiness across hidden tabs, and full
   destruction.
-- Remaining B work: move terminal buffers/state and their methods into
+- Protocol-buffer checkpoint implemented (not yet committed): pending cwd
+  reports, shared PTY read/sanitize storage, split-sequence progress, OSC 99 and
+  OSC 1337 capture, HTP capture, notification assemblies, deferred output/image
+  injection, and startup-input storage now belong to `TerminalPane`. Startup
+  queue construction and buffer destruction take `*TerminalPane`; parser
+  methods still temporarily live on the generic node and access this storage.
+- Bootstrap now transfers input handles individually rather than overwriting
+  the whole `term` value. Rollback clears only handles owned by bootstrap
+  locals, leaving any already-owned protocol buffers available for destruction.
+  Shared scratch storage remains shared; each terminal keeps its own parser
+  progress. Normalizing the moved field paths against `552ea60` shows no parser
+  algorithm changes.
+- New tests inject every allocation failure while constructing owned protocol
+  buffers/notifications/startup input, verify repeat-safe cleanup and destruction
+  of shortened startup slices using their original allocation capacity, preserve
+  queued input on allocation failure, and check command/raw-input terminators.
+- Remaining B work: move terminal runtime flags, timing/lifecycle/job state,
+  scroll/image state, and the remaining terminal-only methods into
   `TerminalPane`, narrow terminal-only consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
@@ -556,3 +573,6 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   analysis otherwise misses renderer-only consumers such as the debug overlay.
   GUI performance comparisons remain pending; the headless renderer benchmark
   owns a separate `Session`, so it cannot measure this pane-ownership refactor.
+- Protocol-buffer extraction validation: full native build and Zig tests pass
+  in Nix, Lua remains at 785 successes, and touched Zig formatting is clean.
+  No Lua surface or painting changes were made in this checkpoint.

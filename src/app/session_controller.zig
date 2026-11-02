@@ -133,7 +133,7 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     defer pane.term.paste_output = null;
     rt.pasteText(pane.term.terminal, text) catch |err| {
         if (err == error.UnsafePaste) {
-            try pane.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
+            try pane.term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
             self.signalWake();
         }
         return err;

@@ -2411,7 +2411,7 @@ pub const App = struct {
                 const pty_read_loops: usize = (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_read_bytes: usize = if (pane_is_active) pane_mod.PTY_HARD_BYTE_LIMIT else background_budget.byteQuota();
                 const pending_output_bytes: usize = if (pane_is_active) blk: {
-                    const deferred_output_bytes = pane.boot_output.items.len +| pane.pending_terminal_inject.items.len;
+                    const deferred_output_bytes = pane.term.boot_output.items.len +| pane.term.pending_terminal_inject.items.len;
                     break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
                 const pty_now_ns = io.nanoTimestamp();
@@ -2471,7 +2471,7 @@ pub const App = struct {
                     _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = pane.id });
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
-                const had_notifications = pane.osc99_notifications.hasNotifications();
+                const had_notifications = pane.term.osc99_notifications.hasNotifications();
                 if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or had_notifications) automation_changed = true;
                 total_pty_read_ns += pane.last_pty_read_ns;
                 total_terminal_write_ns += pane.last_terminal_write_ns;
@@ -2506,7 +2506,7 @@ pub const App = struct {
                     }
                     if (self.config.debug_overlay) total_cwd_ns += io.nanoTimestamp() - start_ns;
                 }
-                while (pane.osc99_notifications.popNotification()) |notification_value| {
+                while (pane.term.osc99_notifications.popNotification()) |notification_value| {
                     var notification = notification_value;
                     defer notification.deinit(self.allocator);
                     const now_notification_ns = io.nanoTimestamp();
@@ -2629,7 +2629,7 @@ pub const App = struct {
                     if (self.copy_mode_active and self.copy_mode_pane == pane and !self.copy_mode_needs_refresh) {
                         copy_mode.refreshCopyModeVisibleSlice(self, pane) catch {};
                     }
-                    if (builtin.os.tag != .windows and pane.logged_first_pty_read and pane.title.len == 0) {
+                    if (builtin.os.tag != .windows and pane.term.logged_first_pty_read and pane.title.len == 0) {
                         if (runtime.cursorPos(pane.term.render_state)) |cp| {
                             std.log.info("linux startup cursor row={d} col={d} render_rows={d} render_cols={d}", .{
                                 cp.y,
@@ -2931,8 +2931,8 @@ test "HTP queue owns cwd at receipt including earlier OSC 7 in the same batch" {
     var pane = Pane.init(std.testing.allocator);
     pane.setCwd("/launch");
     defer std.testing.allocator.free(pane.cwd);
-    pane.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
-    defer if (pane.pending_cwd) |cwd| std.testing.allocator.free(cwd);
+    pane.term.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
+    defer if (pane.term.pending_cwd) |cwd| std.testing.allocator.free(cwd);
 
     htp.queueHtpMessage(app, &pane, "start");
     try std.testing.expect(pane.refreshCwd());
@@ -3125,15 +3125,15 @@ test "mux pane changes forward focus events to child terminals" {
     try std.testing.expect(runtime.setTerminalMode(current.term.terminal, .focus_event, true));
 
     app.syncActivePaneChange(&previous, &current);
-    try std.testing.expect(std.mem.endsWith(u8, previous.pending_startup_input, "\x1b[O"));
-    try std.testing.expect(std.mem.endsWith(u8, current.pending_startup_input, "\x1b[I"));
+    try std.testing.expect(std.mem.endsWith(u8, previous.term.pending_startup_input, "\x1b[O"));
+    try std.testing.expect(std.mem.endsWith(u8, current.term.pending_startup_input, "\x1b[I"));
 
-    const previous_len = previous.pending_startup_input.len;
-    const current_len = current.pending_startup_input.len;
+    const previous_len = previous.term.pending_startup_input.len;
+    const current_len = current.term.pending_startup_input.len;
     app.window_focused = false;
     app.syncActivePaneChange(&current, &previous);
-    try std.testing.expectEqual(previous_len, previous.pending_startup_input.len);
-    try std.testing.expectEqual(current_len, current.pending_startup_input.len);
+    try std.testing.expectEqual(previous_len, previous.term.pending_startup_input.len);
+    try std.testing.expectEqual(current_len, current.term.pending_startup_input.len);
 }
 
 test "viewport iterator row mapping follows platform row order" {

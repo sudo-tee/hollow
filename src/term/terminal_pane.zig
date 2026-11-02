@@ -3,6 +3,17 @@
 //! arm once all terminal consumers have moved behind the content boundary.
 const ghostty = @import("ghostty.zig");
 const Pty = @import("../pty/pty.zig").Pty;
+const std = @import("std");
+const osc99 = @import("osc99.zig");
+
+pub const read_buffer_size: usize = 384 * 1024;
+const pending_sequence_max: usize = 32;
+const sanitize_buffer_size: usize = read_buffer_size + pending_sequence_max;
+
+// PTYs are polled sequentially on the app thread. Keep transient storage shared,
+// rather than allocating these large buffers for every terminal content value.
+var shared_pty_read_buf: [read_buffer_size]u8 = undefined;
+var shared_pty_sanitize_buf: [sanitize_buffer_size]u8 = undefined;
 
 pub const TerminalPane = struct {
     pty: ?Pty = null,
@@ -23,6 +34,33 @@ pub const TerminalPane = struct {
     mouse_event: ?*anyopaque = null,
     /// Borrowed only during synchronous bracketed-paste encoding.
     paste_output: ?*ghostty.PasteOutput = null,
+    pending_cwd: ?[]u8 = null,
+    read_buf: *[read_buffer_size]u8 = &shared_pty_read_buf,
+    logged_first_pty_read: bool = false,
+    pty_pending_seq: [pending_sequence_max]u8 = @splat(0),
+    pty_pending_len: usize = 0,
+    pty_sanitize_buf: *[sanitize_buffer_size]u8 = &shared_pty_sanitize_buf,
+    osc99_active: bool = false,
+    osc99_st_pending: bool = false,
+    osc99_overflow: bool = false,
+    osc99_buf: std.ArrayListUnmanaged(u8) = .empty,
+    osc99_notifications: osc99.State = .{},
+    osc_prefix_buf: [@import("../htp/codec.zig").osc_prefix.len]u8 = @splat(0),
+    osc_prefix_len: usize = 0,
+    osc1337_active: bool = false,
+    osc1337_st_pending: bool = false,
+    osc1337_overflow: bool = false,
+    osc1337_buf: std.ArrayListUnmanaged(u8) = .empty,
+    pending_terminal_inject: std.ArrayListUnmanaged(u8) = .empty,
+    htp_osc_active: bool = false,
+    htp_osc_st_pending: bool = false,
+    htp_osc_overflow: bool = false,
+    htp_osc_buf: []u8 = &.{},
+    htp_osc_len: usize = 0,
+    boot_output: std.ArrayListUnmanaged(u8) = .empty,
+    pending_startup_input: []u8 = &.{},
+    pending_startup_input_capacity: usize = 0,
+    startup_input_quiet_ticks: u8 = 0,
 
     pub fn initInput(runtime: *ghostty.Runtime, terminal: ?*anyopaque) !TerminalPane {
         const key_encoder = try runtime.createKeyEncoder();
@@ -58,13 +96,57 @@ pub const TerminalPane = struct {
         self.pty = null;
     }
 
-    pub fn deinit(self: *TerminalPane, runtime: *ghostty.Runtime) void {
+    pub fn deinit(self: *TerminalPane, runtime: *ghostty.Runtime, allocator: std.mem.Allocator) void {
+        self.deinitBuffers(allocator);
         self.deinitInput(runtime);
         self.freeRenderHandles(runtime);
         runtime.setTerminalUserdata(self.terminal, null);
         runtime.freeTerminal(self.terminal);
         self.deinitPty();
         self.* = .{};
+    }
+
+    pub fn deinitBuffers(self: *TerminalPane, allocator: std.mem.Allocator) void {
+        if (self.pending_cwd) |value| allocator.free(value);
+        self.pending_cwd = null;
+        self.boot_output.deinit(allocator);
+        self.boot_output = .empty;
+        self.osc1337_buf.deinit(allocator);
+        self.osc1337_buf = .empty;
+        self.osc99_buf.deinit(allocator);
+        self.osc99_buf = .empty;
+        self.osc99_notifications.deinit(allocator);
+        self.osc99_notifications = .{};
+        self.pending_terminal_inject.deinit(allocator);
+        self.pending_terminal_inject = .empty;
+        if (self.htp_osc_buf.len > 0) allocator.free(self.htp_osc_buf);
+        self.htp_osc_buf = &.{};
+        self.htp_osc_len = 0;
+        if (self.pending_startup_input_capacity > 0) allocator.free(self.pending_startup_input.ptr[0..self.pending_startup_input_capacity]);
+        self.pending_startup_input = &.{};
+        self.pending_startup_input_capacity = 0;
+        self.startup_input_quiet_ticks = 0;
+    }
+
+    pub fn queueStartupInput(self: *TerminalPane, allocator: std.mem.Allocator, text: []const u8) !void {
+        const suffix = if (!std.mem.endsWith(u8, text, "\r") and !std.mem.endsWith(u8, text, "\n")) "\r" else "";
+        try self.queuePendingInput(allocator, text, suffix);
+    }
+
+    pub fn queuePendingRawInput(self: *TerminalPane, allocator: std.mem.Allocator, text: []const u8) !void {
+        try self.queuePendingInput(allocator, text, "");
+    }
+
+    fn queuePendingInput(self: *TerminalPane, allocator: std.mem.Allocator, text: []const u8, suffix: []const u8) !void {
+        const old = self.pending_startup_input;
+        const queued = try allocator.alloc(u8, old.len + text.len + suffix.len);
+        std.mem.copyForwards(u8, queued[0..old.len], old);
+        std.mem.copyForwards(u8, queued[old.len..][0..text.len], text);
+        std.mem.copyForwards(u8, queued[old.len + text.len ..], suffix);
+        if (self.pending_startup_input_capacity > 0) allocator.free(old.ptr[0..self.pending_startup_input_capacity]);
+        self.pending_startup_input = queued;
+        self.pending_startup_input_capacity = queued.len;
+        self.startup_input_quiet_ticks = 0;
     }
 
     fn freeRenderHandles(self: *TerminalPane, runtime: anytype) void {
@@ -85,7 +167,6 @@ pub const TerminalPane = struct {
     }
 
     pub fn recreateRenderHelpers(self: *TerminalPane, runtime: *ghostty.Runtime) void {
-        const std = @import("std");
         var failed: RenderResource = undefined;
         self.replaceRenderHelpers(runtime, &failed) catch |err| {
             std.log.err("pane: recreate {s} failed: {s}", .{ @tagName(failed), @errorName(err) });
@@ -135,8 +216,76 @@ pub const TerminalPane = struct {
     }
 };
 
+test "terminal protocol buffers clean up every partial allocation and shortened startup input" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var content: TerminalPane = .{};
+            defer content.deinitBuffers(allocator);
+            content.pending_cwd = try allocator.dupe(u8, "/reported");
+            try content.boot_output.appendSlice(allocator, "deferred PTY output");
+            try content.osc1337_buf.appendSlice(allocator, "image data");
+            try content.osc99_buf.appendSlice(allocator, "notification packet");
+            try content.pending_terminal_inject.appendSlice(allocator, "image escape sequence");
+            content.htp_osc_buf = try allocator.alloc(u8, 8192);
+            content.htp_osc_len = 5;
+            try content.osc99_notifications.enqueueSimple(allocator, "Build", "Complete", .info);
+            try content.queueStartupInput(allocator, "startup command");
+            // PTY writes shrink the visible slice without shrinking its owned
+            // allocation; destruction must free using the original capacity.
+            content.pending_startup_input = content.pending_startup_input[0..3];
+            content.deinitBuffers(allocator);
+            content.deinitBuffers(allocator);
+            try std.testing.expect(content.pending_cwd == null);
+            try std.testing.expectEqual(@as(usize, 0), content.boot_output.capacity);
+            try std.testing.expectEqual(@as(usize, 0), content.osc1337_buf.capacity);
+            try std.testing.expectEqual(@as(usize, 0), content.osc99_buf.capacity);
+            try std.testing.expectEqual(@as(usize, 0), content.pending_terminal_inject.capacity);
+            try std.testing.expectEqual(@as(usize, 0), content.htp_osc_buf.len);
+            try std.testing.expectEqual(@as(usize, 0), content.htp_osc_len);
+            try std.testing.expectEqual(@as(usize, 0), content.pending_startup_input_capacity);
+            try std.testing.expect(!content.osc99_notifications.hasNotifications());
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "terminal startup queue preserves old input on allocation failure and adds terminators only for commands" {
+    const allocator = std.testing.allocator;
+    var content: TerminalPane = .{};
+    defer content.deinitBuffers(allocator);
+    try content.queueStartupInput(allocator, "command");
+    try std.testing.expectEqualStrings("command\r", content.pending_startup_input);
+    content.startup_input_quiet_ticks = 7;
+    const original = content.pending_startup_input;
+    const capacity = content.pending_startup_input_capacity;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, content.queueStartupInput(failing.allocator(), "second"));
+    try std.testing.expectEqual(original.ptr, content.pending_startup_input.ptr);
+    try std.testing.expectEqualStrings("command\r", content.pending_startup_input);
+    try std.testing.expectEqual(capacity, content.pending_startup_input_capacity);
+    try std.testing.expectEqual(@as(u8, 7), content.startup_input_quiet_ticks);
+    try content.queuePendingRawInput(allocator, "key");
+    try content.queueStartupInput(allocator, "next\n");
+    try std.testing.expectEqualStrings("command\rkeynext\n", content.pending_startup_input);
+    try std.testing.expectEqual(@as(u8, 0), content.startup_input_quiet_ticks);
+}
+
+test "terminals share transient PTY buffers but keep parser progress independent" {
+    var first: TerminalPane = .{};
+    const second: TerminalPane = .{};
+    try std.testing.expectEqual(first.read_buf, second.read_buf);
+    try std.testing.expectEqual(first.pty_sanitize_buf, second.pty_sanitize_buf);
+    try std.testing.expectEqual(read_buffer_size, first.read_buf.len);
+    try std.testing.expectEqual(read_buffer_size + first.pty_pending_seq.len, first.pty_sanitize_buf.len);
+    first.pty_pending_seq[0] = 'x';
+    first.pty_pending_len = 1;
+    first.osc_prefix_len = 1;
+    try std.testing.expectEqual(@as(usize, 0), second.pty_pending_len);
+    try std.testing.expectEqual(@as(u8, 0), second.pty_pending_seq[0]);
+    try std.testing.expectEqual(@as(usize, 0), second.osc_prefix_len);
+}
+
 test "terminal input resources are owned and released independently of the pane node" {
-    const std = @import("std");
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     const terminal = try runtime.createTerminal(80, 24, 0);
@@ -154,7 +303,6 @@ test "terminal input resources are owned and released independently of the pane 
 }
 
 test "terminal render helper lifetime preserves parser readiness across hidden tabs" {
-    const std = @import("std");
     var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var content: TerminalPane = .{
@@ -162,7 +310,7 @@ test "terminal render helper lifetime preserves parser readiness across hidden t
         .terminal = try runtime.createTerminal(80, 24, 0),
         .terminal_output_ready = true,
     };
-    defer content.deinit(&runtime);
+    defer content.deinit(&runtime, std.testing.allocator);
     content.recreateRenderHelpers(&runtime);
     try std.testing.expect(content.hasRenderHelpers());
     try std.testing.expect(!content.renderHelpersReady());
@@ -179,13 +327,12 @@ test "terminal render helper lifetime preserves parser readiness across hidden t
     content.recreateRenderHelpers(&runtime);
     try std.testing.expect(content.hasRenderHelpers());
     try std.testing.expect(content.terminal_output_ready);
-    content.deinit(&runtime);
+    content.deinit(&runtime, std.testing.allocator);
     try std.testing.expect(content.terminal == null and content.terminal_runtime == null);
     try std.testing.expect(!content.terminal_output_ready);
 }
 
 test "failed render helper recreation unwinds allocations and preserves existing resources" {
-    const std = @import("std");
     const Fake = struct {
         fail_at: usize,
         created: usize = 0,

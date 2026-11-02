@@ -35,7 +35,7 @@ pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
     if (!pane.isTerminal()) return;
     const pending_count = self.htp_pending_messages.items.len - self.htp_pending_message_head;
-    const cwd = pane.pending_cwd orelse pane.cwd;
+    const cwd = pane.term.pending_cwd orelse pane.cwd;
     const available_bytes = HTP_MAX_QUEUED_BYTES - self.htp_pending_message_bytes;
     if (pending_count >= HTP_MAX_QUEUED_MESSAGES or
         payload.len > available_bytes or cwd.len > available_bytes - payload.len)

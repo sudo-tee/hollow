@@ -142,7 +142,7 @@ fn programStatusCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const g
 fn desktopNotificationCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.DesktopNotification) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
     if (report.size < @sizeOf(ghostty.DesktopNotification)) return;
-    pane.osc99_notifications.enqueueSimple(pane.allocator, report.title.slice(), report.body.slice(), .info) catch {};
+    pane.term.osc99_notifications.enqueueSimple(pane.allocator, report.title.slice(), report.body.slice(), .info) catch {};
 }
 
 fn progressReportCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.ProgressReport) callconv(.c) void {
@@ -186,8 +186,8 @@ fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c)
         if (std.mem.indexOfScalar(u8, path, '/')) |idx| path = path[idx..];
     }
     const owned = pane.allocator.dupe(u8, path) catch return;
-    if (pane.pending_cwd) |old| pane.allocator.free(old);
-    pane.pending_cwd = owned;
+    if (pane.term.pending_cwd) |old| pane.allocator.free(old);
+    pane.term.pending_cwd = owned;
     pane.cwd_dirty = true;
 }
 
@@ -240,17 +240,17 @@ test "native notifications and progress retain ordering and ignore cancellation"
     runtime.setTerminalUserdata(pane.term.terminal, &pane);
     runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
     runtime.terminalWrite(pane.term.terminal, "\x1b]9;Build comp");
-    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
     runtime.terminalWrite(pane.term.terminal, "lete\x07\x1b]777;notify;Build;Tests passed\x1b\\");
-    var first = pane.osc99_notifications.popNotification().?;
+    var first = pane.term.osc99_notifications.popNotification().?;
     defer first.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("Build complete", first.message);
-    var second = pane.osc99_notifications.popNotification().?;
+    var second = pane.term.osc99_notifications.popNotification().?;
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("Build", second.title);
     try std.testing.expectEqualStrings("Tests passed", second.message);
     runtime.terminalWrite(pane.term.terminal, "\x1b]9;cancelled\x18\x1b]9;1;420\x07");
-    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
     runtime.terminalWrite(pane.term.terminal, "\x1b]9;4;1;42\x07");
     try std.testing.expectEqual(@as(usize, 1), pane.program_status.records.items.len);
     try std.testing.expectEqual(@as(i8, 42), pane.program_status.records.items[0].progress);
@@ -356,7 +356,7 @@ test "cwd callbacks confirm an unchanged launch cwd for workspace bootstrap" {
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/project", pane.cwd);
     try std.testing.expect(!pane.cwd_dirty);
-    try std.testing.expect(pane.pending_cwd == null);
+    try std.testing.expect(pane.term.pending_cwd == null);
     try std.testing.expect(!pane.refreshCwd());
 }
 

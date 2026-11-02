@@ -247,7 +247,7 @@ test "spawn filters reach initial panes tabs workspaces and splits before PTY la
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     var expected_buf: [64]u8 = undefined;
     const expected = try std.fmt.bufPrint(&expected_buf, "filter:/:filtered:{d}", .{pane.id});
-    while (std.mem.indexOf(u8, pane.boot_output.items, expected) == null) {
+    while (std.mem.indexOf(u8, pane.term.boot_output.items, expected) == null) {
         if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
         _ = try pane.pollPty(&runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
