@@ -647,14 +647,9 @@ function ui.activity.open(opts)
         detail_options.row_budget = math.max(1, math.min(20, math.floor(measured.height / cell_h)))
       end
       local detail_rows = detail_view.render(theme)
-      local body = {}
-      for _, row in ipairs(detail_rows) do
-        body[#body + 1] = c.text(
-          shared.nodes_plain_text(row.children),
-          { fg = theme.fg },
-          { wrap = "none" }
-        )
-      end
+      local body = c.each(detail_rows, function(row)
+        return c.text(shared.nodes_plain_text(row.children), { fg = theme.fg }, { wrap = "none" })
+      end)
       local header = render_details_header()
       local scrollbar = detail_rows[1] or {}
       return c.stack({

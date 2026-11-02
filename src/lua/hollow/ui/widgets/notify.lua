@@ -101,13 +101,14 @@ function ui.notify.show(message, opts)
 
   widget = ui.overlay.new({
     render = function(ctx)
-      local children = {}
       local group = toast_group(widget) or {}
-      for index = 1, #group do
-        local toast = group[widget.align:find("bottom") and index or (#group - index + 1)]
-        children[#children + 1] = toast._toast_render(ctx)
-      end
-      return ui.components.column(children, { gap = props.cell_h(ctx) })
+      local bottom = widget.align:find("bottom") ~= nil
+      return ui.components.column(
+        ui.components.each(group, function(_, index)
+          return group[bottom and index or (#group - index + 1)]._toast_render(ctx)
+        end),
+        { gap = props.cell_h(ctx) }
+      )
     end,
     on_unmount = invalidate_toasts,
     align = opts.align or "top_right",

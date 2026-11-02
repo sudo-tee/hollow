@@ -26,32 +26,37 @@ local function line(...)
 end
 
 local function buttons(appearance, state, changed)
-  local rows = {}
-  for _, variant in ipairs(VARIANTS) do
-    local items = { c.label({ text = string.format("%-12s", variant), tone = "muted" }) }
-    for _, mode in ipairs(STATES) do
-      items[#items + 1] = c.button({
-        id = "gallery:button:" .. appearance .. ":" .. variant .. ":" .. mode.label,
-        text = mode.label,
-        appearance = appearance,
-        variant = variant,
-        hovered = mode.hovered,
-        selected = mode.selected,
-        disabled = mode.disabled,
-        on_click = function()
-          state.clicks = state.clicks + 1
-          changed()
-        end,
-      })
-    end
-    rows[#rows + 1] = line(items)
+  local function caption(text)
+    return c.label({ text = string.format("%-12s", text), tone = "muted" })
   end
-  local sizes = { c.label({ text = string.format("%-12s", "sizes"), tone = "muted" }) }
-  for _, size in ipairs({ "sm", "md" }) do
-    sizes[#sizes + 1] = c.button({ text = size, appearance = appearance, size = size })
-  end
-  rows[#rows + 1] = line(sizes)
-  return c.column(rows, { gap = "0.5lh" })
+  return c.column({
+    c.each(VARIANTS, function(variant)
+      return line(
+        caption(variant),
+        c.each(STATES, function(mode)
+          return c.button({
+            id = "gallery:button:" .. appearance .. ":" .. variant .. ":" .. mode.label,
+            text = mode.label,
+            appearance = appearance,
+            variant = variant,
+            hovered = mode.hovered,
+            selected = mode.selected,
+            disabled = mode.disabled,
+            on_click = function()
+              state.clicks = state.clicks + 1
+              changed()
+            end,
+          })
+        end)
+      )
+    end),
+    line(
+      caption("sizes"),
+      c.each({ "sm", "md" }, function(size)
+        return c.button({ text = size, appearance = appearance, size = size })
+      end)
+    ),
+  }, { gap = "0.5lh" })
 end
 
 local function list_items(state, changed)
@@ -129,14 +134,12 @@ function M.render(state, changed, close)
   for index = 1, 12 do
     numbers[index] = "Row " .. index
   end
-  local tones = {}
-  for _, tone in ipairs({ "default", "muted", "title", "empty", "counter" }) do
-    tones[#tones + 1] = c.label({ text = tone, tone = tone })
-  end
-  local toasts = {}
-  for _, level in ipairs({ "info", "success", "warn", "error" }) do
-    toasts[#toasts + 1] = c.toast({ level = level, text = level .. " notification" })
-  end
+  local tones = c.each({ "default", "muted", "title", "empty", "counter" }, function(tone)
+    return c.label({ text = tone, tone = tone })
+  end)
+  local toasts = c.each({ "info", "success", "warn", "error" }, function(level)
+    return c.toast({ level = level, text = level .. " notification" })
+  end)
   local sections = {
     c.column({
       c.header({

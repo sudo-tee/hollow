@@ -123,40 +123,29 @@ local function render(value)
     opts.align_y = opts.align_y or (center and "center" or nil)
   end
   if opts.plain or #flat > MAX_RUNS then
-    local parts = {}
-    for _, span in ipairs(flat) do
-      if span.node then
-        parts[#parts + 1] = span.node.label
-      elseif not span.spacer then
-        parts[#parts + 1] = span.text
-      end
-    end
+    local parts = c.each(flat, function(span)
+      return span.node and (span.node.label or "") or (not span.spacer and span.text) or ""
+    end)
     return c.row({ c.text(table.concat(parts), style, { wrap = "none" }) }, opts)
   end
   local prefix = opts.prefix or opts.id or "rich"
-  local runs, spacer = {}, nil
-  for index, span in ipairs(flat) do
+  local spacer
+  local runs = c.each(flat, function(span, index)
     if span.spacer then
-      runs[#runs + 1] = c.spacer()
-      spacer = spacer or #runs
-    else
-      runs[#runs + 1] = run(span, index, prefix)
+      spacer = spacer or index
+      return c.spacer()
     end
-  end
+    return run(span, index, prefix)
+  end)
   if not spacer then
     return c.row(runs, opts)
   end
-  local left, right = {}, {}
-  for index, item in ipairs(runs) do
-    if index < spacer then
-      left[#left + 1] = item
-    elseif index > spacer then
-      right[#right + 1] = item
-    end
-  end
   return c.row({
-    c.row(left, { width = "grow", scroll_x = true, align_y = opts.align_y }),
-    c.row(right, { align_y = opts.align_y }),
+    c.row(
+      { unpack(runs, 1, spacer - 1) },
+      { width = "grow", scroll_x = true, align_y = opts.align_y }
+    ),
+    c.row({ unpack(runs, spacer + 1) }, { align_y = opts.align_y }),
   }, opts)
 end
 

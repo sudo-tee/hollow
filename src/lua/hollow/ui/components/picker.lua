@@ -13,46 +13,45 @@ return function(value)
   assert(type(options.id) == "string" and options.id ~= "", "picker requires an id")
   assert(type(options.list) == "table", "picker requires list props")
   local theme = props.theme(options)
-  local children = {}
-  if is_node(options.header) then
-    children[1] = options.header
-  else
-    children[1] = c.header({
-      title = options.title or "Select",
-      meta = options.counter,
-      prompt = options.prompt,
-      theme = theme,
-      width = "grow",
-    })
-  end
-  if is_node(options.filter) then
-    children[#children + 1] = options.filter
-  elseif options.filter then
-    children[#children + 1] = c.row({
-      c.title({ text = "Filter: ", theme = theme }),
-      c.input({
-        id = options.id .. ":filter",
-        behavior = options.filter,
-        theme = theme,
-        boxed = false,
-        -- Picker widgets route every key to their filter themselves.
-        focusable = options.filter_focusable == true,
-      }),
-    }, { width = "grow" })
-  end
   local list = props.copy(options.list)
   list.id = list.id or (options.id .. ":list")
   list.theme = list.theme or theme
   list.width = list.width or "grow"
   list.height = list.height or "grow"
-  children[#children + 1] = c.list(list)
-  if is_node(options.hints) then
-    children[#children + 1] = options.hints
-  elseif options.hints then
-    local hints = props.copy(options.hints)
-    hints.theme = hints.theme or theme
-    children[#children + 1] = c.hints(hints)
-  end
+  local children = {
+    c.when(is_node(options.header), options.header, function()
+      return c.header({
+        title = options.title or "Select",
+        meta = options.counter,
+        prompt = options.prompt,
+        theme = theme,
+        width = "grow",
+      })
+    end),
+    c.when(is_node(options.filter), options.filter, function()
+      return options.filter
+        and c.row({
+          c.title({ text = "Filter: ", theme = theme }),
+          c.input({
+            id = options.id .. ":filter",
+            behavior = options.filter,
+            theme = theme,
+            boxed = false,
+            -- Picker widgets route every key to their filter themselves.
+            focusable = options.filter_focusable == true,
+          }),
+        }, { width = "grow" })
+    end),
+    c.list(list),
+    c.when(is_node(options.hints), options.hints, function()
+      if not options.hints then
+        return false
+      end
+      local hints = props.copy(options.hints)
+      hints.theme = hints.theme or theme
+      return c.hints(hints)
+    end),
+  }
   options.theme = theme
   options.divided = true
   options.width = options.width or "grow"

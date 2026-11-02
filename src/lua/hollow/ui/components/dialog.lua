@@ -10,8 +10,7 @@ local function actions_row(opts, theme, cell_w)
     button_emphasis_bg = theme.button_emphasis_bg
       or color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg),
   }, { __index = theme })
-  local buttons = { c.spacer() }
-  for index, action in ipairs(opts.actions) do
+  local buttons = c.each(opts.actions, function(action, index)
     local id = action.id or (opts.id and (opts.id .. ":action:" .. index))
     local node = c.button({
       appearance = "quiet",
@@ -27,9 +26,9 @@ local function actions_row(opts, theme, cell_w)
     })
     -- Dialog buttons follow the theme radius, square when it is unset.
     node.style.radius = theme.radius
-    buttons[#buttons + 1] = node
-  end
-  return c.row(buttons, { width = "grow", gap = cell_w * 2 })
+    return node
+  end)
+  return c.row({ c.spacer(), buttons }, { width = "grow", gap = cell_w * 2 })
 end
 
 return function(value)
@@ -40,11 +39,13 @@ return function(value)
   if body == nil or type(body) == "string" then
     body = c.text(body, { fg = theme.fg })
   end
-  local children = { body }
-  if opts.actions and #opts.actions > 0 then
-    children[2] = c.gap({ height = cell_h })
-    children[3] = actions_row(opts, theme, cell_w)
-  end
+  local has_actions = opts.actions and #opts.actions > 0
+  local children = {
+    body,
+    c.when(has_actions, function()
+      return { c.gap({ height = cell_h }), actions_row(opts, theme, cell_w) }
+    end),
+  }
   opts.width = opts.width or "grow"
   if not opts.title or opts.title == "" then
     return c.column(children, opts)

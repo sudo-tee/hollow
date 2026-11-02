@@ -5,27 +5,22 @@ local props = require("hollow.ui.components.props")
 
 return function(value)
   local options = props.split(value)
-  local children = {
+  local meta = options.meta
+  return c.row({
     c.title({
       text = tostring(options.title or "") .. (options.prompt and ":" or ""),
       theme = options.theme,
       style = options.title_style,
     }),
-  }
-  if options.meta ~= nil then
-    if options.meta_align ~= "inline" then
-      children[#children + 1] = c.spacer()
-    end
-    if type(options.meta) == "table" then
-      children[#children + 1] = options.meta
-    else
-      children[#children + 1] = c.label({
-        text = options.meta,
-        tone = "counter",
-        theme = options.theme,
-        style = options.meta_style,
-      })
-    end
-  end
-  return c.row(children, options)
+    c.when(meta ~= nil and options.meta_align ~= "inline", c.spacer),
+    c.when(meta ~= nil, function()
+      return type(meta) == "table" and meta
+        or c.label({
+          text = meta,
+          tone = "counter",
+          theme = options.theme,
+          style = options.meta_style,
+        })
+    end),
+  }, options)
 end

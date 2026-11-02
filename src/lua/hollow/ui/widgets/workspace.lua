@@ -158,7 +158,9 @@ local function layout_format_item(workspace, domain_width, ctx, view)
       shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
     })
   end
-  local columns = {
+  local badge = workspace.program_status_badge or ""
+  local domain = source.normalize_domain(workspace.domain)
+  return c.row({
     c.column({
       c.text(
         attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
@@ -174,30 +176,27 @@ local function layout_format_item(workspace, domain_width, ctx, view)
       "name"
     ),
     c.gap(gap),
-  }
-  local badge = workspace.program_status_badge or ""
-  if badge ~= "" then
-    columns[#columns + 1] = c.text(
-      badge,
-      ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
-      { wrap = "none" }
-    )
-  end
-  columns[#columns + 1] = column(cwd, s.cwd, "grow", "cwd")
-  local domain = source.normalize_domain(workspace.domain)
-  if domain and domain_width > 0 then
-    local colors = workspace_name_color(domain)
-    columns[#columns + 1] = c.column({
-      c.text(
-        " " .. util.truncate_end(domain, domain_width - 3) .. " ",
-        { fg = colors.fg },
+    c.when(badge ~= "", function()
+      return c.text(
+        badge,
+        ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
         { wrap = "none" }
-      ),
-    }, {
-      style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
-    })
-  end
-  return c.row(columns, { width = "grow", height = cell_h, align_y = "center" })
+      )
+    end),
+    column(cwd, s.cwd, "grow", "cwd"),
+    c.when(domain and domain_width > 0, function()
+      local colors = workspace_name_color(domain)
+      return c.column({
+        c.text(
+          " " .. util.truncate_end(domain, domain_width - 3) .. " ",
+          { fg = colors.fg },
+          { wrap = "none" }
+        ),
+      }, {
+        style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
+      })
+    end),
+  }, { width = "grow", height = cell_h, align_y = "center" })
 end
 
 ---@param items HollowUiWorkspaceItem[]
