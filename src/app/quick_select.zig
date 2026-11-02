@@ -61,6 +61,7 @@ pub fn start(self: *App, action: Action) void {
         std.log.info("quick-select: no active pane", .{});
         return disarmInput(self);
     };
+    if (!pane.isTerminal()) return disarmInput(self);
     std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), pane.id });
     self.quick_select_pane = pane;
     self.quick_select_action = action;

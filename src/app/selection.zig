@@ -69,6 +69,7 @@ pub fn selectionPointToHistory(self: *App, pane: *Pane, point: selection.CellPoi
 }
 
 pub fn gridRefForHistoryRow(self: *const App, pane: *Pane, history_row: usize) ?ghostty.GridRef {
+    if (!pane.isTerminal()) return null;
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
     const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
@@ -76,6 +77,7 @@ pub fn gridRefForHistoryRow(self: *const App, pane: *Pane, history_row: usize) ?
 }
 
 pub fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, col: usize) ?ghostty.GridRef {
+    if (!pane.isTerminal()) return null;
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
     const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
@@ -83,6 +85,7 @@ pub fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, 
 }
 
 pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Range {
+    if (!pane.isTerminal()) return null;
     if (self.selection_pane != pane) return null;
     const anchor = self.selection_anchor orelse return null;
     const head = self.selection_head orelse return null;
@@ -91,6 +94,7 @@ pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Ran
 
 pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, extend: bool) void {
     if (!self.hasPane(pane)) return;
+    if (!pane.isTerminal()) return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         mux.setActivePane(pane);
@@ -143,6 +147,7 @@ pub fn selectionBeginLine(self: *App, pane: *Pane, point: selection.CellPoint) v
 
 fn selectionBeginNative(self: *App, pane: *Pane, point: selection.CellPoint, line: bool) void {
     if (!self.hasPane(pane)) return;
+    if (!pane.isTerminal()) return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         mux.setActivePane(pane);

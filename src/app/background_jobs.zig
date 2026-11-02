@@ -49,15 +49,16 @@ pub fn spawn(app: *App, args: command.JobSpawn) !command.Response {
 
 fn ownedPane(app: anytype, args: command.JobHandle) ?*Pane {
     const pane = app.findPaneById(args.id) orelse return null;
+    if (!pane.isTerminal()) return null;
     const token = pane.automation_token orelse return null;
     return if (std.mem.eql(u8, &token, args.token)) pane else null;
 }
 
 pub fn get(app: *App, args: command.JobHandle) !command.Response {
     const pane = ownedPane(app, args) orelse return .fail("job_not_found", "no matching automation-owned pane");
-    const running = pane.hasLiveChild() or (if (pane.pty) |*pty| pty.jobOutputPending() else false);
+    const running = pane.hasLiveChild() or (if (pane.term.pty) |*pty| pty.jobOutputPending() else false);
     if (!running) lifecycle.exited(app, pane);
-    return value(app, .{ .pane_id = args.id, .state = if (running) @as([]const u8, "running") else "exited", .status = if (pane.pty) |*pty| pty.exitStatus() else null, .cursor = app.automation_events.subscribe(), .output_bytes = pane.job_output.len, .output_truncated = pane.job_output.truncated, .output_incomplete = pane.job_output.incomplete });
+    return value(app, .{ .pane_id = args.id, .state = if (running) @as([]const u8, "running") else "exited", .status = if (pane.term.pty) |*pty| pty.exitStatus() else null, .cursor = app.automation_events.subscribe(), .output_bytes = pane.job_output.len, .output_truncated = pane.job_output.truncated, .output_incomplete = pane.job_output.incomplete });
 }
 
 pub fn output(app: *App, args: command.JobHandle) !command.Response {
@@ -73,7 +74,7 @@ pub fn output(app: *App, args: command.JobHandle) !command.Response {
 pub fn cleanup(app: *App, args: command.JobHandle) command.Response {
     const pane = ownedPane(app, args) orelse return .fail("job_not_found", "no matching automation-owned pane");
     // Cleanup is not cancellation: never silently kill a running workload.
-    if (pane.hasLiveChild() or (if (pane.pty) |*pty| pty.jobOutputPending() else false)) return .fail("job_running", "job still running or output is draining; cleanup refused");
+    if (pane.hasLiveChild() or (if (pane.term.pty) |*pty| pty.jobOutputPending() else false)) return .fail("job_running", "job still running or output is draining; cleanup refused");
     const mux = if (app.mux) |*m| m else return .fail("unavailable", "multiplexer unavailable");
     const runtime = if (app.ghostty) |*r| r else return .fail("unavailable", "terminal unavailable");
     // Closing the original pane only preserves any user-added panes in its tab.

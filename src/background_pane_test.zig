@@ -63,12 +63,12 @@ test "background jobs: launch preserves focus, drains output, retains failure, a
     try std.testing.expect(observer.calls > 0 and !observer.changed);
     try std.testing.expect(pane.retain_on_exit and pane.terminal_output_ready);
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.hasLiveChild() or pane.pty.?.jobOutputPending()) {
+    while (pane.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
         _ = try pane.pollPty(&runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 128 * 1024, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
-    try std.testing.expectEqual(@as(?u32, 7), pane.pty.?.exitStatus());
+    try std.testing.expectEqual(@as(?u32, 7), pane.term.pty.?.exitStatus());
     const output = try pane.job_output.snapshot(a);
     defer a.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "retained failure") != null);

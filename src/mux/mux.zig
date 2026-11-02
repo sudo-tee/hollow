@@ -316,6 +316,22 @@ pub const Mux = struct {
         return pane;
     }
 
+    /// Allocate an unpublished GUI pane without terminal, domain, or PTY setup.
+    /// The caller owns it until splitActivePaneWith succeeds.
+    pub fn createLuaPane(self: *Mux) !*Pane {
+        const pane = try self.allocator.create(Pane);
+        errdefer self.allocator.destroy(pane);
+        const surface = try self.allocator.create(@import("../ui/lua_surface.zig").LuaSurface);
+        surface.* = .{};
+        pane.* = Pane.init(self.allocator);
+        pane.id = self.next_pane_id;
+        self.next_pane_id += 1;
+        pane.kind = .lua;
+        pane.lua_surface = surface;
+        pane.host_context = self.host_context;
+        return pane;
+    }
+
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
     pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool) !void {
@@ -540,6 +556,18 @@ pub const Mux = struct {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
+        try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        return new_pane;
+    }
+
+    /// Insert any content kind using the same split/floating layout path.
+    /// Ownership transfers to the tab only on success.
+    pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        const source_pane = tab.activePane() orelse return error.NoActivePane;
+        if (!floating and source_pane.is_floating) {
+            if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
+        }
         if (floating) {
             try tab.appendPane(new_pane);
             _ = tab.setPaneFloating(new_pane, true);
@@ -557,11 +585,10 @@ pub const Mux = struct {
             new_pane.restore_place_first = false;
             tab.active_pane = new_pane;
             self.notifyCreated(new_pane);
-            return new_pane;
+            return;
         }
         try tab.splitActivePane(new_pane, direction, ratio);
         self.notifyCreated(new_pane);
-        return new_pane;
     }
 
     /// Resize the active pane by adjusting the ratio of the nearest enclosing
@@ -730,6 +757,7 @@ pub const Mux = struct {
             var dead_buf: [64]*Pane = undefined;
             var dead_count: usize = 0;
             for (tab.panes.items) |pane| {
+                if (!pane.isTerminal()) continue;
                 if (!pane.retain_on_exit and !pane.hasLiveChild() and dead_count < dead_buf.len) {
                     dead_buf[dead_count] = pane;
                     dead_count += 1;

@@ -179,6 +179,7 @@ fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
 
 pub fn enterCopyMode(self: *App) void {
     const pane = self.activePane() orelse return;
+    if (!pane.isTerminal()) return;
     const runtime = if (self.ghostty) |*rt| rt else null;
     const top = if (runtime) |rt| blk: {
         const scrollbar = scroll.refreshPaneScrollbar(self, rt, pane);
@@ -789,6 +790,7 @@ pub fn pruneCopyModeIfInvalid(self: *App) void {
 
 pub fn handlePromptJump(self: *App, direction: PromptJumpDir) void {
     const pane = self.activePane() orelse return;
+    if (!pane.isTerminal()) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     // Native navigation is relative to viewport top and handles continuation
     // prompts and the active-area boundary. Copy-mode cursor movement is separate.

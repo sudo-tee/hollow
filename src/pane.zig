@@ -7,9 +7,10 @@ const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const osc99 = @import("term/osc99.zig");
 const TerminalCallbacks = ghostty.TerminalCallbacks;
-const Pty = @import("pty/pty.zig").Pty;
+const TerminalPane = @import("term/terminal_pane.zig").TerminalPane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
+const LuaSurface = @import("ui/lua_surface.zig").LuaSurface;
 
 pub const PTY_PARSE_CHUNK_BYTES: usize = 128 * 1024;
 pub const PTY_PRESSURE_PARSE_CHUNK_BYTES: usize = 384 * 1024;
@@ -121,8 +122,11 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
 }
 
 pub const Pane = struct {
+    pub const Kind = enum { terminal, lua };
     pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
 
+    kind: Kind = .terminal,
+    lua_surface: ?*LuaSurface = null,
     /// Stable mux identity. Zero denotes a pane not yet published by a mux.
     id: usize = 0,
     allocator: std.mem.Allocator,
@@ -130,17 +134,13 @@ pub const Pane = struct {
     host_wake: @import("pty/wake.zig").Wake = .{},
     spawn_filter: @import("pty/spawn_spec.zig").Filter = .{},
     pty_host: @import("pty/spawn_spec.zig").HostResolver = .{},
-    pty: ?Pty = null,
+    term: TerminalPane = .{},
     terminal: ?*anyopaque = null,
     terminal_runtime: ?*GhosttyRuntime = null,
     render_state: ?*anyopaque = null,
     row_iterator: ?*anyopaque = null,
     foreground_process: ?[]u8 = null,
     row_cells: ?*anyopaque = null,
-    key_encoder: ?*anyopaque = null,
-    key_event: ?*anyopaque = null,
-    mouse_encoder: ?*anyopaque = null,
-    mouse_event: ?*anyopaque = null,
     title: []u8 = &.{},
     cwd: []u8 = &.{},
     pending_cwd: ?[]u8 = null,
@@ -282,7 +282,20 @@ pub const Pane = struct {
         return .{ .allocator = allocator };
     }
 
+    pub fn isTerminal(self: *const Pane) bool {
+        return self.kind == .terminal;
+    }
+
+    pub fn invalidate(self: *Pane) void {
+        self.render_dirty = .full;
+        if (self.lua_surface) |surface| surface.dirty = true;
+    }
+
     pub fn applyTerminalTheme(self: *Pane, runtime: *GhosttyRuntime, theme: *const Config.TerminalTheme) void {
+        if (!self.isTerminal()) {
+            self.invalidate();
+            return;
+        }
         runtime.setTerminalDefaultColors(
             self.terminal,
             theme.foreground,
@@ -294,6 +307,11 @@ pub const Pane = struct {
     }
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
+        if (self.lua_surface) |surface| {
+            self.lua_surface = null;
+            surface.deinit(self.allocator);
+            self.allocator.destroy(surface);
+        }
         self.job_output.deinit(self.allocator);
         self.program_status.deinit(self.allocator);
         if (self.pending_cwd) |value| self.allocator.free(value);
@@ -303,16 +321,15 @@ pub const Pane = struct {
         self.osc99_notifications.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
         if (self.htp_osc_buf.len > 0) self.allocator.free(self.htp_osc_buf);
-        runtime.freeMouseEvent(self.mouse_event);
-        runtime.freeMouseEncoder(self.mouse_encoder);
-        runtime.freeKeyEvent(self.key_event);
-        runtime.freeKeyEncoder(self.key_encoder);
-        runtime.freeRowCells(self.row_cells);
-        runtime.freeRowIterator(self.row_iterator);
-        runtime.freeRenderState(self.render_state);
-        runtime.setTerminalUserdata(self.terminal, null);
-        runtime.freeTerminal(self.terminal);
-        if (self.pty) |*pty| pty.deinit();
+        if (self.isTerminal()) {
+            self.term.deinitInput(runtime);
+            runtime.freeRowCells(self.row_cells);
+            runtime.freeRowIterator(self.row_iterator);
+            runtime.freeRenderState(self.render_state);
+            runtime.setTerminalUserdata(self.terminal, null);
+            runtime.freeTerminal(self.terminal);
+            self.term.deinitPty();
+        }
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
         if (self.pending_startup_input_capacity > 0) self.allocator.free(self.pending_startup_input.ptr[0..self.pending_startup_input_capacity]);
@@ -321,6 +338,7 @@ pub const Pane = struct {
     }
 
     pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
+        std.debug.assert(self.isTerminal());
         const start_ms = io.milliTimestamp();
         _ = cell_width_px;
         _ = cell_height_px;
@@ -365,18 +383,8 @@ pub const Pane = struct {
         const row_cells = try runtime.createRowCells();
         errdefer runtime.freeRowCells(row_cells);
 
-        const key_encoder = try runtime.createKeyEncoder();
-        errdefer runtime.freeKeyEncoder(key_encoder);
-        runtime.syncKeyEncoder(key_encoder, terminal);
-
-        const key_event = try runtime.createKeyEvent();
-        errdefer runtime.freeKeyEvent(key_event);
-
-        const mouse_encoder = try runtime.createMouseEncoder();
-        errdefer runtime.freeMouseEncoder(mouse_encoder);
-
-        const mouse_event = try runtime.createMouseEvent();
-        errdefer runtime.freeMouseEvent(mouse_event);
+        var input_resources = try TerminalPane.initInput(runtime, terminal);
+        errdefer input_resources.deinitInput(runtime);
 
         const shell = try self.allocator.dupeSentinel(u8, try cfg.shellForDomain(domain_name), 0);
         defer self.allocator.free(shell);
@@ -512,11 +520,8 @@ pub const Pane = struct {
         self.render_state = render_state;
         self.row_iterator = row_iterator;
         self.row_cells = row_cells;
-        self.key_encoder = key_encoder;
-        self.key_event = key_event;
-        self.mouse_encoder = mouse_encoder;
-        self.mouse_event = mouse_event;
-        self.pty = pty;
+        self.term = input_resources;
+        self.term.pty = pty;
 
         // Bootstrap locals own these resources until every fallible step succeeds.
         errdefer {
@@ -524,11 +529,7 @@ pub const Pane = struct {
             self.render_state = null;
             self.row_iterator = null;
             self.row_cells = null;
-            self.key_encoder = null;
-            self.key_event = null;
-            self.mouse_encoder = null;
-            self.mouse_event = null;
-            self.pty = null;
+            self.term = .{};
         }
 
         // Defer terminal resize/render-state initialization until the first
@@ -558,8 +559,9 @@ pub const Pane = struct {
     }
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, budget_ns: i128, parse_chunk_bytes: usize, debug_overlay: bool) !usize {
+        std.debug.assert(self.isTerminal());
         var total_read: usize = 0;
-        if (self.pty) |*pty| {
+        if (self.term.pty) |*pty| {
             const budget_start_ns = io.nanoTimestamp();
             const deadline_ns = budget_start_ns + @max(@as(i128, 0), budget_ns);
             self.last_pty_read_ns = 0;
@@ -667,8 +669,7 @@ pub const Pane = struct {
             // focus paths already perform their own explicit syncs.
             if (self.terminal_output_ready and wrote_terminal) {
                 const encoder_sync_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-                runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+                self.term.syncInput(runtime, self.terminal);
                 // Log mouse tracking state changes for diagnostics.
                 var mouse_tracking: u32 = 0;
                 const mt_result = runtime.terminal_get(self.terminal, @backingInt(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
@@ -738,7 +739,8 @@ pub const Pane = struct {
     }
 
     pub fn sendText(self: *Pane, text: []const u8) void {
-        if (self.pty) |*pty| {
+        if (!self.isTerminal()) return;
+        if (self.term.pty) |*pty| {
             if (!pty.isAlive()) return;
             pty.writeAll(text) catch |err| {
                 std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
@@ -747,6 +749,7 @@ pub const Pane = struct {
     }
 
     pub fn tickImageAnimation(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128) void {
+        std.debug.assert(self.isTerminal());
         if (self.synchronized_output_active) return;
         const graphics = runtime.terminalKittyGraphics(self.terminal) orelse {
             self.image_animation_deadline_ns = 0;
@@ -766,6 +769,7 @@ pub const Pane = struct {
     }
 
     pub fn expireRenderHold(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128, timeout_ns: i128) bool {
+        std.debug.assert(self.isTerminal());
         if (!self.synchronized_output_active or now_ns - self.synchronized_output_started_ns < timeout_ns) return false;
         // Setting a mode through the API intentionally does not call render_hold.
         _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
@@ -777,6 +781,7 @@ pub const Pane = struct {
     }
 
     pub fn sendUserText(self: *Pane, text: []const u8) void {
+        if (!self.isTerminal()) return;
         if (self.pending_startup_input.len > 0) {
             self.queuePendingRawInput(text) catch |err| {
                 std.log.err("pane: failed to queue input behind startup input: {s}", .{@errorName(err)});
@@ -787,6 +792,7 @@ pub const Pane = struct {
     }
 
     pub fn queueStartupInput(self: *Pane, text: []const u8) !void {
+        if (!self.isTerminal()) return error.NotATerminal;
         const suffix = if (!std.mem.endsWith(u8, text, "\r") and !std.mem.endsWith(u8, text, "\n")) "\r" else "";
         try self.queuePendingInput(text, suffix);
     }
@@ -818,7 +824,7 @@ pub const Pane = struct {
         self.title_is_manual = false;
 
         if (title.len == 0) {
-            self.title_dirty = true;
+            self.title_dirty = self.isTerminal();
             return;
         }
 
@@ -828,15 +834,17 @@ pub const Pane = struct {
     }
 
     pub fn childPid(self: *const Pane) usize {
-        if (self.pty) |pty| return pty.childPid();
+        if (self.term.pty) |pty| return pty.childPid();
         return 0;
     }
 
     pub fn setHtpMessageHandler(self: *Pane, handler: ?HtpMessageHandler) void {
+        std.debug.assert(self.isTerminal());
         self.htp_message_handler = handler;
     }
 
     pub fn refreshCwd(self: *Pane) bool {
+        if (!self.isTerminal()) return false;
         if (self.pending_cwd) |cwd| {
             self.pending_cwd = null;
             defer self.allocator.free(cwd);
@@ -881,6 +889,12 @@ pub const Pane = struct {
     /// Pass `skip_pty = false` for the single authoritative resize that fires on
     /// divider_commit (mouse release), which sends exactly one SIGWINCH.
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
+        if (!self.isTerminal()) {
+            self.cols = cols;
+            self.rows = rows;
+            self.invalidate();
+            return;
+        }
         // A geometry change invalidates the previously presented surface, so
         // do not let synchronized output hold an obsolete frame across it.
         self.synchronized_output_active = false;
@@ -906,8 +920,7 @@ pub const Pane = struct {
             // Resizing the terminal/PTY here can trigger shell reflow or prompt
             // redraw glitches even though the terminal cell grid did not change.
             self.render_dirty = .full;
-            runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-            runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+            self.term.syncInput(runtime, self.terminal);
             return;
         }
 
@@ -918,9 +931,8 @@ pub const Pane = struct {
         }
         runtime.updateRenderState(self.render_state, self.terminal) catch {};
         self.render_dirty = .full;
-        runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-        runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
-        if (self.pty) |*pty| {
+        self.term.syncInput(runtime, self.terminal);
+        if (self.term.pty) |*pty| {
             if (pty.isAlive()) {
                 pty.resize(cols, rows);
             }
@@ -930,10 +942,11 @@ pub const Pane = struct {
     /// Force a repaint by briefly resizing both Ghostty and the PTY, matching
     /// the authoritative window-resize path instead of nudging only the PTY.
     pub fn nudgeTerminal(self: *Pane, runtime: *GhosttyRuntime, cell_width_px: u32, cell_height_px: u32) void {
+        if (!self.isTerminal()) return;
         if (self.cols == 0 or self.rows == 0) return;
         const original_rows = self.rows;
         const bump_rows: u16 = original_rows +| 1;
-        if (self.pty) |*pty| {
+        if (self.term.pty) |*pty| {
             if (pty.isAlive()) {
                 std.log.info("pane.nudgeTerminal: cols={d} rows={d}->{}->{}", .{ self.cols, original_rows, bump_rows, original_rows });
                 self.rows = bump_rows;
@@ -964,7 +977,8 @@ pub const Pane = struct {
         padding_left: u32,
         padding_right: u32,
     ) void {
-        runtime.setMouseEncoderSize(self.mouse_encoder, .{
+        if (!self.isTerminal()) return;
+        runtime.setMouseEncoderSize(self.term.mouse_encoder, .{
             .size = @sizeOf(ghostty.MouseEncoderSize),
             .screen_width = screen_width,
             .screen_height = screen_height,
@@ -975,12 +989,12 @@ pub const Pane = struct {
             .padding_left = padding_left,
             .padding_right = padding_right,
         });
-        runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, true);
+        runtime.setMouseEncoderTrackLastCell(self.term.mouse_encoder, true);
     }
 
     pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {
         // Write an escape sequence to the PTY
-        if (self.pty) |*pty| {
+        if (self.term.pty) |*pty| {
             pty.writeAll(sequence) catch |err| {
                 std.log.warn("pane: writeEscapeSequence failed: {s}", .{@errorName(err)});
             };
@@ -988,6 +1002,7 @@ pub const Pane = struct {
     }
 
     pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
+        if (!self.isTerminal()) return;
         const new_render_state = runtime.createRenderState() catch |err| {
             std.log.err("pane: recreate render_state failed: {s}", .{@errorName(err)});
             return;
@@ -1022,6 +1037,7 @@ pub const Pane = struct {
     }
 
     pub fn releaseRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
+        if (!self.isTerminal()) return;
         runtime.freeRowCells(self.row_cells);
         self.row_cells = null;
         runtime.freeRowIterator(self.row_iterator);
@@ -1037,6 +1053,7 @@ pub const Pane = struct {
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
+        if (!self.isTerminal()) return;
         if (self.title_is_manual) {
             if (runtime.terminalTitle(self.allocator, self.terminal) catch null) |title| {
                 self.allocator.free(title);
@@ -1084,7 +1101,7 @@ pub const Pane = struct {
     }
 
     pub fn usesAgent(self: *const Pane) bool {
-        if (self.pty) |*pty| return @import("pty/pty.zig").usesAgent(pty);
+        if (self.term.pty) |*pty| return @import("pty/pty.zig").usesAgent(pty);
         return false;
     }
 
@@ -1176,12 +1193,12 @@ pub const Pane = struct {
     }
 
     pub fn pendingPtyOutputBytes(self: *Pane) usize {
-        if (self.pty) |*pty| return pty.pendingOutputBytes();
+        if (self.term.pty) |*pty| return pty.pendingOutputBytes();
         return 0;
     }
 
     fn refreshChildAliveCache(self: *Pane, force: bool) void {
-        const pty = if (self.pty) |*value| value else {
+        const pty = if (self.term.pty) |*value| value else {
             self.child_alive_cached = false;
             self.last_child_alive_check_ns = 0;
             return;
@@ -1851,7 +1868,7 @@ test "background PTY parses blocked and error after rendering helpers are releas
     defer pane.deinit(&runtime);
     runtime.setTerminalUserdata(pane.terminal, &pane);
     runtime.registerCallbacks(pane.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
-    pane.pty = try @import("pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
+    pane.term.pty = try @import("pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
         .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007'; read -r reply; printf '\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
     }, .{});
 

@@ -151,6 +151,7 @@ fn wrappedTokenAt(rows: anytype, point: CellPoint, cfg: Hyperlinks, out: []u8) ?
 }
 
 pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]const u8 {
+    if (!pane.isTerminal()) return null;
     const rt = self.ghostty orelse return null;
     const terminal = pane.terminal orelse return null;
 

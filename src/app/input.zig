@@ -843,13 +843,11 @@ pub fn hoveredHyperlinkAtPointer(self: *App) ?struct {
 }
 
 fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
+    if (!pane.isTerminal()) return false;
     const runtime = if (self.ghostty) |*rt| rt else return false;
-    runtime.setMouseEncoderAnyButtonPressed(pane.mouse_encoder, action != .release and button != null);
-
     var buf: [64]u8 = undefined;
-    const bytes = runtime.encodeMouse(
-        pane.mouse_encoder,
-        pane.mouse_event,
+    const bytes = pane.term.encodeMouse(
+        runtime,
         action,
         button,
         mods,
@@ -909,6 +907,7 @@ pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?App.ScrollbarMetrics {
 
 pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const hit = self.hitTestPane(x, y) orelse return;
+    if (!hit.pane.isTerminal()) return;
     if (self.copy_mode_active and self.copy_mode_pane == hit.pane) {
         if (hitTestScrollbar(self, x, y)) |metrics| {
             const ratio = std.math.clamp((y - metrics.track_y) / metrics.track_h, 0.0, 1.0);

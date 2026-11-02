@@ -921,6 +921,9 @@ fn execPaneResize(self: *App, request: command_mod.Move) command_mod.Response {
 fn execPaneSendText(self: *App, request: command_mod.Text) command_mod.Response {
     const text = request.text;
     const pane_id = request.id;
+    if (self.findPaneById(pane_id)) |pane| {
+        if (!pane.isTerminal()) return command_mod.Response.fail("not_a_terminal", "NotATerminal");
+    }
     if (!mux_ops.sendTextToPane(self, pane_id, text)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }

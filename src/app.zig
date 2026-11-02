@@ -602,6 +602,9 @@ pub const App = struct {
     }
 
     pub fn paneTextValue(self: *App, pane_id: usize) !std.json.Value {
+        if (if (pane_id == 0) self.activePane() else self.findPaneById(pane_id)) |pane| {
+            if (!pane.isTerminal()) return error.NotATerminal;
+        }
         const buf = try self.allocator.alloc(u8, 256 * 1024);
         defer self.allocator.free(buf);
         const text = self.getPaneText(pane_id, buf);
@@ -667,6 +670,7 @@ pub const App = struct {
     pub fn paneScreenValue(self: *App, pane_id: usize) !?std.json.Value {
         const runtime = if (self.ghostty) |*value| value else return null;
         const pane = if (pane_id == 0) self.activePane() orelse return null else self.findPaneById(pane_id) orelse return null;
+        if (!pane.isTerminal()) return error.NotATerminal;
         if (!paneRenderHelpersReady(pane)) return null;
 
         const rows = runtime.renderStateRows(pane.render_state) orelse pane.rows;
@@ -1530,8 +1534,8 @@ pub const App = struct {
     fn invalidateFocusedPaneCache(self: *App, previous: ?*Pane, current: ?*Pane) void {
         _ = self;
         if (previous == current) return;
-        if (previous) |pane| pane.render_dirty = .full;
-        if (current) |pane| pane.render_dirty = .full;
+        if (previous) |pane| pane.invalidate();
+        if (current) |pane| pane.invalidate();
     }
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
@@ -1565,15 +1569,17 @@ pub const App = struct {
             }
         }
         if (self.ghostty) |*runtime| {
-            if (current) |pane| runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+            if (current) |pane| {
+                if (pane.isTerminal()) runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+            }
         }
     }
 
     pub fn refreshActivePaneBinding(self: *App) void {
         if (self.activePane()) |pane| {
-            pane.render_dirty = .full;
+            pane.invalidate();
             if (self.ghostty) |*runtime| {
-                runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+                if (pane.isTerminal()) runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
             }
         }
     }
@@ -1687,6 +1693,7 @@ pub const App = struct {
     }
 
     pub fn paneRenderHelpersReady(pane: *const Pane) bool {
+        if (!pane.isTerminal()) return false;
         return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
     }
 
@@ -1701,6 +1708,7 @@ pub const App = struct {
     };
 
     fn beginPaneRead(runtime: *GhosttyRuntime, pane: *Pane) ?PaneRead {
+        if (!pane.isTerminal()) return null;
         if (paneRenderHelpersReady(pane)) return .{ .runtime = runtime, .pane = pane, .transient = false };
         if (pane.terminal == null) return null;
 
@@ -1755,6 +1763,10 @@ pub const App = struct {
 
     /// Send focus state to a child terminal without treating mux focus as user input.
     fn sendFocusToPane(self: *App, pane: *Pane, gained: bool) void {
+        if (!pane.isTerminal()) {
+            pane.invalidate();
+            return;
+        }
         const rt = if (self.ghostty) |*r| r else return;
         if (!rt.terminalMode(pane.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
@@ -1771,6 +1783,7 @@ pub const App = struct {
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
+        if (!pane.isTerminal()) return false;
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
             return true;
@@ -1787,7 +1800,7 @@ pub const App = struct {
         var derived_text_buf: [4]u8 = undefined;
         const effective_text = text orelse text_helpers.legacyPrintableKeyText(key, mods, &derived_text_buf);
         const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
-        if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+        if (pane.term.encodeKey(rt, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
             mux_ops.sendText(self, bytes);
             return true;
         }
@@ -1808,6 +1821,7 @@ pub const App = struct {
     };
 
     pub fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
+        if (!pane.isTerminal()) return bounds;
         const pad = self.panePadding(pane);
         const scrollbar_gutter = @min(bounds.width, scroll.paneScrollbarGutter(self, pane));
         const inset_left = @min(pad.left, bounds.width -| scrollbar_gutter);
@@ -1987,7 +2001,9 @@ pub const App = struct {
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
-                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                if (mux.activePane()) |active| {
+                    if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                }
             }
             self.pending_renderer_refresh = self.config.backend == .sokol or self.config.backend == .webgpu;
             self.resize(self.config.window_width, self.config.window_height);
@@ -2103,7 +2119,7 @@ pub const App = struct {
 
     pub fn windowTitleCString(self: *App) [256:0]u8 {
         const agent = if (self.activePane()) |pane|
-            if (pane.pty) |*pty| @import("pty/pty.zig").usesAgent(pty) else false
+            if (pane.term.pty) |*pty| @import("pty/pty.zig").usesAgent(pty) else false
         else
             false;
         return text_helpers.windowTitleCString(self.activeTitle(), agent);
@@ -2362,6 +2378,7 @@ pub const App = struct {
             };
             var count_panes = mux.paneIterator();
             while (count_panes.next()) |pane| {
+                if (!pane.isTerminal()) continue;
                 if (pane == active_pane) continue;
                 const is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
@@ -2385,6 +2402,7 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 pane.program_status.setFocused(pane_is_active);
+                if (!pane.isTerminal()) continue;
                 const active_screen_before = pane.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
@@ -2415,7 +2433,7 @@ pub const App = struct {
                 pane.synchronized_output_enabled = self.config.synchronized_output;
                 if (!self.config.synchronized_output) pane.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
-                if (pane.pty) |*pty| pty.setFocused(pane_is_active);
+                if (pane.term.pty) |*pty| pty.setFocused(pane_is_active);
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
@@ -2709,7 +2727,7 @@ pub const App = struct {
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
-                    runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                    if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
                 }
                 self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
                 if (mux.activeTab()) |tab| {
@@ -2988,6 +3006,92 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
     try std.testing.expectEqual(survivor, mux.activePane().?);
 }
 
+test "Lua panes survive app ticks and terminal-only input without terminal handles" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    const runtime = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    mux.next_id = 3;
+    const tab = try workspace.newTab(2, false);
+    const pane = try mux.createLuaPane();
+    try tab.appendPane(pane);
+    const id = pane.id;
+
+    pane.setManualTitle("Lua pane");
+    app.resize(800, 600);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expect(!pane.exit_event_emitted);
+    try std.testing.expect(pane.cols > 0 and pane.rows > 0);
+    try std.testing.expectEqualStrings("Lua pane", pane.title);
+    try std.testing.expect(pane.term.pty == null and pane.terminal == null);
+    try std.testing.expect(!pane.hasRenderHelpers());
+    try std.testing.expect(!app.pending_quit);
+
+    pane.lua_surface.?.dirty = false;
+    pane.resize(runtime, 30, 10, 8, 16, true);
+    try std.testing.expectEqual(@as(u16, 30), pane.cols);
+    try std.testing.expectEqual(@as(u16, 10), pane.rows);
+    try std.testing.expect(pane.lua_surface.?.dirty);
+    pane.lua_surface.?.dirty = false;
+    pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
+    try std.testing.expect(pane.lua_surface.?.dirty);
+    pane.lua_surface.?.dirty = false;
+    try app.sendFocus(false);
+    try std.testing.expect(pane.lua_surface.?.dirty);
+
+    try std.testing.expect(!mux_ops.sendTextToPane(app, id, "text"));
+    try std.testing.expect(!mux_ops.sendKeyToPane(app, id, "enter", 0));
+    try std.testing.expectError(error.NotATerminal, mux_ops.sendPaste(app, "paste"));
+    try std.testing.expect(!try app.sendKey(.enter, 0, .press, null, false));
+    selection_mod.selectionBegin(app, pane, .{ .row = 0, .col = 0 }, false);
+    selection_mod.selectionBeginWord(app, pane, .{ .row = 0, .col = 0 });
+    selection_mod.selectionBeginLine(app, pane, .{ .row = 0, .col = 0 });
+    try std.testing.expect(!selection_mod.hasSelection(app));
+    copy_mode.enterCopyMode(app);
+    try std.testing.expect(!app.copy_mode_active);
+    scroll.scrollPaneViewport(app, pane, 1);
+    scroll.scrollPaneViewportToRow(app, pane, 1);
+    var response = try cmd_ipc.executeCommand(app, .{ .data = .{ .pane_send_text = .{ .id = id, .text = "text" } } });
+    defer response.deinit(a);
+    try std.testing.expect(!response.success);
+    try std.testing.expectEqualStrings("not_a_terminal", response.status);
+    try std.testing.expectError(error.NotATerminal, app.paneScreenValue(id));
+    try std.testing.expectError(error.NotATerminal, app.paneScreenValue(0));
+    try std.testing.expectError(error.NotATerminal, app.paneTextValue(id));
+    try std.testing.expectError(error.NotATerminal, app.paneTextValue(0));
+    pane_lifecycle.exited(app, pane);
+    try std.testing.expect(!pane.exit_event_emitted);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+
+    const second = try mux.createLuaPane();
+    try mux.splitActivePaneWith(second, .horizontal, 0.5, false);
+    app.syncActivePaneChange(pane, second);
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expect(mux.setPaneFloating(second, true));
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expect(mux.setPaneFloating(second, false));
+    _ = tab.setPaneMaximized(second, true, false);
+    app.requestLayoutResize(false);
+    try app.tick();
+    _ = tab.setPaneMaximized(second, false, false);
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expectEqual(second, app.findPaneById(second.id).?);
+}
+
 test "window focus is retained even without an active terminal" {
     const app = try std.testing.allocator.create(App);
     defer std.testing.allocator.destroy(app);
@@ -3076,7 +3180,7 @@ test "Lua terminal jobs queue shared backend operations without focus changes" {
     };
     const pane = owned orelse return error.MissingJobPane;
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.hasLiveChild() or pane.pty.?.jobOutputPending()) {
+    while (pane.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
         _ = try pane.pollPty(runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);

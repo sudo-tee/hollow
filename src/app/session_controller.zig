@@ -31,6 +31,7 @@ const pane_lifecycle = @import("pane_lifecycle.zig");
 
 pub fn sendText(self: *App, text: []const u8) void {
     const pane = self.activePane() orelse return;
+    if (!pane.isTerminal()) return;
     const now_ns = io.nanoTimestamp();
     self.last_input_activity_ns = now_ns;
     self.last_visual_activity_ns = now_ns;
@@ -51,6 +52,7 @@ pub fn sendText(self: *App, text: []const u8) void {
 
 pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
+    if (!pane.isTerminal()) return false;
     pane.sendUserText(text);
     self.signalWake();
     return true;
@@ -66,6 +68,7 @@ pub fn sendBellToPane(self: *App, pane_id: usize, level: ?notification.Level, co
 
 pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
+    if (!pane.isTerminal()) return false;
     const rt = if (self.ghostty) |*r| r else return false;
     const key = std.meta.stringToEnum(ghostty.Key, key_name) orelse return false;
 
@@ -74,7 +77,7 @@ pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32
     const effective_text = text_helpers.legacyPrintableKeyText(key, mods, &text_buf);
     const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
 
-    if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+    if (pane.term.encodeKey(rt, key, mods, .press, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
         pane.sendUserText(bytes);
         self.signalWake();
         return true;
@@ -109,13 +112,14 @@ pub fn invalidateAllPanes(self: *App) void {
     const mux = if (self.mux) |*m| m else return;
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
-        pane.render_dirty = .full;
+        pane.invalidate();
         pane.last_render_state_update_ns = 0;
     }
 }
 
 pub fn sendPaste(self: *App, text: []const u8) !void {
     const pane = self.activePane() orelse return;
+    if (!pane.isTerminal()) return error.NotATerminal;
     const rt = if (self.ghostty) |*r| r else {
         if (self.config.debug_terminal_trace) {
             std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ pane.id, text.len });
@@ -708,6 +712,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     var has_dead = false;
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
+        if (!pane.isTerminal()) continue;
         if (!pane.hasLiveChild()) {
             if (!pane.retain_on_exit) has_dead = true;
             pane_lifecycle.exited(self, pane);
@@ -722,7 +727,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     }
     emitWorkspaceClosedIfRemoved(self, mux);
     if (mux.activePane()) |active| {
-        runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+        if (active.isTerminal()) runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
     }
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     if (mux.activeTab()) |tab| {

@@ -469,7 +469,37 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - Regression coverage checks unique IDs on every creation path, the actual
   child environment, stable IDs across float/unfloat and workspace moves,
   restored split ratios, and rejection of closed IDs after new allocation or
-  reuse of pane storage. Remaining feature steps are not implemented yet.
+  reuse of pane storage.
+- Next backend milestone implemented (not yet committed): Option A `Pane.Kind`,
+  owned `LuaSurface`, content-independent split/floating insertion, and the
+  terminal safety audit. Lua panes skip PTY polling, both reapers, exit events,
+  terminal rendering helpers, Kitty texture preparation, encoders, selection,
+  copy mode, quick select, scrolling, and HTP. Resize/theme/focus invalidates
+  their surface. Startup input, paste, screen/text queries, and CLI send-text
+  reject non-terminal panes; boolean Lua send helpers return false.
+- Backend tests cover allocation-failure cleanup, destruction exactly once,
+  mixed terminal/Lua split/float/unfloat/zoom/workspace moves/close, and full app
+  ticks with Lua-only split, floating, and zoomed layouts. These are native test
+  panes only: the public Lua creation API, Clay pane rendering/input, snapshots
+  with kind/module, and factory restore remain unimplemented.
+- **Option B trigger reached during the audit:** there are 55 explicit
+  `isTerminal()` branches (excluding debug assertions), not the estimated ~19
+  guard sites. The table groups several independent entry points into one row;
+  it also omitted focus callback rebinding, native word/line selection, and
+  terminal screen/text queries. Section 7 therefore recommends switching to
+  Option B before shipping. The current guarded backend is an interim, tested
+  migration checkpoint, not a completed v1.
+- Operator selected **Option B** after this audit. Migration has started in
+  `src/term/terminal_pane.zig`: `Pane.term` now owns the PTY and keyboard/mouse
+  encoder/event resources. Input creation, cleanup, synchronization, and encoding
+  take `*TerminalPane`, without knowledge of Lua panes. Existing bootstrap error
+  ownership and terminal destruction order are preserved. A native regression
+  test checks input ownership, encoding, and repeat-safe cleanup.
+- Next B checkpoint: move the remaining Ghostty handles and terminal state into
+  `TerminalPane`, migrate the remaining consumers, then replace transitional
+  `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
+  transitional, not the final tagged-union model. Keep the guards until the
+  compiler-enforced content boundary replaces them.
 
 ### Current UI architecture differs from the handoff
 
@@ -500,3 +530,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   formatting, screenshot comparisons, and renderer benchmarks are not applicable
   to this milestone.
 - Existing modified submodules were left untouched.
+- Backend milestone validation: Zig tests pass in the same Nix environment;
+  Lua remains at 785 successes. Touched Zig formatting is clean. No Lua or
+  surface painting changes yet; screenshots and render benchmarks remain
+  pending for the actual Clay pane renderer.

@@ -28,6 +28,7 @@ pub fn scrollbarVisible(self: *const App, scrollbar: ghostty.TerminalScrollbar) 
 }
 
 pub fn paneScrollbarGutter(self: *const App, pane: *const Pane) u32 {
+    if (!pane.isTerminal()) return 0;
     return if (scrollbarVisible(self, pane.scrollbar())) self.config.scrollbar.gutterWidth() else 0;
 }
 
@@ -44,6 +45,7 @@ pub fn pageScrollRows(pane: *const Pane) isize {
 }
 
 pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) ghostty.TerminalScrollbar {
+    if (!pane.isTerminal()) return .{ .total = 0, .offset = 0, .len = 0 };
     const was_visible = scrollbarVisible(self, pane.scrollbar());
     if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
         pane.scrollbar_total = scrollbar.total;
@@ -61,6 +63,7 @@ pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) g
 }
 
 pub fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
+    if (!pane.isTerminal()) return;
     if (delta == 0) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     runtime.terminalScroll(pane.terminal, delta);
@@ -123,6 +126,7 @@ fn restorePaneViewportFromBottom(self: *App, pane: *Pane, top_row: usize) void {
 }
 
 pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
+    if (!pane.isTerminal()) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     const scrollbar = refreshPaneScrollbar(self, runtime, pane);
     const max_top = scrollbarMaxTopRow(scrollbar);

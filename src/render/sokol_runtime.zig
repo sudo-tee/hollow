@@ -468,6 +468,7 @@ const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
 fn paneRenderHelpersReady(pane: *const Pane) bool {
+    if (!pane.isTerminal()) return false;
     return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
 }
 
@@ -3513,8 +3514,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
-            for (leaves) |leaf| renderer.prepareKittyTextures(runtime, leaf.pane.terminal, leaf.pane.render_state);
-        } else if (app.activePane()) |pane| renderer.prepareKittyTextures(runtime, pane.terminal, pane.render_state);
+            for (leaves) |leaf| {
+                if (leaf.pane.isTerminal()) renderer.prepareKittyTextures(runtime, leaf.pane.terminal, leaf.pane.render_state);
+            }
+        } else if (app.activePane()) |pane| {
+            if (pane.isTerminal()) renderer.prepareKittyTextures(runtime, pane.terminal, pane.render_state);
+        }
     };
 
     // Decide once whether to use direct rendering.

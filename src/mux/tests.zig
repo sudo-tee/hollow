@@ -279,6 +279,75 @@ test "pane lifecycle closing callback covers automatic dead pane cleanup" {
     try std.testing.expectEqual(@as(usize, 1), recorder.closed);
 }
 
+test "Lua pane allocation has no terminal resources and rolls back on allocation failure" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var mux = Mux.init(allocator);
+            // Deliberately unusable: allocating/freeing Lua panes must not call
+            // any Ghostty function, including null-handle cleanup wrappers.
+            var runtime: ghostty.Runtime = undefined;
+            const pane = try mux.createLuaPane();
+            defer allocator.destroy(pane);
+            defer pane.deinit(&runtime);
+            try std.testing.expect(!pane.isTerminal());
+            try std.testing.expect(pane.id != 0);
+            try std.testing.expect(pane.term.pty == null and pane.terminal == null);
+            try std.testing.expect(pane.term.key_encoder == null and pane.term.mouse_encoder == null);
+            try std.testing.expect(!pane.hasRenderHelpers());
+            try std.testing.expectEqual(@as(usize, 0), pane.domain_name.len);
+            try std.testing.expect(pane.lua_surface.?.dirty);
+            try std.testing.expectError(error.NotATerminal, pane.queueStartupInput("input"));
+            try std.testing.expectError(error.NoActiveTab, mux.splitActivePaneWith(pane, .vertical, 0.5, false));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "mixed Lua and terminal panes split float zoom move and close without reaping Lua panes" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    var recorder: PaneLifecycleRecorder = .{ .mux = &mux };
+    mux.host_context = &recorder;
+    mux.pane_created = PaneLifecycleRecorder.recordCreated;
+    mux.pane_closing = PaneLifecycleRecorder.recordClosing;
+    const callbacks = LifecycleTestCallbacks.callbacks;
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    const terminal = mux.activePane().?;
+    terminal.retain_on_exit = true;
+    const pane = try mux.createLuaPane();
+    try mux.splitActivePaneWith(pane, .vertical, 0.4, false);
+    const id = pane.id;
+    try std.testing.expectEqual(@as(usize, 2), recorder.created);
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    try std.testing.expect(!pane.retain_on_exit);
+    try std.testing.expect(!mux.closeDeadPanes(&runtime));
+    try std.testing.expect(mux.focusPaneById(id));
+    try std.testing.expect(mux.setPaneFloating(pane, true));
+    try std.testing.expect(mux.setPaneFloating(pane, false));
+    _ = mux.activeTab().?.setPaneMaximized(pane, true, false);
+    try std.testing.expect(mux.paneIsMaximized(pane));
+    _ = mux.activeTab().?.setPaneMaximized(pane, false, false);
+    try std.testing.expect(!mux.paneIsMaximized(pane));
+    const floating = try mux.createLuaPane();
+    try mux.splitActivePaneWith(floating, .horizontal, 0.3, true);
+    try std.testing.expect(floating.is_floating);
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try std.testing.expect(mux.movePaneToWorkspace(&runtime, id, 1));
+    try std.testing.expect(mux.focusPaneById(id));
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    _ = mux.closePaneById(&runtime, id);
+    try std.testing.expect(!mux.focusPaneById(id));
+    try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+    try std.testing.expect(recorder.all_panes_resolved);
+}
+
 test "workspace new tab can append after active tab" {
     const allocator = std.testing.allocator;
     var workspace = Workspace.init(allocator, 1);
