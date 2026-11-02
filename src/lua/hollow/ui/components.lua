@@ -152,7 +152,7 @@ function M.button(value)
       selected = opts.selected,
       hovered = true,
     })[slot]
-    style.hover = { bg = hover.bg }
+    style.hover = { fg = hover.fg, bg = hover.bg }
   end
   style = ui.styled(theme, style, opts.style)
   if opts.disabled then

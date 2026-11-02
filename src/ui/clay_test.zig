@@ -1,6 +1,30 @@
 const std = @import("std");
 const c = @import("clay_c");
 
+test "Clay button hover switches descendant text color and restores it on leave" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 200, 100, 1), node(2, 0, 0, 0) };
+    nodes[0].hover_bg = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    nodes[0].hover_fg = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    nodes[1].fg = nodes[0].hover_bg;
+    nodes[1].text = .{ .chars = "Discard", .length = 7, .isStaticallyAllocated = true };
+    // Warm up geometry, then hover the button padding (not its text).
+    _ = layout(surface, &nodes, 300, 200, 0);
+    for ([_]f32{ 150, 250, 150 }) |mouse_x| {
+        const commands = c.hollow_clay_layout(surface, &nodes, nodes.len, 300, 200, 8, 16, mouse_x, 50, 0, 1.0 / 60.0);
+        var found = false;
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_TEXT) continue;
+            const expected = if (mouse_x < 200) nodes[0].hover_fg else nodes[1].fg;
+            try std.testing.expectEqual(expected, command.renderData.text.textColor);
+            found = true;
+        }
+        try std.testing.expect(found);
+        try std.testing.expect(!c.hollow_clay_failed(surface));
+    }
+}
+
 test "Clay workspace windows retire disjoint clipped columns within scroll capacity" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);

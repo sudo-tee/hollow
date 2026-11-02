@@ -16,7 +16,7 @@ typedef struct HollowClayNode {
     float min_width, max_width, min_height, max_height;
     Clay_Padding padding;
     uint16_t gap;
-    Clay_Color fg, bg, border, hover_bg;
+    Clay_Color fg, bg, border, hover_bg, hover_fg;
     Clay_Color scrollbar_track_color, scrollbar_thumb_color;
     float scrollbar_thumb_ratio, scrollbar_thumb_size;
     float radius;

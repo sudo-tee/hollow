@@ -131,6 +131,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss-all",
       "label": "Dismiss all",
       "padding": {
@@ -285,6 +286,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:1",
       "label": "×",
       "padding": {
@@ -411,6 +413,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:2",
       "label": "×",
       "padding": {
@@ -537,6 +540,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:3",
       "label": "×",
       "padding": {
@@ -663,6 +667,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:4",
       "label": "×",
       "padding": {
@@ -789,6 +794,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:5",
       "label": "×",
       "padding": {
@@ -915,6 +921,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:6",
       "label": "×",
       "padding": {
@@ -1041,6 +1048,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:7",
       "label": "×",
       "padding": {
@@ -1167,6 +1175,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:8",
       "label": "×",
       "padding": {
@@ -1293,6 +1302,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:9",
       "label": "×",
       "padding": {
@@ -1419,6 +1429,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:10",
       "label": "×",
       "padding": {
@@ -1545,6 +1556,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:11",
       "label": "×",
       "padding": {
@@ -1671,6 +1683,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:12",
       "label": "×",
       "padding": {
@@ -1797,6 +1810,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:13",
       "label": "×",
       "padding": {
@@ -1923,6 +1937,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:14",
       "label": "×",
       "padding": {
@@ -2049,6 +2064,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:15",
       "label": "×",
       "padding": {
@@ -2175,6 +2191,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:16",
       "label": "×",
       "padding": {
@@ -2301,6 +2318,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:17",
       "label": "×",
       "padding": {
@@ -2427,6 +2445,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:18",
       "label": "×",
       "padding": {
@@ -2553,6 +2572,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:19",
       "label": "×",
       "padding": {
@@ -2679,6 +2699,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:20",
       "label": "×",
       "padding": {
@@ -2805,6 +2826,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:21",
       "label": "×",
       "padding": {
@@ -2931,6 +2953,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:22",
       "label": "×",
       "padding": {
@@ -3057,6 +3080,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:23",
       "label": "×",
       "padding": {
@@ -3225,6 +3249,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:copy",
       "label": "Copy",
       "padding": {

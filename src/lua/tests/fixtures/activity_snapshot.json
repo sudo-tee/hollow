@@ -131,6 +131,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss-all",
       "label": "Dismiss all",
       "padding": {
@@ -275,6 +276,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:dismiss:one",
       "label": "×",
       "padding": {
@@ -443,6 +445,7 @@
       "children": 1,
       "clickable": true,
       "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
       "id": "test:activity:copy",
       "label": "Copy",
       "padding": {

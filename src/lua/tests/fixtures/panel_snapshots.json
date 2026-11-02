@@ -77,6 +77,7 @@
         "children": 1,
         "clickable": true,
         "hover_bg": "#b48ead",
+        "hover_fg": "#d8dee9",
         "id": "test:confirm:button:1",
         "label": "Yes",
         "padding": {
@@ -98,6 +99,7 @@
         "children": 1,
         "clickable": true,
         "hover_bg": "#666870",
+        "hover_fg": "#d8dee9",
         "id": "test:confirm:button:2",
         "label": "No",
         "padding": {

@@ -2,6 +2,33 @@ package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
 describe("dialog component snapshot", function()
+  it("publishes contrasting native hover text for unselected destructive actions", function()
+    local ui = harness.boot().hollow.ui
+    local surface = ui.layout.new({
+      render = function()
+        return ui.components.dialog({
+          theme = { destructive_bg = "#ff0000", destructive_fg = "#ffffff" },
+          actions = {
+            { id = "discard", text = "Discard", kind = "destructive" },
+            { id = "disabled", text = "Disabled", kind = "destructive", disabled = true },
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    for index, node in ipairs(nodes) do
+      if node.label == "Discard" then
+        assert.equals("#ff0000", nodes[index + 1].fg)
+        assert.equals("#ff0000", node.hover_bg)
+        assert.equals("#ffffff", node.hover_fg)
+      elseif node.label == "Disabled" then
+        assert.is_nil(node.hover_bg)
+        assert.is_nil(node.hover_fg)
+      end
+    end
+    surface:destroy()
+  end)
+
   it("preserves button states, geometry, and accessibility", function()
     local ui = harness.boot().hollow.ui
     local theme = {
@@ -60,6 +87,7 @@ describe("dialog component snapshot", function()
       {
         id = "test:accept",
         hover_bg = "#666666",
+        hover_fg = "#ffffff",
         bg = "#666666",
         label = "Accept",
         clickable = true,
@@ -71,6 +99,7 @@ describe("dialog component snapshot", function()
       {
         id = "test:delete",
         hover_bg = "#777777",
+        hover_fg = "#dddddd",
         bg = "#777777",
         label = "Delete",
         clickable = true,
@@ -87,6 +116,7 @@ describe("dialog component snapshot", function()
         children = 1,
         radius = 3,
         hover_bg = "#808080",
+        hover_fg = "#eeeeee",
       },
       { wrap = 2, kind = 2, fg = "#111111", text = "Cancel" },
     }, nodes)

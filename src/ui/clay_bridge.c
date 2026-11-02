@@ -91,12 +91,12 @@ static void hash_ids(HollowClayNode *nodes, int count) {
         nodes[i].element_id = nodes[i].id.length ? Clay_GetElementId(nodes[i].id) : CLAY_IDI("hollow.layout", i);
 }
 
-static void declare_node(HollowClayNode *nodes, int count, int *cursor, int depth, HollowClay *surface) {
+static void declare_node(HollowClayNode *nodes, int count, int *cursor, int depth, HollowClay *surface, Clay_Color hover_fg) {
     if (*cursor >= count || depth > 32) { surface->failed = true; return; }
     int index = (*cursor)++;
     HollowClayNode *node = &nodes[index];
     if (node->kind == 2) {
-        CLAY_TEXT(node->text, { .textColor = node->fg, .fontId = node->bold ? 1 : 0,
+        CLAY_TEXT(node->text, { .textColor = hover_fg.a ? hover_fg : node->fg, .fontId = node->bold ? 1 : 0,
             .fontSize = (uint16_t)surface->cell_h, .lineHeight = (uint16_t)surface->cell_h,
             .textAlignment = node->text_align == 1 ? CLAY_TEXT_ALIGN_CENTER : (node->text_align == 2 ? CLAY_TEXT_ALIGN_RIGHT : CLAY_TEXT_ALIGN_LEFT),
             .wrapMode = (Clay_TextElementConfigWrapMode)node->wrap });
@@ -133,8 +133,9 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
             .childOffset = (node->scroll || node->scroll_x) ? Clay_GetScrollOffset() : (Clay_Vector2){0, 0} },
         .custom = { .customData = node->kind == 3 ? node : NULL },
     }) {
+        Clay_Color child_hover_fg = node->hover_fg.a && Clay_Hovered() ? node->hover_fg : hover_fg;
         for (int i = 0; i < node->children && !surface->failed; ++i)
-            declare_node(nodes, count, cursor, depth + 1, surface);
+            declare_node(nodes, count, cursor, depth + 1, surface, child_hover_fg);
     }
 }
 
@@ -151,9 +152,9 @@ static Clay_RenderCommandArray build_layout(HollowClay *surface, HollowClayNode 
                 .layoutDirection = CLAY_TOP_TO_BOTTOM },
             .clip = { .horizontal = true, .vertical = true },
         }) {
-            if (count > 0) declare_node(nodes, count, &cursor, 0, surface);
+            if (count > 0) declare_node(nodes, count, &cursor, 0, surface, (Clay_Color){0});
         }
-    } else if (count > 0) declare_node(nodes, count, &cursor, 0, surface);
+    } else if (count > 0) declare_node(nodes, count, &cursor, 0, surface, (Clay_Color){0});
     if (cursor != count) surface->failed = true;
     return Clay_EndLayout(delta_time);
 }

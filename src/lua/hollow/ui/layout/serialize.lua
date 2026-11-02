@@ -216,6 +216,7 @@ return function(root, palette, namespace, ctx)
       end
       serialized.radius = nonzero(box.px(paint.radius, 0))
       serialized.hover_bg = type(style.hover) == "table" and style.hover.bg or nil
+      serialized.hover_fg = type(style.hover) == "table" and style.hover.fg or nil
       serialized.scroll = node.scroll == true or nil
       serialized.scroll_x = node.scroll_x == true or nil
       serialized.reveal = node.reveal and (namespace .. node.reveal)
