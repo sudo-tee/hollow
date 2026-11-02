@@ -521,7 +521,7 @@ pub const App = struct {
 
     pub fn currentPaneIdValue(self: *App) usize {
         const pane = self.activePane() orelse return 0;
-        return @intFromPtr(pane);
+        return pane.id;
     }
 
     pub fn currentWorkspaceIdValue(self: *App) ?usize {
@@ -598,7 +598,7 @@ pub const App = struct {
 
     pub fn currentPaneValue(self: *App) !?std.json.Value {
         const pane = self.activePane() orelse return null;
-        return try self.snapshotPane(@intFromPtr(pane));
+        return try self.snapshotPane(pane.id);
     }
 
     pub fn paneTextValue(self: *App, pane_id: usize) !std.json.Value {
@@ -676,7 +676,7 @@ pub const App = struct {
         var screen = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = screen });
         try putJsonField(self.allocator, &screen, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
-        try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(@intFromPtr(pane)) });
+        try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(pane.id) });
         try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
         try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
         try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
@@ -787,14 +787,14 @@ pub const App = struct {
         var panes = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = panes });
         for (tab.panes.items) |pane| {
-            const pane_value = try self.snapshotPane(@intFromPtr(pane));
+            const pane_value = try self.snapshotPane(pane.id);
             if (pane_value) |value| try panes.append(value);
         }
 
         var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
         const active_pane = tab.activePane();
-        const pane_value = if (active_pane) |pane| try self.snapshotPane(@intFromPtr(pane)) else null;
+        const pane_value = if (active_pane) |pane| try self.snapshotPane(pane.id) else null;
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(tab.id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, if (active_pane) |pane| pane.title else "") });
         try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
@@ -840,7 +840,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                const pane_id = @intFromPtr(pane);
+                const pane_id = pane.id;
                 if (wanted_tag) |tag| {
                     const entry = cmd_ipc.findPaneTagEntry(self, pane_id) orelse continue;
                     if (!entry.tags.contains(tag)) continue;
@@ -1665,7 +1665,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                if (@intFromPtr(pane) == pane_id) return pane;
+                if (pane.id == pane_id) return pane;
             }
         }
         return null;
@@ -2425,7 +2425,7 @@ pub const App = struct {
                 }
                 const sync_now_ns = io.nanoTimestamp();
                 if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
-                    std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
+                    std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});
                 }
                 if (pane.synchronized_output_active) {
                     const sync_deadline_ns = pane.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
@@ -2449,8 +2449,8 @@ pub const App = struct {
                     pane.program_status.dirty = false;
                     automation_changed = true;
                     self.topbar_cache_dirty = true;
-                    self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = @intFromPtr(pane) });
-                    _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = @intFromPtr(pane) });
+                    self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = pane.id });
+                    _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = pane.id });
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
                 const had_notifications = pane.osc99_notifications.hasNotifications();
@@ -2469,7 +2469,7 @@ pub const App = struct {
                     defer if (old_title) |value| self.allocator.free(value);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
-                        .pane_id = @intFromPtr(pane),
+                        .pane_id = pane.id,
                         .old_title = if (old_title) |value| value else "",
                         .new_title = pane.title,
                     } });
@@ -2481,7 +2481,7 @@ pub const App = struct {
                     defer if (old_cwd) |value| self.allocator.free(value);
                     if (pane.refreshCwd()) {
                         self.emitLuaBuiltInEvent("term:cwd_changed", .{ .pane_cwd_changed = .{
-                            .pane_id = @intFromPtr(pane),
+                            .pane_id = pane.id,
                             .old_cwd = if (old_cwd) |value| value else "",
                             .new_cwd = pane.cwd,
                         } });
@@ -2494,7 +2494,7 @@ pub const App = struct {
                     const now_notification_ns = io.nanoTimestamp();
                     if (notification.close) {
                         self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
-                            .pane_id = @intFromPtr(pane),
+                            .pane_id = pane.id,
                             .title = "",
                             .message = "",
                             .level = @tagName(notification.level),
@@ -2513,7 +2513,7 @@ pub const App = struct {
                     self.last_visual_activity_ns = now_notification_ns;
                     self.topbar_cache_dirty = true;
                     self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
-                        .pane_id = @intFromPtr(pane),
+                        .pane_id = pane.id,
                         .title = notification.title,
                         .message = notification.message,
                         .level = @tagName(notification.level),
@@ -2537,7 +2537,7 @@ pub const App = struct {
                     // Tab labels may render an attention marker, so force the
                     // top bar to re-layout on the next frame.
                     self.topbar_cache_dirty = true;
-                    self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = @intFromPtr(pane) });
+                    self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = pane.id });
                 }
                 if (pane.bell_active) {
                     const now_bell_ns = io.nanoTimestamp();
@@ -2593,7 +2593,7 @@ pub const App = struct {
                     if (self.config.debug_terminal_trace and pane_is_active) {
                         const cursor_pos = runtime.cursorPos(pane.render_state);
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
-                            @intFromPtr(pane),
+                            pane.id,
                             pane.render_state_fresh,
                             pane.pty_received_data,
                             @tagName(pane.render_dirty),
@@ -2650,7 +2650,7 @@ pub const App = struct {
                         pane.alt_screen_nudge_quiet_ticks +|= 1;
                         if (pane.alt_screen_nudge_quiet_ticks >= 3) {
                             std.log.info("app: pane alt-screen repaint nudge pane={x} rows={d} cols={d}", .{
-                                @intFromPtr(pane),
+                                pane.id,
                                 pane.rows,
                                 pane.cols,
                             });
@@ -2810,7 +2810,7 @@ pub const App = struct {
                     const actual_bottom = leaf.bounds.height - actual_top - inner.height;
                     if (self.debug_split_trace_frames > 0) {
                         std.log.info("split-trace leaf pane={x} outer={d}x{d} inner={d}x{d} insets=t{d} r{d} b{d} l{d} rows={d} cols={d}", .{
-                            @intFromPtr(leaf.pane),
+                            leaf.pane.id,
                             leaf.bounds.width,
                             leaf.bounds.height,
                             inner.width,
@@ -2971,7 +2971,7 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
         closing.program_status.setFocused(true);
         survivor.program_status.setFocused(false);
         survivor.has_bell_attention = true;
-        mux_ops.closePaneById(app, @intFromPtr(closing));
+        mux_ops.closePaneById(app, closing.id);
         try std.testing.expectEqual(survivor, mux.activePane().?);
         try std.testing.expect(survivor.program_status.focused);
         try std.testing.expect(!survivor.has_bell_attention);
@@ -2979,9 +2979,9 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
     // A background close must still synchronize the surviving active pane.
     _ = try mux.splitActivePane(runtime, callbacks, app.config, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
     const background = mux.activePane().?;
-    try std.testing.expect(mux.focusPaneById(@intFromPtr(survivor)));
+    try std.testing.expect(mux.focusPaneById(survivor.id));
     survivor.program_status.setFocused(true);
-    mux_ops.closePaneById(app, @intFromPtr(background));
+    mux_ops.closePaneById(app, background.id);
     try std.testing.expectEqual(survivor, mux.activePane().?);
     try std.testing.expect(survivor.program_status.focused);
     mux_ops.closePaneById(app, 0);

@@ -458,4 +458,45 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 
 ## Findings
 
-(Record deviations and facts discovered during implementation here.)
+### Implementation progress
+
+- Step 1 implemented: `Pane.id` is allocated monotonically by `Mux` before
+  bootstrap. Pane lookup, Lua callbacks, events, HTP, snapshots, the child
+  `HOLLOW_PANE_ID` environment variable, and floating restore anchors use it.
+  A separate `next_pane_id` counter preserves existing workspace/tab ID
+  allocation. Zero is reserved for unpublished panes; standalone test fixtures
+  assign explicit IDs when published.
+- Regression coverage checks unique IDs on every creation path, the actual
+  child environment, stable IDs across float/unfloat and workspace moves,
+  restored split ratios, and rejection of closed IDs after new allocation or
+  reuse of pane storage. Remaining feature steps are not implemented yet.
+
+### Current UI architecture differs from the handoff
+
+- `widgets/overlay.lua` no longer contains `serialize_overlay_row`. Overlays
+  create `ui.layout` surfaces and publish Clay snapshots. Reintroducing the old
+  surface-row drawer in steps 2–3 would create a second obsolete renderer rather
+  than unify surfaces.
+- `hollow.ui.layout` already owns dirty snapshots, render revisions, per-surface
+  callback tables, namespaced IDs, keyboard focus, and destruction. Its native
+  adapter is `src/ui/clay_surface.zig`; `sokol_runtime.zig` retains separate
+  native surfaces for stacked overlays. Lua panes should reuse these facilities
+  with pane ownership, clipping, and pane-local lifecycle/input routing.
+- Revised next step: adapt existing Clay surfaces for pane ownership rather
+  than extract `drawSurfaceRows`. Keep overlay/sidebar rendering unchanged.
+  Option A and the pane lifecycle/terminal guard audit still apply. The pane API
+  and persistence requirements remain outstanding; existing layout support
+  does not itself make a Lua pane.
+
+### Validation environment
+
+- Plain `make test` cannot link here: native X11, Xi, Xcursor, GL, and ALSA
+  libraries are absent. Use the repository-provided Nix environment:
+  `nix-shell --run 'make test ARGS="-Ddynamic-linker=$HOLLOW_DYNAMIC_LINKER"'`.
+- Baseline `make test-lua`: 785 successes, no failures/errors.
+- Step 1 validation: Zig build reports 98/98 steps succeeded in Nix; Lua suite
+  remains at 785 successes. `zig fmt --check` on every touched Zig file and
+  `git diff --check` pass. No Lua files or UI rendering paths changed, so Lua
+  formatting, screenshot comparisons, and renderer benchmarks are not applicable
+  to this milestone.
+- Existing modified submodules were left untouched.

@@ -123,6 +123,8 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
 pub const Pane = struct {
     pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
 
+    /// Stable mux identity. Zero denotes a pane not yet published by a mux.
+    id: usize = 0,
     allocator: std.mem.Allocator,
     host_context: ?*anyopaque = null,
     host_wake: @import("pty/wake.zig").Wake = .{},
@@ -384,7 +386,7 @@ pub const Pane = struct {
         var env_block: std.ArrayListUnmanaged(u8) = .empty;
         defer env_block.deinit(self.allocator);
 
-        const pane_id = @intFromPtr(self);
+        const pane_id = self.id;
         var pane_id_buf: [32]u8 = undefined;
         const pane_id_str = try std.fmt.bufPrint(&pane_id_buf, "{d}", .{pane_id});
 
@@ -1724,7 +1726,7 @@ pub const Pane = struct {
             const payload = self.htp_osc_buf[0..self.htp_osc_len];
             if (self.htp_message_handler) |handler| handler(self, payload);
         } else if (self.htp_osc_overflow) {
-            std.log.warn("htp: dropped oversized osc pane={x} bytes={d}", .{ @intFromPtr(self), self.htp_osc_len });
+            std.log.warn("htp: dropped oversized osc pane={x} bytes={d}", .{ self.id, self.htp_osc_len });
         }
         self.htp_osc_active = false;
         self.htp_osc_st_pending = false;
@@ -1745,7 +1747,7 @@ pub const Pane = struct {
     fn finishNotificationOscSequence(self: *Pane) void {
         if (!self.osc99_overflow and self.osc99_buf.items.len > 0) {
             self.osc99_notifications.feed(self.allocator, self.osc99_buf.items) catch |err| {
-                std.log.warn("osc99: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
+                std.log.warn("osc99: failed to queue notification pane={x} err={s}", .{ self.id, @errorName(err) });
             };
         }
         self.osc99_active = false;

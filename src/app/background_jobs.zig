@@ -38,7 +38,7 @@ pub fn spawn(app: *App, args: command.JobSpawn) !command.Response {
     };
     const pane = tab.activePane().?;
     pane.automation_token = token;
-    response.payload.?.object.getPtr("pane_id").?.* = .{ .integer = @intCast(@intFromPtr(pane)) };
+    response.payload.?.object.getPtr("pane_id").?.* = .{ .integer = @intCast(pane.id) };
     response.payload.?.object.getPtr("tab_id").?.* = .{ .integer = @intCast(tab.id) };
     @import("htp.zig").bindHtpHandlers(app);
     app.requestLayoutRefresh();
@@ -94,17 +94,23 @@ pub fn cleanup(app: *App, args: command.JobHandle) command.Response {
 
 test "background jobs: ownership rejects ordinary panes, mismatched tokens, and recycled pane addresses" {
     var pane = Pane.init(std.testing.allocator);
+    pane.id = 3;
     const Fake = struct {
         pane: *Pane,
         fn findPaneById(self: *@This(), id: usize) ?*Pane {
-            return if (id == @intFromPtr(self.pane)) self.pane else null;
+            return if (id == self.pane.id) self.pane else null;
         }
     };
     var app: Fake = .{ .pane = &pane };
-    const handle: command.JobHandle = .{ .id = @intFromPtr(&pane), .token = "0123456789abcdef0123456789abcdef" };
+    const handle: command.JobHandle = .{ .id = pane.id, .token = "0123456789abcdef0123456789abcdef" };
     try std.testing.expect(ownedPane(&app, handle) == null);
     pane.automation_token = "0123456789abcdef0123456789abcdef".*;
     try std.testing.expect(ownedPane(&app, handle) == &pane);
     pane.automation_token = "fedcba9876543210fedcba9876543210".*;
+    try std.testing.expect(ownedPane(&app, handle) == null);
+    // Reusing storage never makes an old ID target the new pane, even if its
+    // token were accidentally retained.
+    pane.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.id = 4;
     try std.testing.expect(ownedPane(&app, handle) == null);
 }

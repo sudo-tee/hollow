@@ -77,12 +77,12 @@ test "background jobs: launch preserves focus, drains output, retains failure, a
     // A user may add a pane to a job's tab. Owned cleanup must not remove it.
     const sibling = try mux.createPane(&runtime, Callbacks.value, config, 8, 16, 800, 600, "/", null, null, null);
     try tab.splitActivePane(sibling, .vertical, 0.5);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(pane), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, pane.id, false));
     try std.testing.expect(mux.activePane() == original_pane);
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(tab.activePane() == sibling);
     try std.testing.expectEqual(@as(usize, 2), original_workspace.tabs.items.len);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(sibling), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, sibling.id, false));
     try std.testing.expectEqual(@as(usize, 1), original_workspace.tabs.items.len);
 }
 
@@ -125,7 +125,7 @@ test "background jobs: cleanup in another workspace preserves current workspace 
     const job_tab = try mux.newTabWithFocus(&runtime, Callbacks.value, config, 8, 16, 800, 600, null, null, .{ .command = "true", .one_shot = true }, true, false);
     const job = job_tab.activePane().?;
     mux.switchWorkspace(0);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(job), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, job.id, false));
     try std.testing.expect(mux.activePane() == original);
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(other.activeTab() == user_tab);

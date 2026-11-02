@@ -61,7 +61,7 @@ pub fn start(self: *App, action: Action) void {
         std.log.info("quick-select: no active pane", .{});
         return disarmInput(self);
     };
-    std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), @intFromPtr(pane) });
+    std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), pane.id });
     self.quick_select_pane = pane;
     self.quick_select_action = action;
     self.quick_select_layout_generation = self.currentLayoutGeneration();
@@ -246,7 +246,7 @@ fn execute(self: *App, candidate: Candidate) void {
             switch (hyperlinks.routeLink(self, .{
                 .url = open_target,
                 .text = text,
-                .pane_id = @intFromPtr(pane),
+                .pane_id = pane.id,
                 .mods = 0,
                 .source = "quick_select",
                 .kind = @tagName(candidate.kind),

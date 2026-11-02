@@ -39,7 +39,7 @@ pub fn sendText(self: *App, text: []const u8) void {
     pane.last_render_state_update_ns = 0;
     if (self.config.debug_terminal_trace) {
         std.log.info("terminal-trace sendText pane={x} len={d} sample={s}", .{
-            @intFromPtr(pane),
+            pane.id,
             text.len,
             text[0..@min(text.len, 32)],
         });
@@ -118,7 +118,7 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     const pane = self.activePane() orelse return;
     const rt = if (self.ghostty) |*r| r else {
         if (self.config.debug_terminal_trace) {
-            std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ @intFromPtr(pane), text.len });
+            std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ pane.id, text.len });
         }
         sendText(self, text);
         return;
@@ -295,7 +295,7 @@ pub fn closePaneById(self: *App, pane_id: usize) void {
     // Closing the focused pane destroys it before focus synchronization. Only
     // retain the previous pane when it will survive the close operation.
     const previous = if (mux.activePane()) |pane|
-        (if (@intFromPtr(pane) != pane_id) pane else null)
+        (if (pane.id != pane_id) pane else null)
     else
         null;
     const should_quit = mux.closePaneById(runtime, pane_id);
@@ -532,7 +532,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     }
     htp.bindHtpHandlers(self);
     self.syncActivePaneChange(previous, mux.activePane());
-    if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .pane_id = @intFromPtr(pane) });
+    if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .pane_id = pane.id });
     self.requestLayoutResize(false);
     std.log.info("app: splitPane total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
@@ -620,7 +620,7 @@ pub fn focusPane(self: *App, direction: FocusDirection) void {
         mux.focusPaneInDirection(direction, self.config.window_width, self.config.window_height);
         self.syncActivePaneChange(previous, mux.activePane());
         if (mux.activePane()) |pane| {
-            if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = @intFromPtr(pane) });
+            if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane.id });
         }
     }
 }

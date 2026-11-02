@@ -141,7 +141,7 @@ pub const Tab = struct {
 
         target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         // Anchor metadata identifies this pane's split after later nested splits.
-        new_pane.restore_anchor_id = @intFromPtr(current_pane);
+        new_pane.restore_anchor_id = current_pane.id;
         new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
         new_pane.restore_split_horizontal = direction == .horizontal;
         new_pane.restore_place_first = false;
@@ -159,7 +159,7 @@ pub const Tab = struct {
         const root = self.root_split orelse return null;
         if (pane.restore_anchor_id == 0) return null;
         for (self.panes.items) |candidate| {
-            if (@intFromPtr(candidate) != pane.restore_anchor_id) continue;
+            if (candidate.id != pane.restore_anchor_id) continue;
             return findSplitInfoBetween(root, candidate, pane);
         }
         return null;
@@ -325,7 +325,7 @@ pub const Tab = struct {
         if (floating) {
             if (self.active_pane) |active| {
                 if (active != pane and !active.is_floating) {
-                    pane.restore_anchor_id = @intFromPtr(active);
+                    pane.restore_anchor_id = active.id;
                 }
             }
             pane.is_floating = true;
@@ -400,7 +400,7 @@ pub const Tab = struct {
         var anchor: ?*Pane = null;
         if (pane.restore_anchor_id != 0) {
             for (self.panes.items) |candidate| {
-                if (@intFromPtr(candidate) == pane.restore_anchor_id and candidate != pane and !candidate.is_floating) {
+                if (candidate.id == pane.restore_anchor_id and candidate != pane and !candidate.is_floating) {
                     anchor = candidate;
                     break;
                 }
@@ -433,7 +433,7 @@ pub const Tab = struct {
         } else {
             target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         }
-        pane.restore_anchor_id = @intFromPtr(anchor_pane);
+        pane.restore_anchor_id = anchor_pane.id;
         return true;
     }
 };

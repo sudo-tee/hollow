@@ -531,12 +531,12 @@ pub fn processInputQueue(self: *App) void {
 
                 self.emitLuaBuiltInEvent("window:files_dropped", .{ .files_dropped = .{
                     .paths = paths,
-                    .pane_id = @intFromPtr(hit.pane),
+                    .pane_id = hit.pane.id,
                     .x = drop.x,
                     .y = drop.y,
                     .text = text,
                 } });
-                const action = self.fireFileDrop(paths, @intFromPtr(hit.pane), drop.x, drop.y, text);
+                const action = self.fireFileDrop(paths, hit.pane.id, drop.x, drop.y, text);
                 switch (action) {
                     .consume => return,
                     .text => |replacement| {

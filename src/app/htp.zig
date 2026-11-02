@@ -49,7 +49,7 @@ pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
         return;
     };
     self.htp_pending_messages.append(self.allocator, .{
-        .pane_id = @intFromPtr(pane),
+        .pane_id = pane.id,
         .received_at_ms = io.milliTimestamp(),
         .received_cwd = received_cwd,
         .payload = owned,
@@ -201,22 +201,22 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
         return;
     }
 
-    var assembly = self.htp_codec.findOrCreateAssembly(@intFromPtr(pane), request_id, total, io.nanoTimestamp()) catch |err| {
+    var assembly = self.htp_codec.findOrCreateAssembly(pane.id, request_id, total, io.nanoTimestamp()) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     if (assembly.total != total or assembly.next_index != index) {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "invalid_message", "unexpected chunk order");
         return;
     }
     if (data.len > HTP_MAX_ASSEMBLY_BYTES - assembly.buffer.items.len) {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "resource_limit", "chunk assembly too large");
         return;
     }
     assembly.buffer.appendSlice(self.allocator, data) catch |err| {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -224,12 +224,12 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
     if (index < total) return;
 
     const joined = assembly.buffer.toOwnedSlice(self.allocator) catch |err| {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     defer self.allocator.free(joined);
-    self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+    self.htp_codec.removeAssembly(pane.id, request_id);
     handleHtpMessage(self, pane, joined, received_at_ms, received_cwd);
 }
 
@@ -240,7 +240,7 @@ fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: [
         return;
     };
 
-    const ok = lua.dispatchHtpEvent(@intFromPtr(pane), channel, payload, received_at_ms, received_cwd) catch |err| {
+    const ok = lua.dispatchHtpEvent(pane.id, channel, payload, received_at_ms, received_cwd) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -252,7 +252,7 @@ fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: [
 }
 
 fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, channel: []const u8, params: ?std.json.Value) void {
-    const result = dispatchHtpQuerySync(self, @intFromPtr(pane), channel, params) catch |err| {
+    const result = dispatchHtpQuerySync(self, pane.id, channel, params) catch |err| {
         sendHtpQueryError(self, pane, message_id, request_id, "internal", @errorName(err));
         return;
     };
@@ -336,13 +336,13 @@ fn observeCommandEvent(self: *App, pane: *Pane, channel: []const u8, payload: ?s
     if (std.mem.eql(u8, channel, "command_started")) {
         const text = value.object.get("command") orelse return;
         if (text != .string) return;
-        pane.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = @intFromPtr(pane) });
+        pane.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
     } else if (std.mem.eql(u8, channel, "command_ended")) {
         const command_id = pane.automation_command_id orelse return;
         const status = value.object.get("exit_code") orelse return;
         if (status != .integer) return;
         pane.automation_command_id = null;
-        _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = @intFromPtr(pane), .command_id = command_id, .status = status.integer });
+        _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = pane.id, .command_id = command_id, .status = status.integer });
     }
 }
 

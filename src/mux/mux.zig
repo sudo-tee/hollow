@@ -26,6 +26,7 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
+    next_pane_id: usize = 1,
     host_context: ?*anyopaque = null,
     host_wake: @import("../pty/wake.zig").Wake = .{},
     pane_created: ?*const fn (*anyopaque, *Pane) void = null,
@@ -192,7 +193,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
-                    if (@intFromPtr(pane) != pane_id) continue;
+                    if (pane.id != pane_id) continue;
                     self.active_workspace = ws;
                     ws.active_tab = tab;
                     tab.active_pane = pane;
@@ -303,6 +304,8 @@ pub const Mux = struct {
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
+        pane.id = self.next_pane_id;
+        self.next_pane_id += 1;
         pane.host_context = self.host_context;
         pane.host_wake = self.host_wake;
         pane.spawn_filter = self.spawn_filter;
@@ -420,7 +423,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
-                    if (@intFromPtr(pane) != pane_id) continue;
+                    if (pane.id != pane_id) continue;
 
                     if (activate) {
                         self.active_workspace = ws;
@@ -548,7 +551,7 @@ pub const Mux = struct {
                 }
                 break :blk null;
             };
-            if (restore_anchor) |anchor| new_pane.restore_anchor_id = @intFromPtr(anchor);
+            if (restore_anchor) |anchor| new_pane.restore_anchor_id = anchor.id;
             new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
             new_pane.restore_split_horizontal = direction == .horizontal;
             new_pane.restore_place_first = false;
@@ -660,7 +663,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |p| {
-                    if (@intFromPtr(p) == pane_id) {
+                    if (p.id == pane_id) {
                         pane = p;
                         source_tab = tab;
                         source_ws = ws;

@@ -3734,7 +3734,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         if (cfg.debug_terminal_trace and focused) {
                             std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
-                                @intFromPtr(pane),
+                                pane.id,
                                 @tagName(dirty_level),
                                 cursor_state_changed,
                                 cursor_visible,
@@ -3748,7 +3748,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         // Nothing changed and the pane has already survived a clean
                         // post-reflow frame, so the cached RT is safe to reuse.
                         if (g_frames_since_drag_release < 10) {
-                            std.log.info("post_release[{d}] pane={x} cached_clean (skipped render entirely)", .{ g_frames_since_drag_release, @intFromPtr(pane) });
+                            std.log.info("post_release[{d}] pane={x} cached_clean (skipped render entirely)", .{ g_frames_since_drag_release, pane.id });
                         }
                         return .cached_clean;
                     }
@@ -3762,7 +3762,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const force_full = dirty_level == .full or pty_burst_refresh or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
                     if (cfg.debug_terminal_trace and focused) {
                         std.log.info("terminal-trace cache pane={x} mode=cached_dirty dirty={s} force_full={} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d} pty_active={} size_mismatch={} grid_changed={}", .{
-                            @intFromPtr(pane),
+                            pane.id,
                             @tagName(dirty_level),
                             force_full,
                             cursor_state_changed,
@@ -3790,7 +3790,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             "post_release[{d}] pane={x} dirty={s} force_full={} ff_frames={d} geom_stale={} atlas_stale={} needs_clear={} stable={} unsettled={} size_mm={} grid_chg={} pty_active={} rows_rendered={d} rows_skipped={d}",
                             .{
                                 g_frames_since_drag_release,
-                                @intFromPtr(pane),
+                                pane.id,
                                 @tagName(dirty_level),
                                 force_full,
                                 cache_entry.force_full_frames,

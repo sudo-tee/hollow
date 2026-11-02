@@ -183,7 +183,7 @@ pub const GridDebug = struct {
     }
 
     fn pushPane(self: *GridDebug, parent: usize, tab: *mux.Tab, pane: *Pane, bounds: mux.PaneBounds, floating: bool) void {
-        const id = self.string("pane:{d}", .{@intFromPtr(pane)});
+        const id = self.string("pane:{d}", .{pane.id});
         const index = self.pushBounds(parent, id, 0, bounds) orelse return;
         self.rects[index].floating = floating;
         const title = pane.title[0..@min(pane.title.len, 48)];

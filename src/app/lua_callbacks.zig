@@ -207,7 +207,7 @@ pub fn luaCurrentTabIdCallback(app_ptr: *anyopaque) usize {
 pub fn luaCurrentPaneIdCallback(app_ptr: *anyopaque) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.activePane() orelse return 0;
-    return @intFromPtr(pane);
+    return pane.id;
 }
 
 pub fn luaGetTabIdAtCallback(app_ptr: *anyopaque, index: usize) usize {
@@ -227,14 +227,14 @@ pub fn luaGetTabPaneIdAtCallback(app_ptr: *anyopaque, tab_id: usize, index: usiz
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const tab = app.tabById(tab_id) orelse return 0;
     if (index >= tab.panes.items.len) return 0;
-    return @intFromPtr(tab.panes.items[index]);
+    return tab.panes.items[index].id;
 }
 
 pub fn luaGetTabActivePaneIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const tab = app.tabById(tab_id) orelse return 0;
     const pane = tab.activePane() orelse return 0;
-    return @intFromPtr(pane);
+    return pane.id;
 }
 
 pub fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
@@ -371,7 +371,7 @@ pub fn luaPaneIsMaximizedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
 pub fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.activePane() orelse return false;
-    return @intFromPtr(pane) == pane_id;
+    return pane.id == pane_id;
 }
 
 pub fn luaPaneHasBellCallback(app_ptr: *anyopaque, pane_id: usize) bool {

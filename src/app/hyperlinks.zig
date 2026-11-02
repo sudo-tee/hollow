@@ -215,7 +215,7 @@ pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint, mods: u32) voi
     switch (routeLink(self, .{
         .url = token.open_text,
         .text = token.text,
-        .pane_id = @intFromPtr(pane),
+        .pane_id = pane.id,
         .mods = mods,
         .source = "click",
         .kind = "url",
