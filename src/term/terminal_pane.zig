@@ -292,6 +292,25 @@ pub const TerminalPane = struct {
         self.child_alive_cached = pty.isAlive();
     }
 
+    pub fn refreshScrollbar(self: *TerminalPane, runtime: *ghostty.Runtime, rows: u16) ghostty.TerminalScrollbar {
+        const value = runtime.terminalScrollbar(self.terminal) orelse ghostty.TerminalScrollbar{
+            .total = @max(@as(u64, 1), rows),
+            .offset = 0,
+            .len = @max(@as(u64, 1), rows),
+        };
+        self.scrollbar_total = value.total;
+        self.scrollbar_offset = value.offset;
+        self.scrollbar_len = value.len;
+        return value;
+    }
+
+    pub fn markViewportScrolled(self: *TerminalPane) void {
+        self.viewport_scroll_pending = true;
+        self.render_state_fresh = false;
+        self.last_render_state_update_ns = 0;
+        self.pty_received_data = true;
+    }
+
     pub fn scrollbar(self: *const TerminalPane) ghostty.TerminalScrollbar {
         return .{ .total = self.scrollbar_total, .offset = self.scrollbar_offset, .len = self.scrollbar_len };
     }
@@ -454,6 +473,27 @@ test "terminal lifecycle queries and scroll state need no pane node" {
     content.refreshChildAliveCache(true);
     content.sendText("discarded without a PTY");
     content.writeEscapeSequence("\x1b[0m");
+}
+
+test "terminal scrollbar refresh and viewport damage need no pane node" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var content: TerminalPane = .{};
+    // Missing native terminal preserves the existing one-row-minimum fallback.
+    try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 1, .offset = 0, .len = 1 }, content.refreshScrollbar(&runtime, 0));
+    try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 24, .offset = 0, .len = 24 }, content.refreshScrollbar(&runtime, 24));
+    content.terminal = try runtime.createTerminal(80, 12, 0);
+    defer content.deinit(&runtime, std.testing.allocator);
+    const native = runtime.terminalScrollbar(content.terminal).?;
+    try std.testing.expectEqualDeep(native, content.refreshScrollbar(&runtime, 99));
+    try std.testing.expectEqualDeep(native, content.scrollbar());
+    content.render_state_fresh = true;
+    content.last_render_state_update_ns = 123;
+    content.markViewportScrolled();
+    try std.testing.expect(content.viewport_scroll_pending);
+    try std.testing.expect(!content.render_state_fresh);
+    try std.testing.expectEqual(@as(i128, 0), content.last_render_state_update_ns);
+    try std.testing.expect(content.pty_received_data);
 }
 
 test "terminal destruction owns domain and job capture and resets runtime state" {

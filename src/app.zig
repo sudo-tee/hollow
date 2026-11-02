@@ -3034,6 +3034,15 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expect(!app.copy_mode_active);
     scroll.scrollPaneViewport(app, pane, 1);
     scroll.scrollPaneViewportToRow(app, pane, 1);
+    try std.testing.expect(pane.asTerminal() == null);
+    try std.testing.expect(pane.asTerminalConst() == null);
+    try std.testing.expectEqual(@as(u32, 0), scroll.paneScrollbarGutter(app, pane));
+    try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 0, .offset = 0, .len = 0 }, scroll.refreshPaneScrollbar(app, runtime, pane));
+    try std.testing.expect(!pane.term.viewport_scroll_pending);
+    try std.testing.expect(selection_mod.gridRefForHistoryRow(app, pane, 0) == null);
+    try std.testing.expect(selection_mod.gridRefForHistoryCell(app, pane, 0, 0) == null);
+    var link_buf: [128]u8 = undefined;
+    try std.testing.expect(hyperlinks.hyperlinkUriAt(app, pane, .{ .row = 0, .col = 0 }, &link_buf) == null);
     var response = try cmd_ipc.executeCommand(app, .{ .data = .{ .pane_send_text = .{ .id = id, .text = "text" } } });
     defer response.deinit(a);
     try std.testing.expect(!response.success);

@@ -542,7 +542,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - Regression tests enforce the shared/terminal field boundary, exercise terminal
   lifecycle queries without a pane node, cover domain-string allocation failure,
   and verify job/domain cleanup and runtime-state reset on destruction.
-- Terminal-operation checkpoint implemented (not yet committed): bootstrap, PTY
+- Terminal-operation checkpoint committed as `0ea9eed`: bootstrap, PTY
   polling, protocol parsing, cwd/title refresh, and resize/nudge implementations
   now live in `src/term/pane_runtime.zig`. `TerminalPane` entry points supply a
   short-lived context with typed terminal storage and borrowed shared metadata.
@@ -556,6 +556,18 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - PTY limits moved unchanged into `src/term/pty_policy.zig`, shared by polling,
   public compatibility constants, and terminal scratch-buffer sizing. User input
   queuing and mouse-size updates now operate directly on `TerminalPane`.
+- First consumer-narrowing checkpoint implemented (not yet committed): nullable
+  mutable/const terminal accessors select content at generic entry points.
+  Selection, scrolling, and hyperlink modules no longer read `Pane.term`
+  directly. Native history/selection snapshot and OSC 8 helpers take typed
+  terminal storage; hyperlink row iteration no longer retains a generic node.
+  Scrollbar refresh and viewport-damage bookkeeping belong to `TerminalPane`;
+  app code still owns layout-resize requests and shared texture invalidation.
+- Native tests exercise selection formatting, OSC 8 span lookup, scrollbar
+  fallback/native refresh, and viewport-damage state without constructing a
+  generic pane. Lua-pane app coverage now also checks nullable terminal access,
+  absent scrollbar gutters/history refs/hyperlinks, and unchanged scroll state.
+  Accessors still wrap transitional storage; this is not the content-union switch.
 - Remaining B work: narrow terminal consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
@@ -610,3 +622,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   reports 98/98 build steps succeeded and 331 tests passed with one skipped.
   Lua remains at 785 successes. Touched Zig formatting and `git diff --check`
   pass. No Lua or painting changes; GUI benchmarks remain pending.
+- First consumer-narrowing validation: native build and Zig tests pass in Nix;
+  Lua remains at 785 successes. Touched Zig formatting and `git diff --check`
+  pass. No Lua or painting changes; screenshot and GUI performance validation
+  remain pending alongside the public Lua-pane feature.

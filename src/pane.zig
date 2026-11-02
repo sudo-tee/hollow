@@ -62,6 +62,16 @@ pub const Pane = struct {
         return self.kind == .terminal;
     }
 
+    /// Narrow content once at generic entry points. Terminal helpers receive
+    /// this pointer rather than depending on the pane's storage layout.
+    pub fn asTerminal(self: *Pane) ?*TerminalPane {
+        return if (self.isTerminal()) &self.term else null;
+    }
+
+    pub fn asTerminalConst(self: *const Pane) ?*const TerminalPane {
+        return if (self.isTerminal()) &self.term else null;
+    }
+
     pub fn invalidate(self: *Pane) void {
         self.render_dirty = .full;
         if (self.lua_surface) |surface| surface.dirty = true;
