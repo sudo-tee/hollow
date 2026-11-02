@@ -527,7 +527,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   buffers/notifications/startup input, verify repeat-safe cleanup and destruction
   of shortened startup slices using their original allocation capacity, preserve
   queued input on allocation failure, and check command/raw-input terminators.
-- Runtime-state checkpoint implemented (not yet committed): terminal spawn/host
+- Runtime-state checkpoint committed as `5c06949`: terminal spawn/host
   bindings, domain/remote state, HTP callback storage, PTY activity/timing,
   synchronized output, mouse/screen state, alternate-screen nudges, image and
   compression timers, child/exit state, automation job ownership/capture, and
@@ -542,8 +542,21 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - Regression tests enforce the shared/terminal field boundary, exercise terminal
   lifecycle queries without a pane node, cover domain-string allocation failure,
   and verify job/domain cleanup and runtime-state reset on destruction.
-- Remaining B work: migrate the remaining terminal-only methods (especially
-  bootstrap, PTY polling and protocol parsing), narrow consumers, then replace transitional
+- Terminal-operation checkpoint implemented (not yet committed): bootstrap, PTY
+  polling, protocol parsing, cwd/title refresh, and resize/nudge implementations
+  now live in `src/term/pane_runtime.zig`. `TerminalPane` entry points supply a
+  short-lived context with typed terminal storage and borrowed shared metadata.
+  This implementation has no pane-kind checks; generic compatibility facades
+  keep existing callers safe until consumer narrowing and the union switch.
+- Native callback userdata and HTP dispatch retain the stable pane node, never
+  the temporary context. A real-bootstrap regression test sends OSC 7, a title
+  update, and a bell after bootstrap returns, checking shared metadata and owned
+  pending cwd storage. Existing parser and background-PTY tests moved with the
+  implementation, remaining discoverable through the pane module's test import.
+- PTY limits moved unchanged into `src/term/pty_policy.zig`, shared by polling,
+  public compatibility constants, and terminal scratch-buffer sizing. User input
+  queuing and mouse-size updates now operate directly on `TerminalPane`.
+- Remaining B work: narrow terminal consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
   compiler-enforced content boundary replaces them.
@@ -593,3 +606,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - Runtime-state extraction validation: full native build and Zig tests pass in
   Nix, Lua remains at 785 successes, and touched Zig formatting is clean. GUI
   benchmarks and the public Lua-pane rendering/input/API work remain pending.
+- Terminal-operation extraction validation: native build passes in Nix; Zig
+  reports 98/98 build steps succeeded and 331 tests passed with one skipped.
+  Lua remains at 785 successes. Touched Zig formatting and `git diff --check`
+  pass. No Lua or painting changes; GUI benchmarks remain pending.

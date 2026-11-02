@@ -5,8 +5,12 @@ const ghostty = @import("ghostty.zig");
 const Pty = @import("../pty/pty.zig").Pty;
 const std = @import("std");
 const osc99 = @import("osc99.zig");
+const Pane = @import("../pane.zig").Pane;
+const Config = @import("../config.zig").Config;
+const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
+const RuntimeContext = @import("pane_runtime.zig").RuntimeContext;
 
-pub const read_buffer_size: usize = 384 * 1024;
+pub const read_buffer_size: usize = @import("pty_policy.zig").pressure_parse_chunk_bytes;
 const pending_sequence_max: usize = 32;
 const sanitize_buffer_size: usize = read_buffer_size + pending_sequence_max;
 
@@ -16,7 +20,7 @@ var shared_pty_read_buf: [read_buffer_size]u8 = undefined;
 var shared_pty_sanitize_buf: [sanitize_buffer_size]u8 = undefined;
 
 pub const TerminalPane = struct {
-    pub const HtpMessageHandler = *const fn (pane: *@import("../pane.zig").Pane, payload: []const u8) void;
+    pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
 
     host_wake: @import("../pty/wake.zig").Wake = .{},
     spawn_filter: @import("../pty/spawn_spec.zig").Filter = .{},
@@ -109,6 +113,65 @@ pub const TerminalPane = struct {
     scrollbar_len: u64 = 0,
     domain_name: []u8 = &.{},
     is_remote: bool = false,
+
+    fn runtimeContext(self: *TerminalPane, node: *Pane) RuntimeContext {
+        return .{ .term = self, .node = node, .allocator = node.allocator };
+    }
+
+    pub fn bootstrap(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, callbacks: ghostty.TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
+        var context = self.runtimeContext(node);
+        try context.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
+    }
+
+    pub fn pollPty(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, max_read_loops: usize, max_total_read: usize, budget_ns: i128, parse_chunk_bytes: usize, debug_overlay: bool) !usize {
+        var context = self.runtimeContext(node);
+        return context.pollPty(runtime, max_read_loops, max_total_read, budget_ns, parse_chunk_bytes, debug_overlay);
+    }
+
+    pub fn refreshCwd(self: *TerminalPane, node: *Pane) bool {
+        var context = self.runtimeContext(node);
+        return context.refreshCwd();
+    }
+
+    pub fn refreshTitle(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, fallback_title: []const u8, shell_command: []const u8) void {
+        var context = self.runtimeContext(node);
+        context.refreshTitle(runtime, fallback_title, shell_command);
+    }
+
+    pub fn resize(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
+        var context = self.runtimeContext(node);
+        context.resize(runtime, cols, rows, cell_width_px, cell_height_px, skip_pty);
+    }
+
+    pub fn nudgeTerminal(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, cell_width_px: u32, cell_height_px: u32) void {
+        var context = self.runtimeContext(node);
+        context.nudgeTerminal(runtime, cell_width_px, cell_height_px);
+    }
+
+    pub fn setMouseSize(self: *TerminalPane, runtime: *ghostty.Runtime, screen_width: u32, screen_height: u32, cell_width_px: u32, cell_height_px: u32, padding_top: u32, padding_bottom: u32, padding_left: u32, padding_right: u32) void {
+        runtime.setMouseEncoderSize(self.mouse_encoder, .{
+            .size = @sizeOf(ghostty.MouseEncoderSize),
+            .screen_width = screen_width,
+            .screen_height = screen_height,
+            .cell_width = cell_width_px,
+            .cell_height = cell_height_px,
+            .padding_top = padding_top,
+            .padding_bottom = padding_bottom,
+            .padding_left = padding_left,
+            .padding_right = padding_right,
+        });
+        runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, true);
+    }
+
+    pub fn sendUserText(self: *TerminalPane, allocator: std.mem.Allocator, text: []const u8) void {
+        if (self.pending_startup_input.len > 0) {
+            self.queuePendingRawInput(allocator, text) catch |err| {
+                std.log.err("pane: failed to queue input behind startup input: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+        self.sendText(text);
+    }
 
     pub fn initInput(runtime: *ghostty.Runtime, terminal: ?*anyopaque) !TerminalPane {
         const key_encoder = try runtime.createKeyEncoder();
