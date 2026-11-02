@@ -142,6 +142,9 @@ fn luaModuleName(comptime path: []const u8) []const u8 {
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
+    create_lua_pane: ?*const fn (*anyopaque, c_int, []const u8, f32, bool) usize = null,
+    invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
+    title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
     split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool,
@@ -2218,6 +2221,15 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_split_pane, 1);
         api.set_field(self.state, -2, "split_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_create_lua_pane, 1);
+        api.set_field(self.state, -2, "create_lua_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_invalidate_lua_pane, 1);
+        api.set_field(self.state, -2, "invalidate_lua_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_title_lua_pane, 1);
+        api.set_field(self.state, -2, "title_lua_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_toggle_pane_maximized, 1);
@@ -5559,6 +5571,55 @@ fn l_defer(state: *State) callconv(.c) c_int {
             api.unref(state, LUA_REGISTRYINDEX, callback_ref);
         };
     }
+    return 0;
+}
+
+fn luaPaneIdArg(api: Api, state: *State, index: c_int) ?usize {
+    if (api.value_type(state, index) != @backingInt(LuaType.number)) return null;
+    const n = api.to_number(state, index);
+    if (!std.math.isFinite(n) or n < 1 or n > 9007199254740991 or @floor(n) != n) return null;
+    return @intFromFloat(n);
+}
+
+fn l_create_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const create = cbs.create_lua_pane orelse return 0;
+    if (api.value_type(state, 1) != @backingInt(LuaType.table)) return 0;
+    const direction = luaStringField(api, state, 1, "direction") orelse "vertical";
+    api.get_field(state, 1, "ratio");
+    const ratio: f32 = if (api.value_type(state, -1) == @backingInt(LuaType.number)) @floatCast(api.to_number(state, -1)) else 0.5;
+    pop(api, state, 1);
+    api.get_field(state, 1, "floating");
+    const floating = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+    api.push_value(state, 1);
+    const ref = api.ref(state, LUA_REGISTRYINDEX);
+    const id = create(cbs.app, ref, direction, ratio, floating);
+    if (id == 0) {
+        api.unref(state, LUA_REGISTRYINDEX, ref);
+        return 0;
+    }
+    api.push_number(state, @floatFromInt(id));
+    return 1;
+}
+
+fn l_invalidate_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    if (cbs.invalidate_lua_pane) |callback| callback(cbs.app, id);
+    return 0;
+}
+
+fn l_title_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    var len: usize = 0;
+    const title = ctx.api.to_lstring(state, 2, &len) orelse return 0;
+    if (cbs.title_lua_pane) |callback| callback(cbs.app, id, title[0..len]);
     return 0;
 }
 

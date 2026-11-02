@@ -89,13 +89,13 @@ non-terminal nodes.
 | `2b80845` | B2: terminal pass-through methods removed from `Pane`. Callers use `TerminalPane` methods after narrowing; `pollPty`, `bootstrap` and `nudgeTerminal` take the node explicitly. `Pane` keeps only content-dispatching operations: `deinit`, `invalidate`, `resize`, `applyTerminalTheme`, `refreshTitle`, `refreshCwd`, `setCwd`, `setManualTitle`, `domainName` |
 | `bfb6722` | B3: `kind`/`term`/`lua_surface` replaced by `content: Content` (`terminal: TerminalPane`, `lua: *LuaSurface`); `Pane.initLua` takes surface ownership; `asLua()` added. Inactive-arm access now panics in safe builds, so tests that flipped `kind` in place use separate Lua panes. Remaining `isTerminal()` calls are behaviour gates (reject, skip, return early) and stay |
 | `7a4ed3b` | B4: Windows GUI A/B, `5024e8d` vs `bfb6722`; no regression (see §8) |
+| `92b2041` | P1: pane-owned Clay snapshots, clipping, retained pane textures, dirty-only Lua rendering |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| P1 | Native implementation ready, uncommitted: pane-owned Clay snapshots, clipping, retained `PaneCacheEntry` texture, dirty-only Lua rendering. GUI screenshot validation waits for P2 creation API |
-| P2 | Lua API (§4): `split`/`float`/`invalidate`/`close`/`set_title`, `on_mount`/`on_unmount`, error row on render failure |
+| P2 | Implemented, uncommitted: public `split`/`float`/`get`, instance `invalidate`/`close`/`set_title`, mount/unmount/resize hooks, render-error row, runtime-generation-safe cleanup. Example: `examples/lua-pane.lua`. GUI validation below |
 | P3 | Keys and focus: `on_key`, `on_focus`; unhandled keys fall through to global bindings |
 | P4 | Mouse: click and hover through the pane's surface callback namespace |
 | P5 | Snapshots/CLI `kind`, `module` + factories, workspace `lua` leaf (§5) |
@@ -116,6 +116,16 @@ non-terminal nodes.
 ---
 
 ## 4. Lua API
+
+P2 implements creation, lookup, instance methods and mount/unmount/resize hooks.
+`on_key`/`on_focus` remain P3; `register`/factory restore remain P5.
+Creation reserves an ID immediately and queues layout insertion on the frame
+thread. Returns `nil` when unavailable (for example, before GUI initialization).
+Mount runs once at the first snapshot with valid pane geometry; unmount runs
+once on destruction for mounted instances. Closing before first paint does not
+invoke mount/unmount. `on_resize` receives subsequent geometry changes.
+Config reload unmounts against the old runtime and drops native snapshots; until
+P5 restore exists, old Lua pane nodes remain blank and can still be closed.
 
 ```lua
 local pane = hollow.ui.pane.split({
@@ -273,3 +283,24 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   publication, Lua stack balance, stale-runtime rejection, and cleanup. No public
   pane creation API exists yet; error-row/lifecycle/input/persistence work and
   real GUI screenshot/performance validation remain pending.
+- **P2 ownership/lifecycle.** `src/app/lua_panes.zig` queues native creation,
+  invalidation and title updates; Mux reserves IDs atomically so callbacks never
+  insert layouts or race terminal ID allocation. Registry references carry runtime
+  generations through insertion, cancellation and destruction. Unmount runs before
+  releasing the reference, including close/tab teardown and config reload. Shutdown
+  drains actions queued by unmount hooks before destroying Lua. Failed insertion
+  destroys the unpublished owner; stale queued references never enter a new runtime.
+- **P2 validation.** Native build, Windows dev cross-build, full Zig suite and
+  793 Lua tests pass. Added host API creation/title/invalidation/close/rollback/
+  cancellation/reload tests plus eight Lua API tests. Formatting and
+  `git diff --check` pass. Windows GUI smoke checks used a disposable 1100x720
+  instance with a WSL mux terminal: mixed split/clipping, floating render-error
+  row, resize hook, close/unmount, and reload cleanup. Idle render count stayed
+  at 2 across separate probes; explicit invalidation increased it to 3. Mount
+  stayed at 1; float close and reload each added one unmount. Demo instances
+  were closed; existing operator instance/submodules left untouched. No new
+  throughput benchmark was run (B4 remains the terminal-performance baseline).
+
+  ![Terminal beside pane-owned Lua task UI](examples/lua-pane-split.png)
+
+  ![Floating Lua pane containing a clipped render-error row](examples/lua-pane-float-error.png)

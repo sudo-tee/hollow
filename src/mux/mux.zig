@@ -26,7 +26,7 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
-    next_pane_id: usize = 1,
+    next_pane_id: std.atomic.Value(usize) = .init(1),
     host_context: ?*anyopaque = null,
     host_wake: @import("../pty/wake.zig").Wake = .{},
     pane_created: ?*const fn (*anyopaque, *Pane) void = null,
@@ -304,8 +304,7 @@ pub const Mux = struct {
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
-        pane.id = self.next_pane_id;
-        self.next_pane_id += 1;
+        pane.id = self.reservePaneId();
         pane.host_context = self.host_context;
         const term = pane.asTerminal().?;
         term.host_wake = self.host_wake;
@@ -320,13 +319,22 @@ pub const Mux = struct {
     /// Allocate an unpublished GUI pane without terminal, domain, or PTY setup.
     /// The caller owns it until splitActivePaneWith succeeds.
     pub fn createLuaPane(self: *Mux) !*Pane {
+        return self.createLuaPaneWithId(self.reservePaneId());
+    }
+
+    /// Lua callbacks may reserve IDs before frame-thread layout insertion.
+    pub fn reservePaneId(self: *Mux) usize {
+        return self.next_pane_id.fetchAdd(1, .monotonic);
+    }
+
+    pub fn createLuaPaneWithId(self: *Mux, id: usize) !*Pane {
+        std.debug.assert(id != 0);
         const pane = try self.allocator.create(Pane);
         errdefer self.allocator.destroy(pane);
         const surface = try self.allocator.create(@import("../ui/lua_surface.zig").LuaSurface);
         surface.* = .{};
         pane.* = Pane.initLua(self.allocator, surface);
-        pane.id = self.next_pane_id;
-        self.next_pane_id += 1;
+        pane.id = id;
         pane.host_context = self.host_context;
         return pane;
     }

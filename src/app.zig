@@ -973,6 +973,9 @@ pub const App = struct {
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
 
+        // Lua-pane unmount hooks may have queued actions during mux teardown.
+        // Release owned payloads/references while their runtime still exists.
+        input.deinitInputQueue(self);
         if (self.lua) |*lua| {
             std.log.info("App.shutdownRuntime lua.deinit", .{});
             lua.deinit();
@@ -1118,6 +1121,9 @@ pub const App = struct {
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
             .split_pane = lua_callbacks.luaSplitPaneCallback,
+            .create_lua_pane = @import("app/lua_panes.zig").create,
+            .invalidate_lua_pane = @import("app/lua_panes.zig").invalidate,
+            .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
@@ -1963,6 +1969,7 @@ pub const App = struct {
         self.invalidateCachedBarLayouts();
 
         if (self.lua) |*lua| {
+            @import("app/lua_panes.zig").beforeReload(self);
             lua.deinit();
             self.lua = null;
         }
@@ -2967,6 +2974,64 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
     try std.testing.expect(survivor.program_status.focused);
     mux_ops.closePaneById(app, 0);
     try std.testing.expectEqual(survivor, mux.activePane().?);
+}
+
+test "public Lua pane host API queues creation title invalidation close and reload cleanup" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const initial = try mux.createLuaPane();
+    try tab.appendPane(initial);
+    try app.lua.?.runString(
+        \\destroyed = 0
+        \\owner = {direction='horizontal', ratio=0.4, destroy=function() destroyed=destroyed+1 end}
+        \\id = host_api.create_lua_pane(owner)
+        \\assert(type(id)=='number')
+        \\host_api.title_lua_pane(id, 'Lua tasks')
+        \\host_api.invalidate_lua_pane(id)
+    );
+    try std.testing.expectEqual(@as(usize, 1), tab.panes.items.len);
+    input.processInputQueue(app);
+    const pane = mux.activePane().?;
+    const id = pane.id;
+    try std.testing.expectEqual(@as(usize, 2), tab.panes.items.len);
+    try std.testing.expect(pane.asLua() != null);
+    try std.testing.expectEqualStrings("Lua tasks", pane.title);
+    try std.testing.expect(pane.asLua().?.dirty);
+    try app.lua.?.runString("assert(host_api.close_pane_by_id(id))");
+    input.processInputQueue(app);
+    try std.testing.expect(app.findPaneById(id) == null);
+    try app.lua.?.runString("assert(destroyed == 1); id = host_api.create_lua_pane(owner)");
+    input.processInputQueue(app);
+    @import("app/lua_panes.zig").beforeReload(app);
+    try app.lua.?.runString("assert(destroyed == 2)");
+    try std.testing.expectEqual(@as(c_int, -1), mux.activePane().?.asLua().?.ref);
+    // Repeated cleanup must not unref or destroy the old owner again.
+    @import("app/lua_panes.zig").beforeReload(app);
+    try app.lua.?.runString("assert(destroyed == 2)");
+    // Pending (never mounted) owners also release on queue teardown.
+    try app.lua.?.runString("host_api.create_lua_pane(owner)");
+    input.deinitInputQueue(app);
+    try app.lua.?.runString("assert(destroyed == 3)");
+    // Creation without an active layout rolls back its registry ownership.
+    const active = mux.active_workspace;
+    mux.active_workspace = null;
+    try app.lua.?.runString("host_api.create_lua_pane(owner)");
+    input.processInputQueue(app);
+    mux.active_workspace = active;
+    try app.lua.?.runString("assert(destroyed == 4)");
 }
 
 test "Lua panes survive app ticks and terminal-only input without terminal handles" {

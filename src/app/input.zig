@@ -75,6 +75,9 @@ pub const PendingInputEvent = union(enum) {
     close_tab,
     close_pane,
     close_pane_by_id: usize,
+    create_lua_pane: @import("lua_panes.zig").Create,
+    invalidate_lua_pane: usize,
+    title_lua_pane: struct { id: usize, text: []const u8 },
     focus_pane_by_id: usize,
     command_request: command_mod.Request,
     reload_config,
@@ -241,6 +244,7 @@ pub const PendingInputEvent = union(enum) {
 
 pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
     switch (event.*) {
+        .title_lua_pane => |payload| allocator.free(payload.text),
         .new_tab => |payload| {
             if (payload.cwd) |value| allocator.free(value);
             if (payload.domain_name) |value| allocator.free(value);
@@ -276,6 +280,7 @@ pub fn deinitInputQueue(self: *App) void {
             .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
             .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
             .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .create_lua_pane => |payload| @import("lua_panes.zig").release(self, payload.ref, payload.generation),
             else => {},
         };
         deinitPendingInputEvent(self.allocator, &event);
@@ -292,6 +297,17 @@ pub fn processInputQueue(self: *App) void {
         defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
+            .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
+            .invalidate_lua_pane => |id| {
+                if (self.findPaneById(id)) |pane| if (pane.asLua() != null) {
+                    pane.invalidate();
+                };
+            },
+            .title_lua_pane => |payload| {
+                if (self.findPaneById(payload.id)) |pane| if (pane.asLua() != null) {
+                    pane.setManualTitle(payload.text);
+                };
+            },
             .none => {},
             .lua_job_request => |payload| {
                 const jobs = @import("background_jobs.zig");
