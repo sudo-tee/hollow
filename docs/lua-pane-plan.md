@@ -93,13 +93,13 @@ non-terminal nodes.
 | `4948a4a` | P2: public creation/lookup/instance API, mount/unmount/resize hooks, error rows, reload-safe ownership; Windows GUI smoke screenshots |
 | `d5882c4` | P3: keyboard/global routing, pane-local surface focus, OS/mux focus hooks, blur-before-unmount; Windows GUI smoke screenshot |
 | `cfe69c2` | P4: pane-local clicks/hover, stale-event guards, gesture isolation, offscreen rectangle pipeline; two-instance/float GUI validation |
+| `6d6ab5b` | P5: content snapshots/CLI metadata, named factories, same-ID reload, PTY-free workspace Lua leaves, export/import and JSON edge fixes |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| P5 | Implemented, uncommitted: snapshot/CLI `kind`, `module`, `args`; named factories; same-ID config reload; workspace `lua` leaves and export/import (§5) |
-| P6 | Types (`types/hollow.lua`) and docs (`docs/reference/lua/ui.md`, `docs/custom-ui.md`) |
+| P6 | Implemented, uncommitted: pane context/options/instance/namespace types, snapshot and layout metadata, API reference and custom-UI guide; executable doc examples |
 | later | Scroll viewports for Lua panes; more content kinds (one union arm each) |
 
 **Done when (v1):**
@@ -415,3 +415,19 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   missing factories, PTY-free insertion, export/import and workspace names.
 
   ![Factory panes after workspace import and same-ID config reload](examples/lua-pane-factory-restored.png)
+- **P6 authoring contract.** `types/hollow.lua` describes public pane methods,
+  callbacks, creation args, geometry units and snapshot/layout metadata. The UI
+  reference and custom-UI guide distinguish Clay pane/overlay roots from inline
+  bar/sidebar nodes, document input priority and lifecycle, and explain factory
+  registration, transient state and restore failure. Term/workspace references
+  cross-link mixed-pane snapshots and Lua leaves. Two tests execute the actual
+  reference/guide snippets, checking fresh restore state and isolated clicks.
+  Private owner/surface fields and `_create`/`_restore` remain outside the public
+  type contract. LuaLS is unavailable here; schema syntax is checked with LuaJIT,
+  not a full language-server diagnostic run.
+- **P6 validation.** Native build and Windows dev cross-build pass. Full Zig
+  invocation succeeds (98/98 steps; 339 passed, one skipped, other test steps
+  cached); all 826 Lua tests pass, including both executable doc examples.
+  Touched Lua passes `stylua --check`; relative links in touched docs resolve;
+  `git diff --check` passes. No runtime implementation changed in P6 and no new
+  GUI/performance run was needed; P4/P5 screenshots and B4 baseline remain valid.
