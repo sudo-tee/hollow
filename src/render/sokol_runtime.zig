@@ -423,7 +423,7 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     }
 }
 
-// The experimental surface is modal. Never leak its pointer/keyboard input to PTYs.
+// A standalone Clay surface is modal. Never leak its pointer/keyboard input to PTYs.
 fn claySurfaceEvent(event: c.sapp_event) bool {
     if (!g_clay_surface.active or g_clay_surface.owner_index > 0) return false;
     switch (event.type) {

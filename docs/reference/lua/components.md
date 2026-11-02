@@ -148,6 +148,23 @@ Unconsumed keys continue to the overlay. Clicking a button moves focus without
 the ring; clicking an input focuses it for typing and shows the text cursor. Surfaces expose `focus(id)`, `blur()`, `focus_move(delta)` and
 `focused_id()`.
 
+## Migrating from inline helpers
+
+Overlay `render` functions return a component tree. Inline helpers still work
+inside `c.rich`, but the components are focusable and themed consistently:
+
+| Inline helper                      | Component                         |
+| ---------------------------------- | --------------------------------- |
+| `ui.row` / `ui.column` as a root   | `c.row` / `c.column` / `c.panel`  |
+| `ui.button`, `ui.action_button`    | `c.button`                        |
+| `ui.tab`, `ui.tab_bar`             | `c.tabs`                          |
+| `ui.text_input(...).render(theme)` | `c.input({ behavior = input })`   |
+| hand-rolled scrolled rows          | `c.list` / `c.picker`             |
+| `ui.span` runs with click handlers | `c.rich({ prefix = "id", ... })`  |
+
+`hollow.ui.modal` and `hollow.ui.overlay.new` are the overlay hosts: they wrap
+your tree in `c.panel` chrome, so return content, not another panel.
+
 ## Theme overrides
 
 Recipe overrides live under `styles.<sheet>.<slot>` on the applicable widget

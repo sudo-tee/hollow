@@ -2531,8 +2531,8 @@ local workspace = {}
 ---@field focused_id fun(self: HollowUiLayoutSurface): string|nil Local ID of the focused node.
 
 ---@class HollowUi
----@field layout HollowUiLayout Experimental Clay-backed surface engine.
----@field components HollowUiComponents Experimental Clay node constructors and components.
+---@field layout HollowUiLayout Clay-backed surface engine behind every overlay.
+---@field components HollowUiComponents Clay node constructors and components for overlays.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
@@ -2609,6 +2609,7 @@ function ui.style(...) end
 ---@return HollowStyle
 function ui.styled(theme, ...) end
 
+--- Inline padded button. In overlay renders prefer `ui.components.button`.
 ---@param opts HollowUiActionButtonOptions
 ---@return HollowUiSpanNode
 function ui.action_button(opts) end
@@ -2621,6 +2622,7 @@ function ui.button(opts) end
 ---@return HollowUiGroupNode
 function ui.tab(opts) end
 
+--- Inline tab group. In overlay renders prefer `ui.components.tabs`.
 ---@param opts HollowUiTabBarOptions
 ---@return HollowUiGroupNode
 function ui.tab_bar(opts) end
