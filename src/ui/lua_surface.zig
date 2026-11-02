@@ -6,6 +6,8 @@ const ClaySurface = @import("clay_surface.zig").Surface;
 pub const LuaSurface = struct {
     ref: c_int = -1,
     runtime_generation: u64 = 0,
+    /// Creation-time factory descriptor survives runtime reload; no Lua values.
+    descriptor_json: ?[]u8 = null,
     dirty: bool = true,
     /// Native rendering storage is erased so headless pane consumers do not
     /// acquire a Clay/GUI link dependency merely by destroying a Lua node.
@@ -126,6 +128,7 @@ pub const LuaSurface = struct {
             callback(self);
         }
         if (self.hovered_id) |id| allocator.free(id);
+        if (self.descriptor_json) |descriptor| allocator.free(descriptor);
         if (self.clay) |surface| if (self.on_clay_deinit) |destroy| destroy(surface, allocator);
         self.* = .{};
     }

@@ -578,6 +578,18 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
+        try putJsonField(self.allocator, &object, "kind", .{ .string = try self.allocator.dupe(u8, if (pane.asLua() != null) "lua" else "terminal") });
+        if (pane.asLua()) |surface| {
+            if (surface.descriptor_json) |text| {
+                const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+                defer parsed.deinit();
+                if (parsed.value == .object) {
+                    inline for (.{ "module", "args" }) |field| if (parsed.value.object.get(field)) |value| {
+                        try putJsonField(self.allocator, &object, field, try cloneJsonValue(self.allocator, value));
+                    };
+                }
+            }
+        }
         try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(if (pane.asTerminalConst()) |term| term.childPid() else 0) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
@@ -1122,6 +1134,7 @@ pub const App = struct {
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
             .split_pane = lua_callbacks.luaSplitPaneCallback,
             .create_lua_pane = @import("app/lua_panes.zig").create,
+            .get_pane_content = @import("app/lua_panes.zig").contentInfo,
             .invalidate_lua_pane = @import("app/lua_panes.zig").invalidate,
             .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
@@ -2016,6 +2029,7 @@ pub const App = struct {
                 return false;
             };
         }
+        @import("app/lua_panes.zig").restoreAll(self);
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
     }
@@ -3110,6 +3124,103 @@ test "public Lua pane host API queues creation title invalidation close and relo
     input.processInputQueue(app);
     mux.active_workspace = active;
     try app.lua.?.runString("assert(destroyed == 4)");
+}
+
+test "factory pane metadata and reload retain native identity while rebuilding Lua state" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    try tab.appendPane(try mux.createLuaPane());
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    const configure =
+        \\local h = hollow
+        \\factory_calls = 0
+        \\h.ui.pane.register('tasks', function(args)
+        \\  factory_calls = factory_calls + 1
+        \\  assert(type(args.huge) == 'number' and args.huge == 2^63)
+        \\  assert(args['key\0x'] == 'v\0z')
+        \\  return {title='Tasks', state={n=args.n+(offset or 0)},
+        \\    render=function(ctx) return h.ui.components.text(ctx.state.n) end}
+        \\end)
+    ;
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(configure);
+    try app.lua.?.runString(
+        \\id = hollow.ui.pane.split({module='tasks', args={n=2, huge=2^63, ['key\0x']='v\0z'},
+        \\  on_complete=function(result) completed=result end}).id
+    );
+    input.processInputQueue(app);
+    const pane = mux.activePane().?;
+    const id = pane.id;
+    const old_generation = app.lua.?.generation;
+    const next_id = mux.next_pane_id.load(.monotonic);
+    const snapshot = (try app.snapshotPane(id)).?;
+    defer deinitJsonValue(a, snapshot);
+    try std.testing.expectEqualStrings("lua", snapshot.object.get("kind").?.string);
+    try std.testing.expectEqualStrings("tasks", snapshot.object.get("module").?.string);
+    try std.testing.expectEqual(@as(i64, 2), snapshot.object.get("args").?.object.get("n").?.integer);
+    try app.lua.?.runString(
+        \\assert(completed.success and completed.pane_id == id and factory_calls == 1)
+        \\local p = hollow.term.current_pane()
+        \\assert(p.kind == 'lua' and p.module == 'tasks' and p.args.n == 2 and p.args.huge == 2^63,
+        \\  tostring(p.kind)..'/'..tostring(p.module)..'/'..type(p.args.huge)..':'..tostring(p.args.huge))
+        \\hollow.ui.pane.get(id).opts.state.n = 99
+    );
+    try std.testing.expect(mux.setPaneFloating(pane, true));
+    try std.testing.expect(mux.setFloatingPaneBounds(pane, 0.2, 0.3, 0.4, 0.5));
+    @import("app/lua_panes.zig").beforeReload(app);
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString("offset = 100");
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(configure);
+    @import("app/lua_panes.zig").restoreAll(app);
+    input.processInputQueue(app);
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expectEqual(next_id, mux.next_pane_id.load(.monotonic));
+    try std.testing.expect(pane.asLua().?.ref >= 0);
+    try std.testing.expect(pane.asLua().?.runtime_generation != old_generation);
+    try std.testing.expect(pane.is_floating);
+    try std.testing.expectEqual(@as(f32, 0.4), pane.floating_width);
+    try app.lua.?.runString(
+        \\local p = hollow.term.current_pane()
+        \\assert(p.kind == 'lua' and p.module == 'tasks' and p.args.n == 2)
+        \\assert(hollow.ui.pane.get(p.id).opts.state.n == 102 and factory_calls == 1)
+        \\assert(math.abs(p.floating_bounds.x - 0.2) < 0.001)
+        \\local exported = hollow.workspace.export_current()
+        \\assert(#exported.tabs[1].panes == 1 and exported.tabs[1].panes[1].lua == 'tasks')
+        \\assert(exported.tabs[1].panes[1].args.n == 2)
+    );
+    @import("app/lua_panes.zig").restoreAll(app);
+    try app.lua.?.runString("assert(factory_calls == 1)");
+    // Missing factories disable the old owner without resolving its registry
+    // index against a new runtime, and leave the descriptor available to retry.
+    @import("app/lua_panes.zig").beforeReload(app);
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    @import("app/lua_panes.zig").restoreAll(app);
+    try std.testing.expectEqual(@as(c_int, -1), pane.asLua().?.ref);
+    try std.testing.expectEqual(next_id, mux.next_pane_id.load(.monotonic));
+    try app.lua.?.runString(configure);
+    @import("app/lua_panes.zig").restoreAll(app);
+    try std.testing.expect(pane.asLua().?.ref >= 0);
+    try std.testing.expectEqual(@as(c_int, 0), app.lua.?.context.api.get_top(app.lua.?.state));
 }
 
 test "Lua panes survive app ticks and terminal-only input without terminal handles" {

@@ -240,8 +240,8 @@ local function make_host_api()
     return "src/lua/tests/fixtures/config/init.lua"
   end
 
-  function host_api.json_encode(_value)
-    error("json_encode is not available in the Lua stub runtime", 0)
+  function host_api.json_encode(value)
+    return assert(require("dkjson").encode(value))
   end
 
   function host_api.json_decode(text)
@@ -256,7 +256,11 @@ local function make_host_api()
         },
       }
     end
-    error("unexpected json_decode input in Lua stub runtime", 0)
+    local value, _, err = require("dkjson").decode(text, 1, nil, nil, nil)
+    if err then
+      error(err, 0)
+    end
+    return value
   end
 
   function host_api.list_fonts()

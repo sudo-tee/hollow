@@ -55,9 +55,13 @@ end
 
 ---@param pane HollowWorkspaceBootstrapPane
 ---@return boolean
+local function lua_module(pane)
+  return pane.lua or (pane.kind == "lua" and pane.module) or nil
+end
+
 local function can_reuse_current_pane(pane)
   local current_pane = hollow.term.current_pane()
-  if current_pane == nil then
+  if current_pane == nil or current_pane.kind == "lua" or lua_module(pane) then
     return false
   end
   if pane.cwd ~= nil and current_pane.cwd ~= pane.cwd then
@@ -87,10 +91,13 @@ local function normalize_tags(value)
   if type(value) ~= "table" then
     return nil
   end
-  local tags = hollow.tbl(value):filter_map(function(tag)
-    local trimmed = trim_string(tag)
-    return trimmed ~= "" and trimmed or nil
-  end):get()
+  local tags = hollow
+    .tbl(value)
+    :filter_map(function(tag)
+      local trimmed = trim_string(tag)
+      return trimmed ~= "" and trimmed or nil
+    end)
+    :get()
   return #tags > 0 and tags or nil
 end
 
@@ -195,12 +202,23 @@ local function pane_opts(pane, tab_layout)
   return opts
 end
 
+local function create_lua_leaf(pane, tab_layout, placement, name, resolve)
+  local opts = pane_opts(pane, tab_layout)
+  opts.module, opts.args, opts.title = lua_module(pane), pane.args, pane.title
+  opts.ratio = pane.ratio or opts.ratio
+  opts.on_complete = resolve
+  local instance = hollow.ui.pane._create(opts, placement, name)
+  if not instance then
+    resolve({ success = false })
+  end
+end
+
 ---@param tab HollowWorkspaceBootstrapTab
 ---@param base_dir string|nil
 ---@param is_first_tab boolean
 ---@param reuse_existing boolean
 ---@return integer|nil
-local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
+local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, workspace_name)
   local panes = type(tab.panes) == "table" and tab.panes or {}
   if #panes == 0 then
     return nil
@@ -211,7 +229,22 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
   local first = clone_with_resolved_paths(base_dir, panes[1])
   local main_pane_id = nil
   local reuse_first_pane = is_first_tab and reuse_existing == true and can_reuse_current_pane(first)
-  if reuse_first_pane then
+  if lua_module(first) then
+    local result = async.await(function(resolve)
+      create_lua_leaf(
+        first,
+        tab.layout,
+        is_first_tab and not reuse_existing and "workspace" or "tab",
+        is_first_tab and (workspace_name or tab.name) or tab.name,
+        resolve
+      )
+    end)
+    if not result or not result.success then
+      error("workspace bootstrap Lua pane failed")
+    end
+    main_pane_id = select_main_pane(main_pane_id, result.pane_id, first)
+    async.next_tick()
+  elseif reuse_first_pane then
     if first.cwd ~= nil then
       hollow.term.set_workspace_default_cwd(first.cwd)
     end
@@ -266,8 +299,12 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
 
     local split_start_ms = host_api.now_ms and host_api.now_ms() or nil
     local result = async.await(function(resolve)
-      opts.on_complete = resolve
-      hollow.term.split_pane(opts)
+      if lua_module(pane) then
+        create_lua_leaf(pane, tab.layout, "split", nil, resolve)
+      else
+        opts.on_complete = resolve
+        hollow.term.split_pane(opts)
+      end
     end)
     local split_end_ms = host_api.now_ms and host_api.now_ms() or nil
     if split_start_ms ~= nil and split_end_ms ~= nil then
@@ -319,6 +356,18 @@ local function validate_spec(spec)
   if spec.tabs ~= nil and type(spec.tabs) ~= "table" then
     error("workspace spec tabs must be a table")
   end
+  for _, tab in ipairs(spec.tabs or {}) do
+    for _, pane in ipairs(type(tab) == "table" and type(tab.panes) == "table" and tab.panes or {}) do
+      if type(pane) == "table" and (pane.lua ~= nil or pane.kind == "lua") then
+        local module = lua_module(pane)
+        assert(
+          type(module) == "string" and module ~= "" and not module:find("\0", 1, true),
+          "workspace Lua leaf requires a factory name"
+        )
+        assert(pane.args == nil or type(pane.args) == "table", "workspace Lua args must be a table")
+      end
+    end
+  end
 end
 
 ---@param spec HollowWorkspaceBootstrapSpec
@@ -334,6 +383,10 @@ function M.bootstrap(spec, opts)
   end
 
   local base_dir = normalize_base_dir(opts.base_dir)
+  local workspace_name = trim_string(opts.name)
+  if workspace_name == "" then
+    workspace_name = workspace_spec_name(spec, nil)
+  end
   local existing_workspaces = hollow.term.workspaces()
   local previous_workspace = hollow.term.current_workspace()
   local reuse_existing = not (
@@ -355,7 +408,8 @@ function M.bootstrap(spec, opts)
   async.run(function()
     local main_pane_id = nil
     for index, tab in ipairs(tabs) do
-      local tab_main_pane_id = bootstrap_tab(tab, base_dir, index == 1, reuse_existing)
+      local tab_main_pane_id =
+        bootstrap_tab(tab, base_dir, index == 1, reuse_existing, workspace_name)
       if tab_main_pane_id ~= nil then
         if main_pane_id ~= nil then
           error("workspace spec may only mark one pane as main/default")
@@ -398,58 +452,99 @@ function M.load_host(host, path, opts)
   if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then
     error("hollow.workspace.load_host(host, path) expects a nonempty NUL-free path")
   end
-  if opts == nil then opts = {} end
-  if type(opts) ~= "table" then error("load_host options must be a table") end
+  if opts == nil then
+    opts = {}
+  end
+  if type(opts) ~= "table" then
+    error("load_host options must be a table")
+  end
   local maximum = opts.max_bytes
-  if maximum == nil then maximum = 1048576 end
-  if type(maximum) ~= "number" or maximum ~= maximum or maximum % 1 ~= 0 or maximum < 1 or maximum > 1048576 then
+  if maximum == nil then
+    maximum = 1048576
+  end
+  if
+    type(maximum) ~= "number"
+    or maximum ~= maximum
+    or maximum % 1 ~= 0
+    or maximum < 1
+    or maximum > 1048576
+  then
     error("load_host max_bytes must be an integer from 1 to 1048576")
   end
   local resolve, reject
-  local promise = async.promise(function(r, j) resolve, reject = r, j end)
+  local promise = async.promise(function(r, j)
+    resolve, reject = r, j
+  end)
   local settled, active, offset, chunks = false, nil, 0, {}
   local function fail(err)
-    if settled then return end
+    if settled then
+      return
+    end
     settled, chunks = true, nil
     reject(type(err) == "table" and err or { code = "io_error", message = tostring(err) })
   end
   function promise:cancel()
-    if settled then return false end
-    if active and active.cancel then pcall(active.cancel, active) end
+    if settled then
+      return false
+    end
+    if active and active.cancel then
+      pcall(active.cancel, active)
+    end
     fail({ code = "cancelled", message = "workspace host load cancelled" })
     return true
   end
   local function read_page()
-    if settled then return end
+    if settled then
+      return
+    end
     -- One extra byte distinguishes an exactly-full file from truncation. Never
     -- accept a valid JSON prefix of an oversized file as a complete document.
     local limit = math.min(16384, maximum - offset + 1)
     local ok, request = pcall(host.fs.read, path, { offset = offset, limit = limit })
-    if not ok then fail(request); return end
+    if not ok then
+      fail(request)
+      return
+    end
     if type(request) ~= "table" or type(request.next) ~= "function" then
-      fail({ code = "io_error", message = "host read did not return a promise" }); return
+      fail({ code = "io_error", message = "host read did not return a promise" })
+      return
     end
     active = request
     request:next(function(page)
       active = nil
-      if settled then return end
-      if type(page) ~= "table" or type(page.bytes) ~= "string" or type(page.eof) ~= "boolean"
-        or #page.bytes > limit or (#page.bytes == 0 and not page.eof) then
-        fail({ code = "io_error", message = "invalid workspace host read page" }); return
+      if settled then
+        return
+      end
+      if
+        type(page) ~= "table"
+        or type(page.bytes) ~= "string"
+        or type(page.eof) ~= "boolean"
+        or #page.bytes > limit
+        or (#page.bytes == 0 and not page.eof)
+      then
+        fail({ code = "io_error", message = "invalid workspace host read page" })
+        return
       end
       offset = offset + #page.bytes
       if offset > maximum then
-        fail({ code = "resource_exhausted", message = "workspace file exceeds max_bytes" }); return
+        fail({ code = "resource_exhausted", message = "workspace file exceeds max_bytes" })
+        return
       end
       chunks[#chunks + 1] = page.bytes
-      if not page.eof then host_api.defer(read_page); return end
+      if not page.eof then
+        host_api.defer(read_page)
+        return
+      end
       local valid, spec = pcall(function()
         local value = json.decode(table.concat(chunks))
         validate_spec(value)
         value._path = path
         return value
       end)
-      if not valid then fail({ code = "invalid_argument", message = tostring(spec) }); return end
+      if not valid then
+        fail({ code = "invalid_argument", message = tostring(spec) })
+        return
+      end
       settled, chunks = true, nil
       resolve(spec)
     end, fail)
@@ -476,20 +571,39 @@ function M.export_current()
   for _, tab in ipairs(hollow.term.tabs()) do
     local panes = {}
     for _, pane in ipairs(tab.panes or {}) do
-      panes[#panes + 1] = {
-        cwd = pane.cwd ~= "" and pane.cwd or nil,
-        domain = pane.domain,
-        command = normalize_command(strip_cwd_prefix(pane.foreground_process, pane.cwd)),
-        tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
-        direction = pane.direction,
-        size = pane.split_ratio,
-        main = pane.is_focused == true or nil,
-      }
+      if pane.kind == "lua" then
+        if pane.module then
+          local leaf = {
+            lua = pane.module,
+            args = util.clone_value(pane.args or {}),
+            title = pane.title,
+            tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+            direction = pane.direction,
+            size = pane.split_ratio,
+            main = pane.is_focused == true or nil,
+            floating = pane.is_floating == true or nil,
+            fullscreen = pane.is_maximized == true or nil,
+          }
+          for key, value in pairs(pane.floating_bounds or {}) do
+            leaf[key] = value
+          end
+          panes[#panes + 1] = leaf
+        end
+      else
+        panes[#panes + 1] = {
+          cwd = pane.cwd ~= "" and pane.cwd or nil,
+          domain = pane.domain,
+          command = normalize_command(strip_cwd_prefix(pane.foreground_process, pane.cwd)),
+          tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+          direction = pane.direction,
+          size = pane.split_ratio,
+          main = pane.is_focused == true or nil,
+        }
+      end
     end
-    tabs[#tabs + 1] = {
-      name = tab.title,
-      panes = panes,
-    }
+    if #panes > 0 then
+      tabs[#tabs + 1] = { name = tab.title, panes = panes }
+    end
   end
   return {
     name = workspace and workspace.name or nil,
@@ -609,23 +723,38 @@ local function active_pane_guard()
   return function()
     local current_workspace = hollow.term.current_workspace()
     local current_pane = hollow.term.current_pane()
-    return workspace and current_workspace and workspace.id == current_workspace.id
-      and pane and current_pane and pane.id == current_pane.id
+    return workspace
+      and current_workspace
+      and workspace.id == current_workspace.id
+      and pane
+      and current_pane
+      and pane.id == current_pane.id
   end
 end
 
 local function read_bootstrap_layout(path, descriptor, still_current)
-  if path == nil or not still_current() then return nil end
+  if path == nil or not still_current() then
+    return nil
+  end
   local connection, release = require("hollow.workspace.hosts").acquire(descriptor)
   local connected, host = pcall(connection.await, connection)
-  if not connected then release(); error(host) end
+  if not connected then
+    release()
+    error(host)
+  end
 
   local ok, layout = pcall(function()
-    if still_current() then return M.load_host(host, path):await() end
+    if still_current() then
+      return M.load_host(host, path):await()
+    end
   end)
   release()
-  if ok then return layout end
-  if type(layout) == "table" and layout.code == "not_found" then return nil end
+  if ok then
+    return layout
+  end
+  if type(layout) == "table" and layout.code == "not_found" then
+    return nil
+  end
   error(layout)
 end
 
@@ -640,7 +769,9 @@ function M.bootstrap_project_async(dir, domain)
   local domain_cfg = (config.domains or {})[domain] or {}
   local descriptor = require("hollow.host.pty").descriptor(domain, domain_cfg.shell or config.shell)
   dir = trim_string(dir)
-  if dir == "" then dir = trim_string(pane and pane.cwd) end
+  if dir == "" then
+    dir = trim_string(pane and pane.cwd)
+  end
   local project_path = dir ~= "" and util.join_path(dir, ".hollow", "workspace.json") or nil
   local still_current = active_pane_guard()
 
@@ -653,14 +784,20 @@ function M.bootstrap_project_async(dir, domain)
           path = default_layout_path((config.workspace or {}).default_layout)
           layout = read_bootstrap_layout(path, nil, still_current)
         end
-        if layout == nil or not still_current() then return false end
+        if layout == nil or not still_current() then
+          return false
+        end
         M.bootstrap(layout, {
           base_dir = normalize_base_dir(util.basepath(path)),
           replace_current = false,
         })
         return true
       end)
-      if ok then resolve(result) else reject(result) end
+      if ok then
+        resolve(result)
+      else
+        reject(result)
+      end
     end)
   end)
 end

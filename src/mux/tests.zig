@@ -304,6 +304,47 @@ test "Lua pane allocation has no terminal resources and rolls back on allocation
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
+test "Lua-only tabs and workspaces publish transactionally without terminal runtime calls" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var runtime: ghostty.Runtime = undefined;
+            var mux = Mux.init(allocator);
+            defer mux.deinit(&runtime);
+            const first = try mux.createLuaPane();
+            var first_published = false;
+            errdefer if (!first_published) {
+                first.deinit(&runtime);
+                allocator.destroy(first);
+            };
+            first.asLua().?.descriptor_json = try allocator.dupe(u8, "{\"module\":\"tasks\"}");
+            mux.newWorkspaceWithPane(&runtime, first, "Lua workspace") catch |err| {
+                try std.testing.expect(mux.activeWorkspace() == null);
+                try std.testing.expectEqual(@as(usize, 0), mux.workspaces.items.len);
+                return err;
+            };
+            first_published = true;
+            const previous = mux.activeTab();
+            const second = try mux.createLuaPane();
+            var second_published = false;
+            errdefer if (!second_published) {
+                second.deinit(&runtime);
+                allocator.destroy(second);
+            };
+            mux.newTabWithPane(&runtime, second) catch |err| {
+                try std.testing.expectEqual(previous, mux.activeTab());
+                return err;
+            };
+            second_published = true;
+            try std.testing.expectEqual(@as(usize, 1), mux.workspaces.items.len);
+            try std.testing.expectEqual(@as(usize, 2), mux.activeWorkspace().?.tabs.items.len);
+            try std.testing.expectEqual(second, mux.activePane().?);
+            try std.testing.expectEqualStrings("Lua workspace", mux.activeWorkspace().?.name.?);
+            try std.testing.expect(!mux.closeDeadPanes(&runtime));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
 test "mixed Lua and terminal panes split float zoom move and close without reaping Lua panes" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;

@@ -4,6 +4,14 @@ const App = @import("../app.zig").App;
 const LuaSurface = @import("../ui/lua_surface.zig").LuaSurface;
 const SplitDirection = @import("../mux.zig").SplitDirection;
 const Pane = @import("../pane.zig").Pane;
+const bridge = @import("../lua_bridge.zig");
+
+pub fn contentInfo(context: *anyopaque, id: usize) ?bridge.PaneContentInfo {
+    const app: *App = @ptrCast(@alignCast(context));
+    const pane = app.findPaneById(id) orelse return null;
+    const surface = pane.asLua() orelse return .{ .kind = .terminal };
+    return .{ .kind = .lua, .descriptor_json = surface.descriptor_json, .floating = pane.is_floating, .x = pane.floating_x, .y = pane.floating_y, .width = pane.floating_width, .height = pane.floating_height };
+}
 
 pub const Pointer = struct {
     pane_id: usize,
@@ -69,14 +77,17 @@ pub const Create = struct {
     direction: SplitDirection,
     ratio: f32,
     floating: bool,
+    descriptor_json: []const u8,
 };
 
-pub fn create(context: *anyopaque, ref: c_int, direction: []const u8, ratio: f32, floating: bool) usize {
+pub fn create(context: *anyopaque, ref: c_int, direction: []const u8, ratio: f32, floating: bool, descriptor: []const u8) usize {
     if (!std.math.isFinite(ratio) or ratio <= 0 or ratio >= 1) return 0;
     const app: *App = @ptrCast(@alignCast(context));
     if (app.automation_shutting_down) return 0;
     const mux = if (app.mux) |*m| m else return 0;
     const runtime = if (app.lua) |*r| r else return 0;
+    if (descriptor.len > 65536) return 0;
+    const owned = app.allocator.dupe(u8, descriptor) catch return 0;
     const id = mux.reservePaneId();
     if (!app.enqueueMouse(.{ .create_lua_pane = .{
         .id = id,
@@ -85,7 +96,11 @@ pub fn create(context: *anyopaque, ref: c_int, direction: []const u8, ratio: f32
         .direction = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical,
         .ratio = ratio,
         .floating = floating,
-    } })) return 0;
+        .descriptor_json = owned,
+    } })) {
+        app.allocator.free(owned);
+        return 0;
+    }
     return id;
 }
 
@@ -142,6 +157,64 @@ fn unmount(surface: *LuaSurface) void {
     release(app, surface.ref, surface.runtime_generation);
 }
 
+fn complete(app: *App, payload: Create, success: bool) void {
+    const runtime = if (app.lua) |*r| r else return;
+    if (runtime.generation != payload.generation) return;
+    runtime.mutex.lock();
+    defer runtime.mutex.unlock();
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.rawgeti(state, -10000, payload.ref);
+    api.get_field(state, -1, "complete");
+    if (api.value_type(state, -1) != @backingInt(bridge.LuaType.function)) return;
+    api.push_value(state, -2);
+    api.push_boolean(state, @intFromBool(success));
+    if (api.pcall(state, 2, 0, 0) != 0) std.log.err("Lua pane completion failed", .{});
+}
+
+pub fn restoreAll(app: *App) void {
+    const mux = if (app.mux) |*m| m else return;
+    const runtime = if (app.lua) |*r| r else return;
+    runtime.mutex.lock();
+    defer runtime.mutex.unlock();
+    const api = runtime.context.api;
+    const state = runtime.state;
+    var panes = mux.paneIterator();
+    while (panes.next()) |pane| {
+        const surface = pane.asLua() orelse continue;
+        if (surface.ref >= 0) continue;
+        const descriptor = surface.descriptor_json orelse continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, descriptor, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object or parsed.value.object.get("module") == null) continue;
+        const top = api.get_top(state);
+        defer api.set_top(state, top);
+        api.get_field(state, -10002, "hollow");
+        if (api.value_type(state, -1) != @backingInt(bridge.LuaType.table)) continue;
+        api.get_field(state, -1, "ui");
+        if (api.value_type(state, -1) != @backingInt(bridge.LuaType.table)) continue;
+        api.get_field(state, -1, "pane");
+        if (api.value_type(state, -1) != @backingInt(bridge.LuaType.table)) continue;
+        api.get_field(state, -1, "_restore");
+        if (api.value_type(state, -1) != @backingInt(bridge.LuaType.function)) continue;
+        api.push_number(state, @floatFromInt(pane.id));
+        api.push_lstring(state, descriptor.ptr, descriptor.len);
+        if (api.pcall(state, 2, 1, 0) != 0) {
+            var len: usize = 0;
+            const err = api.to_lstring(state, -1, &len);
+            std.log.warn("Lua pane restore id={d}: {s}", .{ pane.id, if (err) |ptr| ptr[0..len] else "unknown error" });
+            continue;
+        }
+        if (api.value_type(state, -1) != @backingInt(bridge.LuaType.table)) continue;
+        surface.attach(api.ref(state, -10000), runtime.generation);
+        surface.context = app;
+        surface.on_deinit = unmount;
+        pane.invalidate();
+    }
+}
+
 pub fn focus(app: *App, pane: *Pane, focused: bool) void {
     pane.invalidate();
     const surface = pane.asLua() orelse return;
@@ -177,11 +250,31 @@ pub fn focus(app: *App, pane: *Pane, focused: bool) void {
 
 pub fn process(app: *App, payload: Create) void {
     const mux = if (app.mux) |*m| m else {
+        complete(app, payload, false);
         release(app, payload.ref, payload.generation);
         return;
     };
     if (app.lua == null or app.lua.?.generation != payload.generation) return;
+    const runtime = if (app.ghostty) |*r| r else {
+        complete(app, payload, false);
+        release(app, payload.ref, payload.generation);
+        return;
+    };
+    const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, payload.descriptor_json, .{}) catch {
+        complete(app, payload, false);
+        release(app, payload.ref, payload.generation);
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) {
+        complete(app, payload, false);
+        release(app, payload.ref, payload.generation);
+        return;
+    }
+    const object = parsed.value.object;
+    const placement = if (object.get("placement")) |value| (if (value == .string) value.string else "invalid") else "split";
     const pane = mux.createLuaPaneWithId(payload.id) catch {
+        complete(app, payload, false);
         release(app, payload.ref, payload.generation);
         return;
     };
@@ -189,13 +282,48 @@ pub fn process(app: *App, payload: Create) void {
     surface.attach(payload.ref, payload.generation);
     surface.context = app;
     surface.on_deinit = unmount;
-    const previous = mux.activePane();
-    mux.splitActivePaneWith(pane, payload.direction, payload.ratio, payload.floating) catch {
-        surface.deinit(app.allocator);
-        app.allocator.destroy(surface);
-        app.allocator.destroy(pane);
+    surface.descriptor_json = pane.allocator.dupe(u8, payload.descriptor_json) catch {
+        complete(app, payload, false);
+        pane.deinit(runtime);
+        mux.allocator.destroy(pane);
         return;
+    };
+    const previous = mux.activePane();
+    const insertion = if (std.mem.eql(u8, placement, "split"))
+        mux.splitActivePaneWith(pane, payload.direction, payload.ratio, payload.floating)
+    else if (std.mem.eql(u8, placement, "tab"))
+        mux.newTabWithPane(runtime, pane)
+    else if (std.mem.eql(u8, placement, "workspace"))
+        mux.newWorkspaceWithPane(runtime, pane, if (object.get("name")) |value| (if (value == .string) value.string else null) else null)
+    else
+        error.InvalidPlacement;
+    insertion catch {
+        complete(app, payload, false);
+        pane.deinit(runtime);
+        mux.allocator.destroy(pane);
+        return;
+    };
+    if (payload.floating) {
+        if (!pane.is_floating) _ = mux.setPaneFloating(pane, true);
+        _ = mux.setFloatingPaneBounds(pane, number(object.get("x"), pane.floating_x), number(object.get("y"), pane.floating_y), number(object.get("width"), pane.floating_width), number(object.get("height"), pane.floating_height));
+    }
+    if (object.get("fullscreen")) |value| if (value == .bool and value.bool) {
+        _ = mux.togglePaneMaximized(pane, false);
     };
     app.syncActivePaneChange(previous, pane);
     app.requestLayoutResize(false);
+    if (!std.mem.eql(u8, placement, "split")) {
+        app.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = mux.activeTab().?.id });
+        app.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+    }
+    complete(app, payload, true);
+}
+
+fn number(value: ?std.json.Value, fallback: f32) f32 {
+    const n = switch (value orelse return fallback) {
+        .integer => |n| @as(f64, @floatFromInt(n)),
+        .float => |n| n,
+        else => return fallback,
+    };
+    return if (std.math.isFinite(n)) @floatCast(std.math.clamp(n, 0, 1)) else fallback;
 }

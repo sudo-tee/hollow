@@ -11,10 +11,10 @@ hollow.config.set({
   },
 })
 
-hollow.events.on("gui:ready", function()
-  hollow.ui.pane.split({
-    title = "Lua tasks",
-    ratio = 0.45,
+-- Register during config loading, not gui:ready, so reload can rebuild owners.
+hollow.ui.pane.register("tasks", function(args)
+  return {
+    title = args.title or "Lua tasks",
     state = { renders = 0, mounted = false, key = "Press F6", focused = false, clicks = 0 },
     on_mount = function(ctx)
       ctx.state.mounted = true
@@ -34,6 +34,7 @@ hollow.events.on("gui:ready", function()
       return c.column({
         c.text("Lua pane / Tasks", { bold = true }),
         c.text("Native split. No PTY. Retained Clay surface."),
+        c.text("Factory: tasks | creation args survive reload"),
         c.text(string.format("Grid: %d x %d | pane: %d", ctx.cols, ctx.rows, ctx.pane_id)),
         c.text("Mounted: " .. tostring(ctx.state.mounted)),
         c.text("Render calls: " .. ctx.state.renders),
@@ -50,7 +51,12 @@ hollow.events.on("gui:ready", function()
         c.text("[done] Mount, resize and unmount lifecycle"),
         c.text("[done] Keyboard and focus routing"),
         c.text("[done] Isolated click and hover routing"),
+        c.text("[done] Factory restore; transient state resets"),
       }, { width = "grow", height = "grow", padding = 16, gap = 10 })
     end,
-  })
+  }
+end)
+
+hollow.events.on("gui:ready", function()
+  hollow.ui.pane.split({ module = "tasks", args = { title = "Lua tasks" }, ratio = 0.45 })
 end)

@@ -398,6 +398,43 @@ pub const Mux = struct {
         return tab;
     }
 
+    /// Publish an owned content node without spawning a seed terminal. Ownership
+    /// transfers only after all fallible allocations have succeeded.
+    pub fn newTabWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) !void {
+        const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.appendPane(pane);
+        ws.insertTab(tab) catch unreachable;
+        self.notifyCreated(pane);
+    }
+
+    pub fn newWorkspaceWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane, name: ?[]const u8) !void {
+        const ws = try self.createWorkspace();
+        errdefer {
+            ws.deinit(runtime);
+            self.allocator.destroy(ws);
+        }
+        if (name) |value| try ws.setName(value);
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try self.workspaces.ensureUnusedCapacity(self.allocator, 1);
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.appendPane(pane);
+        ws.tabs.appendAssumeCapacity(tab);
+        ws.active_tab = tab;
+        self.workspaces.appendAssumeCapacity(ws);
+        self.active_workspace = ws;
+        self.notifyCreated(pane);
+    }
+
     /// Close the active tab. Returns true if no tabs remain (app should quit).
     pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) bool {
         const ws = self.activeWorkspace() orelse return true;

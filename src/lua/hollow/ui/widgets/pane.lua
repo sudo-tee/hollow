@@ -1,8 +1,10 @@
 -- GUI panes own layout surfaces; native host owns their final destruction.
 local ui = _G.hollow.ui
 local host = require("hollow.state").get().host_api
+local json = require("hollow.json")
 local shared = require("hollow.ui.shared")
 local M, instances = {}, {}
+local factories = {}
 local Pane = {}
 Pane.__index = Pane
 
@@ -114,7 +116,66 @@ local function snapshot(self, ctx)
   }
 end
 
-local function create(opts, floating)
+-- Persist only bounded, plain JSON data, never closures, metatables or state.
+local function copy_args(value, seen, depth, budget)
+  local kind = type(value)
+  if kind == "nil" or kind == "string" or kind == "boolean" then
+    return value
+  end
+  if kind == "number" then
+    assert(
+      value == value and value > -math.huge and value < math.huge,
+      "pane args require finite numbers"
+    )
+    return value
+  end
+  assert(kind == "table" and getmetatable(value) == nil, "pane args must be plain JSON data")
+  seen, depth, budget = seen or {}, depth or 0, budget or { remaining = 4096 }
+  assert(depth < 32 and not seen[value], "pane args are cyclic or too deep")
+  seen[value] = true
+  local out, strings, numbers, maximum = {}, 0, 0, 0
+  for key, item in pairs(value) do
+    budget.remaining = budget.remaining - 1
+    assert(budget.remaining >= 0, "pane args exceed entry limit")
+    if type(key) == "string" then
+      strings = strings + 1
+    else
+      assert(type(key) == "number" and key >= 1 and key % 1 == 0, "invalid pane args key")
+      numbers, maximum = numbers + 1, math.max(maximum, key)
+    end
+    out[key] = copy_args(item, seen, depth + 1, budget)
+  end
+  assert(numbers == 0 or (strings == 0 and maximum == numbers), "pane args arrays must be dense")
+  seen[value] = nil
+  return out
+end
+
+local function resolve(opts)
+  assert(type(opts) == "table", "pane options must be a table")
+  local module = opts.module
+  assert(
+    module == nil or (type(module) == "string" and module ~= "" and not module:find("\0", 1, true)),
+    "invalid pane module"
+  )
+  assert(opts.args == nil or type(opts.args) == "table", "pane args must be a table")
+  local args = copy_args(opts.args or {})
+  local owned = {}
+  if module and opts.render == nil then
+    local factory = assert(factories[module], "unknown Lua pane factory: " .. module)
+    local result = factory(copy_args(args))
+    assert(type(result) == "table", "pane factory must return options")
+    for key, value in pairs(result) do
+      owned[key] = value
+    end
+  end
+  for key, value in pairs(opts) do
+    owned[key] = value
+  end
+  owned.module, owned.args = module, args
+  return owned
+end
+
+local function new_instance(opts, floating, placement, name)
   assert(type(opts) == "table" and type(opts.render) == "function", "pane requires render(ctx)")
   local direction = opts.direction or "vertical"
   assert(direction == "vertical" or direction == "horizontal", "invalid pane direction")
@@ -123,10 +184,7 @@ local function create(opts, floating)
   assert(type(host.create_lua_pane) == "function", "Lua panes require GUI host")
   assert(opts.title == nil or type(opts.title) == "string", "pane title must be a string")
   assert(opts.state == nil or type(opts.state) == "table", "pane state must be a table")
-  local owned = {}
-  for key, value in pairs(opts) do
-    owned[key] = value
-  end
+  local owned = opts
   owned.state = opts.state or {}
   local self = setmetatable({ opts = owned }, Pane)
   self.surface = ui.layout.new({ render = owned.render, theme = owned.theme })
@@ -134,6 +192,24 @@ local function create(opts, floating)
     direction = direction,
     ratio = ratio,
     floating = floating,
+    _descriptor = json.encode({
+      kind = "lua",
+      module = owned.module,
+      args = owned.args,
+      placement = placement or "split",
+      name = name,
+      floating = floating,
+      x = owned.x,
+      y = owned.y,
+      width = owned.width,
+      height = owned.height,
+      fullscreen = owned.fullscreen,
+    }),
+    complete = function(_, success)
+      if owned.on_complete then
+        owned.on_complete({ success = success, pane_id = success and self.id or nil })
+      end
+    end,
     invalidate = function()
       self.surface:invalidate()
     end,
@@ -164,6 +240,13 @@ local function create(opts, floating)
       end
     end,
   }
+  assert(#owner._descriptor <= 65536, "pane descriptor exceeds 64 KiB")
+  return self, owner
+end
+
+local function create(opts, floating, placement, name)
+  opts = resolve(opts)
+  local self, owner = new_instance(opts, floating, placement, name)
   self.id = host.create_lua_pane(owner)
   if not self.id then
     self.surface:destroy()
@@ -174,6 +257,32 @@ local function create(opts, floating)
     self:set_title(opts.title)
   end
   return self
+end
+
+function M.register(name, factory)
+  assert(
+    type(name) == "string" and name ~= "" and not name:find("\0", 1, true),
+    "invalid pane factory name"
+  )
+  assert(type(factory) == "function", "pane factory must be a function")
+  factories[name] = factory
+end
+
+-- Workspace bootstrap selects a native insertion target without a seed PTY.
+function M._create(opts, placement, name)
+  return create(opts, opts.floating == true, placement, name)
+end
+
+-- The native reload path attaches this new owner to the existing pane ID/tree.
+function M._restore(id, descriptor)
+  descriptor = json.decode(descriptor)
+  local opts = resolve({ module = descriptor.module, args = descriptor.args })
+  local self, owner = new_instance(opts, false)
+  self.id, instances[id] = id, self
+  if opts.title then
+    self:set_title(opts.title)
+  end
+  return owner
 end
 
 function M.split(opts)

@@ -92,13 +92,13 @@ non-terminal nodes.
 | `92b2041` | P1: pane-owned Clay snapshots, clipping, retained pane textures, dirty-only Lua rendering |
 | `4948a4a` | P2: public creation/lookup/instance API, mount/unmount/resize hooks, error rows, reload-safe ownership; Windows GUI smoke screenshots |
 | `d5882c4` | P3: keyboard/global routing, pane-local surface focus, OS/mux focus hooks, blur-before-unmount; Windows GUI smoke screenshot |
+| `cfe69c2` | P4: pane-local clicks/hover, stale-event guards, gesture isolation, offscreen rectangle pipeline; two-instance/float GUI validation |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| P4 | Implemented, uncommitted: pane-local clicks/hover and keyboard focus on click; copied namespaced node IDs with runtime/snapshot/layout guards; isolated two-instance/float GUI validation and offscreen rectangle-pipeline fix below |
-| P5 | Snapshots/CLI `kind`, `module` + factories, workspace `lua` leaf (§5) |
+| P5 | Implemented, uncommitted: snapshot/CLI `kind`, `module`, `args`; named factories; same-ID config reload; workspace `lua` leaves and export/import (§5) |
 | P6 | Types (`types/hollow.lua`) and docs (`docs/reference/lua/ui.md`, `docs/custom-ui.md`) |
 | later | Scroll viewports for Lua panes; more content kinds (one union arm each) |
 
@@ -117,8 +117,8 @@ non-terminal nodes.
 
 ## 4. Lua API
 
-P2/P3 implement creation, lookup, instance methods and lifecycle/input hooks.
-`register`/factory restore remain P5.
+P2–P5 implement creation, lookup, instance methods, lifecycle/input hooks and
+named factory registration/restore.
 Creation reserves an ID immediately and queues layout insertion on the frame
 thread. Returns `nil` when unavailable (for example, before GUI initialization).
 Mount runs once at the first snapshot with valid pane geometry; unmount runs
@@ -142,8 +142,9 @@ to Lua presses never reach terminal panes. Native hover paint and optional
 `ctx.hovered_id` (local ID or `nil`) update on node transitions, not every pixel.
 Hover also clears when panes/nodes become occluded, hidden or destroyed. Root
 buttons work too. Scrolling/drag widgets and text selection remain outside v1.
-Config reload unmounts against the old runtime and drops native snapshots; until
-P5 restore exists, old Lua pane nodes remain blank and can still be closed.
+Config reload unmounts against the old runtime and drops native snapshots, then
+rebuilds factory-backed owners before `config:reloaded`. Native IDs and layouts
+stay intact; live Lua state resets. Anonymous nodes remain blank and closable.
 
 ```lua
 local pane = hollow.ui.pane.split({
@@ -194,8 +195,21 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   snapshots store `{ kind = "lua", module = "tasks", args = {...} }` and the
   layout loader calls the factory registered with `hollow.ui.pane.register`.
   A Lua pane without `module` is not restored (documented).
-- Workspace layouts (`ui/workspace/source.lua` and the host layout loader) gain
-  a `lua` leaf: `{ lua = "tasks", args = {...} }`.
+- Register factories during config loading, not `gui:ready`. A factory receives
+  an independent copy of creation args and returns pane options. Explicit options
+  override factory options. Only creation args persist, never live state/functions.
+- Args must be plain JSON tables: finite numbers, dense arrays or string-keyed
+  objects; no metatables or cycles. Limits: depth 32, 4096 entries, descriptor
+  64 KiB. Empty tables follow the existing JSON bridge's array/object semantics.
+- The actual workspace layout loader is `src/lua/hollow/workspace.lua`, not the
+  switcher UI's `ui/workspace/source.lua`; there is no separate native loader.
+  It accepts `{ lua = "tasks", args = {...} }` leaves (or snapshot-style
+  `kind = "lua", module = "tasks"`). Lua-first layouts insert native tabs or
+  workspaces without seed PTYs. Without `replace_current`, existing tabs stay.
+- Workspace export saves named factories, args, split ratios, focus, tags and
+  floating bounds; anonymous panes and resulting empty tabs are omitted. File
+  import creates new IDs; config reload retains existing IDs. Missing factories
+  during config reload warn and leave blank, closable nodes for a later retry.
 - `hollow-cli`: listing shows `kind`; a `split --lua <module>` verb is optional.
 
 ---
@@ -376,3 +390,28 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   ![Two Lua pane instances with isolated button counters](examples/lua-pane-pointer-instances.png)
 
   ![Floating Lua pane occluding another pane's button](examples/lua-pane-pointer-floating.png)
+- **P5 persistence.** Native surfaces own bounded JSON descriptors across runtime
+  teardown. Native and Lua snapshots expose content metadata; config reload
+  attaches fresh factory owners to the same native nodes before notifying reload
+  listeners. Workspace bootstrap/export uses the existing local/host JSON path.
+  PTY-free tab/workspace publication is transactional under allocation failure.
+  `examples/lua-pane.lua` registers `tasks`; `examples/lua-pane-workspace.json`
+  demonstrates two persistent instances. Optional CLI `split --lua` is deferred.
+- **P5 JSON findings.** The JSON bridge's inclusive i64 upper bound trapped on
+  `2^63` (rounded `maxInt(i64)`); the upper bound is now exclusive. Oversized
+  finite integer tokens decode to Lua numbers, and JSON strings/object keys use
+  length-aware APIs so embedded NULs survive. Real-runtime reload coverage checks
+  these cases alongside stack balance and missing-factory retry.
+- **P5 GUI validation.** Disposable Windows instance verified CLI metadata,
+  same-ID config reload (`2`, then imported IDs `5`/`6`), live-state reset from
+  `99` to creation values `7`/`9`, Lua-only workspace creation and JSON file
+  export/import. Workspace name `Persistent UI` survived independently of pane
+  titles. Demo instance closed; existing operator instance/submodules untouched.
+  No new throughput benchmark was run. P6 types/reference docs are next.
+- **P5 final validation.** Native build, Windows dev cross-build, full Zig suite
+  (98/98 steps; 349 passed, one skipped), 824 Lua tests, `zig fmt --check`,
+  `stylua --check` and `git diff --check` pass. Eight factory tests and eight
+  workspace tests cover creation-arg isolation, validation limits, fresh owners,
+  missing factories, PTY-free insertion, export/import and workspace names.
+
+  ![Factory panes after workspace import and same-ID config reload](examples/lua-pane-factory-restored.png)

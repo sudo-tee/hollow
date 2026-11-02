@@ -245,6 +245,7 @@ pub const PendingInputEvent = union(enum) {
 
 pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
     switch (event.*) {
+        .create_lua_pane => |payload| allocator.free(payload.descriptor_json),
         .lua_pane_pointer => |payload| if (payload.id) |id| allocator.free(id),
         .title_lua_pane => |payload| allocator.free(payload.text),
         .new_tab => |payload| {
