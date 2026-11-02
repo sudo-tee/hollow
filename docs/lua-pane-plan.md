@@ -91,13 +91,13 @@ non-terminal nodes.
 | `7a4ed3b` | B4: Windows GUI A/B, `5024e8d` vs `bfb6722`; no regression (see §8) |
 | `92b2041` | P1: pane-owned Clay snapshots, clipping, retained pane textures, dirty-only Lua rendering |
 | `4948a4a` | P2: public creation/lookup/instance API, mount/unmount/resize hooks, error rows, reload-safe ownership; Windows GUI smoke screenshots |
+| `d5882c4` | P3: keyboard/global routing, pane-local surface focus, OS/mux focus hooks, blur-before-unmount; Windows GUI smoke screenshot |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| P3 | Implemented, uncommitted: `on_key`/`on_focus`, surface keyboard focus, global-binding fallback, OS/mux focus and blur-before-unmount; tests and Windows GUI screenshot below |
-| P4 | Mouse: click and hover through the pane's surface callback namespace |
+| P4 | Implemented, uncommitted: pane-local clicks/hover and keyboard focus on click; copied namespaced node IDs with runtime/snapshot/layout guards; isolated two-instance/float GUI validation and offscreen rectangle-pipeline fix below |
 | P5 | Snapshots/CLI `kind`, `module` + factories, workspace `lua` leaf (§5) |
 | P6 | Types (`types/hollow.lua`) and docs (`docs/reference/lua/ui.md`, `docs/custom-ui.md`) |
 | later | Scroll viewports for Lua panes; more content kinds (one union arm each) |
@@ -135,6 +135,13 @@ Routing priority: overlays/modal handlers and pending global sequences first;
 modified global bindings next; then pane-local surface focus, `on_key`, and Tab
 navigation; finally unmodified global bindings when the pane declines. Copy-mode
 bindings keep their existing priority. A handled pane key invalidates its surface.
+P4 routes left-button presses to declarative `on_click` callbacks, using each
+pane's own layout namespace. Callback `event.id` remains the local node ID.
+Blank presses focus the pane without terminal selection; releases/drags belonging
+to Lua presses never reach terminal panes. Native hover paint and optional
+`ctx.hovered_id` (local ID or `nil`) update on node transitions, not every pixel.
+Hover also clears when panes/nodes become occluded, hidden or destroyed. Root
+buttons work too. Scrolling/drag widgets and text selection remain outside v1.
 Config reload unmounts against the old runtime and drops native snapshots; until
 P5 restore exists, old Lua pane nodes remain blank and can still be closed.
 
@@ -336,3 +343,36 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   Demo instance closed; P4 mouse routing is next.
 
   ![Lua pane handling F6 and falling back to a global F7 binding](examples/lua-pane-keyboard-focus.png)
+- **P4 pointer ownership.** The renderer hit-tests clipped pane rectangles in
+  reverse paint order, then the owning Clay surface. It copies node IDs into
+  frame-thread events; delivery verifies pane/runtime identity, snapshot revision
+  and layout generation. Clicks focus the pane before dispatching through its
+  surface's callback table. Hover IDs are pane-owned; same-node pixel motion
+  updates coordinates without entering Lua or invalidating snapshots. Post-layout
+  probes clear stationary hover after geometry/overlay changes. Lua press latches
+  prevent selection, drag motion and releases from leaking into terminal input.
+- **Colored-pane pipeline finding.** First P4 Windows GUI run aborted in D3D11
+  validation: colored buttons loaded the swapchain rectangle pipeline into an
+  RGBA8 offscreen pane pass. P1/P2/P3 screenshots only exercised text, so missed
+  it. Lua pane caches now lazily own a straight-alpha rectangle pipeline with
+  offscreen color/depth formats; Lua painting temporarily selects it and restores
+  the swapchain pipeline afterward. Pipeline pools cover the additional lazy
+  resource. Terminal caches/painting do not select or allocate this UI pipeline.
+- **P4 validation.** Native build, Windows dev cross-build, full Zig suite,
+  808 Lua tests, formatting and `git diff --check` pass. Seven new Lua tests cover
+  identical local IDs in independent instances, hover context/leave, click focus,
+  root buttons, closure/retired callbacks and callback errors. Native regressions
+  cover clipped root hits, opaque pane order, hover deduplication, copied-event
+  cleanup, stale runtime/snapshot/layout rejection and rectangle pipeline formats.
+  Release-latch tests also cover newly opened modal routing and preserve
+  terminal-origin releases; terminal selection drags retain their existing path.
+  Windows GUI smoke used two panes sharing a render function and `increment` ID:
+  independent click-counter deltas, hover enter/leave, unchanged render counts
+  during same-button motion, opaque floating panes, and overlay click blocking
+  (the underlying counter resumed after overlay removal). Colored controls and
+  screenshots work after the pipeline fix. Cursor position restored and demo
+  instance closed. No new throughput benchmark was run. P5 persistence is next.
+
+  ![Two Lua pane instances with isolated button counters](examples/lua-pane-pointer-instances.png)
+
+  ![Floating Lua pane occluding another pane's button](examples/lua-pane-pointer-floating.png)

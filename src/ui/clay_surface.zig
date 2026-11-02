@@ -378,7 +378,7 @@ pub const Surface = struct {
         return bounds;
     }
 
-    pub const Target = enum { clickable, scroll };
+    pub const Target = enum { clickable, clickable_root, scroll };
 
     /// Last node in preorder (the deepest or latest sibling) of `target`
     /// under the window-space point. Scroll targets include the root panel.
@@ -390,6 +390,7 @@ pub const Surface = struct {
             if (node.id.length <= 0) continue;
             const wanted = switch (target) {
                 .clickable => index != 0 and node.clickable,
+                .clickable_root => node.clickable,
                 .scroll => index == 0 or node.scroll or node.scroll_x,
             };
             if (!wanted) continue;

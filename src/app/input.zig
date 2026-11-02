@@ -76,6 +76,7 @@ pub const PendingInputEvent = union(enum) {
     close_pane,
     close_pane_by_id: usize,
     create_lua_pane: @import("lua_panes.zig").Create,
+    lua_pane_pointer: @import("lua_panes.zig").Pointer,
     invalidate_lua_pane: usize,
     title_lua_pane: struct { id: usize, text: []const u8 },
     focus_pane_by_id: usize,
@@ -244,6 +245,7 @@ pub const PendingInputEvent = union(enum) {
 
 pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
     switch (event.*) {
+        .lua_pane_pointer => |payload| if (payload.id) |id| allocator.free(id),
         .title_lua_pane => |payload| allocator.free(payload.text),
         .new_tab => |payload| {
             if (payload.cwd) |value| allocator.free(value);
@@ -297,6 +299,7 @@ pub fn processInputQueue(self: *App) void {
         defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
+            .lua_pane_pointer => |payload| @import("lua_panes.zig").pointer(self, payload),
             .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
             .invalidate_lua_pane => |id| {
                 if (self.findPaneById(id)) |pane| if (pane.asLua() != null) {

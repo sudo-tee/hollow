@@ -9,6 +9,7 @@ Pane.__index = Pane
 local function context(self, ctx)
   ctx.state = self.opts.state
   ctx.theme = self.opts.theme or shared.palette("select")
+  ctx.hovered_id = self.hovered_id
   return ctx
 end
 
@@ -144,6 +145,23 @@ local function create(opts, floating)
     end,
     focus = function(_, ctx, focused)
       focus(self, ctx, focused)
+    end,
+    pointer = function(_, kind, id)
+      if self.closed or self.closing then
+        return
+      end
+      if kind == "click" then
+        if id then
+          self.surface:dispatch(id)
+          self.surface:invalidate()
+        end
+      elseif kind == "hover" then
+        self.hovered_id = id and self.surface:local_id(id) or nil
+        if self.context then
+          self.context.hovered_id = self.hovered_id
+        end
+        self.surface:invalidate()
+      end
     end,
   }
   self.id = host.create_lua_pane(owner)

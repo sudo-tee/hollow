@@ -14,6 +14,8 @@ pub const LuaSurface = struct {
     prepared: ?Viewport = null,
     revision: f64 = 0,
     hovered_id: ?[]u8 = null,
+    pointer_x: f32 = -1,
+    pointer_y: f32 = -1,
     context: ?*anyopaque = null,
     /// The host releases its Lua reference and runs unmount before storage dies.
     on_deinit: ?*const fn (*LuaSurface) void = null,

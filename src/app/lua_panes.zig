@@ -5,6 +5,63 @@ const LuaSurface = @import("../ui/lua_surface.zig").LuaSurface;
 const SplitDirection = @import("../mux.zig").SplitDirection;
 const Pane = @import("../pane.zig").Pane;
 
+pub const Pointer = struct {
+    pane_id: usize,
+    generation: u64,
+    revision: f64,
+    layout_generation: u32,
+    kind: enum { click, hover },
+    /// Owned by the input event, never borrowed from a retained Clay arena.
+    id: ?[]const u8 = null,
+    x: f32 = -1,
+    y: f32 = -1,
+};
+
+pub fn pointer(app: *App, event: Pointer) void {
+    const pane = app.findPaneById(event.pane_id) orelse return;
+    const surface = pane.asLua() orelse return;
+    const runtime = if (app.lua) |*r| r else return;
+    if (surface.ref < 0 or runtime.generation != event.generation or surface.runtime_generation != event.generation) return;
+    if (event.layout_generation != app.currentLayoutGeneration()) return;
+    if (event.id != null and surface.revision != event.revision) return;
+    if (event.kind == .hover) {
+        surface.pointer_x = event.x;
+        surface.pointer_y = event.y;
+        const same = if (event.id) |id| (if (surface.hovered_id) |old| std.mem.eql(u8, id, old) else false) else surface.hovered_id == null;
+        if (same) return;
+        const owned = if (event.id) |id| pane.allocator.dupe(u8, id) catch return else null;
+        if (surface.hovered_id) |old| pane.allocator.free(old);
+        surface.hovered_id = owned;
+    } else {
+        if (!app.isPaneVisible(pane)) return;
+        if (app.mux) |*mux| {
+            const previous = mux.activePane();
+            mux.setActivePane(pane);
+            app.syncActivePaneChange(previous, pane);
+            if (previous != pane) app.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane.id });
+        }
+    }
+    pane.invalidate();
+    runtime.mutex.lock();
+    defer runtime.mutex.unlock();
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.rawgeti(state, -10000, surface.ref);
+    api.get_field(state, -1, "pointer");
+    if (api.value_type(state, -1) != @backingInt(@import("../lua_bridge.zig").LuaType.function)) return;
+    api.push_value(state, -2);
+    const kind = @tagName(event.kind);
+    api.push_lstring(state, kind.ptr, kind.len);
+    if (event.id) |id| api.push_lstring(state, id.ptr, id.len) else api.push_nil(state);
+    if (api.pcall(state, 3, 0, 0) != 0) {
+        var len: usize = 0;
+        const err = api.to_lstring(state, -1, &len);
+        std.log.err("Lua pane pointer: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
+    }
+}
+
 pub const Create = struct {
     id: usize,
     ref: c_int,
@@ -69,6 +126,10 @@ pub fn beforeReload(app: *App) void {
         release(app, surface.ref, surface.runtime_generation);
         surface.ref = -1;
         surface.dirty = false;
+        if (surface.hovered_id) |id| pane.allocator.free(id);
+        surface.hovered_id = null;
+        surface.pointer_x = -1;
+        surface.pointer_y = -1;
         if (surface.clay) |tree| if (surface.on_clay_deinit) |free| free(tree, app.allocator);
         surface.clay = null;
         surface.on_clay_deinit = null;

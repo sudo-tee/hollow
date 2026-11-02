@@ -83,6 +83,9 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
     const saved_pipeline = renderer.atlas_pip;
     renderer.atlas_pip = entry.cache.atlas_pip;
     defer renderer.atlas_pip = saved_pipeline;
+    const saved_rect_pipeline = g_rect_pip;
+    g_rect_pip = entry.cache.uiRectPipeline();
+    defer g_rect_pip = saved_rect_pipeline;
     c.sgl_defaults();
     c.sgl_viewport(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
     c.sgl_scissor_rect(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
@@ -90,8 +93,8 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
     c.sgl_load_identity();
     c.sgl_ortho(0, pw, ph, 0, -1, 1);
     if (surface.clayState()) |tree| {
-        tree.mouse_x = g_mouse_x - @as(f32, @floatFromInt(bounds.x));
-        tree.mouse_y = g_mouse_y - @as(f32, @floatFromInt(bounds.y));
+        tree.mouse_x = surface.pointer_x;
+        tree.mouse_y = surface.pointer_y;
         drawClaySurface(tree, renderer, pw, ph, 0, 0);
         tree.area.x = @floatFromInt(bounds.x);
         tree.area.y = @floatFromInt(bounds.y);
@@ -729,6 +732,7 @@ var g_drag_node: ?*SplitNode = null;
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
+var g_lua_pane_button: ?ghostty.MouseButton = null;
 var g_mouse_x: f32 = 0;
 var g_mouse_y: f32 = 0;
 var g_top_bar_cache: BarCache = .{};
@@ -1829,6 +1833,120 @@ fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
     if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
         app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = hit.id, .index = hit.stack_index } });
     } else app.emitLuaBuiltInEvent("overlay:leave", .none);
+}
+
+const LuaPaneHit = struct {
+    pane: *Pane,
+    surface: *LuaPaneSurface,
+    bounds: PaneBounds,
+    id: ?[]const u8 = null,
+    text_cursor: bool = false,
+};
+
+/// Pane order includes floating panes. Never look through an opaque terminal or
+/// outside the pane scissor, even when a Clay node overflows its root.
+fn luaPaneAt(leaves: []const LayoutLeaf, x: f32, y: f32) ?LuaPaneHit {
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        if (x < @as(f32, @floatFromInt(leaf.bounds.x)) or y < @as(f32, @floatFromInt(leaf.bounds.y)) or
+            x >= @as(f32, @floatFromInt(leaf.bounds.x + leaf.bounds.width)) or y >= @as(f32, @floatFromInt(leaf.bounds.y + leaf.bounds.height))) continue;
+        const surface = leaf.pane.asLua() orelse return null;
+        var hit: LuaPaneHit = .{ .pane = leaf.pane, .surface = surface, .bounds = leaf.bounds };
+        if (surface.clayState()) |tree| if (tree.active) {
+            if (tree.hitTest(.clickable_root, x, y)) |node| {
+                hit.id = tree.nodeId(node);
+                hit.text_cursor = tree.nodes[node].text_cursor;
+            }
+        };
+        return hit;
+    }
+    return null;
+}
+
+fn hitTestLuaPane(app: *App, x: f32, y: f32) ?LuaPaneHit {
+    var buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    return luaPaneAt(app.computeActiveLayout(&buf), x, y);
+}
+
+fn queueLuaPanePointer(app: *App, hit: LuaPaneHit, kind: @FieldType(@import("../app/lua_panes.zig").Pointer, "kind"), x: f32, y: f32) void {
+    const id = if (hit.id) |value| app.allocator.dupe(u8, value) catch return else null;
+    if (!app.enqueueMouse(.{ .lua_pane_pointer = .{
+        .pane_id = hit.pane.id,
+        .generation = hit.surface.runtime_generation,
+        .revision = hit.surface.revision,
+        .layout_generation = app.currentLayoutGeneration(),
+        .kind = kind,
+        .id = id,
+        .x = x,
+        .y = y,
+    } })) if (id) |value| app.allocator.free(value);
+}
+
+fn luaPanePointerBlocked(app: *App, x: f32, y: f32) bool {
+    return !g_mouse_over_window or g_block_all_mouse_until_up or g_block_left_mouse_until_up or
+        g_drag_node != null or g_scrollbar_drag_pane != null or g_overlay_scrollbar_drag_id_len > 0 or
+        g_selection_pointer_active or quick_select.inputActive(app) or sidebarContains(x, y) or
+        app.hitTestDividerAt(x, y, 6) != null or
+        topBarHitTest(app, x, y, c.sapp_widthf()).inBar() or bottomBarHitTest(app, x, y, c.sapp_widthf()).inBar() or
+        hitTestOverlayWheel(x, y) != null or (g_clay_surface.active and g_clay_surface.owner_index == 0);
+}
+
+/// Queue only pointer transitions. Re-probing after layout/overlay rendering
+/// clears occluded/retired hover without waking clean panes forever.
+fn updateLuaPaneHover(app: *App) void {
+    const mux = if (app.mux) |*m| m else return;
+    var hit: ?LuaPaneHit = null;
+    var probed = false;
+    var panes = mux.paneIterator();
+    while (panes.next()) |pane| {
+        const surface = pane.asLua() orelse continue;
+        if (surface.ref < 0) continue;
+        if (!probed) {
+            probed = true;
+            hit = if (luaPanePointerBlocked(app, g_mouse_x, g_mouse_y)) null else hitTestLuaPane(app, g_mouse_x, g_mouse_y);
+        }
+        if (hit) |target| if (target.pane == pane) {
+            const x = g_mouse_x - @as(f32, @floatFromInt(target.bounds.x));
+            const y = g_mouse_y - @as(f32, @floatFromInt(target.bounds.y));
+            const same_id = if (target.id) |id| (if (surface.hovered_id) |old| std.mem.eql(u8, id, old) else false) else surface.hovered_id == null;
+            if (!same_id or surface.pointer_x != x or surface.pointer_y != y) queueLuaPanePointer(app, target, .hover, x, y);
+            continue;
+        };
+        if (surface.hovered_id != null or surface.pointer_x >= 0 or surface.pointer_y >= 0) {
+            queueLuaPanePointer(app, .{ .pane = pane, .surface = surface, .bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 } }, .hover, -1, -1);
+        }
+    }
+}
+
+test "Lua pane pointer hit testing clips roots and respects opaque pane order" {
+    var tree: ClaySurface = .{ .active = true, .area = .{ .x = 100, .y = 50, .width = 100, .height = 100 } };
+    defer tree.deinit();
+    tree.context = clay.hollow_clay_create();
+    tree.nodes[0] = std.mem.zeroes(clay.HollowClayNode);
+    tree.nodes[0].width = 300;
+    tree.nodes[0].height = 30;
+    tree.nodes[0].clickable = true;
+    tree.nodes[0].id = .{ .chars = "layout:1:button", .length = 15 };
+    tree.len = 1;
+    _ = tree.layout(100, 100, 10, 20, 0);
+    var surface: LuaPaneSurface = .{ .clay = &tree };
+    var pane = Pane.initLua(std.testing.allocator, &surface);
+    var terminal = Pane.init(std.testing.allocator);
+    const leaves = [_]LayoutLeaf{
+        .{ .pane = &pane, .bounds = .{ .x = 100, .y = 50, .width = 100, .height = 100 } },
+        .{ .pane = &terminal, .bounds = .{ .x = 120, .y = 50, .width = 20, .height = 30 } },
+    };
+    try std.testing.expectEqualStrings("layout:1:button", luaPaneAt(&leaves, 110, 60).?.id.?);
+    try std.testing.expect(luaPaneAt(&leaves, 125, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 99, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 205, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 150, 100).?.id == null);
+    // Pane roots can be buttons; overlay root semantics remain unchanged.
+    try std.testing.expect(tree.hitTest(.clickable, 110, 60) == null);
+    tree.active = false;
+    try std.testing.expect(luaPaneAt(&leaves, 110, 60).?.id == null);
 }
 
 fn boundsContain(b: ui_semantics.Bounds, x: f32, y: f32) bool {
@@ -3245,6 +3363,7 @@ pub fn run(app: *App) !void {
     g_last_frame_swapchain_submit_ms = 0;
     g_drag_node = null;
     g_mouse_button_down = null;
+    g_lua_pane_button = null;
 
     var host = WindowHost.init(.{
         .context = app,
@@ -3349,8 +3468,9 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // Each pane cache ends up consuming a surprising number of sg pipelines:
     // one sokol_gl context default pipeline (5 backend pipelines) plus one
     // extra pane atlas pipeline (another 5). With 6 panes we exceed sokol_gfx's
-    // default pipeline pool size of 64 and crash during cache creation.
-    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 12 + 64;
+    // default pipeline pool size of 64 and crash during cache creation. Lua
+    // panes may lazily add a straight-alpha rectangle pipeline (another 5).
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 18 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -3368,7 +3488,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
     // context and drops overlays like the cursor. Size the pool to our cache cap.
     sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
-    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 2 + 16;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 3 + 16;
     c.sgl_setup(&sgl_desc);
 
     const swapchain = c.sglue_swapchain();
@@ -4554,6 +4674,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     } else {
         app.publishUiSemanticFrame();
     }
+    updateLuaPaneHover(app);
 
     // Flush all queued geometry — exactly once per frame.
     c.sgl_draw_layer(-3);
@@ -5208,9 +5329,66 @@ fn linuxResizeDirection(x: f32, y: f32) ?c_int {
     return null;
 }
 
+/// A click callback may open a modal before release. Retire the Lua gesture
+/// before modal/inspector routing; terminal-origin gestures remain untouched.
+fn takeLuaPaneRelease(event: c.sapp_event) bool {
+    const button = g_lua_pane_button orelse return false;
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED) {
+        g_lua_pane_button = null;
+        g_mouse_button_down = null;
+        return false;
+    }
+    if (event.type != c.SAPP_EVENTTYPE_MOUSE_UP) return false;
+    const matches = switch (button) {
+        .left => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT,
+        .right => event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT,
+        .middle => event.mouse_button == c.SAPP_MOUSEBUTTON_MIDDLE,
+        else => false,
+    };
+    if (!matches) return false;
+    g_lua_pane_button = null;
+    g_mouse_button_down = null;
+    return true;
+}
+
+test "Lua gesture release retires before modal routing without stealing terminal releases" {
+    const old_lua = g_lua_pane_button;
+    const old_button = g_mouse_button_down;
+    defer {
+        g_lua_pane_button = old_lua;
+        g_mouse_button_down = old_button;
+    }
+    var event = std.mem.zeroes(c.sapp_event);
+    event.type = c.SAPP_EVENTTYPE_MOUSE_UP;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    g_mouse_button_down = .left;
+    g_lua_pane_button = null;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_mouse_button_down == .left);
+    g_lua_pane_button = .left;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_RIGHT;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    try std.testing.expect(takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null and g_mouse_button_down == null);
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_UNFOCUSED;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null);
+}
+
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
+
+    if (g_lua_pane_button != null and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
+    if (takeLuaPaneRelease(event)) {
+        g_mouse_x = event.mouse_x;
+        g_mouse_y = event.mouse_y;
+        updateLuaPaneHover(app);
+        c.sapp_consume_event();
+        return;
+    }
 
     if (inspectorResizeEvent(app, event)) return;
     if (gridDebugEvent(app, event)) return;
@@ -5229,6 +5407,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        updateLuaPaneHover(app);
         setMouseCursorHidden(false);
         updateSidebarHover(app, 0, 0, 0, true);
         return;
@@ -5682,6 +5861,25 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
+    if (action == .press and event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT) {
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
+            if (button) |b| {
+                g_lua_pane_button = b;
+                if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
+                    if (target.surface.ref >= 0) {
+                        var hit = target;
+                        hit.id = null;
+                        queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)));
+                    } else {
+                        _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = b, .x = event.mouse_x, .y = event.mouse_y, .mods = ghosttyMods(event.modifiers) } });
+                    }
+                }
+            }
+            c.sapp_consume_event();
+            return;
+        }
+    }
+
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
         if (selection_mod.hasSelection(app)) {
             _ = app.enqueueMouse(.copy_selection);
@@ -5754,6 +5952,19 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             return;
         }
 
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
+            g_lua_pane_button = .left;
+            if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
+                if (hit.surface.ref >= 0) {
+                    queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)));
+                } else {
+                    _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = .left, .x = event.mouse_x, .y = event.mouse_y, .mods = mods } });
+                }
+            }
+            c.sapp_consume_event();
+            return;
+        }
+
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const wants_selection = selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
             if (wants_selection) {
@@ -5822,6 +6033,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
+    defer updateLuaPaneHover(app);
     setMouseCursorHidden(false);
     if (g_linux_window_resize_active) {
         c.hollow_linux_update_window_resize();
@@ -5837,6 +6049,11 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     if (g_skip_mouse_move_frames > 0) {
         g_skip_mouse_move_frames -= 1;
+        return;
+    }
+
+    if (g_lua_pane_button != null) {
+        setTextSelectionCursor(.arrow);
         return;
     }
 
@@ -5965,6 +6182,13 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .horizontal => c.SAPP_MOUSECURSOR_RESIZE_NS,
         });
     } else {
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
+            g_hover_hyperlink = false;
+            if (!g_selection_pointer_active) {
+                setTextSelectionCursor(if (hit.id != null) (if (hit.text_cursor) .ibeam else .hand) else .arrow);
+                return;
+            }
+        }
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const hover_link = hyperlinkHoverActive(app, event.modifiers);
             g_hover_hyperlink = hover_link;

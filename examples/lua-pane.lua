@@ -15,7 +15,7 @@ hollow.events.on("gui:ready", function()
   hollow.ui.pane.split({
     title = "Lua tasks",
     ratio = 0.45,
-    state = { renders = 0, mounted = false, key = "Press F6", focused = false },
+    state = { renders = 0, mounted = false, key = "Press F6", focused = false, clicks = 0 },
     on_mount = function(ctx)
       ctx.state.mounted = true
     end,
@@ -38,10 +38,18 @@ hollow.events.on("gui:ready", function()
         c.text("Mounted: " .. tostring(ctx.state.mounted)),
         c.text("Render calls: " .. ctx.state.renders),
         c.text("Focused: " .. tostring(ctx.state.focused) .. " | " .. ctx.state.key),
+        c.text("Hovered node: " .. (ctx.hovered_id or "none")),
+        c.button({
+          id = "increment",
+          text = "Clicks: " .. ctx.state.clicks,
+          on_click = function()
+            ctx.state.clicks = ctx.state.clicks + 1
+          end,
+        }),
         c.text("[done] Pane-owned surface and isolated IDs"),
         c.text("[done] Mount, resize and unmount lifecycle"),
         c.text("[done] Keyboard and focus routing"),
-        c.text("[next] Mouse routing"),
+        c.text("[done] Isolated click and hover routing"),
       }, { width = "grow", height = "grow", padding = 16, gap = 10 })
     end,
   })
