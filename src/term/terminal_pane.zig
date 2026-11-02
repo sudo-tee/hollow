@@ -406,6 +406,35 @@ pub const TerminalPane = struct {
         return self.render_state_ready and self.hasRenderHelpers();
     }
 
+    /// Borrow render helpers for a screen query, creating them temporarily for
+    /// hidden terminals. Call `end` on every successful borrow.
+    pub const Read = struct {
+        runtime: *ghostty.Runtime,
+        term: *TerminalPane,
+        transient: bool,
+
+        pub fn end(self: Read) void {
+            if (self.transient) self.term.releaseRenderHelpers(self.runtime);
+        }
+    };
+
+    pub fn beginRead(self: *TerminalPane, runtime: *ghostty.Runtime) ?Read {
+        if (self.renderHelpersReady()) return .{ .runtime = runtime, .term = self, .transient = false };
+        if (self.terminal == null) return null;
+        var transient = false;
+        if (!self.hasRenderHelpers()) {
+            self.recreateRenderHelpers(runtime);
+            if (!self.hasRenderHelpers()) return null;
+            transient = true;
+        }
+        const read: Read = .{ .runtime = runtime, .term = self, .transient = transient };
+        runtime.updateRenderState(self.render_state, self.terminal) catch {
+            read.end();
+            return null;
+        };
+        return read;
+    }
+
     pub fn recreateRenderHelpers(self: *TerminalPane, runtime: *ghostty.Runtime) void {
         var failed: RenderResource = undefined;
         self.replaceRenderHelpers(runtime, &failed) catch |err| {
@@ -648,6 +677,39 @@ test "terminal render helper lifetime preserves parser readiness across hidden t
     content.deinit(&runtime, std.testing.allocator);
     try std.testing.expect(content.terminal == null and content.terminal_runtime == null);
     try std.testing.expect(!content.terminal_output_ready);
+}
+
+test "terminal reads release only transient helpers and preserve parser readiness" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var content: TerminalPane = .{};
+    try std.testing.expect(content.beginRead(&runtime) == null);
+    content.terminal = try runtime.createTerminal(80, 24, 0);
+    content.terminal_output_ready = true;
+    defer content.deinit(&runtime, std.testing.allocator);
+    runtime.terminalWrite(content.terminal, "hidden text");
+    const transient = content.beginRead(&runtime).?;
+    try std.testing.expect(transient.transient);
+    try std.testing.expect(content.hasRenderHelpers());
+    try std.testing.expect(!content.render_state_ready);
+    transient.end();
+    try std.testing.expect(!content.hasRenderHelpers());
+    try std.testing.expect(content.terminal_output_ready);
+
+    content.recreateRenderHelpers(&runtime);
+    const owned_state = content.render_state;
+    const owned = content.beginRead(&runtime).?;
+    try std.testing.expect(!owned.transient);
+    owned.end();
+    try std.testing.expectEqual(owned_state, content.render_state);
+    try std.testing.expect(content.hasRenderHelpers());
+    content.render_state_ready = true;
+    content.render_state_fresh = true;
+    const ready = content.beginRead(&runtime).?;
+    try std.testing.expect(!ready.transient);
+    ready.end();
+    try std.testing.expect(content.render_state_ready and content.render_state_fresh);
+    try std.testing.expectEqual(owned_state, content.render_state);
 }
 
 test "failed render helper recreation unwinds allocations and preserves existing resources" {

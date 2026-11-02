@@ -81,7 +81,7 @@ pub fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, 
     return terminalGridRefForHistoryCell(runtime, term, history_row, col);
 }
 
-fn terminalGridRefForHistoryCell(runtime: *GhosttyRuntime, term: *const TerminalPane, history_row: usize, col: usize) ?ghostty.GridRef {
+pub fn terminalGridRefForHistoryCell(runtime: *GhosttyRuntime, term: *const TerminalPane, history_row: usize, col: usize) ?ghostty.GridRef {
     const scrollbar = runtime.terminalScrollbar(term.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
     return gridRefForHistoryPoint(runtime, term.terminal, history_row, col, scrollback_rows);

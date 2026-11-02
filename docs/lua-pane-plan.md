@@ -556,7 +556,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - PTY limits moved unchanged into `src/term/pty_policy.zig`, shared by polling,
   public compatibility constants, and terminal scratch-buffer sizing. User input
   queuing and mouse-size updates now operate directly on `TerminalPane`.
-- First consumer-narrowing checkpoint implemented (not yet committed): nullable
+- First consumer-narrowing checkpoint committed as `06263fb`: nullable
   mutable/const terminal accessors select content at generic entry points.
   Selection, scrolling, and hyperlink modules no longer read `Pane.term`
   directly. Native history/selection snapshot and OSC 8 helpers take typed
@@ -568,6 +568,17 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   generic pane. Lua-pane app coverage now also checks nullable terminal access,
   absent scrollbar gutters/history refs/hyperlinks, and unchanged scroll state.
   Accessors still wrap transitional storage; this is not the content-union switch.
+- Second consumer-narrowing checkpoint implemented (not yet committed): copy-mode
+  history capture, quick-select capture/OSC 8 probes, screen JSON cursor/line
+  helpers, and text queries now use typed terminal storage. Copy-mode and
+  quick-select modules no longer read `Pane.term` directly. Shared pane identity,
+  dimensions, invalidation, and focus bookkeeping remain at app entry points.
+- Temporary render-helper borrowing moved from `App.PaneRead` into
+  `TerminalPane.beginRead`/`Read.end`, preserving the existing policy: already-ready
+  helpers are reused, existing unready helpers are refreshed and retained, and
+  helpers created only for hidden-terminal queries are released afterward.
+  Native tests cover all three lifetimes and unchanged parser readiness, plus
+  copy-mode history capture and quick-select OSC 8 targets without a mux pane.
 - Remaining B work: narrow terminal consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
@@ -626,3 +637,6 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   Lua remains at 785 successes. Touched Zig formatting and `git diff --check`
   pass. No Lua or painting changes; screenshot and GUI performance validation
   remain pending alongside the public Lua-pane feature.
+- Second consumer-narrowing validation: native build and Zig tests pass in Nix;
+  Lua remains at 785 successes. Touched Zig formatting and `git diff --check`
+  pass. Public Lua-pane creation/rendering/input and GUI validation remain pending.

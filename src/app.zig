@@ -41,6 +41,7 @@ const nodeIsInTree = mux_mod.nodeIsInTree;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const pane_mod = @import("pane.zig");
 const Pane = pane_mod.Pane;
+const TerminalPane = @import("term/terminal_pane.zig").TerminalPane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
@@ -619,18 +620,18 @@ pub const App = struct {
         return .{ .object = line };
     }
 
-    fn screenLinesValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane, rows: u16, cols: u16) !std.json.Value {
+    fn screenLinesValue(self: *App, runtime: *GhosttyRuntime, term: *TerminalPane, rows: u16, cols: u16) !std.json.Value {
         var lines = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = lines });
         const row_buffer = try self.allocator.alloc(u8, @max(@as(usize, cols) * 64, 1));
         defer self.allocator.free(row_buffer);
 
         var iterator_index: usize = 0;
-        while (iterator_index < rows and runtime.nextRow(pane.term.row_iterator)) : (iterator_index += 1) {
-            if (!runtime.populateRowCells(pane.term.row_iterator, &pane.term.row_cells)) break;
+        while (iterator_index < rows and runtime.nextRow(term.row_iterator)) : (iterator_index += 1) {
+            if (!runtime.populateRowCells(term.row_iterator, &term.row_cells)) break;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.term.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.term.row_cells, row_buffer, &row_len);
+            while (runtime.nextCell(term.row_cells)) {
+                text_helpers.appendCellText(runtime, term.row_cells, row_buffer, &row_len);
             }
             while (row_len > 0 and row_buffer[row_len - 1] == ' ') row_len -= 1;
             const visual_row = viewportIteratorRowIndex(iterator_index, rows) orelse continue;
@@ -651,31 +652,31 @@ pub const App = struct {
         return .{ .object = point };
     }
 
-    fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !std.json.Value {
+    fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, term: *const TerminalPane) !std.json.Value {
         var cursor = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = cursor });
-        if (runtime.cursorPos(pane.term.render_state)) |position| {
+        if (runtime.cursorPos(term.render_state)) |position| {
             try putJsonField(self.allocator, &cursor, "position", try self.cursorPositionValue(position.y, position.x));
         } else {
             try putJsonField(self.allocator, &cursor, "position", .null);
         }
-        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(pane.term.render_state) });
-        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(pane.term.render_state) });
-        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(pane.term.render_state) });
-        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(pane.term.render_state) });
-        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(pane.term.render_state))) });
+        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(term.render_state))) });
         return .{ .object = cursor };
     }
 
     pub fn paneScreenValue(self: *App, pane_id: usize) !?std.json.Value {
         const runtime = if (self.ghostty) |*value| value else return null;
         const pane = if (pane_id == 0) self.activePane() orelse return null else self.findPaneById(pane_id) orelse return null;
-        if (!pane.isTerminal()) return error.NotATerminal;
-        if (!paneRenderHelpersReady(pane)) return null;
+        const term = pane.asTerminal() orelse return error.NotATerminal;
+        if (!term.renderHelpersReady()) return null;
 
-        const rows = runtime.renderStateRows(pane.term.render_state) orelse pane.rows;
-        const cols = runtime.renderStateCols(pane.term.render_state) orelse pane.cols;
-        if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return null;
+        const rows = runtime.renderStateRows(term.render_state) orelse pane.rows;
+        const cols = runtime.renderStateCols(term.render_state) orelse pane.cols;
+        if (!runtime.populateRowIterator(term.render_state, &term.row_iterator)) return null;
 
         var screen = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = screen });
@@ -684,9 +685,9 @@ pub const App = struct {
         try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
         try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
         try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
-        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
-        try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, pane));
-        try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, pane, rows, cols));
+        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
+        try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, term));
+        try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, term, rows, cols));
         return .{ .object = screen };
     }
 
@@ -1693,56 +1694,28 @@ pub const App = struct {
     }
 
     pub fn paneRenderHelpersReady(pane: *const Pane) bool {
-        if (!pane.isTerminal()) return false;
-        return pane.term.renderHelpersReady();
-    }
-
-    const PaneRead = struct {
-        runtime: *GhosttyRuntime,
-        pane: *Pane,
-        transient: bool,
-
-        fn end(self: PaneRead) void {
-            if (self.transient) self.pane.releaseRenderHelpers(self.runtime);
-        }
-    };
-
-    fn beginPaneRead(runtime: *GhosttyRuntime, pane: *Pane) ?PaneRead {
-        if (!pane.isTerminal()) return null;
-        if (paneRenderHelpersReady(pane)) return .{ .runtime = runtime, .pane = pane, .transient = false };
-        if (pane.term.terminal == null) return null;
-
-        var transient = false;
-        if (!pane.hasRenderHelpers()) {
-            pane.recreateRenderHelpers(runtime);
-            if (!pane.hasRenderHelpers()) return null;
-            transient = true;
-        }
-        const read: PaneRead = .{ .runtime = runtime, .pane = pane, .transient = transient };
-        runtime.updateRenderState(pane.term.render_state, pane.term.terminal) catch {
-            read.end();
-            return null;
-        };
-        return read;
+        const term = pane.asTerminalConst() orelse return false;
+        return term.renderHelpersReady();
     }
 
     pub fn getPaneText(self: *App, pane_id: usize, out: []u8) []const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return "";
         const pane = self.findPaneById(pane_id) orelse return "";
         if (pane.rows == 0) return "";
-        const read = beginPaneRead(runtime, pane) orelse return "";
+        const term = pane.asTerminal() orelse return "";
+        const read = term.beginRead(runtime) orelse return "";
         defer read.end();
-        if (!runtime.populateRowIterator(pane.term.render_state, &pane.term.row_iterator)) return "";
+        if (!runtime.populateRowIterator(term.render_state, &term.row_iterator)) return "";
 
         var writer: std.Io.Writer = .fixed(out);
         var row_index: usize = 0;
-        while (runtime.nextRow(pane.term.row_iterator) and row_index < pane.rows) : (row_index += 1) {
-            if (!runtime.populateRowCells(pane.term.row_iterator, &pane.term.row_cells)) break;
+        while (runtime.nextRow(term.row_iterator) and row_index < pane.rows) : (row_index += 1) {
+            if (!runtime.populateRowCells(term.row_iterator, &term.row_cells)) break;
 
             var row_text: [4096]u8 = undefined;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.term.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.term.row_cells, row_text[0..], &row_len);
+            while (runtime.nextCell(term.row_cells)) {
+                text_helpers.appendCellText(runtime, term.row_cells, row_text[0..], &row_len);
             }
             while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
             writer.writeAll(row_text[0..row_len]) catch break;
@@ -3032,6 +3005,12 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expect(!selection_mod.hasSelection(app));
     copy_mode.enterCopyMode(app);
     try std.testing.expect(!app.copy_mode_active);
+    quick_select.start(app, .copy);
+    try std.testing.expect(!app.quick_select_active);
+    try std.testing.expect(!quick_select.inputActive(app));
+    try copy_mode.refreshCopyModeVisibleSlice(app, pane);
+    copy_mode.handlePromptJump(app, .prev);
+    try std.testing.expect(!pane.term.viewport_scroll_pending);
     scroll.scrollPaneViewport(app, pane, 1);
     scroll.scrollPaneViewportToRow(app, pane, 1);
     try std.testing.expect(pane.asTerminal() == null);

@@ -157,7 +157,7 @@ pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]c
     return terminalHyperlinkUriAt(rt, term, point, out);
 }
 
-fn terminalHyperlinkUriAt(rt: *ghostty.Runtime, term: *const TerminalPane, point: CellPoint, out: []u8) ?[]const u8 {
+pub fn terminalHyperlinkUriAt(rt: *ghostty.Runtime, term: *const TerminalPane, point: CellPoint, out: []u8) ?[]const u8 {
     const terminal = term.terminal orelse return null;
 
     var ref = ghostty.GridRef{
