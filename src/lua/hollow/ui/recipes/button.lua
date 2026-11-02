@@ -28,6 +28,7 @@ return sheet.define("button", {
     radius = 4,
     hovered = { fg = "selected_fg", bg = "button_emphasis_bg", bold = true },
     selected = { fg = "selected_fg", bg = "button_emphasis_bg", bold = true },
+    disabled = { fg = "muted|fg", bg = false, bold = false, hover = false },
     variants = {
       default = {},
       primary = {

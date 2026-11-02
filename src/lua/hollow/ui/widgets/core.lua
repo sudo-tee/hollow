@@ -178,13 +178,41 @@ end
 function ui.dispatch_overlay_key(key, mods)
   local canonical_mods = hollow.keymap.format_mods(mods)
 
+  local function redraw()
+    if type(state.host_api.request_redraw) == "function" then
+      state.host_api.request_redraw()
+    end
+  end
+
   for index = #overlay_stack, 1, -1 do
     local widget = overlay_stack[index]
+    local surface = widget._layout_surface
+    if type(surface) ~= "table" or surface.destroyed or type(surface.focus_key) ~= "function" then
+      surface = nil
+    end
+    if surface then
+      local ok, consumed = pcall(surface.focus_key, surface, key, canonical_mods)
+      if ok and consumed then
+        redraw()
+        return true
+      end
+    end
     if type(widget.on_key) == "function" then
       local ok, consumed = pcall(widget.on_key, key, canonical_mods)
       if ok and consumed then
         return true
       end
+    end
+    -- Tab moves keyboard focus unless the widget claimed it.
+    if
+      key == "tab"
+      and (canonical_mods == "" or canonical_mods == "<S>")
+      and surface
+      and not surface.destroyed
+      and surface:focus_move(canonical_mods == "<S>" and -1 or 1)
+    then
+      redraw()
+      return true
     end
 
     if shared.normalize_overlay_backdrop(widget.backdrop) ~= nil then

@@ -1,0 +1,385 @@
+[
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Lua REPL",
+      "padding": {
+        "bottom": 9,
+        "left": 13,
+        "right": 13,
+        "top": 19
+      },
+      "radius": 8
+    },
+    {
+      "children": 3,
+      "gap": 4,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 19,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Lua REPL"
+    },
+    {
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:input",
+      "reveal": "test:repl:caret",
+      "scroll": true,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 4,
+      "height": 19,
+      "kind": 1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "> "
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "bg": "#d8dee9",
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:caret"
+    },
+    {
+      "fg": "#1f2430",
+      "kind": 2,
+      "text": " ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:footer",
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Enter run · Tab complete · Esc close",
+      "wrap": 2
+    }
+  ],
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Lua REPL",
+      "padding": {
+        "bottom": 9,
+        "left": 13,
+        "right": 13,
+        "top": 19
+      },
+      "radius": 8
+    },
+    {
+      "children": 4,
+      "gap": 4,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 19,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Lua REPL"
+    },
+    {
+      "width": -1
+    },
+    {
+      "bg": "#16161d",
+      "children": 7,
+      "height": 133,
+      "id": "test:repl:completion",
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 3,
+      "height": 19,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "hollow.config.",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "1/5 matches",
+      "wrap": 2
+    },
+    {
+      "bg": "#333640",
+      "children": 4,
+      "clickable": true,
+      "height": 19,
+      "id": "test:repl:candidate:1",
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "▌ ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "get",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "fn",
+      "wrap": 2
+    },
+    {
+      "children": 4,
+      "clickable": true,
+      "height": 19,
+      "id": "test:repl:candidate:2",
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "populate_wsl_domains",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "fn",
+      "wrap": 2
+    },
+    {
+      "children": 4,
+      "clickable": true,
+      "height": 19,
+      "id": "test:repl:candidate:3",
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "reload",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "fn",
+      "wrap": 2
+    },
+    {
+      "children": 4,
+      "clickable": true,
+      "height": 19,
+      "id": "test:repl:candidate:4",
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "set",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "fn",
+      "wrap": 2
+    },
+    {
+      "children": 4,
+      "clickable": true,
+      "height": 19,
+      "id": "test:repl:candidate:5",
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "snapshot",
+      "wrap": 2
+    },
+    {
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "fn",
+      "wrap": 2
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "hollow.config.get(key: string): any",
+      "wrap": 2
+    },
+    {
+      "bg": "#16161d",
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:input",
+      "reveal": "test:repl:caret",
+      "scroll": true,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 4,
+      "height": 19,
+      "kind": 1
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "> "
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "hollow.config.",
+      "wrap": 2
+    },
+    {
+      "bg": "#d8dee9",
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:caret"
+    },
+    {
+      "fg": "#1f2430",
+      "kind": 2,
+      "text": " ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "height": 19,
+      "id": "test:repl:footer",
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Tab/↑/↓ select · Enter insert · Esc dismiss",
+      "wrap": 2
+    }
+  ]
+]

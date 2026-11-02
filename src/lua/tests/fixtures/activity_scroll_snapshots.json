@@ -1,0 +1,3468 @@
+[
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Activity",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
+      },
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "children": 3,
+      "gap": 20,
+      "height": -1,
+      "id": "test:activity:picker",
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 20,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Activity  ",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "gap": 10,
+      "kind": 1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "gap": 4,
+      "id": "test:activity:inbox",
+      "kind": 1,
+      "label": "Inbox",
+      "padding": {
+        "bottom": 3,
+        "left": 8,
+        "right": 8,
+        "top": 3
+      },
+      "radius": 4
+    },
+    {
+      "bold": true,
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "Inbox",
+      "wrap": 2
+    },
+    {
+      "bg": "#8fbcdf",
+      "children": 1,
+      "padding": {
+        "bottom": 1,
+        "left": 5,
+        "right": 5,
+        "top": 1
+      },
+      "radius": 4
+    },
+    {
+      "bold": true,
+      "fg": "#1c202b",
+      "kind": 2,
+      "text": "30",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "id": "test:activity:history",
+      "kind": 1,
+      "label": "History",
+      "padding": {
+        "bottom": 3,
+        "left": 8,
+        "right": 8,
+        "top": 3
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "History",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss-all",
+      "label": "Dismiss all",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Dismiss all",
+      "wrap": 2
+    },
+    {
+      "children": 23,
+      "height": -1,
+      "id": "test:activity:viewport",
+      "measure": true,
+      "padding": {
+        "bottom": 0,
+        "left": 0,
+        "right": 10,
+        "top": 0
+      },
+      "reveal": "test:activity:item:1",
+      "scroll": true,
+      "scroll_x": true,
+      "scrollbar_id": "test:activity:scrollbar:2",
+      "scrollbar_thumb_color": "#f7d794",
+      "scrollbar_thumb_size": 0.066666666666666999,
+      "scrollbar_track_color": "#81a1c1",
+      "width": -1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#3b4252",
+      "id": "test:activity:item:1",
+      "kind": 1,
+      "label": "Item 1 · word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "bg": "#b48ead",
+      "height": -1,
+      "radius": 1,
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:21",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "Item 1",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word wo...",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:1",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:2",
+      "kind": 1,
+      "label": "Item 2 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:38",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 2",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:2",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:3",
+      "kind": 1,
+      "label": "Item 3 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:55",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 3",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:3",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:4",
+      "kind": 1,
+      "label": "Item 4 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:72",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 4",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:4",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:5",
+      "kind": 1,
+      "label": "Item 5 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:89",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 5",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:5",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:6",
+      "kind": 1,
+      "label": "Item 6 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:106",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 6",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:6",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:7",
+      "kind": 1,
+      "label": "Item 7 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:123",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 7",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:7",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:8",
+      "kind": 1,
+      "label": "Item 8 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:140",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 8",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:8",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:9",
+      "kind": 1,
+      "label": "Item 9 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:157",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 9",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:9",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:10",
+      "kind": 1,
+      "label": "Item 10 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:174",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 10",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:10",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:11",
+      "kind": 1,
+      "label": "Item 11 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:191",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 11",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:11",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:12",
+      "kind": 1,
+      "label": "Item 12 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:208",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 12",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:12",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:13",
+      "kind": 1,
+      "label": "Item 13 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:225",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 13",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:13",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:14",
+      "kind": 1,
+      "label": "Item 14 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:242",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 14",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:14",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:15",
+      "kind": 1,
+      "label": "Item 15 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:259",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 15",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:15",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:16",
+      "kind": 1,
+      "label": "Item 16 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:276",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 16",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:16",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:17",
+      "kind": 1,
+      "label": "Item 17 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:293",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 17",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:17",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:18",
+      "kind": 1,
+      "label": "Item 18 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:310",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 18",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:18",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:19",
+      "kind": 1,
+      "label": "Item 19 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:327",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 19",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:19",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:20",
+      "kind": 1,
+      "label": "Item 20 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:344",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 20",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:20",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:21",
+      "kind": 1,
+      "label": "Item 21 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:361",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 21",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:21",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:22",
+      "kind": 1,
+      "label": "Item 22 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:378",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 22",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:22",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "id": "test:activity:item:23",
+      "kind": 1,
+      "label": "Item 23 · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 24,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:395",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 23",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:23",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 12,
+      "height": 20,
+      "id": "test:auto:409",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Enter",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " open   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "v",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " details   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "y",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " copy   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "d",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " dismiss   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "/",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " search   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Tab",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " views   ",
+      "wrap": 2
+    }
+  ],
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Activity",
+      "padding": {
+        "bottom": 10,
+        "left": 16,
+        "right": 16,
+        "top": 20
+      },
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "children": 3,
+      "gap": 20,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 20,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Activity details",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:copy",
+      "label": "Copy",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Copy",
+      "wrap": 2
+    },
+    {
+      "children": 20,
+      "height": -1,
+      "id": "test:activity:details",
+      "measure": true,
+      "padding": {
+        "bottom": 0,
+        "left": 0,
+        "right": 10,
+        "top": 0
+      },
+      "scroll": true,
+      "scrollbar_id": "test:text-view:scrollbar:1",
+      "scrollbar_thumb_color": "#f7d794",
+      "scrollbar_thumb_size": 0.12345679012346,
+      "scrollbar_track_color": "#81a1c1",
+      "width": -1
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Item 1",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "word word word word word word word word word word word word word word word word word word word",
+      "wrap": 2
+    },
+    {
+      "children": 8,
+      "height": 20,
+      "id": "test:auto:30",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "↑/↓",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " scroll   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "PgUp/PgDn",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " page   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "y/Ctrl-C",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " copy   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Esc",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " back   ",
+      "wrap": 2
+    }
+  ]
+]

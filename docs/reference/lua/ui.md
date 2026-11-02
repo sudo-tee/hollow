@@ -110,7 +110,11 @@ ui.join({ "one", false, "three" }, function(i)
 end)
 ```
 
-`ui.action_button` is an opt-in overlay button with horizontal padding, rounded
+> In overlay renders prefer `hollow.ui.components.button` and
+> `hollow.ui.components.tabs`: they are focusable and share the component
+> recipes. The inline helpers below remain for inline rows and rich labels.
+
+`ui.action_button` is an inline button with horizontal padding, rounded
 corners, and select-theme colors. Pass the modal render `theme` to match the
 surrounding widget; hover needs no render state. `style` overrides normal defaults;
 `hover_style` overrides hover defaults. Like `ui.button`, a clickable action needs
@@ -551,11 +555,16 @@ input.handlers         -- arrow_left, arrow_right, backspace, _else
 
 ### Components
 
-Compose custom overlays with `hollow.ui.components.column`, `row`, `text`,
-`button` and `progress`. The same namespace holds the composed components the
-built-in overlays use: `dialog`, `input` and `select`. `hollow.ui.layout` is the
-surface engine (`new`, `show`, `hide`, `debug`). Inline `ui.row`/`ui.column` payloads remain for bars, sidebars and rich
-list labels, not direct overlay render roots. See [Clay layout](../../clay-layout.md).
+`hollow.ui.components` is the default way to build overlays: every built-in
+overlay (select, palette, workspace switcher, mux navigator, activity, REPL,
+dialogs, notifications) is composed from it. It covers layout (`row`, `column`,
+`stack`, `scroll`), atoms (`text`, `label`, `badge`, `kbd`, `progress`),
+controls (`button`, `input`, `tabs`, `hints`), containers (`panel`, `header`,
+`rich`, `list_item`, `list`, `picker`) and composites (`dialog`, `toast`), with
+keyboard focus built in. `hollow.ui.layout` is the surface engine (`new`,
+`show`, `hide`, `debug`). Inline `ui.row`/`ui.column` payloads remain for bars,
+sidebars and rich list labels, not direct overlay render roots. See
+[components](components.md) and [Clay layout](../../clay-layout.md).
 
 ### Key composition
 

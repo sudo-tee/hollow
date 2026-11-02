@@ -27,6 +27,96 @@ describe("Clay text-input overlay", function()
     return table.concat(text)
   end
 
+  it("resolves scoped theme and metrics like explicit props", function()
+    local c = ui.components
+    local theme = { fg = "#111111", input_bg = "#222222" }
+    local behavior = {
+      render = function(palette)
+        assert.equals(theme, palette)
+        return {
+          { text = "abc", style = { fg = "#333333" } },
+          { text = " ", style = { bg = "#444444" } },
+        }
+      end,
+    }
+    local ctx = { cell_w = 10, cell_h = 20 }
+    local serialize = require("hollow.ui.layout.serialize")
+    local explicit =
+      serialize(c.input({ behavior = behavior, theme = theme, ctx = ctx }), theme, "test:", ctx)
+    local surface = ui.layout.new({
+      theme = theme,
+      render = function()
+        return c.input({ behavior = behavior })
+      end,
+    })
+    local actual = surface:snapshot(ctx)
+    local expected = serialize(
+      c.input({ behavior = behavior, theme = theme, ctx = ctx }),
+      theme,
+      surface.namespace,
+      ctx
+    )
+    assert.same(expected, actual)
+    assert.equals(5, explicit[1].padding.left)
+    local named = ui.layout
+      .new({
+        theme = theme,
+        render = function()
+          return c.column({
+            c.input({ behavior = behavior, id = "first", boxed = false }),
+            c.input({ behavior = behavior, id = "second", style = { bg = "#555555" } }),
+          })
+        end,
+      })
+      :snapshot(ctx)
+    assert.is_nil(named[2].bg)
+    assert.matches("first:viewport$", named[3].id)
+    assert.matches("first:caret$", named[3].reveal)
+    assert.equals("#555555", named[8].bg)
+    assert.matches("second:viewport$", named[9].id)
+  end)
+
+  it("resolves input override and run tokens using the explicit theme", function()
+    local outer = { fg = "#111111", input_bg = "#222222", muted = "#333333" }
+    local inner = { fg = "#aaaaaa", input_bg = "#bbbbbb", muted = "#cccccc" }
+    local behavior = {
+      render = function(theme)
+        assert.equals(inner, theme)
+        return {
+          { text = "value", style = { fg = "muted" } },
+          { text = " ", style = { bg = "muted", fg = "fg" } },
+        }
+      end,
+    }
+    local surface = ui.layout.new({
+      theme = outer,
+      render = function()
+        return ui.components.input({ behavior = behavior, theme = inner, style = { bg = "muted" } })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#cccccc", nodes[1].bg)
+    assert.equals("#cccccc", nodes[4].fg)
+    assert.equals("#cccccc", nodes[5].bg)
+    assert.equals("#aaaaaa", nodes[6].fg)
+  end)
+
+  it("honors explicit metrics when constructing input outside a surface", function()
+    local theme = { fg = "#111111", input_bg = "#222222" }
+    local behavior = {
+      render = function()
+        return { { text = "x", style = {} }, { text = " ", style = {} } }
+      end,
+    }
+    local node = ui.components.input({
+      behavior = behavior,
+      theme = theme,
+      ctx = { cell_w = 12, cell_h = 24 },
+    })
+    assert.equals(6, node.padding.x)
+    assert.equals(24, node.children[1].height)
+  end)
+
   it("composes styled inline runs with a horizontal viewport and reveal target", function()
     ui.input.open({ prompt = "Rename", default = "world", width = 50 })
     assert.is_true(ui._overlay_state()[1].clay)

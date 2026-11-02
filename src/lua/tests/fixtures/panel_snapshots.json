@@ -1,0 +1,215 @@
+[
+  {
+    "frame": {
+      "align_x": 1,
+      "align_y": 0,
+      "margin": {
+        "bottom": 3,
+        "left": 2,
+        "right": 2,
+        "top": 3
+      },
+      "width": 50
+    },
+    "nodes": [
+      {
+        "bg": "#112233",
+        "border": "#445566",
+        "border_width": {
+          "bottom": 1,
+          "left": 1,
+          "right": 1,
+          "top": 1
+        },
+        "children": 1,
+        "id": "test:dialog",
+        "label": "Confirm",
+        "padding": {
+          "bottom": 11,
+          "left": 18,
+          "right": 19,
+          "top": 22
+        },
+        "radius": 5
+      },
+      {
+        "border": "#4c566a",
+        "border_width": {
+          "between_children": 1,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0
+        },
+        "children": 2,
+        "gap": 10,
+        "width": -1
+      },
+      {
+        "bold": true,
+        "fg": "#8fbcdf",
+        "kind": 2,
+        "text": "Confirm"
+      },
+      {
+        "children": 3,
+        "width": -1
+      },
+      {
+        "fg": "#d8dee9",
+        "kind": 2,
+        "text": "Continue?"
+      },
+      {
+        "height": 20
+      },
+      {
+        "children": 3,
+        "gap": 20,
+        "kind": 1,
+        "width": -1
+      },
+      {
+        "width": -1
+      },
+      {
+        "bg": "#b48ead",
+        "children": 1,
+        "clickable": true,
+        "hover_bg": "#b48ead",
+        "hover_fg": "#d8dee9",
+        "id": "test:confirm:button:1",
+        "label": "Yes",
+        "padding": {
+          "bottom": 0,
+          "left": 10,
+          "right": 10,
+          "top": 0
+        },
+        "radius": 8
+      },
+      {
+        "bold": true,
+        "fg": "#d8dee9",
+        "kind": 2,
+        "text": "Yes",
+        "wrap": 2
+      },
+      {
+        "children": 1,
+        "clickable": true,
+        "hover_bg": "#666870",
+        "hover_fg": "#d8dee9",
+        "id": "test:confirm:button:2",
+        "label": "No",
+        "padding": {
+          "bottom": 0,
+          "left": 10,
+          "right": 10,
+          "top": 0
+        },
+        "radius": 8
+      },
+      {
+        "fg": "#d8dee9",
+        "kind": 2,
+        "text": "No",
+        "wrap": 2
+      }
+    ]
+  },
+  {
+    "frame": {
+      "align_x": 1,
+      "align_y": 0,
+      "margin": {
+        "bottom": 3,
+        "left": 2,
+        "right": 2,
+        "top": 3
+      }
+    },
+    "nodes": [
+      {
+        "bg": "#112233",
+        "border": "#445566",
+        "border_width": {
+          "bottom": 1,
+          "left": 1,
+          "right": 1,
+          "top": 1
+        },
+        "children": 1,
+        "id": "test:dialog",
+        "padding": {
+          "bottom": 11,
+          "left": 8,
+          "right": 9,
+          "top": 22
+        },
+        "radius": 5
+      },
+      {
+        "fg": "#d8dee9",
+        "kind": 2,
+        "text": "Overlay"
+      }
+    ]
+  },
+  {
+    "frame": {
+      "align_x": 2,
+      "align_y": 0,
+      "margin": {
+        "bottom": 3,
+        "left": 2,
+        "right": 2,
+        "top": 3
+      }
+    },
+    "nodes": [
+      {
+        "children": 1,
+        "id": "test:dialog",
+        "padding": {
+          "bottom": 11,
+          "left": 8,
+          "right": 9,
+          "top": 22
+        }
+      },
+      {
+        "children": 1,
+        "gap": 20
+      },
+      {
+        "bg": "#112233",
+        "border": "#445566",
+        "border_width": {
+          "bottom": 1,
+          "left": 1,
+          "right": 1,
+          "top": 1
+        },
+        "children": 1,
+        "clickable": true,
+        "id": "test:notify:1",
+        "label": "[INFO] Notice",
+        "padding": {
+          "bottom": 11,
+          "left": 18,
+          "right": 19,
+          "top": 22
+        },
+        "radius": 5
+      },
+      {
+        "bold": true,
+        "fg": "#8fbcdf",
+        "kind": 2,
+        "text": "[INFO] Notice",
+        "wrap": 2
+      }
+    ]
+  }
+]

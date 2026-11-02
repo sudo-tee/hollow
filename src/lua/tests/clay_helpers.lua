@@ -1,16 +1,5 @@
 local M = {}
 
-function M.row(ui, row, theme)
-  local shared = require("hollow.ui.shared")
-  return require("hollow.ui.components.select").from_row(
-    row,
-    row.id or "row",
-    shared.nodes_plain_text(row.children),
-    theme or shared.palette("overlay"),
-    { cell_w = 8, cell_h = 19 }
-  )
-end
-
 function M.nodes(ui)
   ui._overlay_state()
   ui._layout_prepare(1200, 900, 8, 19)

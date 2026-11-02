@@ -1,6 +1,6 @@
 local box = require("hollow.ui.style.box")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
-local styles = require("hollow.ui.recipes.notify")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -11,11 +11,6 @@ local ui = hollow.ui
 local overlay_stack = state.ui.overlay_stack
 
 ui.notify = ui.notify or {}
-
-local function notification_style(theme, level)
-  local variant = styles.slots.message.variants[level] and level or nil
-  return styles(theme, { variant = variant }).message
-end
 
 local function notification_border(theme, level)
   local foreground = theme.notify_levels[level] or theme.title
@@ -106,13 +101,14 @@ function ui.notify.show(message, opts)
 
   widget = ui.overlay.new({
     render = function(ctx)
-      local children = {}
       local group = toast_group(widget) or {}
-      for index = 1, #group do
-        local toast = group[widget.align:find("bottom") and index or (#group - index + 1)]
-        children[#children + 1] = toast._toast_render(ctx)
-      end
-      return ui.components.column(children, { gap = ctx.cell_h or 19 })
+      local bottom = widget.align:find("bottom") ~= nil
+      return ui.components.column(
+        ui.components.each(group, function(_, index)
+          return group[bottom and index or (#group - index + 1)]._toast_render(ctx)
+        end),
+        { gap = props.cell_h(ctx) }
+      )
     end,
     on_unmount = invalidate_toasts,
     align = opts.align or "top_right",
@@ -144,28 +140,25 @@ function ui.notify.show(message, opts)
     if not opts.chrome then
       chrome.border = notification_border(theme, level)
     end
-    local padding = box.normalize(chrome.padding)
-    local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-    padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
-    padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-    return ui.components.column(
-      { ui.components.text(text, notification_style(theme, level), { wrap = "none" }) },
-      {
-        id = "notify:" .. tostring(widget._toast_id),
-        label = text,
-        padding = padding,
-        style = chrome,
-        on_click = function()
-          if action and type(action.fn) == "function" then
-            action.fn()
-          end
-          if widget._activity_id then
-            hollow.activity.dismiss(widget._activity_id)
-          end
-          ui.close_overlay_widget(widget)
-        end,
-      }
-    )
+    return ui.components.toast({
+      id = "notify:" .. tostring(widget._toast_id),
+      label = text,
+      theme = theme,
+      ctx = ctx,
+      inset = "modal",
+      chrome = chrome,
+      level = level,
+      text = text,
+      on_click = function()
+        if action and type(action.fn) == "function" then
+          action.fn()
+        end
+        if widget._activity_id then
+          hollow.activity.dismiss(widget._activity_id)
+        end
+        ui.close_overlay_widget(widget)
+      end,
+    })
   end
   ui.notify._next_toast_id = (ui.notify._next_toast_id or 0) + 1
   widget._toast_id = ui.notify._next_toast_id

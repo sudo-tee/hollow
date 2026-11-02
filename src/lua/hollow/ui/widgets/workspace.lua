@@ -2,6 +2,7 @@ local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 local styles = require("hollow.ui.recipes.workspace")
@@ -129,18 +130,17 @@ end
 -- but let Clay allocate the remaining cwd width instead of padding strings.
 local function layout_format_item(workspace, domain_width, ctx, view)
   local c = ui.components
-  local component = require("hollow.ui.components.select")
   local switcher = switcher_state()
   ctx._workspace_palette = ctx._workspace_palette or derived_palette()
   local palette = ctx._workspace_palette
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
   local s = styles(palette, { variant = variant })
   local match = require("hollow.ui.recipes.select")(view.theme).match
-  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+  local cell_h = props.cell_h(ctx)
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
-  local gap = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP) * cell_w
+  local gap = tostring(math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)) .. "ch"
   local attention = workspace.has_bell or workspace.program_status_attention
   local bell = workspace.program_status_attention_level == "error" and palette.bell_error
     or palette.bell
@@ -149,53 +149,54 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     cwd = CWD_FALLBACK[variant]
   end
   local function column(text, style, width, suffix)
-    return component.inline(
+    return c.rich({
+      id = view.id .. ":" .. suffix,
+      width = width,
+      height = cell_h,
+      scroll_x = true,
+      align_y = "center",
       shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
-      nil,
-      {
-        id = view.id .. ":" .. suffix,
-        width = width,
-        height = cell_h,
-        scroll_x = true,
-        align_y = "center",
-      }
-    )
+    })
   end
-  local columns = {
+  local badge = workspace.program_status_badge or ""
+  local domain = source.normalize_domain(workspace.domain)
+  return c.row({
     c.column({
       c.text(
         attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
         ui.style(s.status, attention and { fg = bell, bold = true }),
         { wrap = "none" }
       ),
-    }, { width = status_width * cell_w }),
-    c.column({}, { width = gap }),
-    column(util.truncate_end(workspace.name, name_width), s.name, name_width * cell_w, "name"),
-    c.column({}, { width = gap }),
-  }
-  local badge = workspace.program_status_badge or ""
-  if badge ~= "" then
-    columns[#columns + 1] = c.text(
-      badge,
-      ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
-      { wrap = "none" }
-    )
-  end
-  columns[#columns + 1] = column(cwd, s.cwd, "grow", "cwd")
-  local domain = source.normalize_domain(workspace.domain)
-  if domain and domain_width > 0 then
-    local colors = workspace_name_color(domain)
-    columns[#columns + 1] = c.column({
-      c.text(
-        " " .. util.truncate_end(domain, domain_width - 3) .. " ",
-        { fg = colors.fg },
+    }, { width = tostring(status_width) .. "ch" }),
+    c.gap(gap),
+    column(
+      util.truncate_end(workspace.name, name_width),
+      s.name,
+      tostring(name_width) .. "ch",
+      "name"
+    ),
+    c.gap(gap),
+    c.when(badge ~= "", function()
+      return c.text(
+        badge,
+        ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
         { wrap = "none" }
-      ),
-    }, {
-      style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
-    })
-  end
-  return c.row(columns, { width = "grow", height = cell_h, align_y = "center" })
+      )
+    end),
+    column(cwd, s.cwd, "grow", "cwd"),
+    c.when(domain and domain_width > 0, function()
+      local colors = workspace_name_color(domain)
+      return c.column({
+        c.text(
+          " " .. util.truncate_end(domain, domain_width - 3) .. " ",
+          { fg = colors.fg },
+          { wrap = "none" }
+        ),
+      }, {
+        style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
+      })
+    end),
+  }, { width = "grow", height = cell_h, align_y = "center" })
 end
 
 ---@param items HollowUiWorkspaceItem[]

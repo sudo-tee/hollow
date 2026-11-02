@@ -1,0 +1,75 @@
+package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local harness = require("tests.harness")
+local json = require("dkjson")
+
+describe("select hints snapshot", function()
+  it("preserves the rendered select with multiple hints", function()
+    local ui = harness.boot().hollow.ui
+    ui.select.open({
+      prompt = "Choose",
+      items = { "one", "two" },
+      actions = {
+        { name = "open", key = "<CR>", desc = "open", action = function() end },
+        { name = "remove", key = "<C-d>", desc = "remove", action = function() end },
+      },
+    })
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local nodes = surface:snapshot({ width = 800, height = 600, cell_w = 8, cell_h = 19 })
+    local normalized = json.decode(json.encode(nodes))
+    for _, node in ipairs(normalized) do
+      for _, field in ipairs({ "id", "reveal", "scrollbar_id" }) do
+        if node[field] then
+          node[field] = node[field]:gsub("^layout:%d+:", "test:")
+        end
+      end
+    end
+    harness.fixture("src/lua/tests/fixtures/select_hints_snapshot.json", normalized)
+  end)
+
+  it("keeps the plain-text fallback for more than 32 hint runs", function()
+    local ui = harness.boot().hollow.ui
+    local actions = {}
+    for i = 1, 12 do
+      actions[i] = { name = "action" .. i, key = "x", desc = "item" .. i, action = function() end }
+    end
+    ui.select.open({ items = { "one" }, actions = actions })
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local nodes = surface:snapshot({ cell_w = 8, cell_h = 19 })
+    for index, node in ipairs(nodes) do
+      if node.id and node.id:match(":select:hints$") then
+        assert.equals(1, node.children)
+        assert.matches("item12$", nodes[index + 1].text)
+        return
+      end
+    end
+    error("missing select hints")
+  end)
+
+  it("preserves a measured select viewport with scrollbar", function()
+    local ui = harness.boot().hollow.ui
+    local items = {}
+    for i = 1, 30 do
+      items[i] = "item " .. i
+    end
+    ui.select.open({ items = items })
+    local surface = require("hollow.state").get().ui.overlay_stack[1]._layout_surface
+    local ctx = { width = 800, height = 600, cell_w = 10, cell_h = 20 }
+    surface:snapshot(ctx)
+    surface.metrics["select:viewport"] = { width = 400, height = 48 }
+    surface:invalidate()
+    local normalized = json.decode(json.encode(surface:snapshot(ctx)))
+    local found
+    for _, node in ipairs(normalized) do
+      if node.scrollbar_id then
+        found = true
+      end
+      for _, field in ipairs({ "id", "reveal", "scrollbar_id" }) do
+        if node[field] then
+          node[field] = node[field]:gsub("^layout:%d+:", "test:")
+        end
+      end
+    end
+    assert.is_true(found)
+    harness.fixture("src/lua/tests/fixtures/select_scroll_snapshot.json", normalized)
+  end)
+end)

@@ -178,7 +178,7 @@ describe("Clay activity", function()
     assert.is_not_nil(find(":activity:viewport"))
     local button
     for _, node in ipairs(tree()) do
-      if node.id and node.id:find("activity:item:1:run:", 1, true) then
+      if node.id and node.id:find("activity:dismiss:1", 1, true) then
         button = node
       end
     end

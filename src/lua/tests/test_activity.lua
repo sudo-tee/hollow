@@ -60,6 +60,16 @@ describe("activity center", function()
     return clay.text(hollow.ui)
   end
 
+  -- Badges are a painted container directly followed by their text node.
+  local function badge_box(label)
+    local nodes = clay.nodes(hollow.ui)
+    for index = 2, #nodes do
+      if nodes[index].text == label and nodes[index - 1].bg then
+        return nodes[index - 1]
+      end
+    end
+  end
+
   before_each(function()
     env = harness.boot()
     hollow, host = env.hollow, env.host_api
@@ -130,8 +140,7 @@ describe("activity center", function()
     notify("info")
     report("blocked")
     hollow.ui.activity.open({ view = "history" })
-    local badge = assert(clay.label(hollow.ui, "2"))
-    assert.is_not_nil(clay.text_node(hollow.ui, "2"))
+    local badge = assert(badge_box("2"))
     assert.equals(require("hollow.theme").resolve_widget("select").notify_levels.warn, badge.bg)
   end)
 
@@ -139,11 +148,9 @@ describe("activity center", function()
     emit("window:blurred", {})
     notify("info")
     hollow.ui.activity.open({ view = "inbox" })
-    local tab = assert(clay.label(hollow.ui, "Inbox "))
-    local badge = assert(clay.label(hollow.ui, "1"))
-    assert.is_not_nil(clay.text_node(hollow.ui, "Inbox "))
+    local tab = assert(clay.label(hollow.ui, "Inbox"))
+    local badge = assert(badge_box("1"))
     assert.equals(require("hollow.theme").resolve_widget("select").selection_bg, tab.bg)
-    assert.is_not_nil(clay.text_node(hollow.ui, "1"))
     assert.equals(require("hollow.theme").resolve_widget("select").title, badge.bg)
   end)
 

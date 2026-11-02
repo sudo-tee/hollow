@@ -1,3 +1,8 @@
+local box = require("hollow.ui.style.box")
+local c = require("hollow.ui.components")
+local list_item = require("hollow.ui.components.list_item")
+local list_row = require("hollow.ui.recipes.list_row")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.select")
 local util = require("hollow.util")
@@ -148,8 +153,9 @@ end
 
 ---@param actions HollowUiSelectAction[]
 ---@param theme HollowUiTheme
----@return HollowUiRows|nil
-local function render_hint_rows(actions, theme)
+---@param ctx HollowUiLayoutContext
+---@return HollowUiHintsProps|nil
+local function hint_props(actions, theme, ctx)
   local s = styles(theme)
   local hints = hollow
     .tbl(actions)
@@ -158,10 +164,7 @@ local function render_hint_rows(actions, theme)
       if not key_hint then
         return
       end
-      return {
-        ui.text(normalize_hint_chord(key_hint), s.key_hint),
-        ui.text(" " .. (action.desc or action.name or "action"), s.muted),
-      }
+      return { normalize_hint_chord(key_hint), action.desc or action.name or "action" }
     end)
     :get()
 
@@ -169,8 +172,79 @@ local function render_hint_rows(actions, theme)
     return nil
   end
 
-  local hint_nodes = ui.join(hints, ui.text("  ", s.hint_separator))
-  return { ui.divider(theme.divider), ui.row(hint_nodes) }
+  hints.id, hints.width, hints.height, hints.scroll_x =
+    "select:hints", "grow", props.cell_h(ctx), true
+  hints.key_style, hints.description_style, hints.separator_style =
+    s.key_hint, s.muted, s.hint_separator
+  -- Three nodes per hint; long action lists collapse into one text node.
+  hints.plain = #hints * 3 - 1 > 32
+  return hints
+end
+
+---@param entry HollowUiSelectEntry
+---@return string
+local function entry_id(entry)
+  return "select:item:" .. entry.source_index
+end
+
+-- One list item of one or two lines (label, optional detail). Custom
+-- `layout_label` content replaces the label line when rendered rich.
+---@param entry HollowUiSelectEntry
+---@param index integer
+---@param view table
+---@param plain boolean
+---@return HollowUiLayoutNode
+local function render_entry(entry, index, view, plain)
+  local theme, ctx = view.theme, view.ctx
+  local id = entry_id(entry)
+  local selected, hovered = index == view.selected, view.hovered_id == id
+  local s = styles(theme, { selected = selected, hovered = hovered })
+  local padding = box.normalize(list_row(theme).indicator.padding)
+  local line_h = list_item.line_height(theme, ctx)
+  local line =
+    { width = "grow", height = line_h, padding = { top = padding.top, bottom = padding.bottom } }
+  local label = plain and { ui.text(entry.label_text) }
+    or shared.highlight_inline_nodes(entry.label_nodes, view.query, s.match)
+  local lines =
+    { c.rich(util.merge_tables({ prefix = id .. ":label", style = s.label, label }, line)) }
+  local custom = not plain
+    and view.render_label
+    and view.render_label(entry.item, ctx, {
+      query = view.query,
+      selected = selected,
+      hovered = hovered,
+      theme = theme,
+      id = id,
+    })
+  if custom then
+    lines[1] = c.column({ custom }, line)
+  end
+  if entry.detail_text and entry.detail_text ~= "" then
+    local detail = plain and { ui.text(entry.detail_text) }
+      or shared.highlight_inline_nodes(entry.detail_nodes, view.query, s.match)
+    local detail_line =
+      util.merge_tables({ prefix = id .. ":detail", style = s.detail, detail }, line)
+    detail_line.padding.left = props.cell_w(ctx)
+    lines[2] = c.rich(detail_line)
+  end
+  return c.list_item({
+    id = id,
+    theme = theme,
+    selected = selected,
+    hovered = hovered,
+    label = entry.detail_text
+        and entry.detail_text ~= ""
+        and (entry.label_text .. "\n" .. entry.detail_text)
+      or entry.label_text,
+    height = line_h * #lines,
+    on_activate = function()
+      view.on_activate(entry.source_index)
+    end,
+    c.column(
+      lines,
+      { width = "grow", padding = { left = props.cell_w(ctx) * 2 + padding.left - 2 } }
+    ),
+  })
 end
 
 ---@param opts HollowUiSelectOptions|nil
@@ -273,15 +347,12 @@ function ui.select.open(opts)
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-      local component = require("hollow.ui.components.select")
+      local line_h = list_item.line_height(render_theme, ctx)
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
-        clay_row_budget = math.max(
-          1,
-          math.min(20, math.floor(measured.height / component.line_height(render_theme, ctx)))
-        )
+        clay_row_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
       end
-      local hints = render_hint_rows(actions, render_theme)
+      local hints = hint_props(actions, render_theme, ctx)
       local units = 0
       for _, entry in ipairs(entries) do
         units = math.min(list_row_budget(opts), units + entry_row_count(entry))
@@ -289,21 +360,17 @@ function ui.select.open(opts)
           break
         end
       end
-      local list_height = #entries == 0 and (ctx.cell_h or 19)
-        or units * component.line_height(render_theme, ctx)
-      local content_height = (4 + (hints and 2 or 0)) * (ctx.cell_h or 19) + list_height
-      return component.render({
-        prompt = opts.prompt,
-        entries = entries,
-        selected = nav.index,
+      local cell_h = props.cell_h(ctx)
+      local list_height = #entries == 0 and cell_h or units * line_h
+      local content_height = (4 + (hints and 2 or 0)) * cell_h + list_height
+      local view = {
         query = filter.value,
-        filter = filter,
-        viewport = selectable.visible_range(),
+        selected = nav.index,
         hovered_id = state and state.hovered_id,
-        hints = hints,
-        reveal_start = reveal_start,
         render_label = opts.layout_label,
-        on_activate = function(_, source_index)
+        theme = render_theme,
+        ctx = ctx,
+        on_activate = function(source_index)
           -- Ignore stale hits when a filter removed the previously painted row.
           for index, entry in ipairs(current_entries()) do
             if entry.source_index == source_index then
@@ -313,7 +380,45 @@ function ui.select.open(opts)
             end
           end
         end,
-      }, render_theme, ctx),
+      }
+      local viewport = selectable.visible_range()
+      local target = entries[reveal_start and viewport.start_idx or nav.index]
+      local s = styles(render_theme)
+      return c.picker({
+        id = "select:picker",
+        theme = render_theme,
+        header = c.header({
+          id = "select:header",
+          width = "grow",
+          height = cell_h,
+          scroll_x = true,
+          title = opts.prompt or "Select",
+          prompt = true,
+          meta = #entries > 0 and string.format("   %d/%d", nav.index, #entries) or "",
+          meta_align = "inline",
+          theme = render_theme,
+          title_style = s.title,
+          meta_style = s.counter,
+        }),
+        filter = filter,
+        hints = hints,
+        list = {
+          id = "select:viewport",
+          axis = "both",
+          measure = true,
+          reveal = target and entry_id(target),
+          reveal_start = reveal_start,
+          items = entries,
+          selected = nav.index,
+          viewport = viewport,
+          -- Column-heavy windows stay conservative against Clay's fixed scroll pool.
+          window = opts.layout_label and 23 or 24,
+          render_item = function(entry, index, item_view)
+            return render_entry(entry, index, view, item_view.plain)
+          end,
+          empty = c.empty({ text = "No matches", style = s.empty, wrap = "words" }),
+        },
+      }),
         content_height
     end,
     width = opts.width,

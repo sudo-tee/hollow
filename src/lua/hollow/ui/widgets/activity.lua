@@ -2,6 +2,8 @@ local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local list_row = require("hollow.ui.recipes.list_row")
 local program_status = require("hollow.program_status")
+local props = require("hollow.ui.components.props")
+local rich = require("hollow.ui.components.rich")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.activity")
 local util = require("hollow.util")
@@ -94,19 +96,20 @@ local function row_label(entry)
   return secondary and (primary .. " · " .. secondary) or primary
 end
 
-local function hint_row(theme, text)
-  local hints = {}
-  for key, label in text:gmatch("(%S+) ([^%s]+)") do
-    hints[#hints + 1] = { key = key, label = label }
-  end
-  local s = styles(theme)
-  return ui.row(ui.each(hints, function(hint)
-    return {
-      ui.text(hint.key, s.title),
-      ui.text(" " .. hint.label .. "   ", s.muted),
-    }
-  end))
-end
+local detail_hints = {
+  { "↑/↓", "scroll" },
+  { "PgUp/PgDn", "page" },
+  { "y/Ctrl-C", "copy" },
+  { "Esc", "back" },
+}
+local list_hints = {
+  { "Enter", "open" },
+  { "v", "details" },
+  { "y", "copy" },
+  { "d", "dismiss" },
+  { "/", "search" },
+  { "Tab", "views" },
+}
 
 local function marker(entry)
   if entry.source == "shell_command" and entry.category ~= "task" then
@@ -459,24 +462,18 @@ function ui.activity.open(opts)
     end,
   })
 
-  local function render_details()
-    return ui.column({
-      ui.row({
-        ui.text("Activity details", styles(theme).title),
-        ui.spacer(),
-        ui.action_button({
-          id = "activity:copy",
-          text = copy_feedback or "Copy",
-          theme = theme,
-          style = styles(theme).label,
-          on_click = copy,
-        }),
+  local function render_details_header()
+    return {
+      ui.text("Activity details", styles(theme).title),
+      ui.spacer(),
+      ui.components.button({
+        id = "activity:copy",
+        text = copy_feedback or "Copy",
+        theme = theme,
+        style = styles(theme).label,
+        on_click = copy,
       }),
-      ui.divider(theme.divider),
-      detail_view.render(theme),
-      ui.divider(theme.divider),
-      hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back"),
-    })
+    }
   end
 
   local function render_header()
@@ -487,36 +484,30 @@ function ui.activity.open(opts)
         worst = entry.level
       end
     end
-    return ui.row({
+    return {
       ui.text("Activity  ", styles(theme).title),
-      ui.tab_bar({
+      ui.components.tabs({
         theme = theme,
+        gap = "1ch",
+        active = "activity:" .. view,
+        on_select = function(id)
+          return set_view(id:match("^activity:(.+)$"))
+        end,
         tabs = {
           {
             id = "activity:inbox",
             label = "Inbox",
-            active = view == "inbox",
             badge = summary.count > 0 and {
               text = tostring(summary.count),
               color = BADGE_LEVELS[worst] and theme.notify_levels[worst] or theme.title,
             } or nil,
-            on_click = function()
-              return set_view("inbox")
-            end,
           },
-          {
-            id = "activity:history",
-            label = "History",
-            active = view == "history",
-            on_click = function()
-              return set_view("history")
-            end,
-          },
+          { id = "activity:history", label = "History" },
         },
       }),
       ui.spacer(),
       ui.when(summary.count > 0, function()
-        return ui.action_button({
+        return ui.components.button({
           id = "activity:dismiss-all",
           text = "Dismiss all",
           theme = theme,
@@ -528,7 +519,7 @@ function ui.activity.open(opts)
       end, function()
         return ui.text("")
       end),
-    })
+    }
   end
 
   local function measure_columns()
@@ -553,15 +544,15 @@ function ui.activity.open(opts)
     }
   end
 
-  local function render_category_row(entry, row_state)
-    local selected, hovered = row_state.selected, row_state.hovered
+  local function category_nodes(entry, row_state)
+    local selected = row_state.selected
     local s = styles(theme, { selected = selected })
-    return ui.row({
+    return {
       ui.text("  ", list_row(theme, { selected = selected }).section_indicator),
       ui.text((entry.expanded and icons.expanded or icons.collapsed) .. " ", s.category_arrow),
       ui.text(entry.title, s.category_title),
       ui.text(" (" .. entry.count .. ")", s.category_count),
-    }, row_state.options)
+    }
   end
 
   local function render_workspace_pill(entry, workspace, columns)
@@ -580,7 +571,7 @@ function ui.activity.open(opts)
 
   local function render_dismiss_button(entry, row_state)
     return ui.when(entry.pending, function()
-      return ui.action_button({
+      return ui.components.button({
         id = "activity:dismiss:" .. entry.id,
         text = "×",
         theme = theme,
@@ -594,8 +585,8 @@ function ui.activity.open(opts)
     end)
   end
 
-  local function render_entry_row(entry, row_state, columns)
-    local selected, hovered = row_state.selected, row_state.hovered
+  local function entry_nodes(entry, row_state, columns)
+    local selected = row_state.selected
     local workspace = util.truncate_end(entry.workspace or "", columns.pill_cap)
     local time, seconds = age(entry)
     local indent = row_group[entry] and "  " or ""
@@ -610,7 +601,7 @@ function ui.activity.open(opts)
     local rest = budget - util.display_width(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
     local entry_s = entry_styles(theme, entry, row_state, columns, seconds)
-    return ui.row({
+    return {
       ui.text("  ", list_row(theme, { selected = selected }).indicator),
       ui.text(indent),
       ui.text(marker(entry), entry_s.marker),
@@ -626,19 +617,29 @@ function ui.activity.open(opts)
       ),
       ui.text("  "),
       render_dismiss_button(entry, row_state),
-    }, row_state.options)
+    }
   end
 
   local function render_layout(render_theme, state, ctx)
     local c = ui.components
-    local component = require("hollow.ui.components.select")
-    local cell_h = ctx.cell_h or 19
-    local function line(node)
-      return component.inline(
-        node.children,
-        nil,
-        { width = "grow", height = cell_h, scroll_x = true }
-      )
+    local cell_h = props.cell_h(ctx)
+    local function line(prefix, nodes)
+      return c.rich({ prefix = prefix, width = "grow", height = cell_h, scroll_x = true, nodes })
+    end
+    local function hints(items)
+      local options = {
+        width = "grow",
+        height = cell_h,
+        scroll_x = true,
+        separator = "   ",
+        trailing_separator = true,
+        key_style = styles(theme).title,
+        description_style = styles(theme).muted,
+      }
+      for index, item in ipairs(items) do
+        options[index] = item
+      end
+      return c.hints(options)
     end
     if details then
       local measured = ctx.metrics and ctx.metrics["activity:details"]
@@ -646,88 +647,71 @@ function ui.activity.open(opts)
         detail_options.row_budget = math.max(1, math.min(20, math.floor(measured.height / cell_h)))
       end
       local detail_rows = detail_view.render(theme)
-      local body = {}
-      for _, row in ipairs(detail_rows) do
-        body[#body + 1] = c.text(
-          shared.nodes_plain_text(row.children),
-          { fg = theme.fg },
-          { wrap = "none" }
-        )
-      end
-      local header = render_details().children[1]
+      local body = c.each(detail_rows, function(row)
+        return c.text(shared.nodes_plain_text(row.children), { fg = theme.fg }, { wrap = "none" })
+      end)
+      local header = render_details_header()
       local scrollbar = detail_rows[1] or {}
-      return component.sections({
-        line(header),
-        c.column(body, {
+      return c.stack({
+        theme = theme,
+        divided = true,
+        width = "grow",
+        height = "grow",
+        gap = cell_h,
+        line("activity:details:header", header),
+        c.scroll({
           id = "activity:details",
+          theme = theme,
+          ctx = ctx,
           width = "grow",
           height = "grow",
-          scroll = true,
           measure = true,
-          padding = {
-            left = 0,
-            right = scrollbar.scrollbar_track and math.max(8, ctx.cell_w or 8) or 0,
-          },
-          scrollbar_id = scrollbar.scrollbar_track and scrollbar.scrollbar_id or nil,
-          scrollbar_thumb_ratio = scrollbar.scrollbar_thumb_ratio,
-          scrollbar_thumb_size = scrollbar.scrollbar_thumb_size,
-          scrollbar_track_color = scrollbar.scrollbar_track_color,
-          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+          scrollbar = scrollbar.scrollbar_track and {
+            id = scrollbar.scrollbar_id,
+            ratio = scrollbar.scrollbar_thumb_ratio,
+            size = scrollbar.scrollbar_thumb_size,
+            track_color = scrollbar.scrollbar_track_color,
+            thumb_color = scrollbar.scrollbar_thumb_color,
+          } or nil,
+          body,
         }),
-        line(hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back")),
-      }, theme, cell_h),
+        hints(detail_hints),
+      }),
         height * cell_h
     end
     refresh()
     local measured = ctx.metrics and ctx.metrics["activity:viewport"]
     local columns = measure_columns()
-    local sample = rows[1]
-      and (
-        rows[1].header_category
-          and render_category_row(rows[1], { selected = false, options = {} })
-        or render_entry_row(
-          rows[1],
-          { selected = false, hovered = false, options = {}, fg = theme.fg },
-          columns
+    local function row_nodes(entry, row_state)
+      return entry.header_category and category_nodes(entry, row_state)
+        or entry_nodes(entry, row_state, columns)
+    end
+    local row_height = rows[1]
+        and rich.height(
+          row_nodes(rows[1], { selected = false, hovered = false, fg = theme.fg }),
+          ctx
         )
-      )
-    local row_height = sample and component.row_height(sample, ctx) or cell_h
+      or cell_h
     if measured then
       clay_budget = math.max(1, math.min(20, math.floor(measured.height / row_height)))
     end
     local viewport = list.visible_range()
-    local first = math.max(1, viewport.start_idx - math.floor((23 - clay_budget) / 2))
-    local last = math.min(#rows, first + 22)
-    first = math.max(1, last - 22)
-    local items, costs, total = {}, {}, 0
-    local function count(node)
-      local result = 1
-      for _, child in ipairs(node.children or {}) do
-        result = result + count(child)
-      end
-      return result
-    end
-    local function make_item(index, plain)
-      local entry = rows[index]
+    local function make_item(entry, index, item_view)
       local id = "activity:item:" .. tostring(entry.id)
       local selected, hovered = index == list.nav.index, state.hovered_id == id
-      local options = list_row(theme, { selected = selected, hovered = hovered }).paint
       local row_state = {
-        options = options,
         selected = selected,
         hovered = hovered,
         fg = styles(theme, { selected = selected, hovered = hovered }).row.fg,
       }
-      local row = entry.header_category and render_category_row(entry, row_state)
-        or render_entry_row(entry, row_state, columns)
       local entry_id = entry.id
-      return component.from_row(
-        row,
-        id,
-        entry.header_category and entry.title or row_label(entry),
-        theme,
-        ctx,
-        function()
+      return c.list_item({
+        id = id,
+        theme = theme,
+        label = entry.header_category and entry.title or row_label(entry),
+        selected = selected,
+        hovered = hovered,
+        on_activate = function()
           refresh()
           for current, candidate in ipairs(rows) do
             if candidate.id == entry_id then
@@ -737,72 +721,60 @@ function ui.activity.open(opts)
             end
           end
         end,
-        plain
-      )
-    end
-    for index = first, last do
-      local item = make_item(index, false)
-      items[#items + 1] = item
-      costs[#costs + 1] = count(item)
-      total = total + costs[#costs]
-    end
-    local simplified = {}
-    while total > component.row_budget do
-      local farthest, distance
-      for offset = 1, #items do
-        local index = first + offset - 1
-        local d = math.abs(index - list.nav.index)
-        if not simplified[offset] and (not distance or d > distance) then
-          farthest, distance = offset, d
-        end
-      end
-      if not farthest then
-        break
-      end
-      local item = make_item(first + farthest - 1, true)
-      total = total - costs[farthest] + count(item)
-      items[farthest], costs[farthest], simplified[farthest] = item, count(item), true
-    end
-    if #rows == 0 then
-      items[1] = c.text(
-        filter.value ~= "" and "No matching activity"
-          or view == "inbox" and "All caught up"
-          or "No activity recorded",
-        styles(theme).empty
-      )
+        c.rich({
+          width = "grow",
+          prefix = id,
+          plain = item_view.plain,
+          row_nodes(entry, row_state),
+        }),
+      })
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
-    local scrollbar = viewport.show_scrollbar
-        and shared.serialize_row_paint({ scrollbar_track = true }, theme)
-      or {}
-    local children = { line(render_header()) }
+    local header = line("activity:header", render_header())
+    local filter_node
     if searching then
-      children[#children + 1] = c.row({
+      filter_node = c.row({
         c.text("/ ", styles(theme).label),
-        require("hollow.ui.components.input")(filter, theme, ctx, true),
+        require("hollow.ui.components.input")({
+          behavior = filter,
+          theme = theme,
+          boxed = false,
+          -- Search mode owns the filter's keys.
+          focusable = false,
+        }),
       }, { width = "grow" })
     end
-    children[#children + 1] = c.column(items, {
+    local list_props = {
       id = "activity:viewport",
-      width = "grow",
-      height = "grow",
-      scroll = true,
-      scroll_x = true,
       measure = true,
       reveal = target and ("activity:item:" .. tostring(target.id)) or nil,
       reveal_start = reveal_start,
-      padding = { left = 0, right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0 },
-      scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
-      scrollbar_thumb_ratio = viewport.thumb_ratio,
-      scrollbar_thumb_size = viewport.thumb_size,
-      scrollbar_track_color = scrollbar.scrollbar_track_color,
-      scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
-    })
-    children[#children + 1] = line(
-      copy_feedback and ui.row({ ui.text(copy_feedback, styles(theme).success) })
-        or hint_row(theme, "Enter open   v details   y copy   d dismiss   / search   Tab views")
-    )
-    return component.sections(children, theme, cell_h), height * cell_h
+      viewport = viewport,
+      items = rows,
+      selected = list.nav.index,
+      window = 23,
+      render_item = make_item,
+      empty = c.empty({
+        text = filter.value ~= "" and "No matching activity"
+          or view == "inbox" and "All caught up"
+          or "No activity recorded",
+        style = styles(theme).empty,
+        wrap = "words",
+      }),
+    }
+    local hint_node = copy_feedback
+        and line("activity:hints", { ui.text(copy_feedback, styles(theme).success) })
+      or hints(list_hints)
+    return c.picker({
+      id = "activity:picker",
+      theme = theme,
+      gap = cell_h,
+      list = list_props,
+      header = header,
+      filter = filter_node,
+      hints = hint_node,
+    }),
+      height * cell_h
   end
 
   modal = ui.modal({

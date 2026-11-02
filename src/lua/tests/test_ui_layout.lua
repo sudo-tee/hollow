@@ -9,6 +9,719 @@ describe("hierarchical Clay layout", function()
     c = ui.components
   end)
 
+  it("splits props and preserves sparse fragments and legacy options", function()
+    local props = require("hollow.ui.components.props")
+    assert.equals(8, props.cell_w(nil))
+    assert.equals(19, props.cell_h(nil))
+    assert.equals(12, props.cell_w({ cell_w = 12 }))
+    assert.equals(24, props.cell_h({ cell_h = 24 }))
+    local child = c.text("child")
+    local p, children = props.split({ [1] = child, [3] = false, width = "grow" })
+    assert.equals("grow", p.width)
+    assert.equals(child, children[1])
+    assert.is_false(children[3])
+    local old = { child }
+    local options = { width = 12 }
+    p, children = props.split(old, options)
+    assert.equals(options, p)
+    assert.equals(old, children)
+    local node = c.row({ width = "grow", child, { c.text({ "nested", wrap = "none" }) } })
+    assert.equals("grow", node.width)
+    assert.equals("nested", node.children[2][1].text)
+    assert.equals("none", node.children[2][1].wrap)
+    assert.equals(ui.each, c.each)
+    assert.equals(ui.when, c.when)
+    assert.equals(ui.join, c.join)
+  end)
+
+  it("renders text atoms with scoped recipes and one node each", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      muted = "#333333",
+      styles = { label = { root = { variants = { muted = { fg = "title" } } } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.label({ "hint", tone = "muted" }),
+          c.title("heading"),
+          c.icon({ name = "bell", style = { fg = "#abcdef" } }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(4, #nodes)
+    assert.equals("#222222", nodes[2].fg)
+    assert.equals(2, nodes[2].wrap)
+    assert.equals("#222222", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(require("hollow.ui.icons").bell, nodes[4].text)
+    assert.equals("#abcdef", nodes[4].fg)
+    assert.has_error(function()
+      c.icon("unknown")
+    end, "unknown icon: unknown")
+  end)
+
+  it("renders hints within the two-nodes-per-hint budget", function()
+    local theme = { fg = "#111111", muted = "#222222", panel_border = "#333333" }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.hints({
+          { "Enter", "open" },
+          { "Esc", "close" },
+          separator = " · ",
+          width = "grow",
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals(-1, nodes[1].width)
+    assert.equals("Enter", nodes[2].text)
+    assert.equals("#333333", nodes[2].fg)
+    assert.is_true(nodes[2].bold)
+    assert.equals(" open · ", nodes[3].text)
+    assert.equals("#222222", nodes[3].fg)
+    assert.equals(" close", nodes[5].text)
+  end)
+
+  it("renders rich inline nodes and dispatches their original local IDs", function()
+    local clicked
+    local surface = layout.new({
+      render = function()
+        return c.rich({
+          id = "rich",
+          prefix = "sample",
+          width = "grow",
+          ui.text("left"),
+          ui.button({
+            id = "action",
+            text = "run",
+            on_click = function(event)
+              clicked = event.id
+            end,
+          }),
+          ui.spacer(),
+          ui.text("right"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals("left", nodes[3].text)
+    assert.equals("run", nodes[5].text)
+    assert.equals("right", nodes[7].text)
+    assert.equals(surface.namespace .. "sample:run:2", nodes[4].id)
+    surface:dispatch(nodes[4].id)
+    assert.equals("action", clicked)
+  end)
+
+  it("renders list item selection, accent and padded accessibility label", function()
+    local clicked
+    local theme = {
+      fg = "#111111",
+      panel_border = "#222222",
+      selection_bg = "#333333",
+      hover_bg = "#444444",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.list_item({
+            id = "first",
+            label = " padded ",
+            selected = true,
+            accent = "panel_border",
+            on_activate = function(event)
+              clicked = event.id
+            end,
+            c.text("One"),
+          }),
+          c.list_item({
+            id = "disabled",
+            label = "Disabled",
+            selected = true,
+            accent = false,
+            disabled = true,
+            on_activate = function()
+              error("disabled")
+            end,
+            c.text("Two"),
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(8, #nodes)
+    assert.equals(" padded ", nodes[2].label)
+    assert.is_true(nodes[2].list_item)
+    assert.equals("#333333", nodes[2].bg)
+    assert.equals("#222222", nodes[4].bg)
+    assert.is_nil(nodes[6].clickable)
+    assert.equals("Two", nodes[8].text)
+    surface:dispatch(nodes[2].id)
+    assert.equals("first", clicked)
+  end)
+
+  it("renders optional list item detail without changing its accessibility label", function()
+    local theme = { fg = "#111111", muted = "#222222", panel_border = "#333333" }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.list_item({
+          id = "item",
+          label = " padded ",
+          detail = "secondary",
+          c.text("primary"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals(" padded ", nodes[1].label)
+    assert.equals("primary", nodes[4].text)
+    assert.equals("secondary", nodes[5].text)
+    assert.equals("#222222", nodes[5].fg)
+  end)
+
+  it("derives list item labels from nested text and optional detail", function()
+    local surface = layout.new({
+      render = function()
+        return c.list_item({
+          id = "item",
+          detail = "detail",
+          [1] = { c.text("  padded"), false, { c.text(" text  ") } },
+        })
+      end,
+    })
+    assert.equals("  padded text  \ndetail", surface:snapshot()[1].label)
+  end)
+
+  it("keeps visible and selected list rows rich under the node budget", function()
+    local items, simplified = {}, {}
+    for i = 1, 100 do
+      items[i] = i
+    end
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = items,
+          selected = 12,
+          viewport = { start_idx = 12, end_idx = 13 },
+          render_item = function(item, index, view)
+            if view.plain then
+              simplified[index] = true
+            end
+            local children = {}
+            for run = 1, view.plain and 1 or 20 do
+              children[run] = c.text(item .. ":" .. run)
+            end
+            return c.row(children, { id = "item:" .. index })
+          end,
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.is_true(#nodes <= 411)
+    assert.is_true(#nodes < 512)
+    assert.is_not_nil(next(simplified))
+    assert.is_nil(simplified[12])
+    assert.is_nil(simplified[13])
+    assert.equals(surface.namespace .. "item:12", nodes[1].reveal)
+    local rich = {}
+    for _, node in ipairs(nodes) do
+      if node.id then
+        rich[node.id] = node.children
+      end
+    end
+    assert.equals(20, rich[surface.namespace .. "item:12"])
+    assert.equals(20, rich[surface.namespace .. "item:13"])
+  end)
+
+  it("composes a picker from header, filter, list and hints", function()
+    local theme = {
+      fg = "#111111",
+      muted = "#222222",
+      title = "#333333",
+      counter = "#444444",
+      panel_border = "#555555",
+      divider = "#666666",
+      input_bg = "#777777",
+    }
+    local filter = {
+      render = function()
+        return {
+          { text = "abc", style = { fg = "#111111" } },
+          { text = " ", style = { bg = "#777777" } },
+        }
+      end,
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.picker({
+          id = "picker",
+          title = "Choose",
+          counter = "1/1",
+          filter = filter,
+          list = {
+            items = { "one" },
+            render_item = function(item)
+              return c.list_item({ id = "item:1", label = item, c.text(item) })
+            end,
+          },
+          hints = { { "Enter", "open" } },
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(4, nodes[1].children)
+    assert.equals(20, nodes[1].gap)
+    assert.equals("#666666", nodes[1].border)
+    local ids = {}
+    for _, node in ipairs(nodes) do
+      if node.id then
+        ids[node.id] = node
+      end
+    end
+    assert.is_not_nil(ids[surface.namespace .. "picker:filter:caret"])
+    assert.is_not_nil(ids[surface.namespace .. "picker:list"])
+    assert.equals(surface.namespace .. "item:1", ids[surface.namespace .. "picker:list"].reveal)
+    assert.has_error(function()
+      c.picker({})
+    end, "picker requires an id")
+  end)
+
+  it("retains a selected list item outside the visible window", function()
+    local items = {}
+    for i = 1, 50 do
+      items[i] = i
+    end
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = items,
+          selected = 40,
+          window = 4,
+          viewport = { start_idx = 1, end_idx = 2 },
+          render_item = function(item, index, view)
+            assert.is_false(index == 40 and view.plain)
+            return c.column({ c.text(item) }, { id = "item:" .. index })
+          end,
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(surface.namespace .. "item:40", nodes[1].reveal)
+  end)
+
+  it("re-renders only off-screen unselected items plain over budget", function()
+    local simplified = {}
+    local surface = layout.new({
+      render = function()
+        return c.list({
+          id = "list",
+          items = { "one", "two" },
+          selected = 1,
+          viewport = { start_idx = 1, end_idx = 1 },
+          window = 2,
+          budget = 0,
+          render_item = function(item, index, view)
+            if view.plain then
+              simplified[index] = true
+            end
+            return c.row({ c.text(item) }, { id = "row:" .. index })
+          end,
+        })
+      end,
+    })
+    surface:snapshot()
+    assert.is_nil(simplified[1])
+    assert.is_true(simplified[2])
+  end)
+
+  it("flattens sparse nested rich fragments", function()
+    local surface = layout.new({
+      render = function()
+        return c.rich({ [1] = { ui.text("left"), false, { ui.text("right") } }, [3] = "tail" })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(4, #nodes)
+    assert.equals("left", nodes[2].text)
+    assert.equals("right", nodes[3].text)
+    assert.equals("tail", nodes[4].text)
+  end)
+
+  it("composes stack, header and empty state without extra wrappers", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      counter = "#333333",
+      empty = "#444444",
+      divider = "#555555",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.stack({
+          divided = true,
+          gap = "1ch",
+          width = "grow",
+          c.header({ title = "Workspaces", prompt = true, meta = "3/12", width = "grow" }),
+          c.empty("No matches"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10 })
+    assert.equals(6, #nodes)
+    assert.equals(2, nodes[1].children)
+    assert.equals(10, nodes[1].gap)
+    assert.equals("#555555", nodes[1].border)
+    assert.equals(1, nodes[1].border_width.between_children)
+    assert.equals(3, nodes[2].children)
+    assert.equals("Workspaces:", nodes[3].text)
+    assert.equals("#222222", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(-1, nodes[4].width)
+    assert.equals("#333333", nodes[5].fg)
+    assert.equals("#444444", nodes[6].fg)
+    assert.has_error(function()
+      c.stack({ direction = "diagonal" })
+    end, "invalid stack direction")
+  end)
+
+  it("supports inline header metadata without adding a spacer", function()
+    local theme = { fg = "#111111", styles = { label = { root = { bold = true } } } }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.header({
+          title = "Filter",
+          prompt = true,
+          meta = " 1/2",
+          meta_align = "inline",
+          title_style = { fg = "#222222" },
+          meta_style = { fg = "#333333" },
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(3, #nodes)
+    assert.equals("Filter:", nodes[2].text)
+    assert.equals("#222222", nodes[2].fg)
+    assert.equals(" 1/2", nodes[3].text)
+    assert.equals("#333333", nodes[3].fg)
+  end)
+
+  it("renders panel chrome and inset with unit-aware padding", function()
+    local theme = { fg = "#111111", panel_bg = "#222222", panel_border = "#333333", radius = 3 }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.panel({
+          id = "panel",
+          label = "Panel",
+          inset = "modal",
+          padding = { x = "0.5ch", y = "0.5lh" },
+          c.text("content"),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(2, #nodes)
+    assert.equals("Panel", nodes[1].label)
+    assert.equals("#222222", nodes[1].bg)
+    assert.equals("#333333", nodes[1].border)
+    assert.equals(3, nodes[1].radius)
+    assert.same({ left = 20, right = 20, top = 30, bottom = 20 }, nodes[1].padding)
+    local plain = layout
+      .new({
+        theme = theme,
+        render = function()
+          return c.panel({
+            inset = "none",
+            chrome = false,
+            padding = "1ch",
+            style = { bg = "#abcdef" },
+          })
+        end,
+      })
+      :snapshot({ cell_w = 10 })
+    assert.equals("#abcdef", plain[1].bg)
+    assert.is_nil(plain[1].border)
+    assert.same({ left = 10, right = 10, top = 10, bottom = 10 }, plain[1].padding)
+    assert.has_error(function()
+      c.panel({ inset = "wrong" })
+    end, "invalid panel inset")
+  end)
+
+  it("renders toast level and action in two nodes", function()
+    local clicked = 0
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      panel_bg = "#333333",
+      panel_border = "#444444",
+      notify_levels = { info = "#555555", warn = "#666666" },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.toast({
+          id = "toast",
+          level = "warn",
+          text = "Warning",
+          inset = "none",
+          action = {
+            label = "Open",
+            on_click = function()
+              clicked = clicked + 1
+            end,
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(2, #nodes)
+    assert.equals("Warning  [Open]", nodes[1].label)
+    assert.equals("Warning  [Open]", nodes[2].text)
+    assert.equals("#666666", nodes[2].fg)
+    surface:dispatch(nodes[1].id)
+    assert.equals(1, clicked)
+  end)
+
+  it("preserves notification theme sheet overrides in toast", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      panel_bg = "#333333",
+      panel_border = "#444444",
+      notify_levels = { info = "#555555" },
+      styles = { notify = { message = { variants = { info = { fg = "title", bold = false } } } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.toast({ text = "notice", level = "info", inset = "none" })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#222222", nodes[2].fg)
+    assert.is_nil(nodes[2].bold)
+  end)
+
+  it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()
+    local theme = {
+      fg = "#111111",
+      panel_border = "#222222",
+      scrollbar_track = "#333333",
+      scrollbar_thumb = "#444444",
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.scroll({
+          id = "list",
+          axis = "both",
+          width = "grow",
+          reveal = "item",
+          measure = true,
+          padding = { x = "0.5ch", y = "0.5lh" },
+          scrollbar = { id = "bar", ratio = 0.25, size = 0.5 },
+          c.column({ id = "item", c.text("row") }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(3, #nodes)
+    assert.is_true(nodes[1].scroll)
+    assert.is_true(nodes[1].scroll_x)
+    assert.is_true(nodes[1].measure)
+    assert.equals(nodes[2].id, nodes[1].reveal)
+    assert.equals(surface.namespace .. "bar", nodes[1].scrollbar_id)
+    assert.equals(0.25, nodes[1].scrollbar_thumb_ratio)
+    assert.equals(0.5, nodes[1].scrollbar_thumb_size)
+    assert.equals("#333333", nodes[1].scrollbar_track_color)
+    assert.equals("#444444", nodes[1].scrollbar_thumb_color)
+    assert.same({ left = 5, right = 15, top = 10, bottom = 10 }, nodes[1].padding)
+    assert.has_error(function()
+      c.scroll({ axis = "y" })
+    end, "scroll requires an id")
+    assert.has_error(function()
+      c.scroll({ id = "x", axis = "z" })
+    end, "invalid scroll axis")
+    local horizontal = c.scroll({ id = "horizontal", axis = "x" })
+    assert.is_false(horizontal.scroll)
+    assert.is_true(horizontal.scroll_x)
+  end)
+
+  it("renders painted atoms in two nodes with theme and prop overrides", function()
+    local clicked = 0
+    local theme = {
+      fg = "#111111",
+      panel_bg = "#222222",
+      input_bg = "#333333",
+      styles = { badge = { root = { radius = 7, fg = "fg" } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.badge({
+            text = "busy",
+            color = "#444444",
+            id = "badge",
+            label = "status",
+            on_click = function()
+              clicked = clicked + 1
+            end,
+          }),
+          c.pill({ "domain", fg = "#555555", bg = "#666666", width = 30 }),
+          c.kbd({
+            key = "<CR>",
+            style = { bg = "#777777" },
+            disabled = true,
+            id = "key",
+            on_click = function()
+              error("disabled")
+            end,
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals(7, nodes[2].radius)
+    assert.equals("#444444", nodes[2].bg)
+    assert.equals("status", nodes[2].label)
+    assert.equals("#111111", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(30, nodes[4].width)
+    assert.equals("#666666", nodes[4].bg)
+    assert.equals("#555555", nodes[5].fg)
+    assert.equals("#777777", nodes[6].bg)
+    assert.is_nil(nodes[6].clickable)
+    local key, mods = hollow.keymap.parse_chord("<CR>")
+    assert.equals(hollow.keymap.format_chord(key, mods), nodes[7].text)
+    surface:dispatch(nodes[2].id)
+    assert.equals(1, clicked)
+  end)
+
+  it("resolves atom style tokens against an explicit theme, not the surface", function()
+    local outer = { fg = "#111111", muted = "#222222", panel_bg = "#333333" }
+    local inner = { fg = "#aaaaaa", muted = "#bbbbbb", panel_bg = "#cccccc" }
+    local surface = layout.new({
+      theme = outer,
+      render = function()
+        return c.column({
+          c.label({ text = "label", theme = inner, style = { fg = "muted" } }),
+          c.badge({ text = "badge", theme = inner, color = "muted", style = { fg = "fg" } }),
+          c.pill({ text = "pill", theme = inner, fg = "muted", bg = "panel_bg" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#bbbbbb", nodes[2].fg)
+    assert.equals("#bbbbbb", nodes[3].bg)
+    assert.equals("#aaaaaa", nodes[4].fg)
+    assert.equals("#cccccc", nodes[5].bg)
+    assert.equals("#bbbbbb", nodes[6].fg)
+  end)
+
+  it("honors explicit themes for hints, stack and scroll style tokens", function()
+    local outer =
+      { fg = "#111111", muted = "#222222", panel_border = "#333333", divider = "#444444" }
+    local inner =
+      { fg = "#aaaaaa", muted = "#bbbbbb", panel_border = "#cccccc", divider = "#dddddd" }
+    local surface = layout.new({
+      theme = outer,
+      render = function()
+        return c.stack({
+          theme = inner,
+          divided = true,
+          style = { bg = "muted" },
+          c.hints({ theme = inner, { "Enter", "open" } }),
+          c.scroll({ id = "view", theme = inner, style = { bg = "muted" } }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals("#bbbbbb", nodes[1].bg)
+    assert.equals("#dddddd", nodes[1].border)
+    assert.equals("#cccccc", nodes[3].fg)
+    assert.equals("#bbbbbb", nodes[4].fg)
+    assert.equals("#bbbbbb", nodes[5].bg)
+  end)
+
+  it("resolves cell units and reports invalid fields", function()
+    local surface = layout.new({
+      render = function()
+        return c.column({
+          width = "2ch",
+          height = "1lh",
+          min_width = "0.5ch",
+          gap = "0.5lh",
+          padding = { x = "1ch", y = "0.5lh" },
+          c.gap({ height = "1lh" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot({ cell_w = 10, cell_h = 20 })
+    assert.equals(20, nodes[1].width)
+    assert.equals(20, nodes[1].height)
+    assert.equals(5, nodes[1].min_width)
+    assert.equals(10, nodes[1].gap)
+    assert.same({ top = 10, right = 10, bottom = 10, left = 10 }, nodes[1].padding)
+    assert.equals(20, nodes[2].height)
+    local serialize = require("hollow.ui.layout.serialize")
+    local palette = require("hollow.ui.shared").palette("select")
+    assert.has_error(function()
+      serialize(c.column({ gap = "2em" }), palette, "test:")
+    end, "invalid gap unit: 2em")
+    local defaults = serialize(c.column({ width = "1ch", height = "1lh" }), palette, "test:")
+    assert.equals(8, defaults[1].width)
+    assert.equals(19, defaults[1].height)
+    local props = require("hollow.ui.components.props")
+    assert.equals(4, props.unit("0.5ch", "gap", {}))
+    assert.has_error(function()
+      props.unit("2em", "padding.right", {})
+    end, "invalid padding.right unit: 2em")
+  end)
+
+  it("restores render scope after nested snapshots and errors", function()
+    local props = require("hollow.ui.components.props")
+    local outer_theme, inner_theme = { fg = "#111111" }, { fg = "#222222" }
+    local inner = layout.new({
+      theme = inner_theme,
+      render = function(ctx)
+        assert.equals(inner_theme, props.scope().theme)
+        assert.equals(ctx, props.scope().ctx)
+        error("render failure")
+      end,
+    })
+    local outer = layout.new({
+      theme = outer_theme,
+      render = function()
+        assert.equals(outer_theme, props.scope().theme)
+        assert.has_error(function()
+          inner:snapshot()
+        end)
+        assert.equals(outer_theme, props.scope().theme)
+        return c.text("ok")
+      end,
+    })
+    outer:snapshot()
+    assert.is_nil(props._scope)
+    assert.not_nil(props.scope().theme)
+  end)
+
   it("toggles the surface and grid inspectors independently", function()
     layout.debug(true)
     layout.debug_grid(1)
@@ -212,31 +925,48 @@ describe("hierarchical Clay layout", function()
     assert.equals(previous, ui._layout_tree)
   end)
 
-  it("caches demo until interaction and keeps custom paint and scroll nodes", function()
-    c.demo()
-    local tree = ui._layout_tree
-    local scrolls, custom = 0, 0
-    for _, node in ipairs(tree) do
-      if node.scroll then
-        scrolls = scrolls + 1
+  it("opens the gallery above an open modal and re-renders only after interaction", function()
+    local function has_text(text)
+      for _, node in ipairs(ui._layout_tree or {}) do
+        if node.text == text then
+          return true
+        end
       end
+      return false
+    end
+    ui.modal({
+      title = "Below",
+      render = function()
+        return c.text("modal below")
+      end,
+    })
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    local gallery = c.demo()
+    ui._layout_prepare(1200, 900, 8, 19)
+    local tree = ui._layout_tree
+    assert.is_true(has_text("Component gallery"))
+    local custom = 0
+    for _, node in ipairs(tree) do
       if node.kind == 3 then
         custom = custom + 1
       end
     end
-    assert.equals(1, scrolls)
-    assert.equals(41, custom)
-    ui._layout_click("clay.count")
+    assert.equals(1, custom)
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.equals(tree, ui._layout_tree)
+    ui._layout_click("gallery:button:solid:default:rest")
+    ui._layout_prepare(1200, 900, 8, 19)
     assert.not_equals(tree, ui._layout_tree)
-    local found = false
-    for _, node in ipairs(ui._layout_tree) do
-      if node.text == "Clicked 1 times" then
-        found = true
-      end
-    end
-    assert.is_true(found)
-    ui._layout_click("clay.close")
-    assert.is_nil(ui._layout_tree)
+    assert.is_true(has_text("clicks: 1"))
+    ui._layout_click("gallery:close")
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    c.demo()
+    assert.is_true(ui.dispatch_overlay_key("escape", {}))
+    ui._layout_prepare(1200, 900, 8, 19)
+    assert.is_true(has_text("modal below"))
+    assert.is_not_nil(gallery)
   end)
 
   it("isolates identical local IDs and invalidates only the owning snapshot", function()

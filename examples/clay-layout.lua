@@ -1,4 +1,6 @@
 -- Standalone opt-in demo: launch Hollow with --config pointing to this file.
+-- This replaces the window config; from a running session (e.g. the Lua REPL)
+-- call `hollow.ui.components.demo()` instead.
 local hollow = require("hollow")
 local windows = hollow.platform.is_windows
 hollow.config.set({

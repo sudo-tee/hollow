@@ -1,0 +1,331 @@
+[
+  {
+    "bg": "#1c202b",
+    "border": "#b48ead",
+    "border_width": {
+      "bottom": 1,
+      "left": 1,
+      "right": 1,
+      "top": 1
+    },
+    "children": 1,
+    "id": "test:dialog",
+    "label": "Command Palette",
+    "padding": {
+      "bottom": 9,
+      "left": 13,
+      "right": 13,
+      "top": 19
+    },
+    "radius": 8
+  },
+  {
+    "border": "#4c566a",
+    "border_width": {
+      "between_children": 1,
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "children": 4,
+    "gap": 19,
+    "height": -1,
+    "id": "test:palette:picker",
+    "width": -1
+  },
+  {
+    "children": 2,
+    "height": 19,
+    "id": "test:select:header",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Command Palette:",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "   0/2",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Filter: ",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "id": "test:palette:picker:filter",
+    "width": -1
+  },
+  {
+    "children": 3,
+    "height": 19,
+    "id": "test:palette:picker:filter:viewport",
+    "kind": 1,
+    "reveal": "test:palette:picker:filter:caret",
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 19
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "bg": "#d8dee9",
+    "children": 1,
+    "height": 19,
+    "id": "test:palette:picker:filter:caret"
+  },
+  {
+    "bold": true,
+    "fg": "#1f2430",
+    "kind": 2,
+    "text": " ",
+    "wrap": 2
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 19
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "children": 3,
+    "height": -1,
+    "id": "test:select:viewport",
+    "measure": true,
+    "reveal": "test:palette:item:section:1",
+    "scroll": true,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#3b4252",
+    "children": 2,
+    "clickable": true,
+    "hover_bg": "#3b4252",
+    "id": "test:palette:item:section:1",
+    "kind": 1,
+    "label": "  ▼ General",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "bg": "#b48ead",
+    "height": -1,
+    "radius": 1,
+    "width": 2
+  },
+  {
+    "children": 2,
+    "height": 35,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "label": "  ",
+    "padding": {
+      "bottom": 2,
+      "left": 4,
+      "right": 8,
+      "top": 8
+    }
+  },
+  {
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "  ",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "label": "▼ General",
+    "padding": {
+      "bottom": 8,
+      "left": 8,
+      "right": 8,
+      "top": 8
+    }
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "▼ General",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "hover_bg": "#2a2d38",
+    "id": "test:palette:item:entry:1",
+    "kind": 1,
+    "label": "    Open item",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "align_y": 1,
+    "children": 2,
+    "height": 23,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "label": "    ",
+    "padding": {
+      "bottom": 2,
+      "left": 4,
+      "right": 2,
+      "top": 2
+    }
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "    ",
+    "wrap": 2
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "Open item",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "hover_bg": "#2a2d38",
+    "id": "test:palette:item:entry:2",
+    "kind": 1,
+    "label": "    Close item",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "align_y": 1,
+    "children": 2,
+    "height": 23,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "label": "    ",
+    "padding": {
+      "bottom": 2,
+      "left": 4,
+      "right": 2,
+      "top": 2
+    }
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "    ",
+    "wrap": 2
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "Close item",
+    "wrap": 2
+  },
+  {
+    "children": 4,
+    "height": 19,
+    "id": "test:select:hints",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<CR>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " execute  ",
+    "wrap": 2
+  },
+  {
+    "bold": true,
+    "fg": "#b48ead",
+    "kind": 2,
+    "text": "<Esc>",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": " dismiss",
+    "wrap": 2
+  }
+]

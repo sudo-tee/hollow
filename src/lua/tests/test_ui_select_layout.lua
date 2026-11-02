@@ -55,7 +55,7 @@ describe("Clay selectable list", function()
     return values
   end
 
-  it("insets accents without moving select or adapted row content", function()
+  it("insets accents without moving select or list item content", function()
     ui.select.open({ items = { "one", "two" } })
     local tree = prepare()
     local selected, other
@@ -77,32 +77,26 @@ describe("Clay selectable list", function()
     assert.is_nil(tree[other + 1].bg)
     assert.equals(content.padding.left, tree[other + 2].padding.left)
 
-    local adapter = require("hollow.ui.components.select")
     local theme = require("hollow.ui.shared").palette("select")
-    local function adapted(radius, color)
-      return adapter.from_row(
-        ui.row({ ui.text("palette") }, {
-          fill_radius = radius,
-          accent_bar = color,
-        }),
-        "palette:item",
-        "palette",
-        theme,
-        { cell_h = 19 },
-        function() end
-      )
+    local function accented(radius, color)
+      return ui.components.list_item({
+        id = "palette:item",
+        theme = theme,
+        accent = color,
+        style = { radius = radius },
+        ui.components.text("palette"),
+      })
     end
-    local rounded = adapted(4, "#123456")
+    local rounded = accented(4, "#123456")
     assert.equals(2, rounded.children[1].width)
     assert.same({ left = 0, right = 0, top = 4, bottom = 4 }, rounded.children[1].padding)
     assert.equals(1, rounded.children[1].children[1].style.radius)
-    local square = adapted(0, "#123456")
+    local square = accented(0, "#123456")
     assert.equals(0, square.children[1].padding.top)
     assert.equals(0, square.children[1].children[1].style.radius)
-    local absent = adapted(4, nil)
+    local absent = accented(4, false)
     assert.equals(2, absent.children[1].width)
     assert.equals(0, #absent.children[1].children)
-    assert.equals(rounded.height, absent.height)
   end)
 
   it("adds horizontal shell padding while preserving custom chrome padding", function()
@@ -164,7 +158,7 @@ describe("Clay selectable list", function()
       if node.border_width and node.border_width.between_children == 1 then
         sections = node
       end
-      if node.id and node.id:match(":input:viewport$") then
+      if node.id and node.id:match(":filter:viewport$") then
         filter_view = node
       end
     end
@@ -289,6 +283,16 @@ describe("Clay selectable list", function()
     end
     assert.is_true(found_label)
     assert.is_true(found_detail)
+    -- Detail lines are indented one cell past the label.
+    local nodes, indented = prepare(), false
+    for index, node in ipairs(nodes) do
+      if node.padding and node.padding.left == 8 then
+        for offset = 1, 3 do
+          indented = indented or (nodes[index + offset] or {}).text == "details"
+        end
+      end
+    end
+    assert.is_true(indented)
     local beta = row(2)
     ui.dispatch_widget_event("overlay:hover", { id = beta.id, index = 1 })
     prepare()

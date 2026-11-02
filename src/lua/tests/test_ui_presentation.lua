@@ -84,7 +84,14 @@ describe("shared presentation adapters", function()
     local palette = shared.palette("overlay")
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return clay.row(ui, row())
+        local c = ui.components
+        return c.list_item({
+          id = "choice",
+          selected = true,
+          accent = false,
+          style = { radius = 6 },
+          c.rich({ style = { fg = "muted" }, ui.text("choice") }),
+        })
       end,
     }))
     ui.sidebar.mount(ui.sidebar.new({ width = 30, render = row }))
@@ -386,7 +393,7 @@ describe("shared presentation adapters", function()
     }))
     local overlay = ui.overlay.new({
       render = function()
-        return clay.row(ui, ui.row({ close() }))
+        return ui.components.rich({ close() })
       end,
     })
     ui.overlay.push(overlay)

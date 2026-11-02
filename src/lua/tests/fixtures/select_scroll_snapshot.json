@@ -1,0 +1,1347 @@
+[
+  {
+    "bg": "#1c202b",
+    "border": "#b48ead",
+    "border_width": {
+      "bottom": 1,
+      "left": 1,
+      "right": 1,
+      "top": 1
+    },
+    "children": 1,
+    "id": "test:dialog",
+    "label": "Select",
+    "padding": {
+      "bottom": 10,
+      "left": 16,
+      "right": 16,
+      "top": 20
+    },
+    "radius": 8
+  },
+  {
+    "border": "#4c566a",
+    "border_width": {
+      "between_children": 1,
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "children": 3,
+    "gap": 20,
+    "height": -1,
+    "id": "test:select:picker",
+    "width": -1
+  },
+  {
+    "children": 2,
+    "height": 20,
+    "id": "test:select:header",
+    "kind": 1,
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Select:",
+    "wrap": 2
+  },
+  {
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "   1/30",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#8fbcdf",
+    "kind": 2,
+    "text": "Filter: ",
+    "wrap": 2
+  },
+  {
+    "children": 1,
+    "id": "test:select:picker:filter",
+    "width": -1
+  },
+  {
+    "children": 3,
+    "height": 20,
+    "id": "test:select:picker:filter:viewport",
+    "kind": 1,
+    "reveal": "test:select:picker:filter:caret",
+    "scroll_x": true,
+    "width": -1
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 20
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "bg": "#d8dee9",
+    "children": 1,
+    "height": 20,
+    "id": "test:select:picker:filter:caret"
+  },
+  {
+    "bold": true,
+    "fg": "#1f2430",
+    "kind": 2,
+    "text": " ",
+    "wrap": 2
+  },
+  {
+    "bg": "#16161d",
+    "children": 1,
+    "height": 20
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "",
+    "wrap": 2
+  },
+  {
+    "children": 24,
+    "height": -1,
+    "id": "test:select:viewport",
+    "measure": true,
+    "padding": {
+      "bottom": 0,
+      "left": 0,
+      "right": 10,
+      "top": 0
+    },
+    "reveal": "test:select:item:1",
+    "scroll": true,
+    "scroll_x": true,
+    "scrollbar_id": "test:select:scrollbar:1",
+    "scrollbar_thumb_color": "#f7d794",
+    "scrollbar_thumb_size": 0.066666666666666999,
+    "scrollbar_track_color": "#81a1c1",
+    "width": -1
+  },
+  {
+    "bg": "#3b4252",
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#3b4252",
+    "id": "test:select:item:1",
+    "kind": 1,
+    "label": "item 1",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "bg": "#b48ead",
+    "height": -1,
+    "radius": 1,
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#eceff4",
+    "kind": 2,
+    "text": "item 1",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:2",
+    "kind": 1,
+    "label": "item 2",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 2",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:3",
+    "kind": 1,
+    "label": "item 3",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 3",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:4",
+    "kind": 1,
+    "label": "item 4",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 4",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:5",
+    "kind": 1,
+    "label": "item 5",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 5",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:6",
+    "kind": 1,
+    "label": "item 6",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 6",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:7",
+    "kind": 1,
+    "label": "item 7",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 7",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:8",
+    "kind": 1,
+    "label": "item 8",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 8",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:9",
+    "kind": 1,
+    "label": "item 9",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 9",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:10",
+    "kind": 1,
+    "label": "item 10",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 10",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:11",
+    "kind": 1,
+    "label": "item 11",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 11",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:12",
+    "kind": 1,
+    "label": "item 12",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 12",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:13",
+    "kind": 1,
+    "label": "item 13",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 13",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:14",
+    "kind": 1,
+    "label": "item 14",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 14",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:15",
+    "kind": 1,
+    "label": "item 15",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 15",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:16",
+    "kind": 1,
+    "label": "item 16",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 16",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:17",
+    "kind": 1,
+    "label": "item 17",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 17",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:18",
+    "kind": 1,
+    "label": "item 18",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 18",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:19",
+    "kind": 1,
+    "label": "item 19",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 19",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:20",
+    "kind": 1,
+    "label": "item 20",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 20",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:21",
+    "kind": 1,
+    "label": "item 21",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 21",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:22",
+    "kind": 1,
+    "label": "item 22",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 22",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:23",
+    "kind": 1,
+    "label": "item 23",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 23",
+    "wrap": 2
+  },
+  {
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:24",
+    "kind": 1,
+    "label": "item 24",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "children": 1,
+    "padding": {
+      "bottom": 0,
+      "left": 22,
+      "right": 0,
+      "top": 0
+    },
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "padding": {
+      "bottom": 2,
+      "left": 2,
+      "right": 2,
+      "top": 2
+    },
+    "width": -1
+  },
+  {
+    "fg": "#d8dee9",
+    "kind": 2,
+    "text": "item 24",
+    "wrap": 2
+  }
+]

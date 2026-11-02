@@ -1,55 +1,59 @@
--- Clay-backed composition; behavior stays with the modal and navigation helpers.
-local button_styles = require("hollow.ui.recipes.button")
+-- Optional title over a divided content column of body and right-aligned quiet
+-- buttons. Behavior stays with the modal and navigation helpers.
 local c = require("hollow.ui.components")
 local color = require("hollow.color")
+local props = require("hollow.ui.components.props")
 local variants = { default = true, primary = true, destructive = true }
 
-return function(opts, theme, ctx)
-  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-  local children = {}
-  children[#children + 1] = opts.body or c.text(opts.prompt, { fg = theme.fg })
-  if opts.footer and #opts.footer > 0 then
-    local palette = setmetatable({
-      button_emphasis_bg = theme.button_emphasis_bg
-        or color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg),
-    }, { __index = theme })
-    local buttons = { c.column({}, { width = "grow" }) }
-    for index, button in ipairs(opts.footer) do
-      local style = button_styles(palette, {
-        variant = variants[button.kind] and button.kind or "default",
-        selected = opts.selected == index,
-        hovered = opts.hovered == index,
-      }).dialog
-      style.radius = theme.radius
-      style.hover = {
-        bg = button_styles(palette, {
-          variant = variants[button.kind] and button.kind or "default",
-          selected = opts.selected == index,
-          hovered = true,
-        }).dialog.bg,
-      }
-      buttons[#buttons + 1] = c.column({ c.text(button.text, style, { wrap = "none" }) }, {
-        id = button.id,
-        label = button.text,
-        on_click = button.on_click,
-        padding = { x = cell_w },
-        style = style,
-      })
-    end
-    children[#children + 1] = c.column({}, { height = cell_h })
-    children[#children + 1] = c.row(buttons, { width = "grow", gap = cell_w * 2 })
+local function actions_row(opts, theme, cell_w)
+  local palette = setmetatable({
+    button_emphasis_bg = theme.button_emphasis_bg
+      or color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg),
+  }, { __index = theme })
+  local buttons = c.each(opts.actions, function(action, index)
+    local id = action.id or (opts.id and (opts.id .. ":action:" .. index))
+    local node = c.button({
+      appearance = "quiet",
+      theme = palette,
+      variant = variants[action.kind] and action.kind or "default",
+      selected = opts.selected == index or (id ~= nil and opts.selected == id),
+      hovered = opts.hovered == index,
+      id = id,
+      text = action.text,
+      on_click = action.on_click,
+      disabled = action.disabled,
+      padding = { x = cell_w },
+    })
+    -- Dialog buttons follow the theme radius, square when it is unset.
+    node.style.radius = theme.radius
+    return node
+  end)
+  return c.row({ c.spacer(), buttons }, { width = "grow", gap = cell_w * 2 })
+end
+
+return function(value)
+  local opts = props.split(value)
+  local theme, ctx = props.theme(opts), props.ctx(opts)
+  local cell_w, cell_h = props.cell_w(ctx), props.cell_h(ctx)
+  local body = opts.body
+  if body == nil or type(body) == "string" then
+    body = c.text(body, { fg = theme.fg })
   end
-  local content = c.column(children, { width = "grow" })
+  local has_actions = opts.actions and #opts.actions > 0
+  local children = {
+    body,
+    c.when(has_actions, function()
+      return { c.gap({ height = cell_h }), actions_row(opts, theme, cell_w) }
+    end),
+  }
+  opts.width = opts.width or "grow"
   if not opts.title or opts.title == "" then
-    return content
+    return c.column(children, opts)
   end
-  return c.column({
-    c.text(opts.title, { fg = theme.title, bold = true }),
-    content,
-  }, {
-    width = "grow",
-    gap = math.floor(cell_h * 0.5),
-    border_width = { between_children = 1 },
-    style = { border = theme.divider },
-  })
+  opts[1] = c.text(opts.title, { fg = theme.title, bold = true })
+  opts[2] = c.column(children, { width = "grow" })
+  opts.divided = true
+  opts.gap = opts.gap or math.floor(cell_h * 0.5)
+  opts.theme = theme
+  return c.stack(opts)
 end

@@ -34,6 +34,7 @@ const Field = enum {
     alpha,
     border,
     hover_bg,
+    hover_fg,
     bold,
     scroll,
     scroll_x,
@@ -44,6 +45,7 @@ const Field = enum {
     wrap,
     text_align,
     clickable,
+    text_cursor,
     padding,
 };
 const fields = std.StaticStringMap(Field).initComptime(blk: {
@@ -205,6 +207,7 @@ pub const Surface = struct {
                 .alpha => alpha = std.math.clamp(numberAt(api, state, -1), 0, 255),
                 .border => node.border = colorAt(api, state, -1),
                 .hover_bg => node.hover_bg = colorAt(api, state, -1),
+                .hover_fg => node.hover_fg = colorAt(api, state, -1),
                 .bold => node.bold = api.to_boolean(state, -1) != 0,
                 .scroll => node.scroll = api.to_boolean(state, -1) != 0,
                 .scroll_x => node.scroll_x = api.to_boolean(state, -1) != 0,
@@ -212,6 +215,7 @@ pub const Surface = struct {
                 .list_item => node.list_item = api.to_boolean(state, -1) != 0,
                 .measure => node.measure = api.to_boolean(state, -1) != 0,
                 .clickable => node.clickable = api.to_boolean(state, -1) != 0,
+                .text_cursor => node.text_cursor = api.to_boolean(state, -1) != 0,
                 .align_y => node.align_y = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .wrap => node.wrap = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .text_align => node.text_align = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),

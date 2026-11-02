@@ -4,6 +4,7 @@ local c = ui.components
 local completion = require("hollow.ui.widgets.lua_repl.completion")
 local editor = require("hollow.ui.widgets.lua_repl.editor")
 local eval = require("hollow.ui.widgets.lua_repl.eval")
+local props = require("hollow.ui.components.props")
 local tools = require("hollow.ui.widgets.lua_repl.tools")
 local transcript = require("hollow.ui.widgets.lua_repl.transcript")
 local M = { SCROLLBAR = "repl:output:scrollbar" }
@@ -42,16 +43,20 @@ local function output_view(theme, h, ctx, opts, rows)
       }),
     }, { id = "output:" .. (first + i - 1), height = h })
   end)
-  return c.column(lines, {
+  return c.scroll({
     id = "repl:output",
+    theme = theme,
+    ctx = ctx,
+    axis = "x",
     width = "grow",
     height = opts.height and "grow" or #lines * h,
     measure = true,
-    scroll_x = true,
-    padding = scrolled and { left = 0, right = math.max(8, ctx.cell_w or 8) } or nil,
-    scrollbar_id = scrolled and M.SCROLLBAR or nil,
-    scrollbar_thumb_ratio = scrolled and (last - rows) / hidden or nil,
-    scrollbar_thumb_size = scrolled and rows / #transcript.lines or nil,
+    scrollbar = scrolled and {
+      id = M.SCROLLBAR,
+      ratio = (last - rows) / hidden,
+      size = rows / #transcript.lines,
+    } or nil,
+    lines,
   })
 end
 
@@ -132,15 +137,23 @@ local function input_line(line, theme, h)
 end
 
 local function key_hints(muted, h, scrolled)
-  local hints = ui.when(
-    completion.menu,
-    "Tab/↑/↓ select · Enter insert · Esc dismiss",
-    "Enter run · Tab complete · Esc close" .. ui.when(scrolled, " · PgUp/PgDn scroll", "")
-  )
-  return c.column(
-    { text(hints, muted) },
-    { id = "repl:footer", height = h, width = "grow", scroll_x = true }
-  )
+  local hints = completion.menu
+      and {
+        { "Tab/↑/↓", "select" },
+        { "Enter", "insert" },
+        { "Esc", "dismiss" },
+      }
+    or {
+      { "Enter", "run" },
+      { "Tab", "complete" },
+      { "Esc", "close" },
+    }
+  if not completion.menu and scrolled then
+    hints[#hints + 1] = { "PgUp/PgDn", "scroll" }
+  end
+  hints.id, hints.height, hints.width, hints.scroll_x = "repl:footer", h, "grow", true
+  hints.plain, hints.separator, hints.description_style = true, " · ", muted
+  return c.hints(hints)
 end
 
 -- Transcript rows: fill an explicit modal height, otherwise show at most 12.
@@ -155,7 +168,7 @@ end
 
 -- Returns the layout and the height it needs when the modal has no fixed height.
 function M.render(theme, ctx, opts)
-  local h = ctx.cell_h or 19
+  local h = props.cell_h(ctx)
   local muted = { fg = theme.muted or theme.fg }
 
   local menu, menu_rows = {}, 0

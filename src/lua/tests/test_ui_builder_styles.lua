@@ -45,7 +45,7 @@ describe("Clay dialog button styles", function()
         false,
         ui.components.text("last"),
       }),
-      footer = {
+      actions = {
         {
           id = "first",
           text = "First",
@@ -54,7 +54,8 @@ describe("Clay dialog button styles", function()
           end,
         },
       },
-    }, hollow.theme.resolve_widget("select"), {})
+      theme = hollow.theme.resolve_widget("select"),
+    })
     local surface = ui.layout.new({
       render = function()
         return tree

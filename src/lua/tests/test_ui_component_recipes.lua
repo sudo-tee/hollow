@@ -50,6 +50,137 @@ describe("unified component styling", function()
     end, "hollow.ui: unknown list_row variant typo")
   end)
 
+  it("uses scoped quiet button paint and disables interaction", function()
+    local palette = {
+      fg = "#111111",
+      muted = "#555555",
+      selected_fg = "#eeeeee",
+      button_emphasis_bg = "#222222",
+      styles = { button = { dialog = { fg = "#abcdef" } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.column({
+          ui.components.button({
+            appearance = "quiet",
+            id = "active",
+            text = "Go",
+            selected = true,
+            on_click = function() end,
+          }),
+          ui.components.button({
+            appearance = "quiet",
+            id = "disabled",
+            text = "Stop",
+            disabled = true,
+            on_click = function() end,
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals("#222222", nodes[2].bg)
+    assert.equals("#222222", nodes[2].hover_bg)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#555555", nodes[5].fg)
+    assert.is_nil(nodes[4].clickable)
+    assert.is_nil(nodes[4].hover_bg)
+  end)
+
+  it("applies scoped solid button states and forwards layout props", function()
+    local palette = {
+      fg = "#111111",
+      muted = "#222222",
+      hover_fg = "#eeeeee",
+      hover_bg = "#333333",
+      primary_fg = "#ffffff",
+      primary_bg = "#444444",
+      styles = { button = { root = { radius = 9 } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.column({
+          ui.components.button({
+            appearance = "solid",
+            id = "a",
+            text = "Go",
+            variant = "primary",
+            selected = true,
+            width = 80,
+            label = "Launch",
+            on_click = function() end,
+          }),
+          ui.components.button({
+            appearance = "solid",
+            id = "b",
+            text = "No",
+            disabled = true,
+            on_click = function() end,
+          }),
+          ui.components.button({ id = "c", text = "Legacy", variant = "primary" }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(7, #nodes)
+    assert.equals(80, nodes[2].width)
+    assert.equals("Launch", nodes[2].label)
+    assert.equals(9, nodes[2].radius)
+    assert.equals("#333333", nodes[2].bg)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#222222", nodes[5].fg)
+    assert.is_nil(nodes[4].clickable)
+    assert.is_nil(nodes[4].hover_bg)
+    assert.equals("#444444", nodes[6].bg)
+    assert.equals(9, nodes[6].radius)
+  end)
+
+  it("renders tabs with selected paint, badges and isolated callbacks", function()
+    local selected
+    local palette = {
+      fg = "#111111",
+      muted = "#222222",
+      panel_bg = "#333333",
+      selection_fg = "#eeeeee",
+      selection_bg = "#444444",
+      styles = { tab = { root = { radius = 7 } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.tabs({
+          width = "grow",
+          active = "one",
+          on_select = function(id)
+            selected = id
+          end,
+          tabs = {
+            { id = "one", label = "First" },
+            { id = "two", label = "Second", badge = { text = "3", color = "#555555" } },
+            { id = "three", label = "Third", disabled = true },
+          },
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(9, #nodes)
+    assert.equals(-1, nodes[1].width)
+    assert.equals("First", nodes[2].label)
+    assert.equals("#444444", nodes[2].bg)
+    assert.equals(7, nodes[2].radius)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#555555", nodes[6].bg)
+    assert.equals("3", nodes[7].text)
+    assert.is_nil(nodes[8].clickable)
+    surface:dispatch(nodes[4].id)
+    assert.equals("two", selected)
+    surface:dispatch(nodes[2].id)
+    assert.equals("one", selected)
+  end)
+
   it("does not retain disabled overlay callbacks from a previous enabled render", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({
@@ -111,18 +242,20 @@ describe("unified component styling", function()
     assert.equals(1, clicks)
   end)
 
-  it("uses row recipes without inheriting boxes or identity into text", function()
+  it("uses list item paint without inheriting boxes or identity into text", function()
     local widget = ui.overlay.new({
       render = function()
-        return clay.row(
-          ui,
-          ui.row({ ui.text("inherited", { fg = "muted" }), ui.text("child", { fg = "#abcdef" }) }, {
-            id = "choice",
-            variant = "selectable",
-            selected = true,
-            style = { radius = 9, fg = "muted" },
-          })
-        )
+        local c = ui.components
+        return c.list_item({
+          id = "choice",
+          selected = true,
+          style = { radius = 9 },
+          c.rich({
+            style = { fg = "muted" },
+            ui.text("inherited"),
+            ui.text("child", { fg = "#abcdef" }),
+          }),
+        })
       end,
     })
     ui.overlay.push(widget)
@@ -145,38 +278,11 @@ describe("unified component styling", function()
     end, "hollow.ui: unsupported row style field padding")
   end)
 
-  it("resolves row hover once and keeps explicit legacy aliases final", function()
-    local widget = ui.overlay.new({
-      render = function()
-        return clay.row(
-          ui,
-          ui.row({ ui.text("Choice") }, {
-            id = "choice",
-            style = { fg = "#111111", bg = "#222222", hover = { fg = "#333333", bg = "#444444" } },
-            fill_bg = "#555555",
-            fill_radius = 0,
-          })
-        )
-      end,
-    })
-    ui.overlay.push(widget)
-    local row = assert(clay.find(ui, ":choice"))
-    assert.equals(shared.palette("overlay").fg, clay.text_node(ui, "Choice").fg)
-    assert.equals("#555555", row.bg)
-    assert.is_nil(row.radius)
-    assert.equals(shared.palette("overlay").hover_bg, row.hover_bg)
-  end)
-
-  it("honors an explicit disabled accent part on selectable rows", function()
+  it("honors a disabled accent on selected list items", function()
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return clay.row(
-          ui,
-          ui.row(
-            { ui.text("Choice") },
-            { id = "choice", variant = "selectable", selected = true, accent_bar = false }
-          )
-        )
+        local c = ui.components
+        return c.list_item({ id = "choice", selected = true, accent = false, c.text("Choice") })
       end,
     }))
     for _, node in ipairs(clay.nodes(ui)) do
@@ -224,7 +330,7 @@ describe("unified component styling", function()
     assert.is_not.equal(before, ui.action_button({}).style.fg)
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return clay.row(ui, ui.row({ ui.text("row") }, { id = "row" }))
+        return ui.components.list_item({ id = "row", ui.components.text("row") })
       end,
     }))
     assert.equals("#654321", clay.find(ui, ":row").hover_bg)

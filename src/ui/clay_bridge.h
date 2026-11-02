@@ -16,7 +16,7 @@ typedef struct HollowClayNode {
     float min_width, max_width, min_height, max_height;
     Clay_Padding padding;
     uint16_t gap;
-    Clay_Color fg, bg, border, hover_bg;
+    Clay_Color fg, bg, border, hover_bg, hover_fg;
     Clay_Color scrollbar_track_color, scrollbar_thumb_color;
     float scrollbar_thumb_ratio, scrollbar_thumb_size;
     float radius;
@@ -25,6 +25,7 @@ typedef struct HollowClayNode {
     Clay_BorderWidth border_width;
     bool border_width_set;
     bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure;
+    bool text_cursor; // Hovering shows the text (I-beam) cursor; for focusable inputs.
     int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
     int text_align; // Wrapped line alignment: 0 left, 1 center, 2 right.
     int align_y; // Child alignment: 0 start, 1 center, 2 end.

@@ -1,0 +1,156 @@
+-- One row plus inline runs (`ui.text`, `ui.span`, groups or fragments). Painted
+-- or clickable runs need a container, and a spacer splits the content into two
+-- additional rows for left/right alignment. Layout nodes (such as `c.button`)
+-- among the children pass through unchanged. `plain` (or more than 32 runs)
+-- collapses the content into one text node. `style` is inherited by the runs;
+-- the row itself is unpainted.
+--
+-- Without an explicit height, padded runs set the row height to the cell height
+-- plus their largest top and bottom padding, and center unpadded text.
+local box = require("hollow.ui.style.box")
+local c = require("hollow.ui.components")
+local props = require("hollow.ui.components.props")
+local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
+local M = {}
+
+local MAX_RUNS = 32
+
+local function painted(style)
+  return style.bg
+    or style.border
+    or style.radius
+    or type(style.on_click) == "function"
+    or not box.is_empty(box.normalize(style.padding))
+end
+
+-- Largest vertical run padding, and whether some visible text sits higher.
+local function extents(flat)
+  local top, bottom, center = 0, 0, false
+  for _, span in ipairs(flat) do
+    local padding = box.normalize(span.style and span.style.padding)
+    top, bottom = math.max(top, padding.top), math.max(bottom, padding.bottom)
+  end
+  for _, span in ipairs(flat) do
+    if
+      not span.spacer
+      and tostring(span.text or ""):match("%S")
+      and box.normalize(span.style and span.style.padding).top < top
+    then
+      center = true
+    end
+  end
+  return top, bottom, center
+end
+
+local function is_node(value)
+  return type(value) == "table" and value.kind ~= nil and value._type == nil
+end
+
+local function flatten(children, style)
+  local flat, pending = {}, {}
+  local function flush()
+    if #pending > 0 then
+      shared.flatten_span_nodes(
+        shared.collect_inline(pending, "hollow.ui.components.rich", true),
+        style,
+        flat
+      )
+      pending = {}
+    end
+  end
+  local function walk(list)
+    for index = 1, table.maxn(list) do
+      local child = list[index]
+      if is_node(child) then
+        flush()
+        flat[#flat + 1] = { node = child }
+      elseif
+        type(child) == "table"
+        and child._type == nil
+        and not shared.is_text_shorthand(child)
+      then
+        walk(child)
+      elseif child ~= nil and type(child) ~= "boolean" then
+        pending[#pending + 1] = child
+      end
+    end
+  end
+  walk(children)
+  flush()
+  return flat
+end
+
+--- Row height for inline content: cell height plus the largest run padding.
+---@param children table
+---@param ctx? HollowUiLayoutContext
+---@return number
+function M.height(children, ctx)
+  local top, bottom = extents(flatten(children))
+  return props.cell_h(ctx) + top + bottom
+end
+
+local function run(span, index, prefix)
+  if span.node then
+    return span.node
+  end
+  local text = c.text(span.text, span.style, { wrap = "none" })
+  local paint = span.style or {}
+  if not painted(paint) then
+    return text
+  end
+  local clickable = type(paint.on_click) == "function"
+  return c.column({ text }, {
+    style = paint,
+    id = clickable and (prefix .. ":run:" .. index) or nil,
+    label = span.text,
+    on_click = clickable and function(event)
+      local payload = util.clone_value(event)
+      payload.id = paint.id
+      paint.on_click(payload)
+    end or nil,
+  })
+end
+
+local function render(value)
+  local opts, children = props.split(value)
+  local style = opts.style
+  opts.style = nil
+  local flat = flatten(children, style)
+  local top, bottom, center = extents(flat)
+  if opts.height == nil and top + bottom > 0 then
+    opts.height = props.cell_h(props.ctx(opts)) + top + bottom
+    opts.align_y = opts.align_y or (center and "center" or nil)
+  end
+  if opts.plain or #flat > MAX_RUNS then
+    local parts = c.each(flat, function(span)
+      return span.node and (span.node.label or "") or (not span.spacer and span.text) or ""
+    end)
+    return c.row({ c.text(table.concat(parts), style, { wrap = "none" }) }, opts)
+  end
+  local prefix = opts.prefix or opts.id or "rich"
+  local spacer
+  local runs = c.each(flat, function(span, index)
+    if span.spacer then
+      spacer = spacer or index
+      return c.spacer()
+    end
+    return run(span, index, prefix)
+  end)
+  if not spacer then
+    return c.row(runs, opts)
+  end
+  return c.row({
+    c.row(
+      { unpack(runs, 1, spacer - 1) },
+      { width = "grow", scroll_x = true, align_y = opts.align_y }
+    ),
+    c.row({ unpack(runs, spacer + 1) }, { align_y = opts.align_y }),
+  }, opts)
+end
+
+return setmetatable(M, {
+  __call = function(_, value)
+    return render(value)
+  end,
+})

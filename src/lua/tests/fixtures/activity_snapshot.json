@@ -1,0 +1,564 @@
+[
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Activity",
+      "padding": {
+        "bottom": 9,
+        "left": 13,
+        "right": 13,
+        "top": 19
+      },
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "children": 3,
+      "gap": 19,
+      "height": -1,
+      "id": "test:activity:picker",
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 19,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Activity  ",
+      "wrap": 2
+    },
+    {
+      "children": 2,
+      "gap": 8,
+      "kind": 1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "gap": 4,
+      "id": "test:activity:inbox",
+      "kind": 1,
+      "label": "Inbox",
+      "padding": {
+        "bottom": 3,
+        "left": 8,
+        "right": 8,
+        "top": 3
+      },
+      "radius": 4
+    },
+    {
+      "bold": true,
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "Inbox",
+      "wrap": 2
+    },
+    {
+      "bg": "#8fbcdf",
+      "children": 1,
+      "padding": {
+        "bottom": 1,
+        "left": 5,
+        "right": 5,
+        "top": 1
+      },
+      "radius": 4
+    },
+    {
+      "bold": true,
+      "fg": "#1c202b",
+      "kind": 2,
+      "text": "1",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "id": "test:activity:history",
+      "kind": 1,
+      "label": "History",
+      "padding": {
+        "bottom": 3,
+        "left": 8,
+        "right": 8,
+        "top": 3
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "History",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss-all",
+      "label": "Dismiss all",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": "Dismiss all",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "height": -1,
+      "id": "test:activity:viewport",
+      "measure": true,
+      "reveal": "test:activity:item:one",
+      "scroll": true,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bg": "#3b4252",
+      "children": 2,
+      "clickable": true,
+      "hover_bg": "#3b4252",
+      "id": "test:activity:item:one",
+      "kind": 1,
+      "label": "Example · Details",
+      "list_item": true,
+      "radius": 4,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "height": -1,
+      "padding": {
+        "bottom": 4,
+        "left": 0,
+        "right": 0,
+        "top": 4
+      },
+      "width": 2
+    },
+    {
+      "bg": "#b48ead",
+      "height": -1,
+      "radius": 1,
+      "width": 2
+    },
+    {
+      "align_y": 1,
+      "children": 2,
+      "height": 23,
+      "kind": 1,
+      "width": -1
+    },
+    {
+      "align_y": 1,
+      "children": 6,
+      "id": "test:auto:21",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "label": "  ",
+      "padding": {
+        "bottom": 2,
+        "left": 4,
+        "right": 2,
+        "top": 2
+      }
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#b48ead",
+      "kind": 2,
+      "text": "● ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "Example",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " · ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "align_y": 1,
+      "children": 4,
+      "kind": 1
+    },
+    {
+      "fg": "#54697d",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "  ",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:dismiss:one",
+      "label": "×",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#eceff4",
+      "kind": 2,
+      "text": "×",
+      "wrap": 2
+    },
+    {
+      "children": 12,
+      "height": 19,
+      "id": "test:auto:35",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Enter",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " open   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "v",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " details   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "y",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " copy   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "d",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " dismiss   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "/",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " search   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Tab",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " views   ",
+      "wrap": 2
+    }
+  ],
+  [
+    {
+      "bg": "#1c202b",
+      "border": "#b48ead",
+      "border_width": {
+        "bottom": 1,
+        "left": 1,
+        "right": 1,
+        "top": 1
+      },
+      "children": 1,
+      "id": "test:dialog",
+      "label": "Activity",
+      "padding": {
+        "bottom": 9,
+        "left": 13,
+        "right": 13,
+        "top": 19
+      },
+      "radius": 8
+    },
+    {
+      "border": "#4c566a",
+      "border_width": {
+        "between_children": 1,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "children": 3,
+      "gap": 19,
+      "height": -1,
+      "width": -1
+    },
+    {
+      "children": 2,
+      "height": 19,
+      "id": "test:auto:3",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "children": 1,
+      "id": "test:auto:4",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Activity details",
+      "wrap": 2
+    },
+    {
+      "children": 1,
+      "kind": 1
+    },
+    {
+      "children": 1,
+      "clickable": true,
+      "hover_bg": "#2a2d38",
+      "hover_fg": "#d8dee9",
+      "id": "test:activity:copy",
+      "label": "Copy",
+      "padding": {
+        "bottom": 0,
+        "left": 4,
+        "right": 4,
+        "top": 0
+      },
+      "radius": 4
+    },
+    {
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Copy",
+      "wrap": 2
+    },
+    {
+      "children": 5,
+      "height": -1,
+      "id": "test:activity:details",
+      "measure": true,
+      "scroll": true,
+      "width": -1
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Example",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "Details",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "fg": "#d8dee9",
+      "kind": 2,
+      "text": "",
+      "wrap": 2
+    },
+    {
+      "children": 8,
+      "height": 19,
+      "id": "test:auto:15",
+      "kind": 1,
+      "scroll_x": true,
+      "width": -1
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "↑/↓",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " scroll   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "PgUp/PgDn",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " page   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "y/Ctrl-C",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " copy   ",
+      "wrap": 2
+    },
+    {
+      "bold": true,
+      "fg": "#8fbcdf",
+      "kind": 2,
+      "text": "Esc",
+      "wrap": 2
+    },
+    {
+      "fg": "#81a1c1",
+      "kind": 2,
+      "text": " back   ",
+      "wrap": 2
+    }
+  ]
+]

@@ -36,10 +36,10 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 For native Linux, use `zig build run -- --config examples/clay-layout.lua`
 (requires the normal Linux GUI build dependencies).
 
-The demo contains nested columns inside a row, wrapped text, buttons using
-Hollow's existing style recipes, a scrollable task list, and custom-painted
-progress bars. Resize the window, scroll over the list, and click the counter.
-Close or Escape dismisses the experimental surface; close the window afterward.
+The demo is the component gallery: every component, variant, size, and state
+on one scrollable surface. Resize the window, scroll, and click buttons, tabs,
+or list items to see state changes. Close dismisses the surface; close the
+window afterward.
 
 An existing configuration can bind `hollow.ui.components.demo` to an action instead.
 The running executable must include the new native adapter; Lua-only reload is
@@ -131,8 +131,9 @@ text and default search behavior. `view.id` supplies a stable row-local ID prefi
 ## Components are functions
 
 `hollow.ui.components` builds trees that preserve geometry hierarchy;
-`hollow.ui.layout` is the surface engine that mounts them (`new`, `show`,
-`hide`, `debug`). Inline `ui.row` / `ui.column` helpers remain available for
+`hollow.ui.layout` mounts them (`new`, `show`, `hide`, `debug`). See the
+[component reference](reference/lua/components.md) for props, node costs, and
+examples. Inline `ui.row` / `ui.column` helpers remain available for
 bar/sidebar content and rich label adapters.
 
 ```lua
@@ -157,27 +158,9 @@ layout.show(c.row({
 }, { width = "grow", height = "grow", padding = 24, gap = 16 }))
 ```
 
-- `row(children, opts)` / `column(children, opts)` preserve container hierarchy.
-  Fragments, holes and boolean children are accepted.
-- Width/height accept `"fit"` (default), `"grow"`, or a positive pixel count.
-- `min_width`, `max_width`, `min_height` and `max_height` constrain fit/grow
-  containers in pixels. Surface `frame.width` uses terminal cells;
-  `frame.height`/`frame.max_height` use rows. The frame cap applies to fit and
-  fixed-height surfaces, independently of container pixel limits.
-- `border_width` accepts a pixel number or `{ left, right, top, bottom,
-  between_children }`; color comes from `style.border`. This enables dividers
-  between children without spacer nodes.
-- Options: `id`, `padding`, `gap`, `style`, `scroll` (vertical), `scroll_x`,
-  `reveal` (local ID of a descendant container), `reveal_start`, `on_click`,
-  `align_y` (`"start"`, `"center"`, `"end"`), and `measure` (scroll viewport feedback).
-- `text(value, style, opts)` uses the existing monospace label renderer. Its
-  `opts.wrap` accepts `"words"` (default), `"newlines"` or `"none"`.
-  `opts.text_align` accepts `"left"`, `"center"`, `"right"` (or `0`, `1`, `2`).
-- `button(opts)` supports button recipes, variants, sizes and disabled state.
-- `progress(value, opts)` demonstrates a Clay `CUSTOM` command. It is a native
-  proof of custom painting, not an API for arbitrary Lua drawing callbacks.
-- `show(tree)` validates and serializes a snapshot. Call again to update content.
-- `hide()` dismisses the surface and drops its callbacks.
+Surface `frame.width` uses terminal cells; `frame.height` and `frame.max_height`
+use rows. Frame limits are independent of component pixel limits. `show(tree)`
+validates and serializes a snapshot; `hide()` dismisses it and drops callbacks.
 
 All clickable nodes require explicit unique local IDs; surfaces prefix them with
 an instance namespace. Standalone buttons activate on matching press/release;
@@ -207,7 +190,7 @@ schedule timed refreshes only for changing spinner or age labels. Modal listener
 are removed on close; pending callbacks become inert without retaining widgets.
 Modal surfaces are mounted and destroyed by the existing overlay shell. The
 native adapter currently renders one active Clay surface at a time; this is not
-yet a simultaneous multi-pane renderer. Demo content lives in `ui/components/demo.lua`,
+yet a simultaneous multi-pane renderer. The gallery lives in `ui/components/demo.lua`,
 while validation/serialization lives in `ui/layout/serialize.lua`.
 
 ## Ownership boundary

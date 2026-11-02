@@ -1,5 +1,9 @@
+local c = require("hollow.ui.components")
 local icons = require("hollow.ui.icons")
+local list_item = require("hollow.ui.components.list_item")
 local list_row = require("hollow.ui.recipes.list_row")
+local props = require("hollow.ui.components.props")
+local rich = require("hollow.ui.components.rich")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.palette")
 local util = require("hollow.util")
@@ -233,33 +237,24 @@ end
 ---@param is_selected boolean
 ---@param is_hovered boolean
 ---@param is_collapsed boolean
----@param row_options table
----@return HollowUiRowNode
-local function render_section_header(
-  theme,
-  label,
-  is_selected,
-  is_hovered,
-  is_collapsed,
-  row_options
-)
+---@return HollowUiRenderableNode[]
+local function section_nodes(theme, label, is_selected, is_hovered, is_collapsed)
   local arrow = is_collapsed and icons.collapsed or icons.expanded
   local row_s =
     list_row(theme, { variant = "section", selected = is_selected, hovered = is_hovered })
-  return ui.row({
+  return {
     ui.text("  ", row_s.section_indicator),
     ui.text(arrow .. " " .. label, styles(theme).section_title),
-  }, util.merge_tables(row_options, row_s.paint))
+  }
 end
 
 ---@param entry table
 ---@param is_selected boolean
 ---@param is_hovered boolean
 ---@param theme HollowUiTheme
----@param row_options table
 ---@param query string
----@return HollowUiRowNode
-local function render_entry_row(entry, is_selected, is_hovered, theme, row_options, query)
+---@return HollowUiRenderableNode[]
+local function entry_nodes(entry, is_selected, is_hovered, theme, query)
   local chord_text = #entry.chords > 0 and ("  " .. table.concat(entry.chords, " ")) or ""
   local right_text = entry.domain_name and entry.desc or chord_text
   local label_text = (entry.mode_label ~= "" and (entry.mode_label .. " ") or "")
@@ -271,7 +266,7 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
   local row_s = list_row(theme, { selected = is_selected, hovered = is_hovered })
   local active = entry.is_active
     and { fg = shared.resolve_theme().palette.bright_green, bold = true }
-  local label_nodes = {
+  return {
     ui.text("    ", row_s.indicator),
     ui.when(entry.domain_name, function()
       return ui.span(entry.is_active and "• " or "  ", ui.style(s.bullet, active))
@@ -288,7 +283,6 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
       }
     end),
   }
-  return ui.row({ ui.group(label_nodes) }, util.merge_tables(row_options, row_s.paint))
 end
 
 ---@param opts table|nil
@@ -371,25 +365,16 @@ function ui.command_palette.open(opts)
     title = opts.prompt or "Command Palette",
     theme = theme,
     render = function(render_theme, state, ctx)
-      local component = require("hollow.ui.components.select")
       local flat = current_flat()
       nav.index = math.max(1, math.min(#flat, nav.index or 1))
       local item_idx, total_items = item_position(flat, nav.index)
-      local line_h = component.line_height(render_theme, ctx)
-      section_units = component.row_height(
-        render_section_header(render_theme, "", false, false, false, {}),
-        ctx
-      ) / line_h
+      local line_h = list_item.line_height(render_theme, ctx)
+      section_units = rich.height(section_nodes(render_theme, "", false, false, false), ctx)
+        / line_h
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
         clay_budget = math.max(1, math.min(20, measured.height / line_h))
       end
-      local entries = hollow
-        .tbl(flat)
-        :map(function(entry)
-          return { item = entry, source_index = entry_key(entry) }
-        end)
-        :get()
       local s = styles(render_theme)
       local units = 0
       for _, entry in ipairs(flat) do
@@ -399,66 +384,86 @@ function ui.command_palette.open(opts)
           break
         end
       end
-      local list_height = #flat == 0 and (ctx.cell_h or 19) or units * line_h
-      local content_height = 6 * (ctx.cell_h or 19) + list_height
-      return component.render({
-        prompt = opts.prompt or "Command Palette",
-        entries = entries,
-        selected = nav.index,
-        id_prefix = "palette",
-        counter = total_items > 0 and string.format("   %d/%d", item_idx, total_items) or "",
+      local cell_h = props.cell_h(ctx)
+      local list_height = #flat == 0 and cell_h or units * line_h
+      local content_height = 6 * cell_h + list_height
+      local viewport = selectable.visible_range()
+      local target = flat[reveal_start and viewport.start_idx or nav.index]
+      return c.picker({
+        id = "palette:picker",
+        theme = render_theme,
+        header = c.header({
+          id = "select:header",
+          width = "grow",
+          height = cell_h,
+          scroll_x = true,
+          title = opts.prompt or "Command Palette",
+          prompt = true,
+          meta = total_items > 0 and string.format("   %d/%d", item_idx, total_items) or "",
+          meta_align = "inline",
+          theme = render_theme,
+          title_style = s.title,
+          meta_style = s.counter,
+        }),
         filter = filter,
-        viewport = selectable.visible_range(),
-        reveal_start = reveal_start,
-        styles = s,
         hints = {
-          ui.divider(render_theme.divider),
-          ui.row({
-            ui.text("<CR>", s.key_hint),
-            ui.text(" execute  ", s.muted),
-            ui.text("<Esc>", s.key_hint),
-            ui.text(" dismiss", s.muted),
-          }),
+          id = "select:hints",
+          width = "grow",
+          height = cell_h,
+          scroll_x = true,
+          key_style = s.key_hint,
+          description_style = s.muted,
+          { "<CR>", "execute" },
+          { "<Esc>", "dismiss" },
         },
-        render_item = function(adapted, index, id, plain)
-          local entry = adapted.item
-          local selected, hovered = index == nav.index, state and state.hovered_id == id
-          local row = entry._type == "header"
-              and render_section_header(
-                render_theme,
-                entry.label,
-                selected,
-                hovered,
-                collapsed[entry.category],
-                { id = id }
-              )
-            or render_entry_row(
-              entry.item,
-              selected,
-              hovered,
-              render_theme,
-              { id = id },
-              filter.value
-            )
-          return component.from_row(
-            row,
-            id,
-            shared.nodes_plain_text(row.children),
-            render_theme,
-            ctx,
-            function()
-              for current_index, current in ipairs(current_flat()) do
-                if entry_key(current) == adapted.source_index then
-                  nav.index, reveal_start = current_index, false
-                  activate(current_index)
-                  return
+        list = {
+          id = "select:viewport",
+          axis = "both",
+          measure = true,
+          reveal = target and ("palette:item:" .. entry_key(target)),
+          reveal_start = reveal_start,
+          items = flat,
+          selected = nav.index,
+          viewport = viewport,
+          render_item = function(entry, index, view)
+            local key = entry_key(entry)
+            local id = "palette:item:" .. key
+            local selected, hovered = index == nav.index, state and state.hovered_id == id
+            local header = entry._type == "header"
+            return c.list_item({
+              id = id,
+              theme = render_theme,
+              variant = header and "section" or nil,
+              selected = selected,
+              hovered = hovered,
+              on_activate = function()
+                for current_index, current in ipairs(current_flat()) do
+                  if entry_key(current) == key then
+                    nav.index, reveal_start = current_index, false
+                    activate(current_index)
+                    return
+                  end
                 end
-              end
-            end,
-            plain
-          )
-        end,
-      }, render_theme, ctx),
+              end,
+              c.rich({
+                width = "grow",
+                prefix = id,
+                plain = view.plain,
+                header
+                    and section_nodes(
+                      render_theme,
+                      entry.label,
+                      selected,
+                      hovered,
+                      collapsed[entry.category]
+                    )
+                  or entry_nodes(entry.item, selected, hovered, render_theme, filter.value),
+              }),
+            })
+          end,
+          empty = c.empty({ text = "No matches", style = s.empty, wrap = "words" }),
+        },
+      }),
         content_height
     end,
     keys = function(key, mods)
