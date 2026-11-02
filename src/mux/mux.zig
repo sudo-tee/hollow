@@ -307,9 +307,9 @@ pub const Mux = struct {
         pane.id = self.next_pane_id;
         self.next_pane_id += 1;
         pane.host_context = self.host_context;
-        pane.host_wake = self.host_wake;
-        pane.spawn_filter = self.spawn_filter;
-        pane.pty_host = self.pty_host;
+        pane.term.host_wake = self.host_wake;
+        pane.term.spawn_filter = self.spawn_filter;
+        pane.term.pty_host = self.pty_host;
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
         try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
@@ -343,13 +343,13 @@ pub const Mux = struct {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse if (current_pane) |pane|
-            if (pane.domain_name.len > 0) pane.domain_name else cfg.defaultDomainName()
+            if (pane.term.domain_name.len > 0) pane.term.domain_name else cfg.defaultDomainName()
         else
             cfg.defaultDomainName();
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
             if (value.len > 0) value else null
         else if (current_pane) |pane|
-            if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, resolved_domain orelse "")) pane.cwd else null
+            if (pane.cwd.len > 0 and std.mem.eql(u8, pane.term.domain_name, resolved_domain orelse "")) pane.cwd else null
         else if (ws.default_cwd) |value|
             value
         else
@@ -381,7 +381,7 @@ pub const Mux = struct {
         }
         try tab.appendPane(pane);
         if (!activate) {
-            pane.retain_on_exit = true;
+            pane.term.retain_on_exit = true;
             // Hidden jobs must parse/drain output without waiting for first focus.
             pane.term.terminal_output_ready = true;
             ws.active_tab = previous_active;
@@ -534,12 +534,12 @@ pub const Mux = struct {
         if (!floating and source_pane.is_floating) {
             if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
         }
-        const resolved_domain = domain_name orelse if (source_pane.domain_name.len > 0)
-            source_pane.domain_name
+        const resolved_domain = domain_name orelse if (source_pane.term.domain_name.len > 0)
+            source_pane.term.domain_name
         else
             cfg.defaultDomainName();
         const same_domain = if (domain_name) |dn|
-            std.mem.eql(u8, source_pane.domain_name, dn)
+            std.mem.eql(u8, source_pane.term.domain_name, dn)
         else
             true;
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
@@ -758,7 +758,7 @@ pub const Mux = struct {
             var dead_count: usize = 0;
             for (tab.panes.items) |pane| {
                 if (!pane.isTerminal()) continue;
-                if (!pane.retain_on_exit and !pane.hasLiveChild() and dead_count < dead_buf.len) {
+                if (!pane.term.retain_on_exit and !pane.hasLiveChild() and dead_count < dead_buf.len) {
                     dead_buf[dead_count] = pane;
                     dead_count += 1;
                 }

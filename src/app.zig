@@ -534,7 +534,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domain_name, name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.term.domain_name, name) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
@@ -547,8 +547,8 @@ pub const App = struct {
 
     pub fn currentDomainValue(self: *App) !?std.json.Value {
         const pane = self.activePane() orelse return null;
-        if (pane.domain_name.len == 0) return null;
-        return try self.domainValue(pane.domain_name);
+        if (pane.term.domain_name.len == 0) return null;
+        return try self.domainValue(pane.term.domain_name);
     }
 
     pub fn paneFrameValue(self: *App, pane: *Pane) !std.json.Value {
@@ -578,7 +578,7 @@ pub const App = struct {
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.term.domain_name) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
@@ -684,7 +684,7 @@ pub const App = struct {
         try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
         try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
         try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
-        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
+        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
         try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, pane));
         try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, pane, rows, cols));
         return .{ .object = screen };
@@ -864,7 +864,7 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
-                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.term.domain_name) });
             } else {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .null);
             }
@@ -1589,8 +1589,8 @@ pub const App = struct {
         const runtime = if (self.ghostty) |*rt| rt else return;
         runtime.terminalScrollBottom(pane.term.terminal);
         pane.render_dirty = .full;
-        pane.last_render_state_update_ns = 0;
-        pane.pty_received_data = true;
+        pane.term.last_render_state_update_ns = 0;
+        pane.term.pty_received_data = true;
         self.scroll_accum = 0;
         _ = scroll.refreshPaneScrollbar(self, runtime, pane);
     }
@@ -1647,7 +1647,7 @@ pub const App = struct {
     }
 
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
-        return if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+        return if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
             self.config.alternate_screen_padding
         else
             self.config.terminal_padding;
@@ -1998,7 +1998,7 @@ pub const App = struct {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
                     pane.applyTerminalTheme(runtime, &self.config.terminal_theme);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.term.domain_name.len > 0) pane.term.domain_name else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
                 if (mux.activePane()) |active| {
@@ -2403,7 +2403,7 @@ pub const App = struct {
                 const pane_is_active = active_pane == pane;
                 pane.program_status.setFocused(pane_is_active);
                 if (!pane.isTerminal()) continue;
-                const active_screen_before = pane.active_screen;
+                const active_screen_before = pane.term.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
                 } else false;
@@ -2415,7 +2415,7 @@ pub const App = struct {
                     break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
                 const pty_now_ns = io.nanoTimestamp();
-                const recent_pty_output = pane.last_pty_output_ns != 0 and pty_now_ns - pane.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
+                const recent_pty_output = pane.term.last_pty_output_ns != 0 and pty_now_ns - pane.term.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
                 const recent_input = self.last_input_activity_ns != 0 and pty_now_ns - self.last_input_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const recent_resize = self.last_resize_activity_ns != 0 and pty_now_ns - self.last_resize_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const use_pressure_chunk = pane_is_active and !recent_input and !recent_resize and
@@ -2425,13 +2425,13 @@ pub const App = struct {
                 else
                     pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_budget_ns: i128 = if (pane_is_active)
-                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
+                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.term.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
                 else if (pty_read_bytes > 0)
                     background_budget.timeQuota()
                 else
                     0;
-                pane.synchronized_output_enabled = self.config.synchronized_output;
-                if (!self.config.synchronized_output) pane.synchronized_output_active = false;
+                pane.term.synchronized_output_enabled = self.config.synchronized_output;
+                if (!self.config.synchronized_output) pane.term.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
                 if (pane.term.pty) |*pty| pty.setFocused(pane_is_active);
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
@@ -2445,18 +2445,18 @@ pub const App = struct {
                 if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
                     std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});
                 }
-                if (pane.synchronized_output_active) {
-                    const sync_deadline_ns = pane.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
+                if (pane.term.synchronized_output_active) {
+                    const sync_deadline_ns = pane.term.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
                     if (next_idle_render_poll_ns == 0 or sync_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = sync_deadline_ns;
                     }
                 }
-                if (pane.active_screen != active_screen_before) {
+                if (pane.term.active_screen != active_screen_before) {
                     automation_changed = true;
-                    pane.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
-                        pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
-                    pane.alt_screen_nudge_quiet_ticks = 0;
-                    pane.alt_screen_nudge_not_before_ns = if (pane.pending_alt_screen_nudge)
+                    pane.term.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
+                        pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
+                    pane.term.alt_screen_nudge_quiet_ticks = 0;
+                    pane.term.alt_screen_nudge_not_before_ns = if (pane.term.pending_alt_screen_nudge)
                         io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS
                     else
                         0;
@@ -2470,22 +2470,22 @@ pub const App = struct {
                     self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = pane.id });
                     _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = pane.id });
                 }
-                const had_pty_output_this_tick = pane.pty_received_data;
+                const had_pty_output_this_tick = pane.term.pty_received_data;
                 const had_notifications = pane.term.osc99_notifications.hasNotifications();
                 if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or had_notifications) automation_changed = true;
-                total_pty_read_ns += pane.last_pty_read_ns;
-                total_terminal_write_ns += pane.last_terminal_write_ns;
-                total_terminal_write_bytes += pane.last_terminal_write_bytes;
-                total_terminal_write_chunks += pane.last_terminal_write_chunks;
-                total_has_pending_ns += pane.last_has_pending_ns;
-                total_sanitize_ns += pane.last_sanitize_ns;
-                total_child_alive_ns += pane.last_child_alive_ns;
-                total_encoder_sync_ns += pane.last_encoder_sync_ns;
+                total_pty_read_ns += pane.term.last_pty_read_ns;
+                total_terminal_write_ns += pane.term.last_terminal_write_ns;
+                total_terminal_write_bytes += pane.term.last_terminal_write_bytes;
+                total_terminal_write_chunks += pane.term.last_terminal_write_chunks;
+                total_has_pending_ns += pane.term.last_has_pending_ns;
+                total_sanitize_ns += pane.term.last_sanitize_ns;
+                total_child_alive_ns += pane.term.last_child_alive_ns;
+                total_encoder_sync_ns += pane.term.last_encoder_sync_ns;
                 if (pane.title_dirty) {
                     const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.term.domain_name.len > 0) pane.term.domain_name else null) catch self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
                         .pane_id = pane.id,
                         .old_title = if (old_title) |value| value else "",
@@ -2579,28 +2579,28 @@ pub const App = struct {
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
                 pane.tickImageAnimation(runtime, now_ns);
-                if (!pane.synchronized_output_active and pane.image_animation_deadline_ns != 0) {
-                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, pane.image_animation_deadline_ns);
+                if (!pane.term.synchronized_output_active and pane.term.image_animation_deadline_ns != 0) {
+                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, pane.term.image_animation_deadline_ns);
                 }
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
-                const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
-                const needs_update = if (pane.synchronized_output_active)
+                const pane_idle_deadline_ns = pane.term.last_render_state_update_ns + idle_poll_ns;
+                const needs_update = if (pane.term.synchronized_output_active)
                     pane.term.render_state_fresh
                 else
-                    pane.pty_received_data or
+                    pane.term.pty_received_data or
                         pane.render_dirty != .false_value or
-                        (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
+                        (now_ns - pane.term.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     if (pane.term.render_state_fresh) {
                         pane.term.render_state_fresh = false;
-                        pane.pty_received_data = false;
+                        pane.term.pty_received_data = false;
                     } else {
-                        pane.pty_received_data = false;
-                        pane.last_render_state_update_ns = now_ns;
+                        pane.term.pty_received_data = false;
+                        pane.term.last_render_state_update_ns = now_ns;
                         runtime.clearRenderStateDirty(pane.term.render_state);
                         runtime.updateRenderState(pane.term.render_state, pane.term.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
@@ -2613,7 +2613,7 @@ pub const App = struct {
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
                             pane.id,
                             pane.term.render_state_fresh,
-                            pane.pty_received_data,
+                            pane.term.pty_received_data,
                             @tagName(pane.render_dirty),
                             @tagName(post_dirty),
                             runtime.cursorVisible(pane.term.render_state),
@@ -2645,52 +2645,52 @@ pub const App = struct {
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
-                } else if (!pane.synchronized_output_active and pane.last_render_state_update_ns != 0) {
+                } else if (!pane.term.synchronized_output_active and pane.term.last_render_state_update_ns != 0) {
                     if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
                 }
-                if (pane.pending_alt_screen_nudge) {
-                    if (pane.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
-                        pane.pending_alt_screen_nudge = false;
-                        pane.alt_screen_nudge_quiet_ticks = 0;
-                        pane.alt_screen_nudge_not_before_ns = 0;
-                    } else if (now_ns < pane.alt_screen_nudge_not_before_ns) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                if (pane.term.pending_alt_screen_nudge) {
+                    if (pane.term.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
+                        pane.term.pending_alt_screen_nudge = false;
+                        pane.term.alt_screen_nudge_quiet_ticks = 0;
+                        pane.term.alt_screen_nudge_not_before_ns = 0;
+                    } else if (now_ns < pane.term.alt_screen_nudge_not_before_ns) {
+                        pane.term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        pane.term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (had_pty_output_this_tick) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        pane.term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else {
-                        pane.alt_screen_nudge_quiet_ticks +|= 1;
-                        if (pane.alt_screen_nudge_quiet_ticks >= 3) {
+                        pane.term.alt_screen_nudge_quiet_ticks +|= 1;
+                        if (pane.term.alt_screen_nudge_quiet_ticks >= 3) {
                             std.log.info("app: pane alt-screen repaint nudge pane={x} rows={d} cols={d}", .{
                                 pane.id,
                                 pane.rows,
                                 pane.cols,
                             });
                             pane.nudgeTerminal(runtime, self.cell_width_px, self.cell_height_px);
-                            pane.pending_alt_screen_nudge = false;
-                            pane.alt_screen_nudge_quiet_ticks = 0;
-                            pane.alt_screen_nudge_not_before_ns = 0;
+                            pane.term.pending_alt_screen_nudge = false;
+                            pane.term.alt_screen_nudge_quiet_ticks = 0;
+                            pane.term.alt_screen_nudge_not_before_ns = 0;
                             self.last_visual_activity_ns = now_ns;
                         } else {
                             self.last_visual_activity_ns = now_ns;
                         }
                     }
                 }
-                tickPaneCompression(runtime, pane, now_ns);
-                if (pane.compression_deadline_ns != 0 and
-                    (next_idle_render_poll_ns == 0 or pane.compression_deadline_ns < next_idle_render_poll_ns))
+                pane.term.tickCompression(runtime, now_ns);
+                if (pane.term.compression_deadline_ns != 0 and
+                    (next_idle_render_poll_ns == 0 or pane.term.compression_deadline_ns < next_idle_render_poll_ns))
                 {
-                    next_idle_render_poll_ns = pane.compression_deadline_ns;
+                    next_idle_render_poll_ns = pane.term.compression_deadline_ns;
                 }
                 if (!pane.hasLiveChild()) {
                     pane_lifecycle.exited(self, pane);
-                    if (!pane.retain_on_exit) has_dead = true;
+                    if (!pane.term.retain_on_exit) has_dead = true;
                 }
                 pane_idx += 1;
             }
@@ -2738,32 +2738,6 @@ pub const App = struct {
         }
         if (automation_changed) self.markAutomationChanged();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
-    }
-
-    fn tickPaneCompression(runtime: *GhosttyRuntime, pane: *Pane, now_ns: i128) void {
-        const idle_delay_ns: i128 = 250 * std.time.ns_per_ms;
-        const continuation_delay_ns: i128 = std.time.ns_per_ms;
-
-        const activity = runtime.terminalCompressionActivity(pane.term.terminal) catch |err| {
-            std.log.err("pane compression activity failed: {s}", .{@errorName(err)});
-            pane.compression_deadline_ns = 0;
-            return;
-        };
-        if (pane.compression_activity == null or pane.compression_activity.? != activity) {
-            pane.compression_activity = activity;
-            pane.compression_deadline_ns = now_ns + idle_delay_ns;
-            return;
-        }
-        if (pane.compression_deadline_ns == 0 or now_ns < pane.compression_deadline_ns) return;
-
-        pane.compression_deadline_ns = switch (runtime.terminalCompress(pane.term.terminal) catch |err| {
-            std.log.err("pane compression failed: {s}", .{@errorName(err)});
-            pane.compression_deadline_ns = 0;
-            return;
-        }) {
-            .pending => now_ns + continuation_delay_ns,
-            .complete, .unsupported => 0,
-        };
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
@@ -2964,7 +2938,7 @@ test "initial pane callbacks retain the App-owned runtime after initialization r
     app.ghostty.?.terminalWrite(pane.term.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/startup", pane.cwd);
-    try std.testing.expect(pane.synchronized_output_active);
+    try std.testing.expect(pane.term.synchronized_output_active);
     try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.term.render_state).?.x);
 }
 
@@ -3029,7 +3003,7 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     app.resize(800, 600);
     try app.tick();
     try std.testing.expectEqual(pane, app.findPaneById(id).?);
-    try std.testing.expect(!pane.exit_event_emitted);
+    try std.testing.expect(!pane.term.exit_event_emitted);
     try std.testing.expect(pane.cols > 0 and pane.rows > 0);
     try std.testing.expectEqualStrings("Lua pane", pane.title);
     try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
@@ -3069,7 +3043,7 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expectError(error.NotATerminal, app.paneTextValue(id));
     try std.testing.expectError(error.NotATerminal, app.paneTextValue(0));
     pane_lifecycle.exited(app, pane);
-    try std.testing.expect(!pane.exit_event_emitted);
+    try std.testing.expect(!pane.term.exit_event_emitted);
     try app.tick();
     try std.testing.expectEqual(pane, app.findPaneById(id).?);
 
@@ -3175,7 +3149,7 @@ test "Lua terminal jobs queue shared backend operations without focus changes" {
     try std.testing.expect(app.mux.?.activePane() == original);
     var owned: ?*pane_mod.Pane = null;
     var panes = app.mux.?.paneIterator();
-    while (panes.next()) |pane| if (pane.automation_token != null) {
+    while (panes.next()) |pane| if (pane.term.automation_token != null) {
         owned = pane;
     };
     const pane = owned orelse return error.MissingJobPane;

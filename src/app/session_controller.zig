@@ -35,9 +35,9 @@ pub fn sendText(self: *App, text: []const u8) void {
     const now_ns = io.nanoTimestamp();
     self.last_input_activity_ns = now_ns;
     self.last_visual_activity_ns = now_ns;
-    pane.pty_received_data = true;
-    pane.pty_wrote_this_frame = true;
-    pane.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
+    pane.term.pty_wrote_this_frame = true;
+    pane.term.last_render_state_update_ns = 0;
     if (self.config.debug_terminal_trace) {
         std.log.info("terminal-trace sendText pane={x} len={d} sample={s}", .{
             pane.id,
@@ -113,7 +113,7 @@ pub fn invalidateAllPanes(self: *App) void {
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
         pane.invalidate();
-        pane.last_render_state_update_ns = 0;
+        pane.term.last_render_state_update_ns = 0;
     }
 }
 
@@ -364,13 +364,13 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     const inherited_domain = if (domain_name) |value|
         if (value.len > 0) value else null
     else if (previous) |pane|
-        if (pane.domain_name.len > 0) pane.domain_name else null
+        if (pane.term.domain_name.len > 0) pane.term.domain_name else null
     else
         null;
     const inherited_cwd = if (cwd) |value|
         if (value.len > 0) value else null
     else if (previous) |pane|
-        if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, inherited_domain orelse "")) pane.cwd else null
+        if (pane.cwd.len > 0 and std.mem.eql(u8, pane.term.domain_name, inherited_domain orelse "")) pane.cwd else null
     else
         null;
     mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
@@ -714,7 +714,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     while (panes.next()) |pane| {
         if (!pane.isTerminal()) continue;
         if (!pane.hasLiveChild()) {
-            if (!pane.retain_on_exit) has_dead = true;
+            if (!pane.term.retain_on_exit) has_dead = true;
             pane_lifecycle.exited(self, pane);
         }
     }
@@ -765,7 +765,7 @@ fn sendSplitPaneCommand(self: *App, pane: *Pane, command: []const u8, close_on_e
 
 fn wrapCommandForCloseOnExit(self: *App, pane: *Pane, command: []const u8) ![]u8 {
     const trimmed = std.mem.trimEnd(u8, command, "\r\n");
-    const is_windows_domain = pane.domain_name.len > 0 and !std.mem.eql(u8, pane.domain_name, "wsl") and !std.mem.eql(u8, pane.domain_name, "unix");
+    const is_windows_domain = pane.term.domain_name.len > 0 and !std.mem.eql(u8, pane.term.domain_name, "wsl") and !std.mem.eql(u8, pane.term.domain_name, "unix");
 
     if (is_windows_domain) {
         return std.fmt.allocPrint(self.allocator, "{s} & exit", .{trimmed});

@@ -3528,11 +3528,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const atlas_reset_this_frame = if (g_ft_renderer) |*renderer| renderer.atlas_reset_this_frame else false;
     const visible_sync_output = blk: {
         if (leaves.len == 0) {
-            if (app.activePane()) |pane| break :blk pane.synchronized_output_active;
+            if (app.activePane()) |pane| break :blk pane.term.synchronized_output_active;
             break :blk false;
         }
         for (leaves) |leaf| {
-            if (leaf.pane.synchronized_output_active) break :blk true;
+            if (leaf.pane.term.synchronized_output_active) break :blk true;
         }
         break :blk false;
     };
@@ -3548,16 +3548,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const viewport_scroll_active = if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.viewport_scroll_pending) break true;
+            if (leaf.pane.term.viewport_scroll_pending) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.viewport_scroll_pending
+        pane.term.viewport_scroll_pending
     else
         false;
     if (viewport_scroll_active) {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
-                if (leaf.pane.viewport_scroll_pending) invalidatePaneCacheForPane(leaf.pane);
+                if (leaf.pane.term.viewport_scroll_pending) invalidatePaneCacheForPane(leaf.pane);
             }
         } else if (single_visible_pane) |pane| {
             invalidatePaneCacheForPane(pane);
@@ -3571,11 +3571,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         false
     else if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.synchronized_output_active and
+            if (leaf.pane.term.synchronized_output_active and
                 !paneCacheReadyForPresent(leaf.pane, leaf.bounds.width, leaf.bounds.height)) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.synchronized_output_active and
+        pane.term.synchronized_output_active and
             !paneCacheReadyForPresent(pane, @intFromFloat(width), @intFromFloat(height))
     else
         false;
@@ -3649,7 +3649,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // output is active, but the user must keep seeing the
                     // last completed render. An invalid cache is rendered
                     // once to establish the initial frame.
-                    if (pane.synchronized_output_active and
+                    if (pane.term.synchronized_output_active and
                         cache_entry.validity != .invalid and
                         !cache_entry.needs_clear)
                     {
@@ -3731,7 +3731,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const expected_grid = app_ctx.paneGridSize(pane, .{ .x = 0, .y = 0, .width = pw_u, .height = ph_u });
                     const size_mismatch = pane.cols != expected_grid.cols or pane.rows != expected_grid.rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
-                    const pty_active = pane.pty_wrote_this_frame;
+                    const pty_active = pane.term.pty_wrote_this_frame;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
@@ -3841,11 +3841,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const saved_renderer_pad_x = rend.padding_x;
                     const saved_renderer_pad_y = rend.padding_y;
                     {
-                        const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_left: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.left
                         else
                             cfg.terminal_padding.left);
-                        const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_top: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.top
                         else
                             cfg.terminal_padding.top);
@@ -3914,7 +3914,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // existing RT pixels are definitely stale (resize, drag-release,
                     // atlas change, background-color change). Normal PTY output and
                     // scroll frames redraw the dirty rows without forcing a CLEAR.
-                    pane.pty_wrote_this_frame = false; // consumed by renderer
+                    pane.term.pty_wrote_this_frame = false; // consumed by renderer
                     cache_entry.needs_clear = false;
                     const now_stable = !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
@@ -3939,7 +3939,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
                     pane.render_dirty = .false_value;
-                    pane.viewport_scroll_pending = false;
+                    pane.term.viewport_scroll_pending = false;
                     return .cached_dirty;
                 }
             }.call;
@@ -4010,11 +4010,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (leaf.pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (leaf.pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4056,8 +4056,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         leaf.pane.render_dirty = .false_value;
-                        leaf.pane.pty_wrote_this_frame = false;
-                        leaf.pane.viewport_scroll_pending = false;
+                        leaf.pane.term.pty_wrote_this_frame = false;
+                        leaf.pane.term.viewport_scroll_pending = false;
                     }
                 } else if (app.activePane()) |pane| {
                     if (!paneRenderHelpersReady(pane)) {
@@ -4066,11 +4066,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4112,8 +4112,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         pane.render_dirty = .false_value;
-                        pane.pty_wrote_this_frame = false;
-                        pane.viewport_scroll_pending = false;
+                        pane.term.pty_wrote_this_frame = false;
+                        pane.term.viewport_scroll_pending = false;
                     }
                 }
             }
@@ -4207,7 +4207,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             width,
                             height,
                             true,
-                            pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
+                            pane.render_dirty == .full or pane.term.pty_wrote_this_frame or renderer.atlas_dirty,
                             copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
                             null,
                             app.hovered_hyperlink,
@@ -4222,8 +4222,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         // Mark pane clean after direct render.
                         pane.render_dirty = .false_value;
-                        pane.pty_wrote_this_frame = false;
-                        pane.viewport_scroll_pending = false;
+                        pane.term.pty_wrote_this_frame = false;
+                        pane.term.viewport_scroll_pending = false;
                     } else {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
@@ -5645,7 +5645,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
 
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-            const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.term.last_mouse_tracking == 0;
             if (wants_selection) {
                 const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
                 const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
@@ -5858,7 +5858,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const hover_link = hyperlinkHoverActive(app, event.modifiers);
             g_hover_hyperlink = hover_link;
-            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.term.last_mouse_tracking == 0;
             setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
         } else {
             g_hover_hyperlink = false;
@@ -5875,7 +5875,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
                     .point = point,
                     .held_button = .left,
                     .mods = mods,
-                    .tracking = pane.last_mouse_tracking,
+                    .tracking = pane.term.last_mouse_tracking,
                     .layout_generation = app.currentLayoutGeneration(),
                 };
                 if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
@@ -5897,7 +5897,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .point = point,
             .held_button = g_mouse_button_down,
             .mods = mods,
-            .tracking = hit.pane.last_mouse_tracking,
+            .tracking = hit.pane.term.last_mouse_tracking,
             .layout_generation = app.currentLayoutGeneration(),
         };
         if (app.enqueueMouse(.{ .motion = .{

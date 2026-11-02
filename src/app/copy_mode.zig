@@ -217,8 +217,8 @@ pub fn exitCopyMode(self: *App) void {
         if (self.renderer) |*renderer| renderer.invalidatePaneCache(value);
         scroll.scrollPaneViewportToRow(self, value, restore_top);
         value.term.render_state_fresh = false;
-        value.last_render_state_update_ns = 0;
-        value.pty_received_data = true;
+        value.term.last_render_state_update_ns = 0;
+        value.term.pty_received_data = true;
         value.render_dirty = .full;
     }
     emitCopyModeChanged(self);
@@ -318,8 +318,8 @@ fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void 
     if (!pane.term.render_state_ready or pane.term.render_state == null) return;
     runtime.clearRenderStateDirty(pane.term.render_state);
     try runtime.updateRenderState(pane.term.render_state, pane.term.terminal);
-    pane.last_render_state_update_ns = io.nanoTimestamp();
-    pane.pty_received_data = false;
+    pane.term.last_render_state_update_ns = io.nanoTimestamp();
+    pane.term.pty_received_data = false;
     pane.term.render_state_fresh = false;
     _ = scroll.refreshPaneScrollbar(self, runtime, pane);
 }
@@ -796,10 +796,10 @@ pub fn handlePromptJump(self: *App, direction: PromptJumpDir) void {
     // prompts and the active-area boundary. Copy-mode cursor movement is separate.
     runtime.terminalScrollPrompt(pane.term.terminal, if (direction == .prev) -1 else 1);
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
+    pane.term.viewport_scroll_pending = true;
     pane.term.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    pane.term.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
     self.scroll_accum = 0;
     _ = scroll.refreshPaneScrollbar(self, runtime, pane);
 }

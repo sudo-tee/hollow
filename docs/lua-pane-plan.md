@@ -511,7 +511,7 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   readiness flags on failure, and verify cleanup. A native lifecycle test covers
   repeated release, recreation, parser readiness across hidden tabs, and full
   destruction.
-- Protocol-buffer checkpoint implemented (not yet committed): pending cwd
+- Protocol-buffer checkpoint committed as `5940ff6`: pending cwd
   reports, shared PTY read/sanitize storage, split-sequence progress, OSC 99 and
   OSC 1337 capture, HTP capture, notification assemblies, deferred output/image
   injection, and startup-input storage now belong to `TerminalPane`. Startup
@@ -527,9 +527,23 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
   buffers/notifications/startup input, verify repeat-safe cleanup and destruction
   of shortened startup slices using their original allocation capacity, preserve
   queued input on allocation failure, and check command/raw-input terminators.
-- Remaining B work: move terminal runtime flags, timing/lifecycle/job state,
-  scroll/image state, and the remaining terminal-only methods into
-  `TerminalPane`, narrow terminal-only consumers, then replace transitional
+- Runtime-state checkpoint implemented (not yet committed): terminal spawn/host
+  bindings, domain/remote state, HTP callback storage, PTY activity/timing,
+  synchronized output, mouse/screen state, alternate-screen nudges, image and
+  compression timers, child/exit state, automation job ownership/capture, and
+  scrollbar state now live in `TerminalPane`. Direct `Pane` fields are shared
+  identity, geometry, status/title/cwd/foreground metadata, and cache invalidation,
+  plus the transitional kind/content embedding.
+- PTY writes and child/output queries, scroll-state reads, image ticking,
+  render-hold expiry, and compression now take `*TerminalPane`. Generic image/
+  hold facades only propagate the returned invalidation result to the pane's
+  retained texture; timing policy and terminal log messages stay unchanged.
+  Terminal destruction also owns domain strings and captured job output.
+- Regression tests enforce the shared/terminal field boundary, exercise terminal
+  lifecycle queries without a pane node, cover domain-string allocation failure,
+  and verify job/domain cleanup and runtime-state reset on destruction.
+- Remaining B work: migrate the remaining terminal-only methods (especially
+  bootstrap, PTY polling and protocol parsing), narrow consumers, then replace transitional
   `kind`/`term`/`lua_surface` storage with `Content`. The current embedding is
   transitional, not the final tagged-union model. Keep the guards until the
   compiler-enforced content boundary replaces them.
@@ -576,3 +590,6 @@ all Lua-pane state lives in `LuaSurface`, which moves unchanged into
 - Protocol-buffer extraction validation: full native build and Zig tests pass
   in Nix, Lua remains at 785 successes, and touched Zig formatting is clean.
   No Lua surface or painting changes were made in this checkpoint.
+- Runtime-state extraction validation: full native build and Zig tests pass in
+  Nix, Lua remains at 785 successes, and touched Zig formatting is clean. GUI
+  benchmarks and the public Lua-pane rendering/input/API work remain pending.

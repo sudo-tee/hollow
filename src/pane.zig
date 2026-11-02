@@ -116,7 +116,7 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
 
 pub const Pane = struct {
     pub const Kind = enum { terminal, lua };
-    pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
+    pub const HtpMessageHandler = TerminalPane.HtpMessageHandler;
 
     kind: Kind = .terminal,
     lua_surface: ?*LuaSurface = null,
@@ -124,16 +124,11 @@ pub const Pane = struct {
     id: usize = 0,
     allocator: std.mem.Allocator,
     host_context: ?*anyopaque = null,
-    host_wake: @import("pty/wake.zig").Wake = .{},
-    spawn_filter: @import("pty/spawn_spec.zig").Filter = .{},
-    pty_host: @import("pty/spawn_spec.zig").HostResolver = .{},
     term: TerminalPane = .{},
     foreground_process: ?[]u8 = null,
     title: []u8 = &.{},
     cwd: []u8 = &.{},
     program_status: @import("term/program_status.zig").State = .{},
-    image_storage_generation: u64 = 0,
-    image_animation_deadline_ns: i128 = 0,
     /// Actual terminal dimensions in characters (updated on every resize).
     cols: u16 = 0,
     rows: u16 = 0,
@@ -145,65 +140,6 @@ pub const Pane = struct {
     ///                   clear RT and re-render all rows
     /// Cleared (set back to .false_value) by the renderer after re-rendering.
     render_dirty: ghostty.RenderStateDirty = .false_value,
-    /// A viewport scroll changes row identity without changing terminal grid
-    /// dimensions. Invalidate the retained pane texture before rebuilding it.
-    viewport_scroll_pending: bool = false,
-    htp_message_handler: ?HtpMessageHandler = null,
-    /// Set to true by pollPty when actual PTY bytes were written to the terminal
-    /// this tick.  Cleared by tickPanes after updateRenderState is called.
-    /// Used to avoid calling updateRenderState on idle panes — ghostty marks
-    /// the render_state dirty on every updateRenderState call (cursor blink,
-    /// etc.), so calling it unconditionally causes every pane to re-render
-    /// every frame even when nothing changed.
-    pty_received_data: bool = false,
-    /// Set to true by pollPty when actual PTY bytes were written this tick.
-    /// Unlike pty_received_data, this is cleared by the RENDERER (not by
-    /// tickPanes) so that the render phase can see whether the shell was
-    /// actively writing this frame.  Used to hold force-full CLEAR renders
-    /// until the shell's post-resize redraw has fully settled.
-    pty_wrote_this_frame: bool = false,
-    /// True while DEC synchronized output is active for this terminal. The
-    /// parser keeps advancing; the renderer holds the last presented frame.
-    synchronized_output_active: bool = false,
-    synchronized_output_enabled: bool = true,
-    /// Monotonic start time for the synchronized-output watchdog.
-    synchronized_output_started_ns: i128 = 0,
-    /// Last known mouse tracking mode (from terminal_get).  Logged on change.
-    last_mouse_tracking: u32 = 0,
-    mouse_tracking_logged_initial: bool = false,
-    /// Last known active screen (0=primary, 1=alternate).  Used for per-pane padding.
-    active_screen: u32 = 0,
-    /// Queue a one-shot PTY repaint nudge after alternate-screen entry settles.
-    pending_alt_screen_nudge: bool = false,
-    alt_screen_nudge_quiet_ticks: u8 = 0,
-    /// Earliest time to nudge, allowing the TUI to finish startup first.
-    alt_screen_nudge_not_before_ns: i128 = 0,
-    last_has_pending_ns: i128 = 0,
-    last_sanitize_ns: i128 = 0,
-    last_child_alive_ns: i128 = 0,
-    last_encoder_sync_ns: i128 = 0,
-    last_terminal_write_bytes: usize = 0,
-    last_terminal_write_chunks: usize = 0,
-    last_pty_read_ns: i128 = 0,
-    last_terminal_write_ns: i128 = 0,
-    last_pty_output_ns: i128 = 0,
-    /// Monotonic nanosecond timestamp of the last updateRenderState call on this
-    /// pane.  Used to throttle the cursor-blink / idle poll: even with no PTY
-    /// data we call updateRenderState at most once per ~16 ms so that cursor
-    /// blink (managed by ghostty's internal timer) still fires.
-    last_render_state_update_ns: i128 = 0,
-    compression_activity: ?u64 = null,
-    compression_deadline_ns: i128 = 0,
-    child_alive_cached: bool = true,
-    exit_event_emitted: bool = false,
-    automation_command_id: ?u64 = null,
-    automation_token: ?[32]u8 = null,
-    retain_on_exit: bool = false,
-    job_output: @import("job_output.zig").Capture = .{},
-    last_child_alive_check_ns: i128 = 0,
-    scrollbar_total: u64 = 0,
-    scrollbar_offset: u64 = 0,
-    scrollbar_len: u64 = 0,
     title_dirty: bool = false,
     title_is_manual: bool = false,
     bell_dirty: bool = false,
@@ -215,8 +151,6 @@ pub const Pane = struct {
     y_px: u32 = 0,
     width_px: u32 = 0,
     height_px: u32 = 0,
-    domain_name: []u8 = &.{},
-    is_remote: bool = false,
     cwd_dirty: bool = false,
     is_floating: bool = false,
     floating_x: f32 = 0.15,
@@ -262,7 +196,6 @@ pub const Pane = struct {
             surface.deinit(self.allocator);
             self.allocator.destroy(surface);
         }
-        self.job_output.deinit(self.allocator);
         self.program_status.deinit(self.allocator);
         if (self.isTerminal()) {
             self.term.deinit(runtime, self.allocator);
@@ -271,7 +204,6 @@ pub const Pane = struct {
         }
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
-        if (self.domain_name.len > 0) self.allocator.free(self.domain_name);
         self.* = Pane.init(self.allocator);
     }
 
@@ -295,7 +227,7 @@ pub const Pane = struct {
 
         runtime.setTerminalUserdata(terminal, self);
         self.term.terminal_runtime = runtime;
-        self.synchronized_output_enabled = cfg.synchronized_output;
+        self.term.synchronized_output_enabled = cfg.synchronized_output;
 
         runtime.setKittyImageStorageLimit(terminal, 64 * 1024 * 1024);
         runtime.setKittyImageMediumFile(terminal, true);
@@ -388,7 +320,7 @@ pub const Pane = struct {
                 if (domain.ssh != null) is_remote = true;
             }
         }
-        self.is_remote = is_remote;
+        self.term.is_remote = is_remote;
 
         const configured_cwd = cfg.defaultCwdForDomain(domain_name);
         const home_dir = if (inherited_cwd == null and configured_cwd == null and !is_remote)
@@ -406,7 +338,7 @@ pub const Pane = struct {
         if (agent_pty) |*candidate| {
             if (!candidate.agent.fallbackAllowed()) {
                 is_remote = true;
-                self.is_remote = true;
+                self.term.is_remote = true;
             }
         }
         // SSH cwd belongs to remote shell, not local process launcher.
@@ -422,7 +354,7 @@ pub const Pane = struct {
         // Remote cwd and guest environment require domain-aware plumbing.
         // This first producer only transforms native local launch contexts.
         if (agent_pty == null and !is_remote and !(is_windows and @import("pty/spawn_spec.zig").isWsl(shell))) {
-            self.spawn_filter.apply(spawn_arena.allocator(), &spawn_spec) catch |err| {
+            self.term.spawn_filter.apply(spawn_arena.allocator(), &spawn_spec) catch |err| {
                 std.log.warn("spawn filter failed: {s}", .{@errorName(err)});
             };
             launch_cwd = spawn_spec.cwd;
@@ -450,7 +382,7 @@ pub const Pane = struct {
             };
         } else launch_command;
 
-        var pty = agent_pty orelse try @import("pty/pty.zig").spawnNative(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.host_wake);
+        var pty = agent_pty orelse try @import("pty/pty.zig").spawnNative(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.term.host_wake);
         agent_pty = null;
         errdefer pty.deinit();
 
@@ -485,9 +417,9 @@ pub const Pane = struct {
         // event callback, and calling ghostty resize/update APIs here has been a
         // recurring source of null-deref crashes during tab creation.
         self.title = &.{};
-        if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
+        if (domain_name) |name| self.term.domain_name = try self.allocator.dupe(u8, name);
         if (pane_cwd) |cwd| self.setCwd(cwd);
-        std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ io.milliTimestamp() - start_ms, domain_name orelse "", self.is_remote });
+        std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ io.milliTimestamp() - start_ms, domain_name orelse "", self.term.is_remote });
     }
 
     fn shellQuoteSingle(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
@@ -512,19 +444,19 @@ pub const Pane = struct {
         if (self.term.pty) |*pty| {
             const budget_start_ns = io.nanoTimestamp();
             const deadline_ns = budget_start_ns + @max(@as(i128, 0), budget_ns);
-            self.last_pty_read_ns = 0;
-            self.last_terminal_write_ns = 0;
-            self.last_has_pending_ns = 0;
-            self.last_sanitize_ns = 0;
-            self.last_child_alive_ns = 0;
-            self.last_encoder_sync_ns = 0;
-            self.last_terminal_write_bytes = 0;
-            self.last_terminal_write_chunks = 0;
+            self.term.last_pty_read_ns = 0;
+            self.term.last_terminal_write_ns = 0;
+            self.term.last_has_pending_ns = 0;
+            self.term.last_sanitize_ns = 0;
+            self.term.last_child_alive_ns = 0;
+            self.term.last_encoder_sync_ns = 0;
+            self.term.last_terminal_write_bytes = 0;
+            self.term.last_terminal_write_chunks = 0;
 
             if (debug_overlay) {
                 const pending_start_ns = io.nanoTimestamp();
                 _ = pty.pendingOutputBytes();
-                self.last_has_pending_ns = io.nanoTimestamp() - pending_start_ns;
+                self.term.last_has_pending_ns = io.nanoTimestamp() - pending_start_ns;
             }
 
             var wrote_terminal = false;
@@ -546,9 +478,9 @@ pub const Pane = struct {
                     if (err == error.EndOfStream) break;
                     return err;
                 };
-                if (debug_overlay) self.last_pty_read_ns += io.nanoTimestamp() - read_start_ns;
+                if (debug_overlay) self.term.last_pty_read_ns += io.nanoTimestamp() - read_start_ns;
                 if (count == 0) break;
-                if (self.automation_token != null) self.job_output.append(self.allocator, self.term.read_buf[0..count]);
+                if (self.term.automation_token != null) self.term.job_output.append(self.allocator, self.term.read_buf[0..count]);
                 read_loops += 1;
                 total_read += count;
                 if (!self.term.logged_first_pty_read) {
@@ -557,7 +489,7 @@ pub const Pane = struct {
                 }
                 const sanitize_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 const pty_bytes = self.sanitizePtyOutput(self.term.read_buf[0..count]);
-                if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
+                if (debug_overlay) self.term.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
                 if (pty_bytes.len > 0) {
                     if (self.term.terminal_output_ready) {
                         self.writeTerminalChunk(runtime, pty_bytes, debug_overlay);
@@ -579,11 +511,11 @@ pub const Pane = struct {
                 if (io.nanoTimestamp() >= deadline_ns) break;
             }
 
-            if (total_read > 0) self.last_pty_output_ns = io.nanoTimestamp();
+            if (total_read > 0) self.term.last_pty_output_ns = io.nanoTimestamp();
 
             const child_alive_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
             self.refreshChildAliveCache(false);
-            if (debug_overlay) self.last_child_alive_ns += io.nanoTimestamp() - child_alive_start_ns;
+            if (debug_overlay) self.term.last_child_alive_ns += io.nanoTimestamp() - child_alive_start_ns;
             if (self.term.pending_startup_input.len > 0 and self.term.logged_first_pty_read) {
                 if (total_read == 0 and max_total_read > 0 and !pty.hasPendingOutput()) {
                     self.term.startup_input_quiet_ticks +|= 1;
@@ -621,31 +553,31 @@ pub const Pane = struct {
                 // Log mouse tracking state changes for diagnostics.
                 var mouse_tracking: u32 = 0;
                 const mt_result = runtime.terminal_get(self.term.terminal, @backingInt(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
-                if (mouse_tracking != self.last_mouse_tracking) {
-                    std.log.info("pane mouse_tracking changed {d} -> {d} (get_result={d})", .{ self.last_mouse_tracking, mouse_tracking, mt_result });
-                    self.last_mouse_tracking = mouse_tracking;
+                if (mouse_tracking != self.term.last_mouse_tracking) {
+                    std.log.info("pane mouse_tracking changed {d} -> {d} (get_result={d})", .{ self.term.last_mouse_tracking, mouse_tracking, mt_result });
+                    self.term.last_mouse_tracking = mouse_tracking;
                 }
-                if (!self.mouse_tracking_logged_initial) {
-                    self.mouse_tracking_logged_initial = true;
+                if (!self.term.mouse_tracking_logged_initial) {
+                    self.term.mouse_tracking_logged_initial = true;
                     std.log.info("pane initial mouse_tracking={d} (get_result={d})", .{ mouse_tracking, mt_result });
                 }
 
                 {
                     var active_screen: u32 = 0;
                     _ = runtime.terminal_get(self.term.terminal, @backingInt(ghostty.TerminalData.active_screen), &active_screen);
-                    self.active_screen = active_screen;
+                    self.term.active_screen = active_screen;
                 }
 
-                if (debug_overlay) self.last_encoder_sync_ns += io.nanoTimestamp() - encoder_sync_start_ns;
+                if (debug_overlay) self.term.last_encoder_sync_ns += io.nanoTimestamp() - encoder_sync_start_ns;
 
-                if (!self.term.render_state_ready or self.synchronized_output_active) return total_read;
+                if (!self.term.render_state_ready or self.term.synchronized_output_active) return total_read;
                 const now_ns = io.nanoTimestamp();
                 runtime.clearRenderStateDirty(self.term.render_state);
                 runtime.updateRenderState(self.term.render_state, self.term.terminal) catch |err| {
                     std.log.err("pane updateRenderState after PTY drain failed: {s}", .{@errorName(err)});
                     return total_read;
                 };
-                self.last_render_state_update_ns = now_ns;
+                self.term.last_render_state_update_ns = now_ns;
                 self.term.render_state_fresh = true;
             }
         }
@@ -655,11 +587,11 @@ pub const Pane = struct {
     fn writeTerminalChunk(self: *Pane, runtime: *GhosttyRuntime, bytes: []const u8, debug_overlay: bool) void {
         const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
         runtime.terminalWrite(self.term.terminal, bytes);
-        if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
-        self.last_terminal_write_bytes += bytes.len;
-        self.last_terminal_write_chunks += 1;
-        self.pty_received_data = true;
-        self.pty_wrote_this_frame = true;
+        if (debug_overlay) self.term.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
+        self.term.last_terminal_write_bytes += bytes.len;
+        self.term.last_terminal_write_chunks += 1;
+        self.term.pty_received_data = true;
+        self.term.pty_wrote_this_frame = true;
     }
 
     fn writeBufferedTerminalOutput(
@@ -688,42 +620,17 @@ pub const Pane = struct {
 
     pub fn sendText(self: *Pane, text: []const u8) void {
         if (!self.isTerminal()) return;
-        if (self.term.pty) |*pty| {
-            if (!pty.isAlive()) return;
-            pty.writeAll(text) catch |err| {
-                std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
-            };
-        }
+        self.term.sendText(text);
     }
 
     pub fn tickImageAnimation(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128) void {
         std.debug.assert(self.isTerminal());
-        if (self.synchronized_output_active) return;
-        const graphics = runtime.terminalKittyGraphics(self.term.terminal) orelse {
-            self.image_animation_deadline_ns = 0;
-            return;
-        };
-        const before = runtime.kittyStorageGeneration(graphics);
-        if (before == self.image_storage_generation and
-            (self.image_animation_deadline_ns == 0 or now_ns < self.image_animation_deadline_ns)) return;
-        const next_ms = runtime.tickKittyAnimation(graphics, @intCast(@divFloor(now_ns, std.time.ns_per_ms)));
-        self.image_animation_deadline_ns = if (next_ms) |ms| @max(now_ns + 8 * std.time.ns_per_ms, @as(i128, ms) * std.time.ns_per_ms) else 0;
-        const after = runtime.kittyStorageGeneration(graphics);
-        if (after != self.image_storage_generation) {
-            self.render_dirty = .full;
-            self.term.render_state_fresh = false;
-        }
-        self.image_storage_generation = after;
+        if (self.term.tickImageAnimation(runtime, now_ns)) self.render_dirty = .full;
     }
 
     pub fn expireRenderHold(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128, timeout_ns: i128) bool {
         std.debug.assert(self.isTerminal());
-        if (!self.synchronized_output_active or now_ns - self.synchronized_output_started_ns < timeout_ns) return false;
-        // Setting a mode through the API intentionally does not call render_hold.
-        _ = runtime.setTerminalMode(self.term.terminal, .synchronized_output, false);
-        self.synchronized_output_active = false;
-        self.synchronized_output_started_ns = 0;
-        self.term.render_state_fresh = false;
+        if (!self.term.expireRenderHold(runtime, now_ns, timeout_ns)) return false;
         self.render_dirty = .full;
         return true;
     }
@@ -769,13 +676,12 @@ pub const Pane = struct {
     }
 
     pub fn childPid(self: *const Pane) usize {
-        if (self.term.pty) |pty| return pty.childPid();
-        return 0;
+        return self.term.childPid();
     }
 
     pub fn setHtpMessageHandler(self: *Pane, handler: ?HtpMessageHandler) void {
         std.debug.assert(self.isTerminal());
-        self.htp_message_handler = handler;
+        self.term.htp_message_handler = handler;
     }
 
     pub fn refreshCwd(self: *Pane) bool {
@@ -795,7 +701,7 @@ pub const Pane = struct {
             self.cwd_dirty = false;
         }
 
-        if (self.is_remote) return changed;
+        if (self.term.is_remote) return changed;
         if (is_windows) return changed;
 
         const pid = self.childPid();
@@ -832,8 +738,8 @@ pub const Pane = struct {
         }
         // A geometry change invalidates the previously presented surface, so
         // do not let synchronized output hold an obsolete frame across it.
-        self.synchronized_output_active = false;
-        self.synchronized_output_started_ns = 0;
+        self.term.synchronized_output_active = false;
+        self.term.synchronized_output_started_ns = 0;
         const prev_cols = self.cols;
         const prev_rows = self.rows;
 
@@ -893,8 +799,8 @@ pub const Pane = struct {
                 runtime.resizeTerminal(self.term.terminal, self.cols, original_rows, cell_width_px, cell_height_px);
                 runtime.updateRenderState(self.term.render_state, self.term.terminal) catch {};
                 pty.resize(self.cols, original_rows);
-                self.synchronized_output_active = false;
-                self.synchronized_output_started_ns = 0;
+                self.term.synchronized_output_active = false;
+                self.term.synchronized_output_started_ns = 0;
                 self.render_dirty = .full;
             }
         }
@@ -928,12 +834,7 @@ pub const Pane = struct {
     }
 
     pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {
-        // Write an escape sequence to the PTY
-        if (self.term.pty) |*pty| {
-            pty.writeAll(sequence) catch |err| {
-                std.log.warn("pane: writeEscapeSequence failed: {s}", .{@errorName(err)});
-            };
-        }
+        self.term.writeEscapeSequence(sequence);
     }
 
     pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
@@ -979,10 +880,10 @@ pub const Pane = struct {
     }
 
     fn requestAgentPty(self: *Pane, domain_name: ?[]const u8, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, native_cwd: ?[]const u8, env_block: []const u8, launch_command: ?LaunchCommand) !?@import("pty/pty.zig").Pty {
-        if (!self.pty_host.enabled()) return null;
+        if (!self.term.pty_host.enabled()) return null;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const host = self.pty_host.resolve(arena.allocator(), domain_name, shell) orelse return null;
+        const host = self.term.pty_host.resolve(arena.allocator(), domain_name, shell) orelse return null;
         var candidate = try @import("pty/pty.zig").spawnAgent(self.allocator, .{
             .shell = shell,
             .cols = cols,
@@ -992,19 +893,18 @@ pub const Pane = struct {
             .env_block = env_block,
             .launch_command = launch_command,
             .host = host,
-        }, self.host_wake);
+        }, self.term.host_wake);
         errdefer candidate.deinit();
         try candidate.agent.start();
         return candidate;
     }
 
     pub fn usesAgent(self: *const Pane) bool {
-        if (self.term.pty) |*pty| return @import("pty/pty.zig").usesAgent(pty);
-        return false;
+        return self.term.usesAgent();
     }
 
     fn syncRemoteCwdFromTitle(self: *Pane) void {
-        if (!self.is_remote or self.title.len == 0) return;
+        if (!self.term.is_remote or self.title.len == 0) return;
 
         const trimmed = std.mem.trim(u8, self.title, " \t\r\n");
         const derived = deriveRemotePathFromTitle(trimmed) orelse return;
@@ -1086,34 +986,19 @@ pub const Pane = struct {
     }
 
     pub fn hasLiveChild(self: *Pane) bool {
-        self.refreshChildAliveCache(false);
-        return self.child_alive_cached;
+        return self.term.hasLiveChild();
     }
 
     pub fn pendingPtyOutputBytes(self: *Pane) usize {
-        if (self.term.pty) |*pty| return pty.pendingOutputBytes();
-        return 0;
+        return self.term.pendingPtyOutputBytes();
     }
 
     fn refreshChildAliveCache(self: *Pane, force: bool) void {
-        const pty = if (self.term.pty) |*value| value else {
-            self.child_alive_cached = false;
-            self.last_child_alive_check_ns = 0;
-            return;
-        };
-        if (!self.child_alive_cached) return;
-        const now_ns = io.nanoTimestamp();
-        if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutputOrExit()) return;
-        self.last_child_alive_check_ns = now_ns;
-        self.child_alive_cached = pty.isAlive();
+        self.term.refreshChildAliveCache(force);
     }
 
     pub fn scrollbar(self: *const Pane) ghostty.TerminalScrollbar {
-        return .{
-            .total = self.scrollbar_total,
-            .offset = self.scrollbar_offset,
-            .len = self.scrollbar_len,
-        };
+        return self.term.scrollbar();
     }
 
     fn sanitizePtyOutput(self: *Pane, bytes: []u8) []const u8 {
@@ -1639,7 +1524,7 @@ pub const Pane = struct {
     fn finishHtpOscSequence(self: *Pane) void {
         if (!self.term.htp_osc_overflow and self.term.htp_osc_len > 0) {
             const payload = self.term.htp_osc_buf[0..self.term.htp_osc_len];
-            if (self.htp_message_handler) |handler| handler(self, payload);
+            if (self.term.htp_message_handler) |handler| handler(self, payload);
         } else if (self.term.htp_osc_overflow) {
             std.log.warn("htp: dropped oversized osc pane={x} bytes={d}", .{ self.id, self.term.htp_osc_len });
         }
@@ -1755,6 +1640,24 @@ fn trailingAnsiPrefixLen(bytes: []const u8) usize {
     return 0;
 }
 
+test "pane node separates shared metadata from terminal runtime storage" {
+    inline for (.{
+        "host_wake",                  "spawn_filter",          "pty_host",                "pty",                         "terminal",                 "render_state",
+        "boot_output",                "pending_startup_input", "pending_cwd",             "htp_message_handler",         "pty_received_data",        "pty_wrote_this_frame",
+        "synchronized_output_active", "active_screen",         "last_mouse_tracking",     "last_render_state_update_ns", "image_storage_generation", "image_animation_deadline_ns",
+        "viewport_scroll_pending",    "compression_activity",  "compression_deadline_ns", "child_alive_cached",          "exit_event_emitted",       "automation_command_id",
+        "automation_token",           "retain_on_exit",        "job_output",              "scrollbar_total",             "scrollbar_offset",         "scrollbar_len",
+        "domain_name",                "is_remote",
+    }) |field| {
+        try std.testing.expect(!@hasField(Pane, field));
+        try std.testing.expect(@hasField(TerminalPane, field));
+    }
+    inline for (.{ "id", "cols", "rows", "title", "cwd", "program_status", "foreground_process", "render_dirty", "x_px", "y_px", "width_px", "height_px", "is_floating" }) |field| {
+        try std.testing.expect(@hasField(Pane, field));
+        try std.testing.expect(!@hasField(TerminalPane, field));
+    }
+}
+
 test "background PTY parses blocked and error after rendering helpers are released" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
@@ -1807,7 +1710,7 @@ test "background PTY parses blocked and error after rendering helpers are releas
     try Wait.poll(&pane, &runtime, .cleared);
     pane.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .failure });
-    try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.active_screen);
+    try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.term.active_screen);
     try std.testing.expect(!pane.hasRenderHelpers());
     try std.testing.expectEqual(@as(usize, 0), pane.term.boot_output.items.len);
 }
@@ -1912,12 +1815,12 @@ test "image animation invalidates fresh snapshots and schedules next frame" {
     pane.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms);
     try std.testing.expect(!pane.term.render_state_fresh);
     try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
-    try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.image_animation_deadline_ns);
+    try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.term.image_animation_deadline_ns);
     pane.render_dirty = .false_value;
     pane.term.render_state_fresh = true;
     pane.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms);
     try std.testing.expect(pane.term.render_state_fresh);
-    pane.tickImageAnimation(&runtime, pane.image_animation_deadline_ns);
+    pane.tickImageAnimation(&runtime, pane.term.image_animation_deadline_ns);
     try std.testing.expect(!pane.term.render_state_fresh);
     try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
 }

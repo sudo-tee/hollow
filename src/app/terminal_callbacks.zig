@@ -114,7 +114,7 @@ fn titleChangedCallback(_: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void
 
 fn renderHoldCallback(terminal: ?*anyopaque, userdata: ?*anyopaque, held: bool) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
-    if (!pane.synchronized_output_enabled) return;
+    if (!pane.term.synchronized_output_enabled) return;
     if (held) {
         const runtime = pane.term.terminal_runtime orelse return;
         if (pane.term.render_state) |state| {
@@ -123,13 +123,13 @@ fn renderHoldCallback(terminal: ?*anyopaque, userdata: ?*anyopaque, held: bool) 
             pane.term.render_state_fresh = true;
             pane.render_dirty = .full;
         }
-        pane.synchronized_output_started_ns = @import("../io.zig").nanoTimestamp();
+        pane.term.synchronized_output_started_ns = @import("../io.zig").nanoTimestamp();
     } else {
-        pane.synchronized_output_started_ns = 0;
+        pane.term.synchronized_output_started_ns = 0;
         pane.render_dirty = .full;
         pane.term.render_state_fresh = false;
     }
-    pane.synchronized_output_active = held;
+    pane.term.synchronized_output_active = held;
 }
 
 fn programStatusCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.ProgramStatus) callconv(.c) void {
@@ -272,17 +272,17 @@ test "render hold captures each exact boundary including end and restart in one 
     runtime.registerCallbacks(pane.term.terminal, terminalCallbacks());
 
     runtime.terminalWrite(pane.term.terminal, "A\x1b[?2026hBBBB");
-    try std.testing.expect(pane.synchronized_output_active);
+    try std.testing.expect(pane.term.synchronized_output_active);
     try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.term.render_state).?.x);
-    const started = pane.synchronized_output_started_ns;
+    const started = pane.term.synchronized_output_started_ns;
     runtime.terminalWrite(pane.term.terminal, "C\x1b[?2026h");
-    try std.testing.expectEqual(started, pane.synchronized_output_started_ns);
+    try std.testing.expectEqual(started, pane.term.synchronized_output_started_ns);
     runtime.terminalWrite(pane.term.terminal, "\x1b[?2026lD\x1b[?2026hEEEE");
     try std.testing.expectEqual(@as(u16, 7), runtime.cursorPos(pane.term.render_state).?.x);
     runtime.resizeTerminal(pane.term.terminal, 81, 24, 8, 16);
-    try std.testing.expect(!pane.synchronized_output_active);
+    try std.testing.expect(!pane.term.synchronized_output_active);
     runtime.terminalWrite(pane.term.terminal, "\x1b[?2026h");
-    const deadline = pane.synchronized_output_started_ns + std.time.ns_per_s;
+    const deadline = pane.term.synchronized_output_started_ns + std.time.ns_per_s;
     try std.testing.expect(!pane.expireRenderHold(&runtime, deadline - 1, std.time.ns_per_s));
     runtime.terminalWrite(pane.term.terminal, "still busy\x1b[?2026h");
     try std.testing.expect(pane.expireRenderHold(&runtime, deadline, std.time.ns_per_s));

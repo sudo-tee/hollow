@@ -549,7 +549,7 @@ pub fn processInputQueue(self: *App) void {
                     .default => {},
                 }
 
-                if (hit.pane.is_remote) {
+                if (hit.pane.term.is_remote) {
                     std.log.warn("file drop ignored for remote pane", .{});
                     return;
                 }
@@ -784,8 +784,8 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
                 // Synchronized output keeps terminal damage pending until the
                 // mode is cleared or its watchdog expires. PTY wakeups still
                 // drive ticks, but idle frames should not spin on stale damage.
-                if (pane.synchronized_output_active) continue;
-                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame) {
+                if (pane.term.synchronized_output_active) continue;
+                if (pane.render_dirty != .false_value or pane.term.pty_received_data or pane.term.pty_wrote_this_frame) {
                     self.last_visual_activity_ns = now_ns;
                     return true;
                 }
@@ -926,7 +926,7 @@ pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const max_top = scroll_mod.scrollbarMaxTopRow(scrollbar);
     const in_scrollback = scroll_mod.scrollbarTopRow(scrollbar) < max_top;
     const over_scrollbar = hitTestScrollbar(self, x, y) != null;
-    const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.last_mouse_tracking == 0;
+    const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.term.last_mouse_tracking == 0;
 
     if (should_scroll_viewport) {
         scroll_mod.scrollPaneViewport(self, hit.pane, delta);

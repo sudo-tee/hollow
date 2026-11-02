@@ -122,7 +122,7 @@ pub fn refreshAfterPanes(self: *App) void {
     if (!inputActive(self)) return cancel(self);
     const pane = self.quick_select_pane orelse return cancel(self);
     if (!self.hasPane(pane)) return cancel(self);
-    if (pane.pty_wrote_this_frame) {
+    if (pane.term.pty_wrote_this_frame) {
         self.quick_select_prefix_len = 0;
         self.quick_select_pending_capture = true;
     }

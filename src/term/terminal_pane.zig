@@ -16,6 +16,11 @@ var shared_pty_read_buf: [read_buffer_size]u8 = undefined;
 var shared_pty_sanitize_buf: [sanitize_buffer_size]u8 = undefined;
 
 pub const TerminalPane = struct {
+    pub const HtpMessageHandler = *const fn (pane: *@import("../pane.zig").Pane, payload: []const u8) void;
+
+    host_wake: @import("../pty/wake.zig").Wake = .{},
+    spawn_filter: @import("../pty/spawn_spec.zig").Filter = .{},
+    pty_host: @import("../pty/spawn_spec.zig").HostResolver = .{},
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
     terminal_runtime: ?*ghostty.Runtime = null,
@@ -61,6 +66,49 @@ pub const TerminalPane = struct {
     pending_startup_input: []u8 = &.{},
     pending_startup_input_capacity: usize = 0,
     startup_input_quiet_ticks: u8 = 0,
+    htp_message_handler: ?HtpMessageHandler = null,
+    image_storage_generation: u64 = 0,
+    image_animation_deadline_ns: i128 = 0,
+    /// Scrolling invalidates row identity in the retained pane texture.
+    viewport_scroll_pending: bool = false,
+    /// Parser activity consumed by the app's render-state update.
+    pty_received_data: bool = false,
+    /// Parser activity consumed by the renderer, not the app tick.
+    pty_wrote_this_frame: bool = false,
+    synchronized_output_active: bool = false,
+    synchronized_output_enabled: bool = true,
+    synchronized_output_started_ns: i128 = 0,
+    last_mouse_tracking: u32 = 0,
+    mouse_tracking_logged_initial: bool = false,
+    active_screen: u32 = 0,
+    pending_alt_screen_nudge: bool = false,
+    alt_screen_nudge_quiet_ticks: u8 = 0,
+    alt_screen_nudge_not_before_ns: i128 = 0,
+    last_has_pending_ns: i128 = 0,
+    last_sanitize_ns: i128 = 0,
+    last_child_alive_ns: i128 = 0,
+    last_encoder_sync_ns: i128 = 0,
+    last_terminal_write_bytes: usize = 0,
+    last_terminal_write_chunks: usize = 0,
+    last_pty_read_ns: i128 = 0,
+    last_terminal_write_ns: i128 = 0,
+    last_pty_output_ns: i128 = 0,
+    /// Idle render polling preserves cursor blink without updating every frame.
+    last_render_state_update_ns: i128 = 0,
+    compression_activity: ?u64 = null,
+    compression_deadline_ns: i128 = 0,
+    child_alive_cached: bool = true,
+    last_child_alive_check_ns: i128 = 0,
+    exit_event_emitted: bool = false,
+    automation_command_id: ?u64 = null,
+    automation_token: ?[32]u8 = null,
+    retain_on_exit: bool = false,
+    job_output: @import("../job_output.zig").Capture = .{},
+    scrollbar_total: u64 = 0,
+    scrollbar_offset: u64 = 0,
+    scrollbar_len: u64 = 0,
+    domain_name: []u8 = &.{},
+    is_remote: bool = false,
 
     pub fn initInput(runtime: *ghostty.Runtime, terminal: ?*anyopaque) !TerminalPane {
         const key_encoder = try runtime.createKeyEncoder();
@@ -107,6 +155,7 @@ pub const TerminalPane = struct {
     }
 
     pub fn deinitBuffers(self: *TerminalPane, allocator: std.mem.Allocator) void {
+        self.job_output.deinit(allocator);
         if (self.pending_cwd) |value| allocator.free(value);
         self.pending_cwd = null;
         self.boot_output.deinit(allocator);
@@ -126,6 +175,115 @@ pub const TerminalPane = struct {
         self.pending_startup_input = &.{};
         self.pending_startup_input_capacity = 0;
         self.startup_input_quiet_ticks = 0;
+        if (self.domain_name.len > 0) allocator.free(self.domain_name);
+        self.domain_name = &.{};
+    }
+
+    pub fn sendText(self: *TerminalPane, text: []const u8) void {
+        if (self.pty) |*pty| {
+            if (!pty.isAlive()) return;
+            pty.writeAll(text) catch |err| {
+                std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
+    pub fn writeEscapeSequence(self: *TerminalPane, sequence: []const u8) void {
+        if (self.pty) |*pty| {
+            pty.writeAll(sequence) catch |err| {
+                std.log.warn("pane: writeEscapeSequence failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
+    pub fn childPid(self: *const TerminalPane) usize {
+        if (self.pty) |pty| return pty.childPid();
+        return 0;
+    }
+
+    pub fn usesAgent(self: *const TerminalPane) bool {
+        if (self.pty) |*pty| return @import("../pty/pty.zig").usesAgent(pty);
+        return false;
+    }
+
+    pub fn pendingPtyOutputBytes(self: *TerminalPane) usize {
+        if (self.pty) |*pty| return pty.pendingOutputBytes();
+        return 0;
+    }
+
+    pub fn hasLiveChild(self: *TerminalPane) bool {
+        self.refreshChildAliveCache(false);
+        return self.child_alive_cached;
+    }
+
+    pub fn refreshChildAliveCache(self: *TerminalPane, force: bool) void {
+        const pty = if (self.pty) |*value| value else {
+            self.child_alive_cached = false;
+            self.last_child_alive_check_ns = 0;
+            return;
+        };
+        if (!self.child_alive_cached) return;
+        const now_ns = @import("../io.zig").nanoTimestamp();
+        if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutputOrExit()) return;
+        self.last_child_alive_check_ns = now_ns;
+        self.child_alive_cached = pty.isAlive();
+    }
+
+    pub fn scrollbar(self: *const TerminalPane) ghostty.TerminalScrollbar {
+        return .{ .total = self.scrollbar_total, .offset = self.scrollbar_offset, .len = self.scrollbar_len };
+    }
+
+    /// Returns whether the generic pane's retained texture needs invalidation.
+    pub fn tickImageAnimation(self: *TerminalPane, runtime: *ghostty.Runtime, now_ns: i128) bool {
+        if (self.synchronized_output_active) return false;
+        const graphics = runtime.terminalKittyGraphics(self.terminal) orelse {
+            self.image_animation_deadline_ns = 0;
+            return false;
+        };
+        const before = runtime.kittyStorageGeneration(graphics);
+        if (before == self.image_storage_generation and
+            (self.image_animation_deadline_ns == 0 or now_ns < self.image_animation_deadline_ns)) return false;
+        const next_ms = runtime.tickKittyAnimation(graphics, @intCast(@divFloor(now_ns, std.time.ns_per_ms)));
+        self.image_animation_deadline_ns = if (next_ms) |ms| @max(now_ns + 8 * std.time.ns_per_ms, @as(i128, ms) * std.time.ns_per_ms) else 0;
+        const after = runtime.kittyStorageGeneration(graphics);
+        const changed = after != self.image_storage_generation;
+        if (changed) self.render_state_fresh = false;
+        self.image_storage_generation = after;
+        return changed;
+    }
+
+    pub fn expireRenderHold(self: *TerminalPane, runtime: *ghostty.Runtime, now_ns: i128, timeout_ns: i128) bool {
+        if (!self.synchronized_output_active or now_ns - self.synchronized_output_started_ns < timeout_ns) return false;
+        // Setting a mode through the API intentionally does not call render_hold.
+        _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
+        self.synchronized_output_active = false;
+        self.synchronized_output_started_ns = 0;
+        self.render_state_fresh = false;
+        return true;
+    }
+
+    pub fn tickCompression(self: *TerminalPane, runtime: *ghostty.Runtime, now_ns: i128) void {
+        const idle_delay_ns: i128 = 250 * std.time.ns_per_ms;
+        const continuation_delay_ns: i128 = std.time.ns_per_ms;
+        const activity = runtime.terminalCompressionActivity(self.terminal) catch |err| {
+            std.log.err("pane compression activity failed: {s}", .{@errorName(err)});
+            self.compression_deadline_ns = 0;
+            return;
+        };
+        if (self.compression_activity == null or self.compression_activity.? != activity) {
+            self.compression_activity = activity;
+            self.compression_deadline_ns = now_ns + idle_delay_ns;
+            return;
+        }
+        if (self.compression_deadline_ns == 0 or now_ns < self.compression_deadline_ns) return;
+        self.compression_deadline_ns = switch (runtime.terminalCompress(self.terminal) catch |err| {
+            std.log.err("pane compression failed: {s}", .{@errorName(err)});
+            self.compression_deadline_ns = 0;
+            return;
+        }) {
+            .pending => now_ns + continuation_delay_ns,
+            .complete, .unsupported => 0,
+        };
     }
 
     pub fn queueStartupInput(self: *TerminalPane, allocator: std.mem.Allocator, text: []const u8) !void {
@@ -216,11 +374,67 @@ pub const TerminalPane = struct {
     }
 };
 
+test "terminal lifecycle queries and scroll state need no pane node" {
+    var content: TerminalPane = .{
+        .scrollbar_total = 100,
+        .scrollbar_offset = 50,
+        .scrollbar_len = 20,
+        .last_child_alive_check_ns = 123,
+    };
+    try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 100, .offset = 50, .len = 20 }, content.scrollbar());
+    try std.testing.expectEqual(@as(usize, 0), content.childPid());
+    try std.testing.expectEqual(@as(usize, 0), content.pendingPtyOutputBytes());
+    try std.testing.expect(!content.usesAgent());
+    try std.testing.expect(!content.hasLiveChild());
+    try std.testing.expect(!content.child_alive_cached);
+    try std.testing.expectEqual(@as(i128, 0), content.last_child_alive_check_ns);
+    content.refreshChildAliveCache(true);
+    content.sendText("discarded without a PTY");
+    content.writeEscapeSequence("\x1b[0m");
+}
+
+test "terminal destruction owns domain and job capture and resets runtime state" {
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var content: TerminalPane = .{
+        .exit_event_emitted = true,
+        .automation_command_id = 42,
+        .automation_token = "0123456789abcdef0123456789abcdef".*,
+        .retain_on_exit = true,
+        .synchronized_output_active = true,
+        .synchronized_output_started_ns = 123,
+        .image_animation_deadline_ns = 456,
+        .compression_deadline_ns = 789,
+        .pty_received_data = true,
+        .pty_wrote_this_frame = true,
+        .is_remote = true,
+    };
+    defer content.deinit(&runtime, allocator);
+    content.domain_name = try allocator.dupe(u8, "remote");
+    content.job_output.append(allocator, "raw job output\x1b[0m");
+    const captured = try content.job_output.snapshot(allocator);
+    defer allocator.free(captured);
+    try std.testing.expectEqualStrings("raw job output\x1b[0m", captured);
+    content.deinit(&runtime, allocator);
+    try std.testing.expect(content.job_output.bytes == null);
+    try std.testing.expectEqual(@as(usize, 0), content.domain_name.len);
+    try std.testing.expect(!content.exit_event_emitted and !content.retain_on_exit);
+    try std.testing.expect(content.automation_token == null and content.automation_command_id == null);
+    try std.testing.expect(!content.synchronized_output_active and content.synchronized_output_enabled);
+    try std.testing.expectEqual(@as(i128, 0), content.synchronized_output_started_ns);
+    try std.testing.expectEqual(@as(i128, 0), content.image_animation_deadline_ns);
+    try std.testing.expectEqual(@as(i128, 0), content.compression_deadline_ns);
+    try std.testing.expect(!content.pty_received_data and !content.pty_wrote_this_frame);
+    try std.testing.expect(!content.is_remote);
+}
+
 test "terminal protocol buffers clean up every partial allocation and shortened startup input" {
     const Check = struct {
         fn run(allocator: std.mem.Allocator) !void {
             var content: TerminalPane = .{};
             defer content.deinitBuffers(allocator);
+            content.domain_name = try allocator.dupe(u8, "local");
             content.pending_cwd = try allocator.dupe(u8, "/reported");
             try content.boot_output.appendSlice(allocator, "deferred PTY output");
             try content.osc1337_buf.appendSlice(allocator, "image data");
@@ -236,6 +450,7 @@ test "terminal protocol buffers clean up every partial allocation and shortened 
             content.deinitBuffers(allocator);
             content.deinitBuffers(allocator);
             try std.testing.expect(content.pending_cwd == null);
+            try std.testing.expectEqual(@as(usize, 0), content.domain_name.len);
             try std.testing.expectEqual(@as(usize, 0), content.boot_output.capacity);
             try std.testing.expectEqual(@as(usize, 0), content.osc1337_buf.capacity);
             try std.testing.expectEqual(@as(usize, 0), content.osc99_buf.capacity);

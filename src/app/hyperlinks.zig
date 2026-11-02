@@ -242,7 +242,7 @@ pub fn updateHoveredHyperlink(self: *App) void {
         return;
     }
     if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
-        if (hit.pane.pty_wrote_this_frame) {
+        if (hit.pane.term.pty_wrote_this_frame) {
             const now_ns = io.nanoTimestamp();
             if (self.hover_probe_defer_until_ns == 0) {
                 self.hover_probe_defer_until_ns = now_ns + 50 * std.time.ns_per_ms;

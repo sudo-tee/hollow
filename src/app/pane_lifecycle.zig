@@ -19,8 +19,8 @@ pub fn created(context: *anyopaque, pane: *Pane) void {
 
 pub fn exited(app: *App, pane: *Pane) void {
     if (!pane.isTerminal()) return;
-    if (pane.exit_event_emitted or pane.hasLiveChild()) return;
-    pane.exit_event_emitted = true;
+    if (pane.term.exit_event_emitted or pane.hasLiveChild()) return;
+    pane.term.exit_event_emitted = true;
     const status = if (pane.term.pty) |*pty| pty.exitStatus() else null;
     _ = app.automation_events.publish(.{ .kind = "process_exited", .pane_id = pane.id, .status = if (status) |value| @intCast(value) else null });
     app.emitLuaBuiltInEvent("term:pane_exited", .{ .pane_exited = .{

@@ -48,15 +48,15 @@ pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) g
     if (!pane.isTerminal()) return .{ .total = 0, .offset = 0, .len = 0 };
     const was_visible = scrollbarVisible(self, pane.scrollbar());
     if (runtime.terminalScrollbar(pane.term.terminal)) |scrollbar| {
-        pane.scrollbar_total = scrollbar.total;
-        pane.scrollbar_offset = scrollbar.offset;
-        pane.scrollbar_len = scrollbar.len;
+        pane.term.scrollbar_total = scrollbar.total;
+        pane.term.scrollbar_offset = scrollbar.offset;
+        pane.term.scrollbar_len = scrollbar.len;
         if (was_visible != scrollbarVisible(self, scrollbar)) self.requestLayoutResize(false);
         return scrollbar;
     }
-    pane.scrollbar_total = @max(@as(u64, 1), @as(u64, pane.rows));
-    pane.scrollbar_offset = 0;
-    pane.scrollbar_len = @max(@as(u64, 1), pane.rows);
+    pane.term.scrollbar_total = @max(@as(u64, 1), @as(u64, pane.rows));
+    pane.term.scrollbar_offset = 0;
+    pane.term.scrollbar_len = @max(@as(u64, 1), pane.rows);
     const fallback = pane.scrollbar();
     if (was_visible != scrollbarVisible(self, fallback)) self.requestLayoutResize(false);
     return fallback;
@@ -68,10 +68,10 @@ pub fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
     const runtime = if (self.ghostty) |*rt| rt else return;
     runtime.terminalScroll(pane.term.terminal, delta);
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
+    pane.term.viewport_scroll_pending = true;
     pane.term.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    pane.term.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
     selection_mod.syncDraggedSelectionToPointer(self, pane);
@@ -95,10 +95,10 @@ fn forceScrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
     }
 
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
+    pane.term.viewport_scroll_pending = true;
     pane.term.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    pane.term.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }
@@ -117,10 +117,10 @@ fn restorePaneViewportFromBottom(self: *App, pane: *Pane, top_row: usize) void {
     }
 
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
+    pane.term.viewport_scroll_pending = true;
     pane.term.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    pane.term.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }
@@ -136,10 +136,10 @@ pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
 
     runtime.terminalScrollToRow(pane.term.terminal, @intCast(clamped_target));
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
+    pane.term.viewport_scroll_pending = true;
     pane.term.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    pane.term.last_render_state_update_ns = 0;
+    pane.term.pty_received_data = true;
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }

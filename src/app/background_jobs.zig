@@ -21,7 +21,7 @@ pub fn spawn(app: *App, args: command.JobSpawn) !command.Response {
     const workspace = mux.activeWorkspace() orelse return .fail("unavailable", "no active workspace");
     var count: usize = 0;
     var panes = mux.paneIterator();
-    while (panes.next()) |pane| if (pane.automation_token != null) {
+    while (panes.next()) |pane| if (pane.term.automation_token != null) {
         count += 1;
     };
     if (count >= max_jobs) return .fail("resource_exhausted", "clean up retained jobs before spawning more");
@@ -37,7 +37,7 @@ pub fn spawn(app: *App, args: command.JobSpawn) !command.Response {
         return .fail("spawn_failed", @errorName(err));
     };
     const pane = tab.activePane().?;
-    pane.automation_token = token;
+    pane.term.automation_token = token;
     response.payload.?.object.getPtr("pane_id").?.* = .{ .integer = @intCast(pane.id) };
     response.payload.?.object.getPtr("tab_id").?.* = .{ .integer = @intCast(tab.id) };
     @import("htp.zig").bindHtpHandlers(app);
@@ -50,7 +50,7 @@ pub fn spawn(app: *App, args: command.JobSpawn) !command.Response {
 fn ownedPane(app: anytype, args: command.JobHandle) ?*Pane {
     const pane = app.findPaneById(args.id) orelse return null;
     if (!pane.isTerminal()) return null;
-    const token = pane.automation_token orelse return null;
+    const token = pane.term.automation_token orelse return null;
     return if (std.mem.eql(u8, &token, args.token)) pane else null;
 }
 
@@ -58,17 +58,17 @@ pub fn get(app: *App, args: command.JobHandle) !command.Response {
     const pane = ownedPane(app, args) orelse return .fail("job_not_found", "no matching automation-owned pane");
     const running = pane.hasLiveChild() or (if (pane.term.pty) |*pty| pty.jobOutputPending() else false);
     if (!running) lifecycle.exited(app, pane);
-    return value(app, .{ .pane_id = args.id, .state = if (running) @as([]const u8, "running") else "exited", .status = if (pane.term.pty) |*pty| pty.exitStatus() else null, .cursor = app.automation_events.subscribe(), .output_bytes = pane.job_output.len, .output_truncated = pane.job_output.truncated, .output_incomplete = pane.job_output.incomplete });
+    return value(app, .{ .pane_id = args.id, .state = if (running) @as([]const u8, "running") else "exited", .status = if (pane.term.pty) |*pty| pty.exitStatus() else null, .cursor = app.automation_events.subscribe(), .output_bytes = pane.term.job_output.len, .output_truncated = pane.term.job_output.truncated, .output_incomplete = pane.term.job_output.incomplete });
 }
 
 pub fn output(app: *App, args: command.JobHandle) !command.Response {
     const pane = ownedPane(app, args) orelse return .fail("job_not_found", "no matching automation-owned pane");
-    const bytes = try pane.job_output.snapshot(app.allocator);
+    const bytes = try pane.term.job_output.snapshot(app.allocator);
     defer app.allocator.free(bytes);
     const encoded = try app.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
     defer app.allocator.free(encoded);
     _ = std.base64.standard.Encoder.encode(encoded, bytes);
-    return value(app, .{ .encoding = "base64", .data = encoded, .truncated = pane.job_output.truncated, .incomplete = pane.job_output.incomplete, .capacity_bytes = @import("../job_output.zig").capacity });
+    return value(app, .{ .encoding = "base64", .data = encoded, .truncated = pane.term.job_output.truncated, .incomplete = pane.term.job_output.incomplete, .capacity_bytes = @import("../job_output.zig").capacity });
 }
 
 pub fn cleanup(app: *App, args: command.JobHandle) command.Response {
@@ -105,13 +105,13 @@ test "background jobs: ownership rejects ordinary panes, mismatched tokens, and 
     var app: Fake = .{ .pane = &pane };
     const handle: command.JobHandle = .{ .id = pane.id, .token = "0123456789abcdef0123456789abcdef" };
     try std.testing.expect(ownedPane(&app, handle) == null);
-    pane.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.term.automation_token = "0123456789abcdef0123456789abcdef".*;
     try std.testing.expect(ownedPane(&app, handle) == &pane);
-    pane.automation_token = "fedcba9876543210fedcba9876543210".*;
+    pane.term.automation_token = "fedcba9876543210fedcba9876543210".*;
     try std.testing.expect(ownedPane(&app, handle) == null);
     // Reusing storage never makes an old ID target the new pane, even if its
     // token were accidentally retained.
-    pane.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.term.automation_token = "0123456789abcdef0123456789abcdef".*;
     pane.id = 4;
     try std.testing.expect(ownedPane(&app, handle) == null);
 }

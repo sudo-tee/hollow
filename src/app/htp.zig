@@ -338,12 +338,12 @@ fn observeCommandEvent(self: *App, pane: *Pane, channel: []const u8, payload: ?s
     if (std.mem.eql(u8, channel, "command_started")) {
         const text = value.object.get("command") orelse return;
         if (text != .string) return;
-        pane.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
+        pane.term.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
     } else if (std.mem.eql(u8, channel, "command_ended")) {
-        const command_id = pane.automation_command_id orelse return;
+        const command_id = pane.term.automation_command_id orelse return;
         const status = value.object.get("exit_code") orelse return;
         if (status != .integer) return;
-        pane.automation_command_id = null;
+        pane.term.automation_command_id = null;
         _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = pane.id, .command_id = command_id, .status = status.integer });
     }
 }
@@ -365,14 +365,14 @@ test "external shell completion pairs reports and ignores malformed or unpaired 
     try std.testing.expectEqual(@as(u64, 0), app.automation_events.subscribe());
     observeCommandEvent(app, &pane, "command_started", started.value);
     observeCommandEvent(app, &pane, "command_ended", malformed.value);
-    try std.testing.expect(pane.automation_command_id != null);
+    try std.testing.expect(pane.term.automation_command_id != null);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     const batch = try app.automation_events.read(0, .{}, 0);
     try std.testing.expectEqual(@as(usize, 2), batch.count);
     try std.testing.expectEqual(@as(?u64, batch.events[0].sequence), batch.events[1].command_id);
     try std.testing.expectEqual(@as(?i64, 7), batch.events[1].status);
-    try std.testing.expect(pane.automation_command_id == null);
+    try std.testing.expect(pane.term.automation_command_id == null);
 }
 
 fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {
