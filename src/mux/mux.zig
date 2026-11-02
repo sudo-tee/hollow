@@ -324,11 +324,9 @@ pub const Mux = struct {
         errdefer self.allocator.destroy(pane);
         const surface = try self.allocator.create(@import("../ui/lua_surface.zig").LuaSurface);
         surface.* = .{};
-        pane.* = Pane.init(self.allocator);
+        pane.* = Pane.initLua(self.allocator, surface);
         pane.id = self.next_pane_id;
         self.next_pane_id += 1;
-        pane.kind = .lua;
-        pane.lua_surface = surface;
         pane.host_context = self.host_context;
         return pane;
     }

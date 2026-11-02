@@ -366,19 +366,19 @@ test "external shell completion pairs reports and ignores malformed or unpaired 
     try std.testing.expectEqual(@as(u64, 0), app.automation_events.subscribe());
     observeCommandEvent(app, &pane, "command_started", started.value);
     observeCommandEvent(app, &pane, "command_ended", malformed.value);
-    try std.testing.expect(pane.term.automation_command_id != null);
+    try std.testing.expect(pane.content.terminal.automation_command_id != null);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     const batch = try app.automation_events.read(0, .{}, 0);
     try std.testing.expectEqual(@as(usize, 2), batch.count);
     try std.testing.expectEqual(@as(?u64, batch.events[0].sequence), batch.events[1].command_id);
     try std.testing.expectEqual(@as(?i64, 7), batch.events[1].status);
-    try std.testing.expect(pane.term.automation_command_id == null);
-    pane.kind = .lua;
-    observeCommandEvent(app, &pane, "command_started", started.value);
-    observeCommandEvent(app, &pane, "command_ended", ended.value);
+    try std.testing.expect(pane.content.terminal.automation_command_id == null);
+    var surface: @import("../ui/lua_surface.zig").LuaSurface = .{};
+    var lua_pane = Pane.initLua(a, &surface);
+    observeCommandEvent(app, &lua_pane, "command_started", started.value);
+    observeCommandEvent(app, &lua_pane, "command_ended", ended.value);
     try std.testing.expectEqual(@as(u64, 2), app.automation_events.subscribe());
-    try std.testing.expect(pane.term.automation_command_id == null);
 }
 
 fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {

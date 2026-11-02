@@ -113,17 +113,20 @@ test "background jobs: ownership rejects ordinary panes, mismatched tokens, and 
     var app: Fake = .{ .pane = &pane };
     const handle: command.JobHandle = .{ .id = pane.id, .token = "0123456789abcdef0123456789abcdef" };
     try std.testing.expect(ownedPane(&app, handle) == null);
-    pane.term.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.content.terminal.automation_token = "0123456789abcdef0123456789abcdef".*;
     try std.testing.expect(ownedPane(&app, handle).?.node == &pane);
     try std.testing.expect(ownedPane(&app, handle).?.term == pane.asTerminal().?);
-    pane.kind = .lua;
+    var surface: @import("../ui/lua_surface.zig").LuaSurface = .{};
+    var lua_pane = Pane.initLua(std.testing.allocator, &surface);
+    lua_pane.id = pane.id;
+    app.pane = &lua_pane;
     try std.testing.expect(ownedPane(&app, handle) == null);
-    pane.kind = .terminal;
-    pane.term.automation_token = "fedcba9876543210fedcba9876543210".*;
+    app.pane = &pane;
+    pane.content.terminal.automation_token = "fedcba9876543210fedcba9876543210".*;
     try std.testing.expect(ownedPane(&app, handle) == null);
     // Reusing storage never makes an old ID target the new pane, even if its
     // token were accidentally retained.
-    pane.term.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.content.terminal.automation_token = "0123456789abcdef0123456789abcdef".*;
     pane.id = 4;
     try std.testing.expect(ownedPane(&app, handle) == null);
 }

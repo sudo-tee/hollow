@@ -803,18 +803,19 @@ fn paneHasVisualDamage(pane: *const Pane) bool {
 test "visual damage checks terminal hold policy without suppressing Lua damage" {
     var pane = Pane.init(std.testing.allocator);
     try std.testing.expect(!paneHasVisualDamage(&pane));
-    pane.term.pty_received_data = true;
+    pane.content.terminal.pty_received_data = true;
     try std.testing.expect(paneHasVisualDamage(&pane));
-    pane.term.synchronized_output_active = true;
+    pane.content.terminal.synchronized_output_active = true;
     pane.render_dirty = .full;
     try std.testing.expect(!paneHasVisualDamage(&pane));
     pane.bell_dirty = true;
     try std.testing.expect(paneHasVisualDamage(&pane));
-    pane.bell_dirty = false;
-    pane.kind = .lua;
-    try std.testing.expect(paneHasVisualDamage(&pane));
-    pane.render_dirty = .false_value;
-    try std.testing.expect(!paneHasVisualDamage(&pane));
+    var surface: @import("../ui/lua_surface.zig").LuaSurface = .{};
+    var lua_pane = Pane.initLua(std.testing.allocator, &surface);
+    lua_pane.render_dirty = .full;
+    try std.testing.expect(paneHasVisualDamage(&lua_pane));
+    lua_pane.render_dirty = .false_value;
+    try std.testing.expect(!paneHasVisualDamage(&lua_pane));
 }
 
 fn leaderVisualActive(self: *App, now_ns: i128) bool {

@@ -2894,8 +2894,8 @@ test "HTP queue owns cwd at receipt including earlier OSC 7 in the same batch" {
     var pane = Pane.init(std.testing.allocator);
     pane.setCwd("/launch");
     defer std.testing.allocator.free(pane.cwd);
-    pane.term.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
-    defer if (pane.term.pending_cwd) |cwd| std.testing.allocator.free(cwd);
+    pane.content.terminal.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
+    defer if (pane.content.terminal.pending_cwd) |cwd| std.testing.allocator.free(cwd);
 
     htp.queueHtpMessage(app, &pane, "start");
     try std.testing.expect(pane.refreshCwd());
@@ -2916,19 +2916,19 @@ test "initial pane callbacks retain the App-owned runtime after initialization r
     var pane = pane_mod.Pane.init(std.testing.allocator);
     const runtime = try app.initTerminalRuntime();
     try std.testing.expectEqual(@intFromPtr(&app.ghostty.?), @intFromPtr(runtime));
-    pane.term.terminal_runtime = runtime;
-    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.content.terminal.terminal_runtime = runtime;
+    pane.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&app.ghostty.?);
-    pane.term.render_state = try runtime.createRenderState();
-    runtime.setTerminalUserdata(pane.term.terminal, &pane);
-    runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
+    pane.content.terminal.render_state = try runtime.createRenderState();
+    runtime.setTerminalUserdata(pane.content.terminal.terminal, &pane);
+    runtime.registerCallbacks(pane.content.terminal.terminal, terminal_callbacks.terminalCallbacks());
 
     // Initial shell output invokes both callbacks after startup's stack unwinds.
-    app.ghostty.?.terminalWrite(pane.term.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
+    app.ghostty.?.terminalWrite(pane.content.terminal.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/startup", pane.cwd);
-    try std.testing.expect(pane.term.synchronized_output_active);
-    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.term.render_state).?.x);
+    try std.testing.expect(pane.content.terminal.synchronized_output_active);
+    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.content.terminal.render_state).?.x);
 }
 
 test "closePaneById synchronizes surviving focus without accessing the destroyed pane" {
@@ -2992,24 +2992,22 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     app.resize(800, 600);
     try app.tick();
     try std.testing.expectEqual(pane, app.findPaneById(id).?);
-    try std.testing.expect(!pane.term.exit_event_emitted);
+    try std.testing.expect(pane.asTerminal() == null);
     try std.testing.expect(pane.cols > 0 and pane.rows > 0);
     try std.testing.expectEqualStrings("Lua pane", pane.title);
-    try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
-    try std.testing.expect(!pane.term.hasRenderHelpers());
     try std.testing.expect(!app.pending_quit);
 
-    pane.lua_surface.?.dirty = false;
+    pane.asLua().?.dirty = false;
     pane.resize(runtime, 30, 10, 8, 16, true);
     try std.testing.expectEqual(@as(u16, 30), pane.cols);
     try std.testing.expectEqual(@as(u16, 10), pane.rows);
-    try std.testing.expect(pane.lua_surface.?.dirty);
-    pane.lua_surface.?.dirty = false;
+    try std.testing.expect(pane.asLua().?.dirty);
+    pane.asLua().?.dirty = false;
     pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
-    try std.testing.expect(pane.lua_surface.?.dirty);
-    pane.lua_surface.?.dirty = false;
+    try std.testing.expect(pane.asLua().?.dirty);
+    pane.asLua().?.dirty = false;
     try app.sendFocus(false);
-    try std.testing.expect(pane.lua_surface.?.dirty);
+    try std.testing.expect(pane.asLua().?.dirty);
 
     try std.testing.expect(!mux_ops.sendTextToPane(app, id, "text"));
     try std.testing.expect(!mux_ops.sendKeyToPane(app, id, "enter", 0));
@@ -3026,14 +3024,12 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expect(!quick_select.inputActive(app));
     try copy_mode.refreshCopyModeVisibleSlice(app, pane);
     copy_mode.handlePromptJump(app, .prev);
-    try std.testing.expect(!pane.term.viewport_scroll_pending);
     scroll.scrollPaneViewport(app, pane, 1);
     scroll.scrollPaneViewportToRow(app, pane, 1);
     try std.testing.expect(pane.asTerminal() == null);
     try std.testing.expect(pane.asTerminalConst() == null);
     try std.testing.expectEqual(@as(u32, 0), scroll.paneScrollbarGutter(app, pane));
     try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 0, .offset = 0, .len = 0 }, scroll.refreshPaneScrollbar(app, runtime, pane));
-    try std.testing.expect(!pane.term.viewport_scroll_pending);
     try std.testing.expect(selection_mod.gridRefForHistoryRow(app, pane, 0) == null);
     try std.testing.expect(selection_mod.gridRefForHistoryCell(app, pane, 0, 0) == null);
     var link_buf: [128]u8 = undefined;
@@ -3047,7 +3043,6 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expectError(error.NotATerminal, app.paneTextValue(id));
     try std.testing.expectError(error.NotATerminal, app.paneTextValue(0));
     pane_lifecycle.exited(app, pane);
-    try std.testing.expect(!pane.term.exit_event_emitted);
     try app.tick();
     try std.testing.expectEqual(pane, app.findPaneById(id).?);
 
@@ -3090,28 +3085,28 @@ test "mux pane changes forward focus events to child terminals" {
     const runtime = try app.initTerminalRuntime();
     var previous = pane_mod.Pane.init(std.testing.allocator);
     defer previous.deinit(&app.ghostty.?);
-    previous.term.terminal_runtime = runtime;
-    previous.term.terminal = try runtime.createTerminal(80, 24, 0);
-    try previous.term.queueStartupInput(std.testing.allocator, "previous");
-    try std.testing.expect(runtime.setTerminalMode(previous.term.terminal, .focus_event, true));
+    previous.content.terminal.terminal_runtime = runtime;
+    previous.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
+    try previous.content.terminal.queueStartupInput(std.testing.allocator, "previous");
+    try std.testing.expect(runtime.setTerminalMode(previous.content.terminal.terminal, .focus_event, true));
 
     var current = pane_mod.Pane.init(std.testing.allocator);
     defer current.deinit(&app.ghostty.?);
-    current.term.terminal_runtime = runtime;
-    current.term.terminal = try runtime.createTerminal(80, 24, 0);
-    try current.term.queueStartupInput(std.testing.allocator, "current");
-    try std.testing.expect(runtime.setTerminalMode(current.term.terminal, .focus_event, true));
+    current.content.terminal.terminal_runtime = runtime;
+    current.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
+    try current.content.terminal.queueStartupInput(std.testing.allocator, "current");
+    try std.testing.expect(runtime.setTerminalMode(current.content.terminal.terminal, .focus_event, true));
 
     app.syncActivePaneChange(&previous, &current);
-    try std.testing.expect(std.mem.endsWith(u8, previous.term.pending_startup_input, "\x1b[O"));
-    try std.testing.expect(std.mem.endsWith(u8, current.term.pending_startup_input, "\x1b[I"));
+    try std.testing.expect(std.mem.endsWith(u8, previous.content.terminal.pending_startup_input, "\x1b[O"));
+    try std.testing.expect(std.mem.endsWith(u8, current.content.terminal.pending_startup_input, "\x1b[I"));
 
-    const previous_len = previous.term.pending_startup_input.len;
-    const current_len = current.term.pending_startup_input.len;
+    const previous_len = previous.content.terminal.pending_startup_input.len;
+    const current_len = current.content.terminal.pending_startup_input.len;
     app.window_focused = false;
     app.syncActivePaneChange(&current, &previous);
-    try std.testing.expectEqual(previous_len, previous.term.pending_startup_input.len);
-    try std.testing.expectEqual(current_len, current.term.pending_startup_input.len);
+    try std.testing.expectEqual(previous_len, previous.content.terminal.pending_startup_input.len);
+    try std.testing.expectEqual(current_len, current.content.terminal.pending_startup_input.len);
 }
 
 test "viewport iterator row mapping follows platform row order" {
@@ -3153,13 +3148,13 @@ test "Lua terminal jobs queue shared backend operations without focus changes" {
     try std.testing.expect(app.mux.?.activePane() == original);
     var owned: ?*pane_mod.Pane = null;
     var panes = app.mux.?.paneIterator();
-    while (panes.next()) |pane| if (pane.term.automation_token != null) {
+    while (panes.next()) |pane| if (pane.asTerminal()) |term| if (term.automation_token != null) {
         owned = pane;
     };
     const pane = owned orelse return error.MissingJobPane;
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.term.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
-        _ = try pane.term.pollPty(pane, runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+    while (pane.content.terminal.hasLiveChild() or pane.content.terminal.pty.?.jobOutputPending()) {
+        _ = try pane.content.terminal.pollPty(pane, runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }

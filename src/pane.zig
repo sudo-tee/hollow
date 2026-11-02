@@ -10,19 +10,21 @@ pub const PTY_PARSE_CHUNK_BYTES = policy.parse_chunk_bytes;
 pub const PTY_PRESSURE_PARSE_CHUNK_BYTES = policy.pressure_parse_chunk_bytes;
 pub const PTY_HARD_BYTE_LIMIT = policy.hard_byte_limit;
 
-/// Content-independent pane identity, layout and shared status. Terminal
-/// compatibility facades remain here until the content-union migration.
+/// Content-independent pane identity, layout and shared status. Content
+/// specific state lives in `content`.
 pub const Pane = struct {
-    pub const Kind = enum { terminal, lua };
     pub const HtpMessageHandler = TerminalPane.HtpMessageHandler;
+    pub const Content = union(enum) {
+        terminal: TerminalPane,
+        /// Owned by the pane; released in `deinit`.
+        lua: *LuaSurface,
+    };
 
-    kind: Kind = .terminal,
-    lua_surface: ?*LuaSurface = null,
+    content: Content = .{ .terminal = .{} },
     /// Zero denotes a pane not yet published by a mux.
     id: usize = 0,
     allocator: std.mem.Allocator,
     host_context: ?*anyopaque = null,
-    term: TerminalPane = .{},
     foreground_process: ?[]u8 = null,
     title: []u8 = &.{},
     cwd: []u8 = &.{},
@@ -57,18 +59,36 @@ pub const Pane = struct {
         return .{ .allocator = allocator };
     }
 
+    /// Pane with Lua content. Takes ownership of `surface`.
+    pub fn initLua(allocator: std.mem.Allocator, surface: *LuaSurface) Pane {
+        return .{ .allocator = allocator, .content = .{ .lua = surface } };
+    }
+
     pub fn isTerminal(self: *const Pane) bool {
-        return self.kind == .terminal;
+        return self.content == .terminal;
+    }
+
+    pub fn asLua(self: *const Pane) ?*LuaSurface {
+        return switch (self.content) {
+            .lua => |surface| surface,
+            .terminal => null,
+        };
     }
 
     /// Narrow content once at generic entry points. Terminal helpers receive
     /// this pointer rather than depending on the pane's storage layout.
     pub fn asTerminal(self: *Pane) ?*TerminalPane {
-        return if (self.isTerminal()) &self.term else null;
+        return switch (self.content) {
+            .terminal => |*term| term,
+            .lua => null,
+        };
     }
 
     pub fn asTerminalConst(self: *const Pane) ?*const TerminalPane {
-        return if (self.isTerminal()) &self.term else null;
+        return switch (self.content) {
+            .terminal => |*term| term,
+            .lua => null,
+        };
     }
 
     /// Domain of terminal content; empty for local terminals and other content.
@@ -79,24 +99,25 @@ pub const Pane = struct {
 
     pub fn invalidate(self: *Pane) void {
         self.render_dirty = .full;
-        if (self.lua_surface) |surface| surface.dirty = true;
+        if (self.asLua()) |surface| surface.dirty = true;
     }
 
     pub fn applyTerminalTheme(self: *Pane, runtime: *GhosttyRuntime, theme: *const Config.TerminalTheme) void {
-        if (self.isTerminal()) {
-            runtime.setTerminalDefaultColors(self.term.terminal, theme.foreground, theme.background, theme.cursor, &theme.palette);
+        if (self.asTerminal()) |term| {
+            runtime.setTerminalDefaultColors(term.terminal, theme.foreground, theme.background, theme.cursor, &theme.palette);
         }
         self.invalidate();
     }
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
-        if (self.lua_surface) |surface| {
-            self.lua_surface = null;
-            surface.deinit(self.allocator);
-            self.allocator.destroy(surface);
+        switch (self.content) {
+            .terminal => |*term| term.deinit(runtime, self.allocator),
+            .lua => |surface| {
+                surface.deinit(self.allocator);
+                self.allocator.destroy(surface);
+            },
         }
         self.program_status.deinit(self.allocator);
-        if (self.isTerminal()) self.term.deinit(runtime, self.allocator) else self.term.deinitBuffers(self.allocator);
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
         self.* = Pane.init(self.allocator);
@@ -121,21 +142,22 @@ pub const Pane = struct {
     }
 
     pub fn refreshCwd(self: *Pane) bool {
-        return self.isTerminal() and self.term.refreshCwd(self);
+        const term = self.asTerminal() orelse return false;
+        return term.refreshCwd(self);
     }
 
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
-        if (!self.isTerminal()) {
+        const term = self.asTerminal() orelse {
             self.cols = cols;
             self.rows = rows;
             self.invalidate();
             return;
-        }
-        self.term.resize(self, runtime, cols, rows, cell_width_px, cell_height_px, skip_pty);
+        };
+        term.resize(self, runtime, cols, rows, cell_width_px, cell_height_px, skip_pty);
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
-        if (self.isTerminal()) self.term.refreshTitle(self, runtime, fallback_title, shell_command);
+        if (self.asTerminal()) |term| term.refreshTitle(self, runtime, fallback_title, shell_command);
     }
 };
 

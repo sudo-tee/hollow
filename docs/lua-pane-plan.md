@@ -26,8 +26,8 @@ running Lua panes inside the agent process, reactive state/hooks.
 - **Pane model: Option B** (generic node + typed terminal content). An interim
   Option A (`Pane.kind` + `isTerminal()` guards) shipped first as a tested
   safety net. Its audit found 55 guard branches instead of the ~19 estimated,
-  which met the switch trigger, and the operator chose B. Guards stay until
-  the tagged union replaces them.
+  which met the switch trigger, and the operator chose B. The tagged union
+  landed in B3.
 - **Pane IDs** are explicit (`Pane.id`, allocated monotonically by `Mux`, 0
   means unpublished), not pointer addresses.
 - **Rendering: reuse Clay surfaces.** The original plan to extract an overlay
@@ -58,7 +58,9 @@ pub const Pane = struct {
         terminal: TerminalPane,      // src/term/terminal_pane.zig
         lua: *LuaSurface,            // src/ui/lua_surface.zig
     };
+    pub fn initLua(allocator, surface: *LuaSurface) Pane; // owns surface
     pub fn asTerminal(self: *Pane) ?*TerminalPane;
+    pub fn asLua(self: *const Pane) ?*LuaSurface;
 };
 ```
 
@@ -84,13 +86,13 @@ non-terminal nodes.
 | `06263fb` | Selection, scrolling, hyperlinks narrowed to `*TerminalPane` |
 | `5024e8d` | Copy mode, quick select, screen/text queries narrowed; `TerminalPane.beginRead` borrows render helpers |
 | `3d65006` | B1: input, paste, HTP, jobs, native callbacks, app frame loop, resize, renderer, mux and Lua callbacks narrowed. Only tests read `pane.term` outside `src/term/` and `src/pane.zig`. Adds `Pane.domainName()`; fixes the missed HTP guard |
-| (next) | B2: terminal pass-through methods removed from `Pane`. Callers use `TerminalPane` methods after narrowing; `pollPty`, `bootstrap` and `nudgeTerminal` take the node explicitly. `Pane` keeps only content-dispatching operations: `deinit`, `invalidate`, `resize`, `applyTerminalTheme`, `refreshTitle`, `refreshCwd`, `setCwd`, `setManualTitle`, `domainName` |
+| `2b80845` | B2: terminal pass-through methods removed from `Pane`. Callers use `TerminalPane` methods after narrowing; `pollPty`, `bootstrap` and `nudgeTerminal` take the node explicitly. `Pane` keeps only content-dispatching operations: `deinit`, `invalidate`, `resize`, `applyTerminalTheme`, `refreshTitle`, `refreshCwd`, `setCwd`, `setManualTitle`, `domainName` |
+| (next) | B3: `kind`/`term`/`lua_surface` replaced by `content: Content` (`terminal: TerminalPane`, `lua: *LuaSurface`); `Pane.initLua` takes surface ownership; `asLua()` added. Inactive-arm access now panics in safe builds, so tests that flipped `kind` in place use separate Lua panes. Remaining `isTerminal()` calls are behaviour gates (reject, skip, return early) and stay |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| B3 | Replace `kind`/`term`/`lua_surface` with `content: Content`; drop the `isTerminal()` guards the compiler makes redundant |
 | B4 | GUI benchmarks for B1 to B3 (none measured yet) |
 | P1 | Clay surface ownership by a pane: draw into the pane rect, reuse `PaneCacheEntry` texture, render only when dirty |
 | P2 | Lua API (§4): `split`/`float`/`invalidate`/`close`/`set_title`, `on_mount`/`on_unmount`, error row on render failure |

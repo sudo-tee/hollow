@@ -143,12 +143,12 @@ test "pane IDs survive moves and floating restore and are never reused after clo
     try std.testing.expect(first_id != 0);
     // Input-resource transfer during bootstrap must retain the borrowed runtime
     // used by parser callbacks after construction returns.
-    try std.testing.expectEqual(&runtime, first.term.terminal_runtime.?);
+    try std.testing.expectEqual(&runtime, first.content.terminal.terminal_runtime.?);
     try std.testing.expectEqual(@as(usize, 1), mux.activeWorkspace().?.id);
     try std.testing.expectEqual(@as(usize, 2), mux.activeTab().?.id);
     const second = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.4, null, null, false, null);
     const closed_id = second.id;
-    try std.testing.expectEqual(&runtime, second.term.terminal_runtime.?);
+    try std.testing.expectEqual(&runtime, second.content.terminal.terminal_runtime.?);
     try std.testing.expect(closed_id > first_id);
     try std.testing.expectEqual(first_id, second.restore_anchor_id);
     try std.testing.expect(mux.setPaneFloating(second, true));
@@ -191,15 +191,15 @@ test "new tabs inherit the active pane domain and cwd unless explicitly overridd
 
     try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, "/tmp", "container", null, null);
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, false);
-    try std.testing.expectEqualStrings("container", mux.activePane().?.term.domain_name);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/tmp", mux.activePane().?.cwd);
 
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, "/var", null, null, false);
-    try std.testing.expectEqualStrings("container", mux.activePane().?.term.domain_name);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/var", mux.activePane().?.cwd);
 
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, "default", null, false);
-    try std.testing.expectEqualStrings("default", mux.activePane().?.term.domain_name);
+    try std.testing.expectEqualStrings("default", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
 }
 
@@ -247,9 +247,9 @@ test "spawn filters reach initial panes tabs workspaces and splits before PTY la
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     var expected_buf: [64]u8 = undefined;
     const expected = try std.fmt.bufPrint(&expected_buf, "filter:/:filtered:{d}", .{pane.id});
-    while (std.mem.indexOf(u8, pane.term.boot_output.items, expected) == null) {
+    while (std.mem.indexOf(u8, pane.content.terminal.boot_output.items, expected) == null) {
         if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
-        _ = try pane.term.pollPty(pane, &runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        _ = try pane.content.terminal.pollPty(pane, &runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
     _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
@@ -295,12 +295,9 @@ test "Lua pane allocation has no terminal resources and rolls back on allocation
             defer pane.deinit(&runtime);
             try std.testing.expect(!pane.isTerminal());
             try std.testing.expect(pane.id != 0);
-            try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
-            try std.testing.expect(pane.term.key_encoder == null and pane.term.mouse_encoder == null);
             try std.testing.expect(pane.asTerminal() == null);
-            try std.testing.expect(!pane.term.hasRenderHelpers());
-            try std.testing.expectEqual(@as(usize, 0), pane.term.domain_name.len);
-            try std.testing.expect(pane.lua_surface.?.dirty);
+            try std.testing.expectEqual(@as(usize, 0), pane.domainName().len);
+            try std.testing.expect(pane.asLua().?.dirty);
             try std.testing.expectError(error.NoActiveTab, mux.splitActivePaneWith(pane, .vertical, 0.5, false));
         }
     };
@@ -324,13 +321,13 @@ test "mixed Lua and terminal panes split float zoom move and close without reapi
     const callbacks = LifecycleTestCallbacks.callbacks;
     try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
     const terminal = mux.activePane().?;
-    terminal.term.retain_on_exit = true;
+    terminal.content.terminal.retain_on_exit = true;
     const pane = try mux.createLuaPane();
     try mux.splitActivePaneWith(pane, .vertical, 0.4, false);
     const id = pane.id;
     try std.testing.expectEqual(@as(usize, 2), recorder.created);
     try std.testing.expectEqual(pane, mux.activePane().?);
-    try std.testing.expect(!pane.term.retain_on_exit);
+    try std.testing.expect(pane.asTerminal() == null);
     try std.testing.expect(!mux.closeDeadPanes(&runtime));
     try std.testing.expect(mux.focusPaneById(id));
     try std.testing.expect(mux.setPaneFloating(pane, true));

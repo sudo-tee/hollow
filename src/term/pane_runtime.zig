@@ -1443,16 +1443,16 @@ test "bootstrap callbacks retain pane node after runtime context returns" {
     cfg.shell = try a.dupe(u8, "/bin/sh");
     var pane = Pane.init(a);
     defer pane.deinit(&runtime);
-    try pane.term.bootstrap(&pane, &runtime, @import("../app/terminal_callbacks.zig").terminalCallbacks(), cfg, 8, 16, 640, 384, null, null, .{
+    try pane.content.terminal.bootstrap(&pane, &runtime, @import("../app/terminal_callbacks.zig").terminalCallbacks(), cfg, 8, 16, 640, 384, null, null, .{
         .command = "read -r reply",
     }, null);
 
     // Bootstrap's stack-local RuntimeContext is gone. Real native callbacks
     // must still mutate the pane and its owned terminal storage.
     pane.cwd_dirty = false;
-    runtime.terminalWrite(pane.term.terminal, "\x1b]7;file://localhost/bootstrap-callback-test\x07\x1b]2;callback title\x07\x07");
+    runtime.terminalWrite(pane.content.terminal.terminal, "\x1b]7;file://localhost/bootstrap-callback-test\x07\x1b]2;callback title\x07\x07");
     try std.testing.expect(pane.cwd_dirty);
-    try std.testing.expectEqualStrings("/bootstrap-callback-test", pane.term.pending_cwd.?);
+    try std.testing.expectEqualStrings("/bootstrap-callback-test", pane.content.terminal.pending_cwd.?);
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/bootstrap-callback-test", pane.cwd);
     try std.testing.expect(pane.title_dirty);
@@ -1467,12 +1467,12 @@ test "background PTY parses blocked and error after rendering helpers are releas
     var runtime = try GhosttyRuntime.init(a, null);
     defer runtime.deinit();
     var pane = Pane.init(a);
-    pane.term.terminal_runtime = &runtime;
-    pane.term.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.content.terminal.terminal_runtime = &runtime;
+    pane.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&runtime);
-    runtime.setTerminalUserdata(pane.term.terminal, &pane);
-    runtime.registerCallbacks(pane.term.terminal, @import("../app/terminal_callbacks.zig").terminalCallbacks());
-    pane.term.pty = try @import("../pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
+    runtime.setTerminalUserdata(pane.content.terminal.terminal, &pane);
+    runtime.registerCallbacks(pane.content.terminal.terminal, @import("../app/terminal_callbacks.zig").terminalCallbacks());
+    pane.content.terminal.pty = try @import("../pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
         .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007'; read -r reply; printf '\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
     }, .{});
 
@@ -1482,10 +1482,10 @@ test "background PTY parses blocked and error after rendering helpers are releas
         fn poll(p: *Pane, rt: *GhosttyRuntime, expected: Expected) !void {
             const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
             while (io.nanoTimestamp() < deadline) {
-                _ = try p.term.pollPty(p, rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+                _ = try p.content.terminal.pollPty(p, rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
                 switch (expected) {
                     .state => |state| if (p.program_status.records.items.len == 1 and p.program_status.records.items[0].state == state) return,
-                    .startup => if (p.term.boot_output.items.len > 0) return,
+                    .startup => if (p.content.terminal.boot_output.items.len > 0) return,
                     .cleared => if (p.program_status.records.items.len == 0) return,
                 }
                 try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
@@ -1496,30 +1496,30 @@ test "background PTY parses blocked and error after rendering helpers are releas
     // Preserve startup deferral until the initial layout completes.
     try Wait.poll(&pane, &runtime, .startup);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
-    pane.term.recreateRenderHelpers(&runtime);
-    pane.term.render_state_ready = true;
-    pane.term.terminal_output_ready = true;
+    pane.content.terminal.recreateRenderHelpers(&runtime);
+    pane.content.terminal.render_state_ready = true;
+    pane.content.terminal.terminal_output_ready = true;
     try Wait.poll(&pane, &runtime, .{ .state = .working });
 
     // This is the resource transition used when switching tabs/workspaces.
-    pane.term.releaseRenderHelpers(&runtime);
-    try std.testing.expect(!pane.term.render_state_ready);
-    pane.term.sendText("\n");
+    pane.content.terminal.releaseRenderHelpers(&runtime);
+    try std.testing.expect(!pane.content.terminal.render_state_ready);
+    pane.content.terminal.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .blocked });
     try std.testing.expectEqual(@import("program_status.zig").BlockKind.permission, pane.program_status.records.items[0].kind);
     // Prompt return clears transient blocked state. Observe that separately
     // rather than racing it against the blocked report in the same PTY chunk.
-    pane.term.sendText("\n");
+    pane.content.terminal.sendText("\n");
     try Wait.poll(&pane, &runtime, .cleared);
-    pane.term.sendText("\n");
+    pane.content.terminal.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .failure });
-    try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.term.active_screen);
-    try std.testing.expect(!pane.term.hasRenderHelpers());
-    try std.testing.expectEqual(@as(usize, 0), pane.term.boot_output.items.len);
+    try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.content.terminal.active_screen);
+    try std.testing.expect(!pane.content.terminal.hasRenderHelpers());
+    try std.testing.expectEqual(@as(usize, 0), pane.content.terminal.boot_output.items.len);
 }
 
 fn sanitizeForTest(node: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
-    var context: RuntimeContext = .{ .node = node, .term = &node.term, .allocator = node.allocator };
+    var context: RuntimeContext = .{ .node = node, .term = &node.content.terminal, .allocator = node.allocator };
     return context.sanitizePtyOutputForPlatform(bytes, windows_mode);
 }
 
@@ -1530,12 +1530,12 @@ test "sanitizePtyOutput windows strips split 9001 mode sequence" {
     var part1 = [_]u8{ 0x1b, '[', '?', '9' };
     const out1 = sanitizeForTest(&pane, part1[0..], true);
     try std.testing.expectEqual(@as(usize, 0), out1.len);
-    try std.testing.expectEqual(@as(usize, 4), pane.term.pty_pending_len);
+    try std.testing.expectEqual(@as(usize, 4), pane.content.terminal.pty_pending_len);
 
     var part2 = [_]u8{ '0', '0', '1', 'h', 'A' };
     const out2 = sanitizeForTest(&pane, part2[0..], true);
     try std.testing.expectEqualStrings("A", out2);
-    try std.testing.expectEqual(@as(usize, 0), pane.term.pty_pending_len);
+    try std.testing.expectEqual(@as(usize, 0), pane.content.terminal.pty_pending_len);
 }
 
 test "sanitizePtyOutput windows strips split csi t sequence" {
@@ -1545,12 +1545,12 @@ test "sanitizePtyOutput windows strips split csi t sequence" {
     var part1 = [_]u8{ 'x', 0x1b, '[', '8', ';' };
     const out1 = sanitizeForTest(&pane, part1[0..], true);
     try std.testing.expectEqualStrings("x", out1);
-    try std.testing.expectEqual(@as(usize, 4), pane.term.pty_pending_len);
+    try std.testing.expectEqual(@as(usize, 4), pane.content.terminal.pty_pending_len);
 
     var part2 = [_]u8{ '2', '4', 't', 'y' };
     const out2 = sanitizeForTest(&pane, part2[0..], true);
     try std.testing.expectEqualStrings("y", out2);
-    try std.testing.expectEqual(@as(usize, 0), pane.term.pty_pending_len);
+    try std.testing.expectEqual(@as(usize, 0), pane.content.terminal.pty_pending_len);
 }
 
 test "sanitizePtyOutput windows preserves ordinary CSI output in place" {
@@ -1579,30 +1579,30 @@ test "sanitizePtyOutput forwards split OSC 7 to Ghostty" {
 
 test "sanitizePtyOutput captures split OSC 99 notification packets" {
     var pane = Pane.init(std.testing.allocator);
-    defer pane.term.osc99_buf.deinit(std.testing.allocator);
-    defer pane.term.osc99_notifications.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_buf.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_notifications.deinit(std.testing.allocator);
 
     var part1 = "\x1b]99;i=build:d=0:p=title;Build finished\x1b\\".*;
     const out1 = sanitizeForTest(&pane, &part1, false);
     try std.testing.expectEqual(@as(usize, 0), out1.len);
-    try std.testing.expect(!pane.term.osc99_active);
-    try std.testing.expectEqual(@as(usize, 1), pane.term.osc99_notifications.assemblies.items.len);
-    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.content.terminal.osc99_active);
+    try std.testing.expectEqual(@as(usize, 1), pane.content.terminal.osc99_notifications.assemblies.items.len);
+    try std.testing.expect(!pane.content.terminal.osc99_notifications.hasNotifications());
 
     var part2 = "\x1b]99;i=build:p=body:u=2:w=5000;All tests passed\x1b".*;
     const out2 = sanitizeForTest(&pane, &part2, false);
     try std.testing.expectEqual(@as(usize, 0), out2.len);
-    try std.testing.expect(pane.term.osc99_active);
-    try std.testing.expect(pane.term.osc99_st_pending);
-    try std.testing.expectEqualStrings("i=build:p=body:u=2:w=5000;All tests passed", pane.term.osc99_buf.items);
+    try std.testing.expect(pane.content.terminal.osc99_active);
+    try std.testing.expect(pane.content.terminal.osc99_st_pending);
+    try std.testing.expectEqualStrings("i=build:p=body:u=2:w=5000;All tests passed", pane.content.terminal.osc99_buf.items);
 
     var part3 = "\\Z".*;
     const out3 = sanitizeForTest(&pane, &part3, false);
     try std.testing.expectEqualStrings("Z", out3);
-    try std.testing.expect(!pane.term.osc99_active);
-    try std.testing.expect(pane.term.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.content.terminal.osc99_active);
+    try std.testing.expect(pane.content.terminal.osc99_notifications.hasNotifications());
 
-    var result = pane.term.osc99_notifications.popNotification().?;
+    var result = pane.content.terminal.osc99_notifications.popNotification().?;
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("build", result.id.?);
     try std.testing.expectEqualStrings("Build finished", result.title);
@@ -1614,52 +1614,52 @@ test "image animation invalidates fresh snapshots and schedules next frame" {
     var runtime = try GhosttyRuntime.init(std.testing.allocator, null);
     defer runtime.deinit();
     var pane = Pane.init(std.testing.allocator);
-    pane.term.terminal = try runtime.createTerminal(20, 6, 0);
+    pane.content.terminal.terminal = try runtime.createTerminal(20, 6, 0);
     defer pane.deinit(&runtime);
-    runtime.terminalWrite(pane.term.terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
+    runtime.terminalWrite(pane.content.terminal.terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
         "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\" ++
         "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
-    pane.term.render_state_fresh = true;
-    try std.testing.expect(pane.term.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms));
-    try std.testing.expect(!pane.term.render_state_fresh);
-    try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.term.image_animation_deadline_ns);
-    pane.term.render_state_fresh = true;
-    try std.testing.expect(!pane.term.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms));
-    try std.testing.expect(pane.term.render_state_fresh);
-    try std.testing.expect(pane.term.tickImageAnimation(&runtime, pane.term.image_animation_deadline_ns));
-    try std.testing.expect(!pane.term.render_state_fresh);
+    pane.content.terminal.render_state_fresh = true;
+    try std.testing.expect(pane.content.terminal.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms));
+    try std.testing.expect(!pane.content.terminal.render_state_fresh);
+    try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.content.terminal.image_animation_deadline_ns);
+    pane.content.terminal.render_state_fresh = true;
+    try std.testing.expect(!pane.content.terminal.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms));
+    try std.testing.expect(pane.content.terminal.render_state_fresh);
+    try std.testing.expect(pane.content.terminal.tickImageAnimation(&runtime, pane.content.terminal.image_animation_deadline_ns));
+    try std.testing.expect(!pane.content.terminal.render_state_fresh);
 }
 
 test "sanitizePtyOutput forwards native OSC 9 and OSC 777 protocols" {
     var pane = Pane.init(std.testing.allocator);
-    defer pane.term.osc99_buf.deinit(std.testing.allocator);
-    defer pane.term.osc99_notifications.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_buf.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_notifications.deinit(std.testing.allocator);
 
     var input = "\x1b]9;Build complete\x07 \x1b]777;notify;Build;Tests passed\x1b\\X".*;
     const output = sanitizeForTest(&pane, &input, false);
     try std.testing.expectEqualStrings("\x1b]9;Build complete\x07 \x1b]777;notify;Build;Tests passed\x1b\\X", output);
-    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.content.terminal.osc99_notifications.hasNotifications());
 }
 
 test "sanitizePtyOutput does not turn ConEmu OSC 9 commands into notifications" {
     var pane = Pane.init(std.testing.allocator);
-    defer pane.term.osc99_buf.deinit(std.testing.allocator);
-    defer pane.term.osc99_notifications.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_buf.deinit(std.testing.allocator);
+    defer pane.content.terminal.osc99_notifications.deinit(std.testing.allocator);
 
     var input = "\x1b]9;1;420\x07X".*;
     const output = sanitizeForTest(&pane, &input, false);
     try std.testing.expectEqualStrings("\x1b]9;1;420\x07X", output);
-    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
+    try std.testing.expect(!pane.content.terminal.osc99_notifications.hasNotifications());
 }
 
 test "sendUserText queues raw input behind pending startup input" {
     var pane = Pane.init(std.testing.allocator);
-    defer if (pane.term.pending_startup_input.len > 0) std.testing.allocator.free(pane.term.pending_startup_input);
+    defer if (pane.content.terminal.pending_startup_input.len > 0) std.testing.allocator.free(pane.content.terminal.pending_startup_input);
 
-    try pane.term.queueStartupInput(std.testing.allocator, "cd -- '/tmp'");
-    pane.term.sendUserText(std.testing.allocator, "nvim\r");
+    try pane.content.terminal.queueStartupInput(std.testing.allocator, "cd -- '/tmp'");
+    pane.content.terminal.sendUserText(std.testing.allocator, "nvim\r");
 
-    try std.testing.expectEqualStrings("cd -- '/tmp'\rnvim\r", pane.term.pending_startup_input);
+    try std.testing.expectEqualStrings("cd -- '/tmp'\rnvim\r", pane.content.terminal.pending_startup_input);
 }
 
 test "setManualTitle preserves override until cleared" {
