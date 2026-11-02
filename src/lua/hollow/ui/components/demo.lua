@@ -93,6 +93,7 @@ local function picker(state)
     counter = state.picker .. "/" .. #entries,
     prompt = true,
     filter = state.filter,
+    filter_focusable = true,
     height = "fit",
     hints = { { "Enter", "open" }, { "Esc", "close" } },
     list = {
@@ -121,6 +122,8 @@ function M.render(state, changed, close)
   state.picker = state.picker or 1
   state.tab = state.tab or "gallery:tab:one"
   state.filter = state.filter or ui.text_input({ initial = "query" })
+  state.input = state.input or ui.text_input({ initial = "boxed" })
+  state.input_bare = state.input_bare or ui.text_input({ initial = "bare" })
   changed = changed or function() end
   local numbers = {}
   for index = 1, 12 do
@@ -185,8 +188,8 @@ function M.render(state, changed, close)
     ),
     section(
       "Input",
-      c.input({ id = "gallery:input", behavior = state.filter }),
-      c.input({ id = "gallery:input:bare", behavior = state.filter, boxed = false })
+      c.input({ id = "gallery:input", behavior = state.input }),
+      c.input({ id = "gallery:input:bare", behavior = state.input_bare, boxed = false })
     ),
     section(
       "Rich",
@@ -300,7 +303,7 @@ function M.render(state, changed, close)
 end
 
 -- Opens as a non-modal overlay so it stacks above other overlays, such as the
--- REPL. Esc or q closes it.
+-- REPL. Esc or q closes it. Tab/Shift-Tab move focus between buttons and inputs.
 ---@return HollowUiWidget
 function M.open()
   local host_api = require("hollow.state").get().host_api
@@ -318,6 +321,10 @@ function M.open()
   end
   local function step(delta)
     return function()
+      -- A focused node pins the scroll position; section paging releases it.
+      if widget and widget._layout_surface then
+        widget._layout_surface:blur()
+      end
       local section = (state.section or 0) + delta
       state.section = math.max(0, math.min(section, M.SECTION_COUNT or section))
       changed()

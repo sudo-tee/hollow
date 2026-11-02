@@ -88,9 +88,19 @@ function Surface:snapshot(ctx)
     if not ok then
       error(tree, 0)
     end
-    local nodes, callbacks, local_ids = serialize(tree, palette, self.namespace, render_ctx)
+    local nodes, callbacks, local_ids, focus_order, key_handlers = serialize(
+      tree,
+      palette,
+      self.namespace,
+      render_ctx,
+      { id = self.focused, visible = self.focus_visible }
+    )
     revision = revision + 1
     self.nodes, self.callbacks, self.local_ids = nodes, callbacks, local_ids
+    self.focus_order, self.key_handlers = focus_order, key_handlers
+    if self.focused and not self:focus_index(self.focused) then
+      self.focused, self.focus_visible = nil, false
+    end
     self.revision, self.context, self.dirty =
       revision, {
         width = ctx.width,
@@ -104,14 +114,111 @@ function Surface:snapshot(ctx)
 end
 
 ---@param id string
-function Surface:dispatch(id)
-  if self.destroyed then
-    return
-  end
+local function activate(self, id)
   local callback = self.callbacks[id]
   if callback then
     callback({ id = self.local_ids[id] })
   end
+end
+
+-- Pointer activation. A clicked button takes focus without the focus ring, so
+-- Tab continues from it; a clicked input is focused for typing.
+---@param id string
+function Surface:dispatch(id)
+  if self.destroyed then
+    return
+  end
+  if self:focus_index(id) then
+    local visible = self.key_handlers[id] ~= nil
+    if self.focus_visible or visible then
+      self:invalidate()
+      local host_api = require("hollow.state").get().host_api
+      if type(host_api.request_redraw) == "function" then
+        host_api.request_redraw()
+      end
+    end
+    self.focused, self.focus_visible = id, visible
+  end
+  activate(self, id)
+end
+
+---@param id string Namespaced id.
+---@return integer|nil
+function Surface:focus_index(id)
+  for index, focusable in ipairs(self.focus_order or {}) do
+    if focusable == id then
+      return index
+    end
+  end
+end
+
+--- Local id of the keyboard-focused node, if any.
+---@return string|nil
+function Surface:focused_id()
+  return self.focused and self.local_ids[self.focused]
+end
+
+--- Focuses a node by local id and shows the focus ring.
+---@param id string
+---@return boolean
+function Surface:focus(id)
+  local namespaced = self.local_ids[id] and id or (self.namespace .. id)
+  if self.destroyed or not self:focus_index(namespaced) then
+    return false
+  end
+  self.focused, self.focus_visible = namespaced, true
+  self:invalidate()
+  return true
+end
+
+function Surface:blur()
+  if self.focused then
+    self.focused, self.focus_visible = nil, false
+    self:invalidate()
+  end
+end
+
+--- Moves keyboard focus through focusable nodes in tree order, wrapping.
+---@param delta integer 1 for next, -1 for previous.
+---@return boolean moved
+function Surface:focus_move(delta)
+  local order = self.focus_order or {}
+  if self.destroyed or #order == 0 then
+    return false
+  end
+  local current = self.focused and self:focus_index(self.focused)
+  local index
+  if not current then
+    index = delta > 0 and 1 or #order
+  else
+    index = (current - 1 + delta) % #order + 1
+  end
+  self.focused, self.focus_visible = order[index], true
+  self:invalidate()
+  return true
+end
+
+--- Routes a key to the visibly focused node: its `on_key` first, then
+--- Enter/Space activate it.
+---@param key string
+---@param mods string Canonical modifiers, e.g. "" or "<S>".
+---@return boolean consumed
+function Surface:focus_key(key, mods)
+  local id = self.focus_visible and self.focused
+  if self.destroyed or not id then
+    return false
+  end
+  local handler = self.key_handlers and self.key_handlers[id]
+  if handler and handler(key, mods) then
+    self:invalidate()
+    return true
+  end
+  if (key == "enter" or key == "space") and (mods or "") == "" and self.callbacks[id] then
+    activate(self, id)
+    self:invalidate()
+    return true
+  end
+  return false
 end
 
 ---@param id string
@@ -122,6 +229,7 @@ end
 
 function Surface:destroy()
   self.destroyed, self.nodes, self.callbacks, self.local_ids = true, nil, {}, {}
+  self.focus_order, self.key_handlers, self.focused = {}, {}, nil
   self.render, self.palette, self.frame, self.context = nil, nil, nil, nil
   self.metrics = {}
   if shown == self then

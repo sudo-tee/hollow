@@ -430,6 +430,8 @@ fn claySurfaceEvent(event: c.sapp_event) bool {
         c.SAPP_EVENTTYPE_MOUSE_MOVE => {
             g_clay_surface.mouse_x = event.mouse_x;
             g_clay_surface.mouse_y = event.mouse_y;
+            const hit = g_clay_surface.hitTest(.clickable, event.mouse_x, event.mouse_y);
+            setTextSelectionCursor(if (hit) |index| (if (g_clay_surface.nodes[index].text_cursor) .ibeam else .hand) else .arrow);
         },
         c.SAPP_EVENTTYPE_MOUSE_DOWN, c.SAPP_EVENTTYPE_MOUSE_UP => {
             g_clay_surface.mouse_x = event.mouse_x;
@@ -1016,6 +1018,7 @@ const MAX_OVERLAY_SURFACES = 32;
 const OverlayHit = struct {
     id: []const u8,
     stack_index: usize,
+    text_cursor: bool = false,
 };
 
 /// Window-space scrollbar derived from a node's latest layout. The hit strip
@@ -1659,7 +1662,7 @@ fn drawOverlayScrollbar(scrollbar: OverlayScrollbar) void {
 
 fn overlayHit(surface: *ClaySurface, target: ClaySurface.Target, mouse_x: f32, mouse_y: f32) ?OverlayHit {
     const index = surface.hitTest(target, mouse_x, mouse_y) orelse return null;
-    return .{ .id = surface.nodeId(index), .stack_index = surface.owner_index };
+    return .{ .id = surface.nodeId(index), .stack_index = surface.owner_index, .text_cursor = surface.nodes[index].text_cursor };
 }
 
 fn overlayScrollbarAt(surface: *ClaySurface, mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
@@ -5813,13 +5816,13 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
-    if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y) != null or
-        hitTestOverlay(event.mouse_x, event.mouse_y) != null)
-    {
+    const overlay_scrollbar = hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y) != null;
+    const overlay_hit = if (overlay_scrollbar) null else hitTestOverlay(event.mouse_x, event.mouse_y);
+    if (overlay_scrollbar or overlay_hit != null) {
         updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
-        setTextSelectionCursor(.arrow);
+        setTextSelectionCursor(if (overlay_hit) |hit| (if (hit.text_cursor) .ibeam else .hand) else .arrow);
         return;
     }
 

@@ -35,6 +35,8 @@ return function(value)
         behavior = options.filter,
         theme = theme,
         boxed = false,
+        -- Picker widgets route every key to their filter themselves.
+        focusable = options.filter_focusable == true,
       }),
     }, { width = "grow" })
   end

@@ -2283,7 +2283,9 @@ local workspace = {}
 ---@field scrollbar_track_color? string
 ---@field scrollbar_thumb_color? string
 ---@field align_y? 'start'|'center'|'end' Vertical alignment of container children.
----@field on_click? fun(event: { id: string })
+---@field on_click? fun(event: { id: string }) Also makes the node keyboard-focusable.
+---@field focusable? boolean Join the overlay focus order without a click handler; requires `id`.
+---@field on_key? fun(key: string, mods: string): boolean Keys while focused, before the overlay; return true to consume.
 
 ---@class HollowUiLayoutTextOptions
 ---@field wrap? 'words'|'newlines'|'none'
@@ -2349,6 +2351,7 @@ local workspace = {}
 ---@class HollowUiInputProps: HollowUiComponentProps
 ---@field behavior HollowUiTextInput
 ---@field boxed? boolean Defaults to true.
+---@field focusable? boolean Tab and clicks focus the field; defaults to true.
 
 ---@class HollowUiTabComponentItem
 ---@field id string
@@ -2416,6 +2419,7 @@ local workspace = {}
 ---@field prompt? boolean
 ---@field header? HollowUiLayoutNode Replaces the title/counter header.
 ---@field filter? HollowUiTextInput|HollowUiLayoutNode Text input behavior, or a prebuilt filter row.
+---@field filter_focusable? boolean Let Tab and clicks focus the filter input; off when the widget routes keys to it.
 ---@field list HollowUiListProps
 ---@field hints? HollowUiHintsProps|HollowUiLayoutNode
 
@@ -2521,6 +2525,10 @@ local workspace = {}
 ---@field invalidate fun(self: HollowUiLayoutSurface) Rebuild on the next frame.
 ---@field destroy fun(self: HollowUiLayoutSurface) Drop cached nodes and callbacks.
 ---@field snapshot fun(self: HollowUiLayoutSurface, ctx?: HollowUiLayoutContext): table[] Validate and serialize only when dirty.
+---@field focus fun(self: HollowUiLayoutSurface, id: string): boolean Focus a node by local ID and show the focus ring.
+---@field blur fun(self: HollowUiLayoutSurface) Clear keyboard focus.
+---@field focus_move fun(self: HollowUiLayoutSurface, delta: integer): boolean Move focus forward (1) or back (-1), wrapping.
+---@field focused_id fun(self: HollowUiLayoutSurface): string|nil Local ID of the focused node.
 
 ---@class HollowUi
 ---@field layout HollowUiLayout Experimental Clay-backed surface engine.

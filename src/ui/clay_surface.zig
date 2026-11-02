@@ -45,6 +45,7 @@ const Field = enum {
     wrap,
     text_align,
     clickable,
+    text_cursor,
     padding,
 };
 const fields = std.StaticStringMap(Field).initComptime(blk: {
@@ -214,6 +215,7 @@ pub const Surface = struct {
                 .list_item => node.list_item = api.to_boolean(state, -1) != 0,
                 .measure => node.measure = api.to_boolean(state, -1) != 0,
                 .clickable => node.clickable = api.to_boolean(state, -1) != 0,
+                .text_cursor => node.text_cursor = api.to_boolean(state, -1) != 0,
                 .align_y => node.align_y = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .wrap => node.wrap = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .text_align => node.text_align = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),

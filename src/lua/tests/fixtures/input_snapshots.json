@@ -46,12 +46,15 @@
     {
       "bg": "#16161d",
       "children": 1,
+      "clickable": true,
+      "id": "test:input",
       "padding": {
         "bottom": 2,
         "left": 5,
         "right": 5,
         "top": 2
       },
+      "text_cursor": true,
       "width": -1
     },
     {
@@ -127,12 +130,15 @@
     {
       "bg": "#16161d",
       "children": 1,
+      "clickable": true,
+      "id": "test:input",
       "padding": {
         "bottom": 2,
         "left": 5,
         "right": 5,
         "top": 2
       },
+      "text_cursor": true,
       "width": -1
     },
     {

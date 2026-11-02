@@ -2,7 +2,8 @@
 
 `hollow.ui.components` builds trees for `hollow.ui.layout` surfaces. Render
 functions run synchronously; components use the surface theme and cell metrics.
-They do not own input, focus, or keyboard behavior.
+They do not own keyboard behavior beyond overlay focus (see
+[Keyboard focus](#keyboard-focus)).
 
 ```lua
 local ui = hollow.ui
@@ -77,6 +78,9 @@ colors. Recipe-backed atoms accept component theme overrides.
   node between pairs; `plain = true` uses one column and one text node.
 - **`input`** — two containers plus two nodes per behavior run. Pass
   `{ behavior = ui.text_input(...), id = "filter", boxed = false }`.
+  Focusable (Tab or click) unless `focusable = false`; the root takes `id`
+  (default `"input"`). A picker's filter is focusable only with
+  `filter_focusable = true`, since picker widgets route keys to it themselves.
 - **`tabs`** — one row plus two nodes per tab and two per painted badge.
   Pass `{ tabs = { { id = "a", label = "A" } }, active = "a", on_select = fn }`.
 
@@ -127,7 +131,22 @@ colors. Recipe-backed atoms accept component theme overrides.
 `c.demo()` opens a scrollable gallery of every component, variant, size, and
 state as an overlay above any open overlay (including the Lua REPL). It fills the window
 height; the mouse wheel, arrows, `j`/`k`, Page Up/Down, and Home/End scroll by
-section. Esc or q closes it. It is also rendered against every bundled theme in the test suite.
+section. Tab and Shift-Tab move focus between buttons and inputs. Esc or q
+closes it. It is also rendered against every bundled theme in the test suite.
+
+## Keyboard focus
+
+In overlays, clickable nodes (`on_click`, so enabled buttons, list items and
+tabs) and nodes with `focusable = true` (inputs) form a focus order in tree
+order. Tab and Shift-Tab move focus when the overlay's own `on_key` does not
+consume them. The focused node paints its hover layer plus a ring
+(`focus_ring|primary_bg` token) and is revealed in its nearest scroll viewport.
+
+A focused node sees keys before the overlay: its `on_key(key, mods)` first
+(inputs route to their behavior), then Enter or Space activate `on_click`.
+Unconsumed keys continue to the overlay. Clicking a button moves focus without
+the ring; clicking an input focuses it for typing and shows the text cursor. Surfaces expose `focus(id)`, `blur()`, `focus_move(delta)` and
+`focused_id()`.
 
 ## Theme overrides
 

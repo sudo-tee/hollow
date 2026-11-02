@@ -33,6 +33,11 @@ return function(value)
   if explicit and options.style then
     options.style = shared.resolve_tokens(options.style, theme)
   end
+  -- Tab focuses the field; a focused field receives keys before its widget.
+  if options.focusable ~= false then
+    options.id, options.focusable = prefix, true
+    options.on_key = options.on_key or require("hollow.ui.keys").keys(input)
+  end
   return c.column({
     c.row(runs, {
       id = prefix .. ":viewport",

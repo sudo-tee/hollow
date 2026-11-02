@@ -38,13 +38,22 @@ end
 ---@param root HollowUiLayoutNode
 ---@param palette HollowUiTheme
 ---@param namespace string
+---@param ctx? HollowUiLayoutContext
+---@param focus? { id?: string, visible?: boolean } Namespaced keyboard focus.
 ---@return table[] nodes
 ---@return table<string, fun(event: { id: string })> callbacks
 ---@return table<string, string> local_ids
-return function(root, palette, namespace, ctx)
+---@return string[] focus_order Namespaced ids of focusable nodes in preorder.
+---@return table<string, fun(key: string, mods: string): boolean> key_handlers
+return function(root, palette, namespace, ctx, focus)
   ctx = ctx or {}
+  focus = focus or EMPTY
   ---@type table[], table<string, fun(event: { id: string })>, table<string, integer>, table<string, string>, integer[]
   local nodes, callbacks, ids, local_ids, subtree_ends = {}, {}, {}, {}, {}
+  local focus_order, key_handlers = {}, {}
+  -- The visibly focused node paints its hover layer plus a ring; text inside
+  -- it takes the hover foreground. Its nearest scroll ancestor reveals it.
+  local focus_fg, scroll_ancestors, focus_scroll = nil, {}, nil
   -- Callers may mutate style tables between snapshots, so memoize by identity
   -- only within this call.
   local styles, text_styles = {}, {}
@@ -136,6 +145,9 @@ return function(root, palette, namespace, ctx)
     )
     local index = #nodes + 1
     local clickable = type(node.on_click) == "function"
+    -- Focusable nodes without a click handler (inputs) are still pointer
+    -- targets so a click focuses them; they show the text cursor.
+    local text_cursor = not clickable and node.focusable == true and kind ~= 2
     local serialized = {
       kind = nonzero(kind),
       text = node.text,
@@ -143,7 +155,8 @@ return function(root, palette, namespace, ctx)
       list_item = node.role == "listitem" or nil,
       wrap = nonzero(wraps[node.wrap or "words"]),
       text_align = nonzero(text_align or 0),
-      clickable = clickable or nil,
+      clickable = (clickable or text_cursor) or nil,
+      text_cursor = text_cursor or nil,
       measure = node.measure == true or nil,
     }
     local id
@@ -157,9 +170,11 @@ return function(root, palette, namespace, ctx)
       local_ids[id] = local_id
       serialized.id = id
     end
+    local focusable = clickable or node.focusable == true
+    local focused = focus.visible and id ~= nil and id == focus.id and focusable
     if kind == 2 then
       local style = text_style(node.style)
-      serialized.fg, serialized.bold = style.fg, style.bold
+      serialized.fg, serialized.bold = focus_fg or style.fg, style.bold
     else
       local entry = container_style(node.style)
       local style, paint = entry.style, entry.paint
@@ -246,19 +261,58 @@ return function(root, palette, namespace, ctx)
           "parts.scrollbar.thumb|scrollbar_thumb|panel_border"
         )
       end
+      if focused then
+        local hover = type(style.hover) == "table" and style.hover or EMPTY
+        if hover.bg then
+          serialized.bg, serialized.alpha = hover.bg, nil
+        end
+        serialized.border = tokens.resolve_color(
+          "focus_ring|primary_bg|cursor_bg|fg",
+          "border",
+          palette,
+          true
+        ) or serialized.border
+        if not serialized.border_width then
+          serialized.border_width = { left = 1, right = 1, top = 1, bottom = 1 }
+        end
+      end
     end
     nodes[index] = serialized
     if clickable then
       assert(node.id, "clickable layout nodes require stable explicit ids")
       callbacks[id] = node.on_click
     end
+    if focusable then
+      assert(node.id, "focusable layout nodes require stable explicit ids")
+      focus_order[#focus_order + 1] = id
+      if type(node.on_key) == "function" then
+        key_handlers[id] = node.on_key
+      end
+    end
+    local previous_fg = focus_fg
+    if focused then
+      focus_fg = serialized.hover_fg or focus_fg
+      focus_scroll = { scroll = scroll_ancestors[#scroll_ancestors], target = id }
+    end
+    local scrolls = kind ~= 2 and (node.scroll or node.scroll_x)
+    if scrolls then
+      scroll_ancestors[#scroll_ancestors + 1] = index
+    end
     if node.children then
       children(node.children, 0, serialized, depth)
     end
+    if scrolls then
+      scroll_ancestors[#scroll_ancestors] = nil
+    end
+    focus_fg = previous_fg
     subtree_ends[index] = #nodes
     assert(kind ~= 2 or serialized.children == nil, "text cannot have children")
   end
   visit(root, 0)
+  if focus_scroll and focus_scroll.scroll then
+    local viewport = nodes[focus_scroll.scroll]
+    viewport.reveal, viewport.reveal_start = focus_scroll.target, nil
+  end
   for index, node in ipairs(nodes) do
     if node.reveal then
       assert(node.scroll or node.scroll_x, "reveal requires a scroll container")
@@ -268,5 +322,5 @@ return function(root, palette, namespace, ctx)
       assert(nodes[target].kind ~= 2, "reveal target must be a container")
     end
   end
-  return nodes, callbacks, local_ids
+  return nodes, callbacks, local_ids, focus_order, key_handlers
 end

@@ -74,6 +74,8 @@ local function container(kind, children, opts)
     measure = opts.measure,
     align_y = opts.align_y,
     on_click = not opts.disabled and opts.on_click or nil,
+    focusable = not opts.disabled and opts.focusable or nil,
+    on_key = not opts.disabled and opts.on_key or nil,
   }
 end
 

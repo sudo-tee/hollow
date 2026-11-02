@@ -740,7 +740,13 @@ function ui.activity.open(opts)
     if searching then
       filter_node = c.row({
         c.text("/ ", styles(theme).label),
-        require("hollow.ui.components.input")({ behavior = filter, theme = theme, boxed = false }),
+        require("hollow.ui.components.input")({
+          behavior = filter,
+          theme = theme,
+          boxed = false,
+          -- Search mode owns the filter's keys.
+          focusable = false,
+        }),
       }, { width = "grow" })
     end
     local list_props = {
