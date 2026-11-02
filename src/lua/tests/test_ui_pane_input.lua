@@ -230,4 +230,29 @@ describe("Lua pane keys and focus", function()
     assert.is_true(instance.surface.destroyed)
     assert.is_nil(h.ui.pane.get(instance.id))
   end)
+
+  it("lets capture_keys panes take modified keys while the leader escapes", function()
+    local hits, globals, leader = {}, 0, 0
+    h.keymap.set_leader("<C-b>")
+    h.keymap.set("<leader>x", function()
+      leader = leader + 1
+    end)
+    h.keymap.set("<C-v>", function()
+      globals = globals + 1
+    end)
+    pane({
+      capture_keys = true,
+      on_key = function(key, mods)
+        hits[#hits + 1] = mods .. key
+        return true
+      end,
+    })
+    assert.is_true(on_key("v", 2))
+    assert.are.equal(0, globals)
+    assert.same({ "<C>v" }, hits)
+    assert.is_true(on_key("b", 2))
+    assert.is_true(on_key("x", 0))
+    assert.are.equal(1, leader)
+    assert.same({ "<C>v" }, hits)
+  end)
 end)

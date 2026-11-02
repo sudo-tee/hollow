@@ -161,4 +161,38 @@ describe("Lua pane pointer namespaces", function()
     owner:pointer("click", id)
     assert.are.equal(1, pane.opts.state.hits)
   end)
+
+  it("routes buttons and wheel through on_pointer with local IDs", function()
+    local events = {}
+    local pane = ui.pane.split({
+      state = { hits = 0 },
+      on_pointer = function(event, context)
+        events[#events + 1] = event
+        return event.kind == "scroll" and context.state.consume_scroll
+      end,
+      render = function(context)
+        return ui.components.column({
+          ui.components.button({
+            id = "same",
+            text = "Click",
+            on_click = function()
+              context.state.hits = context.state.hits + 1
+            end,
+          }),
+        }, { id = "list", scroll = true })
+      end,
+    })
+    local owner = owners[pane.id]
+    owner:snapshot(ctx(pane.id))
+    local id = pane.surface.namespace .. "same"
+    assert.is_false(owner:pointer("click", id, "right"))
+    assert.are.equal(0, pane.opts.state.hits)
+    assert.same({ kind = "click", id = "same", button = "right" }, events[1])
+    owner:pointer("click", id, "left")
+    assert.are.equal(1, pane.opts.state.hits)
+    assert.is_false(owner:pointer("scroll", pane.surface.namespace .. "list", -1))
+    assert.same({ kind = "scroll", id = "list", delta = -1 }, events[3])
+    pane.opts.state.consume_scroll = true
+    assert.is_true(owner:pointer("scroll", nil, 2))
+  end)
 end)

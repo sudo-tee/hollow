@@ -89,6 +89,27 @@ describe("Lua pane factories", function()
     end
   )
 
+  it("restores an explicit creation title over the factory title", function()
+    local titles = {}
+    env.host_api.title_lua_pane = function(id, title)
+      titles[id] = title
+    end
+    ui.pane.register("tasks", function()
+      return {
+        title = "Factory",
+        render = function()
+          return ui.components.text("Tasks")
+        end,
+      }
+    end)
+    local pane = ui.pane.split({ module = "tasks", title = "Custom" })
+    local descriptor = owners[pane.id]._descriptor
+    owners[pane.id]:destroy()
+    titles[pane.id] = nil
+    ui.pane._restore(pane.id, descriptor)
+    assert.are.equal("Custom", titles[pane.id])
+  end)
+
   it("restores one instance without disturbing another factory instance", function()
     ui.pane.register("tasks", function(args)
       return {

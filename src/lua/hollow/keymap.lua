@@ -1083,6 +1083,12 @@ function M.setup(hollow, host_api, state)
       return true
     end
 
+    -- capture_keys panes (editors, REPLs) see modified keys before global
+    -- bindings; the leader and its sequences above still escape the pane.
+    if hollow.ui.pane._captures_keys() and pane_key() then
+      return true
+    end
+
     local action = get_runtime_binding(mode_state.bindings, key, mods)
     if action ~= nil then
       return run_action(hollow, action) or pane_key()

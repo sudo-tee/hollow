@@ -474,7 +474,7 @@ snapshot. Use `hollow.term.pane_by_id(id)` for a snapshot.
 | `module`, `args` | Optional registered factory name and creation-time JSON table; `args` defaults to `{}` |
 | `state` | Mutable instance table, available as `ctx.state`; defaults to `{}` |
 | `theme` | Explicit token palette; otherwise the current `select` widget palette |
-| `title` | Optional pane title |
+| `title` | Optional pane title; an explicit title is restored on config reload |
 | `direction`, `ratio` | `"vertical"` (default) or `"horizontal"`; new pane fraction in `(0, 1)`, default `0.5` |
 | `x`, `y`, `width`, `height` | Floating bounds as normalized fractions `0–1`, not pixels |
 | `fullscreen` | Maximize after insertion |
@@ -483,6 +483,8 @@ snapshot. Use `hollow.term.pane_by_id(id)` for a snapshot.
 | `on_resize(ctx)` | Subsequent pixel/grid size changes |
 | `on_focus(ctx, focused)` | Initial focus after mount, subsequent transitions, and blur before unmount |
 | `on_key(key, mods, ctx)` | Key-down/repeat; only `true` consumes the event |
+| `capture_keys` | `true` routes modified keys to the pane before global bindings; the leader still escapes |
+| `on_pointer(event, ctx)` | Clicks (any button) and wheel: `{ kind = "click"\|"scroll", id, button, delta }`; `true` consumes |
 | `on_complete(result)` | Queued native insertion result |
 
 Closing before first paint invokes neither mount nor unmount. Allocate independent
@@ -503,7 +505,8 @@ Snapshots are retained until invalidated: there is no per-frame `render` call
 while idle. Resize, focus, theme and hover transitions invalidate automatically,
 as do handled keys and clicks. After asynchronous state changes call
 `pane:invalidate()`. Render/serialization failures replace stale content with an
-error row; fix state and invalidate to retry. Unknown style tokens remain errors.
+error row, as do errors from `on_mount`, `on_resize` and `on_focus`; fix state
+and invalidate to retry. Unknown style tokens remain errors.
 
 ### Input
 
@@ -512,15 +515,21 @@ Clicks focus the pane and dispatch its component `on_click`; IDs are namespaced
 per instance, while callback `event.id` and `ctx.hovered_id` remain local IDs.
 Hover transitions invalidate; moving within the same node does not rebuild Lua.
 Lua presses never initiate terminal selection or leak releases into terminals.
+Only left clicks dispatch component `on_click`; `on_pointer` also sees right and
+middle clicks with `event.button`. Wheel input reaches `on_pointer` as
+`kind = "scroll"` with `delta` in notches (positive scrolls toward earlier
+content) and the local ID of the scroll container under the pointer; if it is not
+consumed, native `scroll = true` containers scroll.
 
 Keyboard priority is: overlays/modal capture and pending global sequences;
-explicit-modifier global bindings; pane-local focused components, `on_key`, then
-Tab navigation; finally unmodified global bindings when the pane declines.
+explicit-modifier global bindings (after the leader, for `capture_keys` panes);
+pane-local focused components, `on_key`, then Tab navigation; finally unmodified
+global bindings when the pane declines.
 Existing copy-mode priority is unchanged. Keys are normalized (for example
 `"f6"`, `"enter"`, `"arrow_left"`); modifier strings are canonical (`""`,
 `"<C>"`, `"<S>"`, etc.). Key-handler errors log and fall through. Key-up,
-text/IME callbacks, scrolling viewports, drag widgets, selection and copy mode
-inside Lua panes are outside v1.
+text/IME callbacks, drag widgets, selection and copy mode inside Lua panes are
+outside v1.
 
 ### Factories and persistence
 

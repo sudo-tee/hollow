@@ -68,9 +68,11 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
         .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane() and app.window_focused, .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
     };
     if (app.lua) |*runtime| {
-        g_lua_pane_prepare = &ctx;
-        defer g_lua_pane_prepare = null;
-        runtime.withLockedState(void, prepareLuaPane);
+        if (surface.needsPrepare(runtime.generation, ctx.viewport)) {
+            g_lua_pane_prepare = &ctx;
+            defer g_lua_pane_prepare = null;
+            runtime.withLockedState(void, prepareLuaPane);
+        }
     }
     if (surface.clayState()) |tree| tree.area = .{ .x = @floatFromInt(bounds.x), .y = @floatFromInt(bounds.y), .width = pw, .height = ph };
     const entry = getOrCreatePaneCacheEntry(pane, @intFromFloat(pw), @intFromFloat(ph)) orelse return;
@@ -1870,7 +1872,9 @@ fn hitTestLuaPane(app: *App, x: f32, y: f32) ?LuaPaneHit {
     return luaPaneAt(app.computeActiveLayout(&buf), x, y);
 }
 
-fn queueLuaPanePointer(app: *App, hit: LuaPaneHit, kind: @FieldType(@import("../app/lua_panes.zig").Pointer, "kind"), x: f32, y: f32) void {
+const LuaPanePointer = @import("../app/lua_panes.zig").Pointer;
+
+fn queueLuaPanePointer(app: *App, hit: LuaPaneHit, kind: @FieldType(LuaPanePointer, "kind"), x: f32, y: f32, extra: struct { button: LuaPanePointer.Button = .left, delta: f32 = 0 }) void {
     const id = if (hit.id) |value| app.allocator.dupe(u8, value) catch return else null;
     if (!app.enqueueMouse(.{ .lua_pane_pointer = .{
         .pane_id = hit.pane.id,
@@ -1881,6 +1885,8 @@ fn queueLuaPanePointer(app: *App, hit: LuaPaneHit, kind: @FieldType(@import("../
         .id = id,
         .x = x,
         .y = y,
+        .button = extra.button,
+        .delta = extra.delta,
     } })) if (id) |value| app.allocator.free(value);
 }
 
@@ -1911,11 +1917,11 @@ fn updateLuaPaneHover(app: *App) void {
             const x = g_mouse_x - @as(f32, @floatFromInt(target.bounds.x));
             const y = g_mouse_y - @as(f32, @floatFromInt(target.bounds.y));
             const same_id = if (target.id) |id| (if (surface.hovered_id) |old| std.mem.eql(u8, id, old) else false) else surface.hovered_id == null;
-            if (!same_id or surface.pointer_x != x or surface.pointer_y != y) queueLuaPanePointer(app, target, .hover, x, y);
+            if (!same_id or surface.pointer_x != x or surface.pointer_y != y) queueLuaPanePointer(app, target, .hover, x, y, .{});
             continue;
         };
         if (surface.hovered_id != null or surface.pointer_x >= 0 or surface.pointer_y >= 0) {
-            queueLuaPanePointer(app, .{ .pane = pane, .surface = surface, .bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 } }, .hover, -1, -1);
+            queueLuaPanePointer(app, .{ .pane = pane, .surface = surface, .bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 } }, .hover, -1, -1, .{});
         }
     }
 }
@@ -5333,22 +5339,47 @@ fn linuxResizeDirection(x: f32, y: f32) ?c_int {
 /// before modal/inspector routing; terminal-origin gestures remain untouched.
 fn takeLuaPaneRelease(event: c.sapp_event) bool {
     const button = g_lua_pane_button orelse return false;
-    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED) {
-        g_lua_pane_button = null;
-        g_mouse_button_down = null;
-        return false;
-    }
-    if (event.type != c.SAPP_EVENTTYPE_MOUSE_UP) return false;
-    const matches = switch (button) {
+    // A release outside the window may never arrive; a new press or a move
+    // without the held button means the gesture already ended.
+    const held_mask: u32 = switch (button) {
+        .left => c.SAPP_MODIFIER_LMB,
+        .right => c.SAPP_MODIFIER_RMB,
+        .middle => c.SAPP_MODIFIER_MMB,
+        else => 0,
+    };
+    const released = held_mask != 0 and event.modifiers & held_mask == 0;
+    const same_button = switch (button) {
         .left => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT,
         .right => event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT,
         .middle => event.mouse_button == c.SAPP_MOUSEBUTTON_MIDDLE,
         else => false,
     };
-    if (!matches) return false;
+    // Only X11 reports per-event button state on moves; Win32/macOS sample the
+    // live state, which can race a queued release (Windows uses capture instead).
+    const stale = (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN and (same_button or released)) or
+        (builtin.os.tag == .linux and event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE and released);
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED or stale) {
+        endLuaPaneGesture();
+        return false;
+    }
+    if (event.type != c.SAPP_EVENTTYPE_MOUSE_UP or !same_button) return false;
+    endLuaPaneGesture();
+    return true;
+}
+
+/// Capture like divider/scrollbar drags so the release is delivered even
+/// when it happens outside the window.
+fn beginLuaPaneGesture(button: ghostty.MouseButton) void {
+    g_lua_pane_button = button;
+    if (builtin.os.tag == .windows) {
+        if (c.sapp_win32_get_hwnd()) |raw| _ = win32.SetCapture(@ptrCast(@constCast(raw)));
+    }
+}
+
+fn endLuaPaneGesture() void {
     g_lua_pane_button = null;
     g_mouse_button_down = null;
-    return true;
+    if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
 }
 
 test "Lua gesture release retires before modal routing without stealing terminal releases" {
@@ -5375,6 +5406,27 @@ test "Lua gesture release retires before modal routing without stealing terminal
     event.type = c.SAPP_EVENTTYPE_UNFOCUSED;
     try std.testing.expect(!takeLuaPaneRelease(event));
     try std.testing.expect(g_lua_pane_button == null);
+
+    // A release lost outside the window must not stick the gesture.
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_MOUSE_MOVE;
+    event.modifiers = c.SAPP_MODIFIER_LMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == .left);
+    event.modifiers = 0;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect((g_lua_pane_button == null) == (builtin.os.tag == .linux));
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_MOUSE_DOWN;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    event.modifiers = c.SAPP_MODIFIER_LMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null);
+    g_lua_pane_button = .left;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_RIGHT;
+    event.modifiers = c.SAPP_MODIFIER_LMB | c.SAPP_MODIFIER_RMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == .left);
 }
 
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
@@ -5864,12 +5916,20 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     if (action == .press and event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT) {
         if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
             if (button) |b| {
-                g_lua_pane_button = b;
+                beginLuaPaneGesture(b);
                 if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
                     if (target.surface.ref >= 0) {
                         var hit = target;
-                        hit.id = null;
-                        queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)));
+                        const lua_button: LuaPanePointer.Button = switch (b) {
+                            .right => .right,
+                            .middle => .middle,
+                            else => blk: {
+                                // Extra buttons only move focus.
+                                hit.id = null;
+                                break :blk .middle;
+                            },
+                        };
+                        queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{ .button = lua_button });
                     } else {
                         _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = b, .x = event.mouse_x, .y = event.mouse_y, .mods = ghosttyMods(event.modifiers) } });
                     }
@@ -5953,10 +6013,10 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
 
         if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
-            g_lua_pane_button = .left;
+            beginLuaPaneGesture(.left);
             if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
                 if (hit.surface.ref >= 0) {
-                    queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)));
+                    queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{});
                 } else {
                     _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = .left, .x = event.mouse_x, .y = event.mouse_y, .mods = mods } });
                 }
@@ -6276,6 +6336,17 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
     }
 
     if (g_scrollbar_drag_pane != null) return;
+    if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
+        if (event.scroll_y == 0 or target.surface.ref < 0) return;
+        var hit = target;
+        hit.id = null;
+        if (target.surface.clayState()) |tree| if (tree.active) {
+            if (tree.hitTest(.scroll, event.mouse_x, event.mouse_y)) |node| hit.id = tree.nodeId(node);
+        };
+        queueLuaPanePointer(app, hit, .scroll, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{ .delta = event.scroll_y });
+        c.sapp_consume_event();
+        return;
+    }
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
         _ = app.enqueueMouse(.{ .scroll = .{
             .x = event.mouse_x,

@@ -914,6 +914,15 @@ function M.setup(hollow, host_api)
     category = "debug",
   })
 
+  register(hollow, "lua_repl_dock", {
+    run = function()
+      hollow.ui.lua_repl.dock()
+      return true
+    end,
+    desc = "Toggle the Lua REPL docked in a split pane",
+    category = "debug",
+  })
+
   register(hollow, "toggle_layout_inspector", {
     run = function()
       hollow.ui.layout.debug(not hollow.ui._layout_debug)

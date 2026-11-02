@@ -143,6 +143,19 @@ describe("Lua UI panes", function()
     assert.are.equal("Recovered", nodes[1].text)
   end)
 
+  it("renders lifecycle hook failures as error rows instead of blanking", function()
+    local pane = ui.pane.split({
+      on_mount = function()
+        error("broken mount")
+      end,
+      render = function()
+        return ui.components.text("Hello")
+      end,
+    })
+    local nodes = owners[pane.id]:snapshot(context())
+    assert.matches("broken mount", nodes[2].text)
+  end)
+
   it("keeps unknown-token errors strict", function()
     local pane = ui.pane.split({
       render = function()

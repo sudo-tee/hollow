@@ -308,8 +308,19 @@ pub fn processInputQueue(self: *App) void {
                 };
             },
             .title_lua_pane => |payload| {
-                if (self.findPaneById(payload.id)) |pane| if (pane.asLua() != null) {
+                // Unchanged titles must not re-emit: a handler that sets the
+                // title again would requeue forever within this drain.
+                if (self.findPaneById(payload.id)) |pane| if (pane.asLua() != null and !std.mem.eql(u8, pane.title, payload.text)) {
+                    const old_title = self.allocator.dupe(u8, pane.title) catch null;
+                    defer if (old_title) |value| self.allocator.free(value);
                     pane.setManualTitle(payload.text);
+                    self.topbar_cache_dirty = true;
+                    self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
+                        .pane_id = pane.id,
+                        .old_title = if (old_title) |value| value else "",
+                        .new_title = pane.title,
+                    } });
+                    self.requestRedraw();
                 };
             },
             .none => {},

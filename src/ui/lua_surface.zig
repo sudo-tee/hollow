@@ -46,6 +46,13 @@ pub const LuaSurface = struct {
         return @ptrCast(@alignCast(self.clay orelse return null));
     }
 
+    /// Lock-free precheck so clean panes never contend for the Lua mutex.
+    pub fn needsPrepare(self: *const LuaSurface, generation: u64, viewport: Viewport) bool {
+        if (self.ref < 0) return false;
+        if (self.runtime_generation != generation or self.dirty) return true;
+        return self.prepared == null or !std.meta.eql(self.prepared.?, viewport);
+    }
+
     /// Called under the Lua lock, before atlas upload. Clean panes do not enter
     /// Lua. Snapshot parsing never changes standalone/overlay publication.
     pub fn prepare(self: *LuaSurface, allocator: std.mem.Allocator, runtime: *lua.Runtime, renderer: anytype, viewport: Viewport) bool {

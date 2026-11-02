@@ -18,11 +18,16 @@ pub const Pointer = struct {
     generation: u64,
     revision: f64,
     layout_generation: u32,
-    kind: enum { click, hover },
+    kind: enum { click, hover, scroll },
     /// Owned by the input event, never borrowed from a retained Clay arena.
     id: ?[]const u8 = null,
     x: f32 = -1,
     y: f32 = -1,
+    button: Button = .left,
+    /// Wheel notches for `scroll`; positive scrolls toward earlier content.
+    delta: f32 = 0,
+
+    pub const Button = enum { left, right, middle };
 };
 
 pub fn pointer(app: *App, event: Pointer) void {
@@ -40,7 +45,7 @@ pub fn pointer(app: *App, event: Pointer) void {
         const owned = if (event.id) |id| pane.allocator.dupe(u8, id) catch return else null;
         if (surface.hovered_id) |old| pane.allocator.free(old);
         surface.hovered_id = owned;
-    } else {
+    } else if (event.kind == .click) {
         if (!app.isPaneVisible(pane)) return;
         if (app.mux) |*mux| {
             const previous = mux.activePane();
@@ -50,6 +55,13 @@ pub fn pointer(app: *App, event: Pointer) void {
         }
     }
     pane.invalidate();
+    // Lua may consume the wheel; otherwise native Clay scroll containers move.
+    if (!callPointer(runtime, surface, event) and event.kind == .scroll) {
+        if (surface.clayState()) |tree| tree.scroll_y += event.delta;
+    }
+}
+
+fn callPointer(runtime: anytype, surface: *LuaSurface, event: Pointer) bool {
     runtime.mutex.lock();
     defer runtime.mutex.unlock();
     const api = runtime.context.api;
@@ -58,16 +70,26 @@ pub fn pointer(app: *App, event: Pointer) void {
     defer api.set_top(state, top);
     api.rawgeti(state, -10000, surface.ref);
     api.get_field(state, -1, "pointer");
-    if (api.value_type(state, -1) != @backingInt(@import("../lua_bridge.zig").LuaType.function)) return;
+    if (api.value_type(state, -1) != @backingInt(bridge.LuaType.function)) return false;
     api.push_value(state, -2);
     const kind = @tagName(event.kind);
     api.push_lstring(state, kind.ptr, kind.len);
     if (event.id) |id| api.push_lstring(state, id.ptr, id.len) else api.push_nil(state);
-    if (api.pcall(state, 3, 0, 0) != 0) {
+    switch (event.kind) {
+        .click => {
+            const button = @tagName(event.button);
+            api.push_lstring(state, button.ptr, button.len);
+        },
+        .scroll => api.push_number(state, event.delta),
+        .hover => api.push_nil(state),
+    }
+    if (api.pcall(state, 4, 1, 0) != 0) {
         var len: usize = 0;
         const err = api.to_lstring(state, -1, &len);
         std.log.err("Lua pane pointer: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
+        return false;
     }
+    return api.to_boolean(state, -1) != 0;
 }
 
 pub const Create = struct {
@@ -126,10 +148,16 @@ pub fn release(app: *App, ref: c_int, generation: u64) void {
     const top = api.get_top(state);
     defer api.set_top(state, top);
     api.rawgeti(state, -10000, ref);
+    defer api.unref(state, -10000, ref);
+    if (api.value_type(state, -1) != @backingInt(bridge.LuaType.table)) return;
     api.get_field(state, -1, "destroy");
+    if (api.value_type(state, -1) != @backingInt(bridge.LuaType.function)) return;
     api.push_value(state, -2);
-    if (api.pcall(state, 1, 0, 0) != 0) std.log.err("Lua pane destroy failed", .{});
-    api.unref(state, -10000, ref);
+    if (api.pcall(state, 1, 0, 0) != 0) {
+        var len: usize = 0;
+        const err = api.to_lstring(state, -1, &len);
+        std.log.err("Lua pane destroy: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
+    }
 }
 
 /// Unmount against the old runtime, never against a recycled registry index.

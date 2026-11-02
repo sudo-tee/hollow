@@ -2070,6 +2070,11 @@ function lua_repl.open(opts) end
 
 function lua_repl.close() end
 
+---Toggle the console docked in a split Lua pane; nil when closing or unavailable.
+---@param opts? { direction?: "horizontal"|"vertical", ratio?: number }
+---@return HollowUiPane|nil
+function lua_repl.dock(opts) end
+
 ---@class HollowUiMuxNavigatorOptions
 ---@field query? string
 ---@field filter? "all"|"pane_bell"
@@ -2575,7 +2580,15 @@ local workspace = {}
 ---@field on_resize? fun(ctx: HollowUiPaneContext) Subsequent content size changes.
 ---@field on_focus? fun(ctx: HollowUiPaneContext, focused: boolean) Initial focus after mount, transitions and blur before unmount.
 ---@field on_key? fun(key: string, mods: HollowKeyMods, ctx: HollowUiPaneContext): boolean|nil Only true consumes; normalized key-down/repeat events.
+---@field capture_keys? boolean Route modified keys to the pane before global bindings; the leader still escapes.
+---@field on_pointer? fun(event: HollowUiPanePointerEvent, ctx: HollowUiPaneContext): boolean|nil Clicks and wheel; only true consumes.
 ---@field on_complete? fun(result: { success: boolean, pane_id?: integer }) Queued native insertion result; not called if creation immediately returns nil.
+
+---@class HollowUiPanePointerEvent
+---@field kind "click"|"scroll"
+---@field id? string Pane-local node ID: clickable for clicks, scroll container for wheel.
+---@field button? "left"|"right"|"middle" Click button.
+---@field delta? number Wheel notches; positive scrolls toward earlier content.
 
 ---@class HollowUiPane
 ---@field id integer Reserved immediately; native insertion is queued.

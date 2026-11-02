@@ -79,8 +79,7 @@ local function destroy(self)
   end
 end
 
-local function snapshot(self, ctx)
-  context(self, ctx)
+local function lifecycle(self, ctx)
   local old = self.snapshot_context
   self.context, self.snapshot_context = ctx, ctx
   if not self.mounted then
@@ -100,7 +99,13 @@ local function snapshot(self, ctx)
     self.opts.on_resize(ctx)
   end
   focus(self, ctx, ctx.focused)
-  local ok, nodes = pcall(self.surface.snapshot, self.surface, ctx)
+  return self.surface:snapshot(ctx)
+end
+
+local function snapshot(self, ctx)
+  context(self, ctx)
+  -- Hook errors render the error row like render errors, never a blank pane.
+  local ok, nodes = pcall(lifecycle, self, ctx)
   if ok then
     return nodes
   end
@@ -196,6 +201,7 @@ local function new_instance(opts, floating, placement, name)
       kind = "lua",
       module = owned.module,
       args = owned.args,
+      title = owned.title,
       placement = placement or "split",
       name = name,
       floating = floating,
@@ -222,12 +228,25 @@ local function new_instance(opts, floating, placement, name)
     focus = function(_, ctx, focused)
       focus(self, ctx, focused)
     end,
-    pointer = function(_, kind, id)
+    -- Returns true when Lua consumed the event (native wheel scroll is skipped).
+    pointer = function(_, kind, id, detail)
       if self.closed or self.closing then
-        return
+        return false
+      end
+      if kind ~= "hover" and owned.on_pointer and self.context then
+        local event = {
+          kind = kind,
+          id = id and self.surface:local_id(id) or nil,
+          button = kind == "click" and detail or nil,
+          delta = kind == "scroll" and detail or nil,
+        }
+        if owned.on_pointer(event, self.context) == true then
+          self:invalidate()
+          return true
+        end
       end
       if kind == "click" then
-        if id then
+        if id and (detail == nil or detail == "left") then
           self.surface:dispatch(id)
           self.surface:invalidate()
         end
@@ -238,6 +257,7 @@ local function new_instance(opts, floating, placement, name)
         end
         self.surface:invalidate()
       end
+      return false
     end,
   }
   assert(#owner._descriptor <= 65536, "pane descriptor exceeds 64 KiB")
@@ -276,7 +296,8 @@ end
 -- The native reload path attaches this new owner to the existing pane ID/tree.
 function M._restore(id, descriptor)
   descriptor = json.decode(descriptor)
-  local opts = resolve({ module = descriptor.module, args = descriptor.args })
+  local opts =
+    resolve({ module = descriptor.module, args = descriptor.args, title = descriptor.title })
   local self, owner = new_instance(opts, false)
   self.id, instances[id] = id, self
   if opts.title then
@@ -297,15 +318,28 @@ function M.get(id)
   return instances[id]
 end
 
--- Called by the shared keymap, under the Lua lock. Overlays and pending global
--- sequences take priority; plain pane keys precede unmodified global bindings.
-function M._dispatch_key(key, mods)
+local function focused_instance()
   if next(instances) == nil then
-    return false
+    return nil
   end
   local id = host.current_pane_id and host.current_pane_id()
   local self = instances[id]
   if not self or self.closed or self.closing or not self.mounted or not self.focused then
+    return nil
+  end
+  return self
+end
+
+function M._captures_keys()
+  local self = focused_instance()
+  return self ~= nil and self.opts.capture_keys == true
+end
+
+-- Called by the shared keymap, under the Lua lock. Overlays and pending global
+-- sequences take priority; plain pane keys precede unmodified global bindings.
+function M._dispatch_key(key, mods)
+  local self = focused_instance()
+  if not self then
     return false
   end
   local canonical_mods = _G.hollow.keymap.format_mods(mods)

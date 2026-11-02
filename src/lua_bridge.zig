@@ -5637,24 +5637,29 @@ fn l_get_pane_content(state: *State) callconv(.c) c_int {
     const id = luaPaneIdArg(api, state, 1) orelse return 0;
     const info = getter(cbs.app, id) orelse return 0;
     const top = api.get_top(state);
-    pushPaneContent(api, state, info) catch {
+    pushPaneContent(ctx.allocator, api, state, info) catch {
         api.set_top(state, top);
         return api.raise_error(state, "pane descriptor unavailable");
     };
     return 1;
 }
 
-fn pushPaneContent(api: Api, state: *State, info: PaneContentInfo) !void {
+fn pushPaneContent(allocator: std.mem.Allocator, api: Api, state: *State, info: PaneContentInfo) !void {
     api.create_table(state, 0, 4);
     const kind = @tagName(info.kind);
     api.push_lstring(state, kind.ptr, kind.len);
     api.set_field(state, -2, "kind");
     if (info.descriptor_json) |text| {
-        const parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, text, .{});
-        defer parsed.deinit();
-        if (parsed.value == .object) {
-            inline for (.{ "module", "args" }) |field| if (parsed.value.object.get(field)) |value| {
-                try pushJsonValue(std.heap.page_allocator, api, state, value);
+        // Pane snapshots query this often; typical descriptors fit on the stack.
+        var buffer: [8192]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&buffer, allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
+        if (value == .object) {
+            inline for (.{ "module", "args" }) |field| if (value.object.get(field)) |item| {
+                try pushJsonValue(scratch, api, state, item);
                 api.set_field(state, -2, field);
             };
         }
