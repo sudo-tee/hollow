@@ -72,6 +72,12 @@ pub const Pane = struct {
         return if (self.isTerminal()) &self.term else null;
     }
 
+    /// Domain of terminal content; empty for local terminals and other content.
+    pub fn domainName(self: *const Pane) []const u8 {
+        const term = self.asTerminalConst() orelse return "";
+        return term.domain_name;
+    }
+
     pub fn invalidate(self: *Pane) void {
         self.render_dirty = .full;
         if (self.lua_surface) |surface| surface.dirty = true;

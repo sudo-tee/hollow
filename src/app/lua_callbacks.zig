@@ -245,7 +245,8 @@ pub fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
 pub fn luaGetPaneActiveScreenCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;
-    return pane.term.active_screen;
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.active_screen;
 }
 
 pub fn luaGetPanePidCallback(app_ptr: *anyopaque, pane_id: usize) usize {
@@ -277,7 +278,7 @@ pub fn luaGetPaneDomainCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []
     _ = out_buf;
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return "";
-    return pane.term.domain_name;
+    return pane.domainName();
 }
 
 pub fn luaGetPaneSplitDirectionCallback(app_ptr: *anyopaque, pane_id: usize) ?[]const u8 {

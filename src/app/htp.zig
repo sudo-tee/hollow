@@ -33,9 +33,9 @@ pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 }
 
 pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
-    if (!pane.isTerminal()) return;
+    const term = pane.asTerminal() orelse return;
     const pending_count = self.htp_pending_messages.items.len - self.htp_pending_message_head;
-    const cwd = pane.term.pending_cwd orelse pane.cwd;
+    const cwd = term.pending_cwd orelse pane.cwd;
     const available_bytes = HTP_MAX_QUEUED_BYTES - self.htp_pending_message_bytes;
     if (pending_count >= HTP_MAX_QUEUED_MESSAGES or
         payload.len > available_bytes or cwd.len > available_bytes - payload.len)
@@ -67,8 +67,8 @@ pub fn bindHtpHandlers(self: *App) void {
     if (self.mux) |*mux| {
         var panes = mux.paneIterator();
         while (panes.next()) |pane| {
-            if (!pane.isTerminal()) continue;
-            pane.setHtpMessageHandler(htpMessageCallback);
+            const term = pane.asTerminal() orelse continue;
+            term.htp_message_handler = htpMessageCallback;
         }
     }
 }
@@ -333,17 +333,18 @@ pub fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, pay
 // Observe the same shell-integration reports on socket, file and OSC paths.
 // Pair starts/ends: an unpaired end must never satisfy a completion wait.
 fn observeCommandEvent(self: *App, pane: *Pane, channel: []const u8, payload: ?std.json.Value) void {
+    const term = pane.asTerminal() orelse return;
     const value = payload orelse return;
     if (value != .object) return;
     if (std.mem.eql(u8, channel, "command_started")) {
         const text = value.object.get("command") orelse return;
         if (text != .string) return;
-        pane.term.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
+        term.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
     } else if (std.mem.eql(u8, channel, "command_ended")) {
-        const command_id = pane.term.automation_command_id orelse return;
+        const command_id = term.automation_command_id orelse return;
         const status = value.object.get("exit_code") orelse return;
         if (status != .integer) return;
-        pane.term.automation_command_id = null;
+        term.automation_command_id = null;
         _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = pane.id, .command_id = command_id, .status = status.integer });
     }
 }
@@ -372,6 +373,11 @@ test "external shell completion pairs reports and ignores malformed or unpaired 
     try std.testing.expectEqual(@as(usize, 2), batch.count);
     try std.testing.expectEqual(@as(?u64, batch.events[0].sequence), batch.events[1].command_id);
     try std.testing.expectEqual(@as(?i64, 7), batch.events[1].status);
+    try std.testing.expect(pane.term.automation_command_id == null);
+    pane.kind = .lua;
+    observeCommandEvent(app, &pane, "command_started", started.value);
+    observeCommandEvent(app, &pane, "command_ended", ended.value);
+    try std.testing.expectEqual(@as(u64, 2), app.automation_events.subscribe());
     try std.testing.expect(pane.term.automation_command_id == null);
 }
 

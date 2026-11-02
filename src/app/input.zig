@@ -549,7 +549,8 @@ pub fn processInputQueue(self: *App) void {
                     .default => {},
                 }
 
-                if (hit.pane.term.is_remote) {
+                const term = hit.pane.asTerminal() orelse return;
+                if (term.is_remote) {
                     std.log.warn("file drop ignored for remote pane", .{});
                     return;
                 }
@@ -777,15 +778,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) {
-                    self.last_visual_activity_ns = now_ns;
-                    return true;
-                }
-                // Synchronized output keeps terminal damage pending until the
-                // mode is cleared or its watchdog expires. PTY wakeups still
-                // drive ticks, but idle frames should not spin on stale damage.
-                if (pane.term.synchronized_output_active) continue;
-                if (pane.render_dirty != .false_value or pane.term.pty_received_data or pane.term.pty_wrote_this_frame) {
+                if (paneHasVisualDamage(pane)) {
                     self.last_visual_activity_ns = now_ns;
                     return true;
                 }
@@ -793,6 +786,35 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         }
     }
     return false;
+}
+
+fn paneHasVisualDamage(pane: *const Pane) bool {
+    if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) return true;
+    if (pane.asTerminalConst()) |term| {
+        // Synchronized output keeps terminal damage pending until the mode is
+        // cleared or its watchdog expires. PTY wakeups still drive ticks, but
+        // idle frames should not spin on stale damage.
+        if (term.synchronized_output_active) return false;
+        if (term.pty_received_data or term.pty_wrote_this_frame) return true;
+    }
+    return pane.render_dirty != .false_value;
+}
+
+test "visual damage checks terminal hold policy without suppressing Lua damage" {
+    var pane = Pane.init(std.testing.allocator);
+    try std.testing.expect(!paneHasVisualDamage(&pane));
+    pane.term.pty_received_data = true;
+    try std.testing.expect(paneHasVisualDamage(&pane));
+    pane.term.synchronized_output_active = true;
+    pane.render_dirty = .full;
+    try std.testing.expect(!paneHasVisualDamage(&pane));
+    pane.bell_dirty = true;
+    try std.testing.expect(paneHasVisualDamage(&pane));
+    pane.bell_dirty = false;
+    pane.kind = .lua;
+    try std.testing.expect(paneHasVisualDamage(&pane));
+    pane.render_dirty = .false_value;
+    try std.testing.expect(!paneHasVisualDamage(&pane));
 }
 
 fn leaderVisualActive(self: *App, now_ns: i128) bool {
@@ -843,10 +865,10 @@ pub fn hoveredHyperlinkAtPointer(self: *App) ?struct {
 }
 
 fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
-    if (!pane.isTerminal()) return false;
+    const term = pane.asTerminal() orelse return false;
     const runtime = if (self.ghostty) |*rt| rt else return false;
     var buf: [64]u8 = undefined;
-    const bytes = pane.term.encodeMouse(
+    const bytes = term.encodeMouse(
         runtime,
         action,
         button,
@@ -857,7 +879,7 @@ fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, butt
         },
         &buf,
     ) orelse return false;
-    pane.sendUserText(bytes);
+    term.sendUserText(pane.allocator, bytes);
     return true;
 }
 
@@ -907,7 +929,7 @@ pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?App.ScrollbarMetrics {
 
 pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const hit = self.hitTestPane(x, y) orelse return;
-    if (!hit.pane.isTerminal()) return;
+    const term = hit.pane.asTerminal() orelse return;
     if (self.copy_mode_active and self.copy_mode_pane == hit.pane) {
         if (hitTestScrollbar(self, x, y)) |metrics| {
             const ratio = std.math.clamp((y - metrics.track_y) / metrics.track_h, 0.0, 1.0);
@@ -926,7 +948,7 @@ pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const max_top = scroll_mod.scrollbarMaxTopRow(scrollbar);
     const in_scrollback = scroll_mod.scrollbarTopRow(scrollbar) < max_top;
     const over_scrollbar = hitTestScrollbar(self, x, y) != null;
-    const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.term.last_mouse_tracking == 0;
+    const should_scroll_viewport = in_scrollback or over_scrollbar or term.last_mouse_tracking == 0;
 
     if (should_scroll_viewport) {
         scroll_mod.scrollPaneViewport(self, hit.pane, delta);

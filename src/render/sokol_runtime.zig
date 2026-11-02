@@ -21,6 +21,7 @@ const FtRendererConfig = @import("font_config.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
 const PaneCache = @import("pane_cache.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
+const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 const selection = @import("../selection.zig");
 const scroll = @import("../app/scroll.zig");
 const copy_mode = @import("../app/copy_mode.zig");
@@ -467,9 +468,29 @@ const Api = lua_mod.Api;
 const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
+fn readyTerminal(pane: *Pane) ?*TerminalPane {
+    const term = pane.asTerminal() orelse return null;
+    return if (term.renderHelpersReady()) term else null;
+}
+
 fn paneRenderHelpersReady(pane: *const Pane) bool {
-    if (!pane.isTerminal()) return false;
-    return pane.term.renderHelpersReady();
+    const term = pane.asTerminalConst() orelse return false;
+    return term.renderHelpersReady();
+}
+
+fn paneSynchronizedOutputActive(pane: *const Pane) bool {
+    const term = pane.asTerminalConst() orelse return false;
+    return term.synchronized_output_active;
+}
+
+fn paneViewportScrollPending(pane: *const Pane) bool {
+    const term = pane.asTerminalConst() orelse return false;
+    return term.viewport_scroll_pending;
+}
+
+fn paneMouseTracking(pane: *const Pane) u32 {
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.last_mouse_tracking;
 }
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -3483,9 +3504,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
-            if (paneRenderHelpersReady(pane)) {
+            if (readyTerminal(pane)) |term| {
                 if (!app.config.terminal_theme.enabled) {
-                    if (runtime.renderStateColorsInto(pane.term.render_state, &g_render_state_colors_scratch)) {
+                    if (runtime.renderStateColorsInto(term.render_state, &g_render_state_colors_scratch)) {
                         clear_r = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                         clear_g = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
                         clear_b = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
@@ -3515,10 +3536,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
-                if (leaf.pane.isTerminal()) renderer.prepareKittyTextures(runtime, leaf.pane.term.terminal, leaf.pane.term.render_state);
+                if (leaf.pane.asTerminal()) |term| renderer.prepareKittyTextures(runtime, term.terminal, term.render_state);
             }
         } else if (app.activePane()) |pane| {
-            if (pane.isTerminal()) renderer.prepareKittyTextures(runtime, pane.term.terminal, pane.term.render_state);
+            if (pane.asTerminal()) |term| renderer.prepareKittyTextures(runtime, term.terminal, term.render_state);
         }
     };
 
@@ -3528,11 +3549,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const atlas_reset_this_frame = if (g_ft_renderer) |*renderer| renderer.atlas_reset_this_frame else false;
     const visible_sync_output = blk: {
         if (leaves.len == 0) {
-            if (app.activePane()) |pane| break :blk pane.term.synchronized_output_active;
+            if (app.activePane()) |pane| break :blk paneSynchronizedOutputActive(pane);
             break :blk false;
         }
         for (leaves) |leaf| {
-            if (leaf.pane.term.synchronized_output_active) break :blk true;
+            if (paneSynchronizedOutputActive(leaf.pane)) break :blk true;
         }
         break :blk false;
     };
@@ -3548,16 +3569,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const viewport_scroll_active = if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.term.viewport_scroll_pending) break true;
+            if (paneViewportScrollPending(leaf.pane)) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.term.viewport_scroll_pending
+        paneViewportScrollPending(pane)
     else
         false;
     if (viewport_scroll_active) {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
-                if (leaf.pane.term.viewport_scroll_pending) invalidatePaneCacheForPane(leaf.pane);
+                if (paneViewportScrollPending(leaf.pane)) invalidatePaneCacheForPane(leaf.pane);
             }
         } else if (single_visible_pane) |pane| {
             invalidatePaneCacheForPane(pane);
@@ -3571,11 +3592,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         false
     else if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.term.synchronized_output_active and
+            if (paneSynchronizedOutputActive(leaf.pane) and
                 !paneCacheReadyForPresent(leaf.pane, leaf.bounds.width, leaf.bounds.height)) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.term.synchronized_output_active and
+        paneSynchronizedOutputActive(pane) and
             !paneCacheReadyForPresent(pane, @intFromFloat(width), @intFromFloat(height))
     else
         false;
@@ -3641,6 +3662,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     _ = oy;
                     _ = fb_w;
                     _ = fb_h;
+                    const term = pane.asTerminal() orelse return .cached_clean;
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
                     const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return .cached_clean;
@@ -3649,7 +3671,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // output is active, but the user must keep seeing the
                     // last completed render. An invalid cache is rendered
                     // once to establish the initial frame.
-                    if (pane.term.synchronized_output_active and
+                    if (term.synchronized_output_active and
                         cache_entry.validity != .invalid and
                         !cache_entry.needs_clear)
                     {
@@ -3682,7 +3704,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
                     } else {
-                        if (rt.renderStateColorsInto(pane.term.render_state, &g_render_state_colors_scratch)) {
+                        if (rt.renderStateColorsInto(term.render_state, &g_render_state_colors_scratch)) {
                             bg_color = g_render_state_colors_scratch.background;
                             cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                             cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
@@ -3693,19 +3715,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
-                    const cursor_pos = rt.cursorPos(pane.term.render_state);
+                    const cursor_pos = rt.cursorPos(term.render_state);
                     const cursor_row = if (cursor_pos) |cp| @as(usize, cp.y) else std.math.maxInt(usize);
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
-                    const cursor_visible = rt.cursorVisible(pane.term.render_state);
-                    const cursor_blinking = rt.cursorBlinking(pane.term.render_state);
-                    const cursor_password_input = rt.cursorPasswordInput(pane.term.render_state);
+                    const cursor_visible = rt.cursorVisible(term.render_state);
+                    const cursor_blinking = rt.cursorBlinking(term.render_state);
+                    const cursor_password_input = rt.cursorPasswordInput(term.render_state);
                     const cursor_blink_visible = cursor_pos == null or
                         !cursor_visible or
                         !cursor_blinking or
                         cursor_password_input or
                         color_math.blinkVisibleNow(io.nanoTimestamp());
-                    const cursor_wide_tail = rt.cursorWideTail(pane.term.render_state);
-                    const cursor_style = rt.cursorVisualStyle(pane.term.render_state);
+                    const cursor_wide_tail = rt.cursorWideTail(term.render_state);
+                    const cursor_style = rt.cursorVisualStyle(term.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
                         cache_entry.last_cursor_row != cursor_row or
                         cache_entry.last_cursor_col != cursor_col or
@@ -3731,7 +3753,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const expected_grid = app_ctx.paneGridSize(pane, .{ .x = 0, .y = 0, .width = pw_u, .height = ph_u });
                     const size_mismatch = pane.cols != expected_grid.cols or pane.rows != expected_grid.rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
-                    const pty_active = pane.term.pty_wrote_this_frame;
+                    const pty_active = term.pty_wrote_this_frame;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
@@ -3841,11 +3863,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const saved_renderer_pad_x = rend.padding_x;
                     const saved_renderer_pad_y = rend.padding_y;
                     {
-                        const pad_left: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.left
                         else
                             cfg.terminal_padding.left);
-                        const pad_top: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.top
                         else
                             cfg.terminal_padding.top);
@@ -3860,10 +3882,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cfg,
                         app_ctx,
                         pane,
-                        pane.term.terminal,
-                        pane.term.render_state,
-                        &pane.term.row_iterator,
-                        &pane.term.row_cells,
+                        term.terminal,
+                        term.render_state,
+                        &term.row_iterator,
+                        &term.row_cells,
                         pw,
                         ph,
                         focused,
@@ -3914,7 +3936,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // existing RT pixels are definitely stale (resize, drag-release,
                     // atlas change, background-color change). Normal PTY output and
                     // scroll frames redraw the dirty rows without forcing a CLEAR.
-                    pane.term.pty_wrote_this_frame = false; // consumed by renderer
+                    term.pty_wrote_this_frame = false; // consumed by renderer
                     cache_entry.needs_clear = false;
                     const now_stable = !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
@@ -3939,7 +3961,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
                     pane.render_dirty = .false_value;
-                    pane.term.viewport_scroll_pending = false;
+                    term.viewport_scroll_pending = false;
                     return .cached_dirty;
                 }
             }.call;
@@ -4002,7 +4024,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (leaves.len > 0) {
                     const active = app.activePane();
                     for (leaves) |leaf| {
-                        if (!paneRenderHelpersReady(leaf.pane)) continue;
+                        const term = readyTerminal(leaf.pane) orelse continue;
                         const ox: f32 = @floatFromInt(leaf.bounds.x);
                         const oy: f32 = @floatFromInt(leaf.bounds.y);
                         const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -4010,11 +4032,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (leaf.pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (leaf.pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4027,10 +4049,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             leaf.pane,
-                            leaf.pane.term.terminal,
-                            leaf.pane.term.render_state,
-                            &leaf.pane.term.row_iterator,
-                            &leaf.pane.term.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             ox,
                             oy,
                             pw,
@@ -4056,21 +4078,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         leaf.pane.render_dirty = .false_value;
-                        leaf.pane.term.pty_wrote_this_frame = false;
-                        leaf.pane.term.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     }
                 } else if (app.activePane()) |pane| {
-                    if (!paneRenderHelpersReady(pane)) {
-                        // nothing to queue
-                    } else {
+                    if (readyTerminal(pane)) |term| {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4083,10 +4103,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.term.terminal,
-                            pane.term.render_state,
-                            &pane.term.row_iterator,
-                            &pane.term.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             0,
                             0,
                             width,
@@ -4112,8 +4132,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         pane.render_dirty = .false_value;
-                        pane.term.pty_wrote_this_frame = false;
-                        pane.term.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     }
                 }
             }
@@ -4175,7 +4195,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // the pass. Nothing to blit here.
             } else if (do_leaves) {
                 for (leaves) |leaf| {
-                    if (!leaf.pane.term.render_state_ready) continue;
+                    if (leaf.pane.asTerminalConst()) |term| if (!term.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -4187,7 +4207,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                 }
             } else if (app.activePane()) |pane| {
-                if (paneRenderHelpersReady(pane)) {
+                if (readyTerminal(pane)) |term| {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
                         terminal_render_app.drawDirect(
@@ -4196,10 +4216,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.term.terminal,
-                            pane.term.render_state,
-                            &pane.term.row_iterator,
-                            &pane.term.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             0,
                             0,
                             width,
@@ -4207,7 +4227,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             width,
                             height,
                             true,
-                            pane.render_dirty == .full or pane.term.pty_wrote_this_frame or renderer.atlas_dirty,
+                            pane.render_dirty == .full or term.pty_wrote_this_frame or renderer.atlas_dirty,
                             copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
                             null,
                             app.hovered_hyperlink,
@@ -4222,8 +4242,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         // Mark pane clean after direct render.
                         pane.render_dirty = .false_value;
-                        pane.term.pty_wrote_this_frame = false;
-                        pane.term.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     } else {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
@@ -4679,10 +4699,10 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     var scroll_offset: u64 = 0;
     var scroll_len: u64 = 0;
     if (runtime) |*rt| {
-        if (pane) |p| {
-            cols = rt.renderStateCols(p.term.render_state) orelse 0;
-            rows = rt.renderStateRows(p.term.render_state) orelse 0;
-            if (rt.terminalScrollbar(p.term.terminal)) |scrollbar| {
+        if (if (pane) |p| p.asTerminal() else null) |term| {
+            cols = rt.renderStateCols(term.render_state) orelse 0;
+            rows = rt.renderStateRows(term.render_state) orelse 0;
+            if (rt.terminalScrollbar(term.terminal)) |scrollbar| {
                 scroll_total = scrollbar.total;
                 scroll_offset = scrollbar.offset;
                 scroll_len = scrollbar.len;
@@ -5645,7 +5665,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
 
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-            const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.term.last_mouse_tracking == 0;
+            const wants_selection = selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
             if (wants_selection) {
                 const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
                 const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
@@ -5858,7 +5878,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const hover_link = hyperlinkHoverActive(app, event.modifiers);
             g_hover_hyperlink = hover_link;
-            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.term.last_mouse_tracking == 0;
+            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
             setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
         } else {
             g_hover_hyperlink = false;
@@ -5875,7 +5895,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
                     .point = point,
                     .held_button = .left,
                     .mods = mods,
-                    .tracking = pane.term.last_mouse_tracking,
+                    .tracking = paneMouseTracking(pane),
                     .layout_generation = app.currentLayoutGeneration(),
                 };
                 if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
@@ -5897,7 +5917,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .point = point,
             .held_button = g_mouse_button_down,
             .mods = mods,
-            .tracking = hit.pane.term.last_mouse_tracking,
+            .tracking = paneMouseTracking(hit.pane),
             .layout_generation = app.currentLayoutGeneration(),
         };
         if (app.enqueueMouse(.{ .motion = .{

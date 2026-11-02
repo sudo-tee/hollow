@@ -31,13 +31,13 @@ const pane_lifecycle = @import("pane_lifecycle.zig");
 
 pub fn sendText(self: *App, text: []const u8) void {
     const pane = self.activePane() orelse return;
-    if (!pane.isTerminal()) return;
+    const term = pane.asTerminal() orelse return;
     const now_ns = io.nanoTimestamp();
     self.last_input_activity_ns = now_ns;
     self.last_visual_activity_ns = now_ns;
-    pane.term.pty_received_data = true;
-    pane.term.pty_wrote_this_frame = true;
-    pane.term.last_render_state_update_ns = 0;
+    term.pty_received_data = true;
+    term.pty_wrote_this_frame = true;
+    term.last_render_state_update_ns = 0;
     if (self.config.debug_terminal_trace) {
         std.log.info("terminal-trace sendText pane={x} len={d} sample={s}", .{
             pane.id,
@@ -46,14 +46,14 @@ pub fn sendText(self: *App, text: []const u8) void {
         });
     }
     scrollActiveViewportBottom(self);
-    pane.sendUserText(text);
+    term.sendUserText(pane.allocator, text);
     self.signalWake();
 }
 
 pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
-    if (!pane.isTerminal()) return false;
-    pane.sendUserText(text);
+    const term = pane.asTerminal() orelse return false;
+    term.sendUserText(pane.allocator, text);
     self.signalWake();
     return true;
 }
@@ -68,7 +68,7 @@ pub fn sendBellToPane(self: *App, pane_id: usize, level: ?notification.Level, co
 
 pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
-    if (!pane.isTerminal()) return false;
+    const term = pane.asTerminal() orelse return false;
     const rt = if (self.ghostty) |*r| r else return false;
     const key = std.meta.stringToEnum(ghostty.Key, key_name) orelse return false;
 
@@ -77,15 +77,15 @@ pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32
     const effective_text = text_helpers.legacyPrintableKeyText(key, mods, &text_buf);
     const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
 
-    if (pane.term.encodeKey(rt, key, mods, .press, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
-        pane.sendUserText(bytes);
+    if (term.encodeKey(rt, key, mods, .press, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+        term.sendUserText(pane.allocator, bytes);
         self.signalWake();
         return true;
     }
 
     if (effective_text != null and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0) {
-        pane.sendUserText("\x1b");
-        pane.sendUserText(effective_text.?);
+        term.sendUserText(pane.allocator, "\x1b");
+        term.sendUserText(pane.allocator, effective_text.?);
         self.signalWake();
         return true;
     }
@@ -113,13 +113,13 @@ pub fn invalidateAllPanes(self: *App) void {
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
         pane.invalidate();
-        pane.term.last_render_state_update_ns = 0;
+        if (pane.asTerminal()) |term| term.last_render_state_update_ns = 0;
     }
 }
 
 pub fn sendPaste(self: *App, text: []const u8) !void {
     const pane = self.activePane() orelse return;
-    if (!pane.isTerminal()) return error.NotATerminal;
+    const term = pane.asTerminal() orelse return error.NotATerminal;
     const rt = if (self.ghostty) |*r| r else {
         if (self.config.debug_terminal_trace) {
             std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ pane.id, text.len });
@@ -129,11 +129,11 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     };
     var output: ghostty.PasteOutput = .{ .allocator = self.allocator };
     defer output.deinit();
-    pane.term.paste_output = &output;
-    defer pane.term.paste_output = null;
-    rt.pasteText(pane.term.terminal, text) catch |err| {
+    term.paste_output = &output;
+    defer term.paste_output = null;
+    rt.pasteText(term.terminal, text) catch |err| {
         if (err == error.UnsafePaste) {
-            try pane.term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
+            try term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
             self.signalWake();
         }
         return err;
@@ -364,13 +364,13 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     const inherited_domain = if (domain_name) |value|
         if (value.len > 0) value else null
     else if (previous) |pane|
-        if (pane.term.domain_name.len > 0) pane.term.domain_name else null
+        if (pane.domainName().len > 0) pane.domainName() else null
     else
         null;
     const inherited_cwd = if (cwd) |value|
         if (value.len > 0) value else null
     else if (previous) |pane|
-        if (pane.cwd.len > 0 and std.mem.eql(u8, pane.term.domain_name, inherited_domain orelse "")) pane.cwd else null
+        if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domainName(), inherited_domain orelse "")) pane.cwd else null
     else
         null;
     mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
@@ -712,9 +712,9 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     var has_dead = false;
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
-        if (!pane.isTerminal()) continue;
-        if (!pane.hasLiveChild()) {
-            if (!pane.term.retain_on_exit) has_dead = true;
+        const term = pane.asTerminal() orelse continue;
+        if (!term.hasLiveChild()) {
+            if (!term.retain_on_exit) has_dead = true;
             pane_lifecycle.exited(self, pane);
         }
     }
@@ -727,7 +727,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     }
     emitWorkspaceClosedIfRemoved(self, mux);
     if (mux.activePane()) |active| {
-        if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
+        if (active.asTerminal()) |term| runtime.registerCallbacks(term.terminal, terminal_callbacks.terminalCallbacks());
     }
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     if (mux.activeTab()) |tab| {
@@ -765,11 +765,51 @@ fn sendSplitPaneCommand(self: *App, pane: *Pane, command: []const u8, close_on_e
 
 fn wrapCommandForCloseOnExit(self: *App, pane: *Pane, command: []const u8) ![]u8 {
     const trimmed = std.mem.trimEnd(u8, command, "\r\n");
-    const is_windows_domain = pane.term.domain_name.len > 0 and !std.mem.eql(u8, pane.term.domain_name, "wsl") and !std.mem.eql(u8, pane.term.domain_name, "unix");
+    const domain = pane.domainName();
+    const is_windows_domain = domain.len > 0 and !std.mem.eql(u8, domain, "wsl") and !std.mem.eql(u8, domain, "unix");
 
     if (is_windows_domain) {
         return std.fmt.allocPrint(self.allocator, "{s} & exit", .{trimmed});
     }
 
     return std.fmt.allocPrint(self.allocator, "{s}; exit", .{trimmed});
+}
+
+test "paste capture clears borrowed output on success and unsafe rejection" {
+    const allocator = std.testing.allocator;
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    app.ghostty = try GhosttyRuntime.init(allocator, null);
+    const runtime = &app.ghostty.?;
+    app.mux = Mux.init(allocator);
+    const mux = &app.mux.?;
+    const workspace = try allocator.create(Workspace);
+    workspace.* = Workspace.init(allocator, 1);
+    try mux.workspaces.append(allocator, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try allocator.create(Pane);
+    pane.* = Pane.init(allocator);
+    try tab.appendPane(pane);
+    const term = pane.asTerminal().?;
+    term.terminal_runtime = runtime;
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    runtime.setTerminalUserdata(term.terminal, pane);
+    runtime.registerCallbacks(term.terminal, terminal_callbacks.terminalCallbacks());
+    try pane.queueStartupInput("startup");
+
+    try sendPaste(app, "safe");
+    try std.testing.expect(term.paste_output == null);
+    try std.testing.expectEqualStrings("startup\rsafe", term.pending_startup_input);
+    try std.testing.expectError(error.UnsafePaste, sendPaste(app, "first\nsecond"));
+    try std.testing.expect(term.paste_output == null);
+    try std.testing.expect(term.osc99_notifications.hasNotifications());
+    try std.testing.expectEqualStrings("startup\rsafe", term.pending_startup_input);
+
+    try std.testing.expect(runtime.setTerminalMode(term.terminal, .bracketed_paste, true));
+    try sendPaste(app, "first\nsecond");
+    try std.testing.expect(term.paste_output == null);
+    try std.testing.expectEqualStrings("startup\rsafe\x1b[200~first\nsecond\x1b[201~", term.pending_startup_input);
 }

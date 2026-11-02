@@ -535,7 +535,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.term.domain_name, name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domainName(), name) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
@@ -548,8 +548,8 @@ pub const App = struct {
 
     pub fn currentDomainValue(self: *App) !?std.json.Value {
         const pane = self.activePane() orelse return null;
-        if (pane.term.domain_name.len == 0) return null;
-        return try self.domainValue(pane.term.domain_name);
+        if (pane.domainName().len == 0) return null;
+        return try self.domainValue(pane.domainName());
     }
 
     pub fn paneFrameValue(self: *App, pane: *Pane) !std.json.Value {
@@ -579,7 +579,7 @@ pub const App = struct {
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.term.domain_name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
@@ -865,7 +865,7 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
-                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.term.domain_name) });
+                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
             } else {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .null);
             }
@@ -1571,7 +1571,7 @@ pub const App = struct {
         }
         if (self.ghostty) |*runtime| {
             if (current) |pane| {
-                if (pane.isTerminal()) runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
+                registerTerminalCallbacks(runtime, pane);
             }
         }
     }
@@ -1580,18 +1580,27 @@ pub const App = struct {
         if (self.activePane()) |pane| {
             pane.invalidate();
             if (self.ghostty) |*runtime| {
-                if (pane.isTerminal()) runtime.registerCallbacks(pane.term.terminal, terminal_callbacks.terminalCallbacks());
+                registerTerminalCallbacks(runtime, pane);
             }
         }
+    }
+
+    fn registerTerminalCallbacks(runtime: *GhosttyRuntime, pane: *Pane) void {
+        const term = pane.asTerminal() orelse return;
+        runtime.registerCallbacks(term.terminal, terminal_callbacks.terminalCallbacks());
     }
 
     pub fn refreshActivePaneDisplay(self: *App) void {
         const pane = self.activePane() orelse return;
         const runtime = if (self.ghostty) |*rt| rt else return;
-        runtime.terminalScrollBottom(pane.term.terminal);
+        const term = pane.asTerminal() orelse {
+            pane.invalidate();
+            return;
+        };
+        runtime.terminalScrollBottom(term.terminal);
         pane.render_dirty = .full;
-        pane.term.last_render_state_update_ns = 0;
-        pane.term.pty_received_data = true;
+        term.last_render_state_update_ns = 0;
+        term.pty_received_data = true;
         self.scroll_accum = 0;
         _ = scroll.refreshPaneScrollbar(self, runtime, pane);
     }
@@ -1648,7 +1657,8 @@ pub const App = struct {
     }
 
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
-        return if (pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+        const term = pane.asTerminalConst() orelse return self.config.terminal_padding;
+        return if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
             self.config.alternate_screen_padding
         else
             self.config.terminal_padding;
@@ -1736,15 +1746,15 @@ pub const App = struct {
 
     /// Send focus state to a child terminal without treating mux focus as user input.
     fn sendFocusToPane(self: *App, pane: *Pane, gained: bool) void {
-        if (!pane.isTerminal()) {
+        const term = pane.asTerminal() orelse {
             pane.invalidate();
             return;
-        }
+        };
         const rt = if (self.ghostty) |*r| r else return;
-        if (!rt.terminalMode(pane.term.terminal, .focus_event)) return;
+        if (!rt.terminalMode(term.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
         const bytes = rt.encodeFocus(if (gained) .gained else .lost, &buf) orelse return;
-        pane.sendUserText(bytes);
+        term.sendUserText(pane.allocator, bytes);
         self.signalWake();
     }
 
@@ -1756,7 +1766,7 @@ pub const App = struct {
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
-        if (!pane.isTerminal()) return false;
+        const term = pane.asTerminal() orelse return false;
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
             return true;
@@ -1773,7 +1783,7 @@ pub const App = struct {
         var derived_text_buf: [4]u8 = undefined;
         const effective_text = text orelse text_helpers.legacyPrintableKeyText(key, mods, &derived_text_buf);
         const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
-        if (pane.term.encodeKey(rt, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+        if (term.encodeKey(rt, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
             mux_ops.sendText(self, bytes);
             return true;
         }
@@ -1971,11 +1981,11 @@ pub const App = struct {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
                     pane.applyTerminalTheme(runtime, &self.config.terminal_theme);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.term.domain_name.len > 0) pane.term.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domainName().len > 0) pane.domainName() else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
                 if (mux.activePane()) |active| {
-                    if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
+                    registerTerminalCallbacks(runtime, active);
                 }
             }
             self.pending_renderer_refresh = self.config.backend == .sokol or self.config.backend == .webgpu;
@@ -2092,7 +2102,7 @@ pub const App = struct {
 
     pub fn windowTitleCString(self: *App) [256:0]u8 {
         const agent = if (self.activePane()) |pane|
-            if (pane.term.pty) |*pty| @import("pty/pty.zig").usesAgent(pty) else false
+            if (pane.asTerminalConst()) |term| term.usesAgent() else false
         else
             false;
         return text_helpers.windowTitleCString(self.activeTitle(), agent);
@@ -2375,8 +2385,8 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 pane.program_status.setFocused(pane_is_active);
-                if (!pane.isTerminal()) continue;
-                const active_screen_before = pane.term.active_screen;
+                const term = pane.asTerminal() orelse continue;
+                const active_screen_before = term.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
                 } else false;
@@ -2384,11 +2394,11 @@ pub const App = struct {
                 const pty_read_loops: usize = (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_read_bytes: usize = if (pane_is_active) pane_mod.PTY_HARD_BYTE_LIMIT else background_budget.byteQuota();
                 const pending_output_bytes: usize = if (pane_is_active) blk: {
-                    const deferred_output_bytes = pane.term.boot_output.items.len +| pane.term.pending_terminal_inject.items.len;
+                    const deferred_output_bytes = term.boot_output.items.len +| term.pending_terminal_inject.items.len;
                     break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
                 const pty_now_ns = io.nanoTimestamp();
-                const recent_pty_output = pane.term.last_pty_output_ns != 0 and pty_now_ns - pane.term.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
+                const recent_pty_output = term.last_pty_output_ns != 0 and pty_now_ns - term.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
                 const recent_input = self.last_input_activity_ns != 0 and pty_now_ns - self.last_input_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const recent_resize = self.last_resize_activity_ns != 0 and pty_now_ns - self.last_resize_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const use_pressure_chunk = pane_is_active and !recent_input and !recent_resize and
@@ -2398,15 +2408,15 @@ pub const App = struct {
                 else
                     pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_budget_ns: i128 = if (pane_is_active)
-                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.term.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
+                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, term.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
                 else if (pty_read_bytes > 0)
                     background_budget.timeQuota()
                 else
                     0;
-                pane.term.synchronized_output_enabled = self.config.synchronized_output;
-                if (!self.config.synchronized_output) pane.term.synchronized_output_active = false;
+                term.synchronized_output_enabled = self.config.synchronized_output;
+                if (!self.config.synchronized_output) term.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
-                if (pane.term.pty) |*pty| pty.setFocused(pane_is_active);
+                if (term.pty) |*pty| pty.setFocused(pane_is_active);
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
@@ -2418,18 +2428,18 @@ pub const App = struct {
                 if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
                     std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});
                 }
-                if (pane.term.synchronized_output_active) {
-                    const sync_deadline_ns = pane.term.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
+                if (term.synchronized_output_active) {
+                    const sync_deadline_ns = term.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
                     if (next_idle_render_poll_ns == 0 or sync_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = sync_deadline_ns;
                     }
                 }
-                if (pane.term.active_screen != active_screen_before) {
+                if (term.active_screen != active_screen_before) {
                     automation_changed = true;
-                    pane.term.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
-                        pane.term.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
-                    pane.term.alt_screen_nudge_quiet_ticks = 0;
-                    pane.term.alt_screen_nudge_not_before_ns = if (pane.term.pending_alt_screen_nudge)
+                    term.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
+                        term.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
+                    term.alt_screen_nudge_quiet_ticks = 0;
+                    term.alt_screen_nudge_not_before_ns = if (term.pending_alt_screen_nudge)
                         io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS
                     else
                         0;
@@ -2443,22 +2453,22 @@ pub const App = struct {
                     self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = pane.id });
                     _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = pane.id });
                 }
-                const had_pty_output_this_tick = pane.term.pty_received_data;
-                const had_notifications = pane.term.osc99_notifications.hasNotifications();
+                const had_pty_output_this_tick = term.pty_received_data;
+                const had_notifications = term.osc99_notifications.hasNotifications();
                 if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or had_notifications) automation_changed = true;
-                total_pty_read_ns += pane.term.last_pty_read_ns;
-                total_terminal_write_ns += pane.term.last_terminal_write_ns;
-                total_terminal_write_bytes += pane.term.last_terminal_write_bytes;
-                total_terminal_write_chunks += pane.term.last_terminal_write_chunks;
-                total_has_pending_ns += pane.term.last_has_pending_ns;
-                total_sanitize_ns += pane.term.last_sanitize_ns;
-                total_child_alive_ns += pane.term.last_child_alive_ns;
-                total_encoder_sync_ns += pane.term.last_encoder_sync_ns;
+                total_pty_read_ns += term.last_pty_read_ns;
+                total_terminal_write_ns += term.last_terminal_write_ns;
+                total_terminal_write_bytes += term.last_terminal_write_bytes;
+                total_terminal_write_chunks += term.last_terminal_write_chunks;
+                total_has_pending_ns += term.last_has_pending_ns;
+                total_sanitize_ns += term.last_sanitize_ns;
+                total_child_alive_ns += term.last_child_alive_ns;
+                total_encoder_sync_ns += term.last_encoder_sync_ns;
                 if (pane.title_dirty) {
                     const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.term.domain_name.len > 0) pane.term.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (term.domain_name.len > 0) term.domain_name else null) catch self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
                         .pane_id = pane.id,
                         .old_title = if (old_title) |value| value else "",
@@ -2479,7 +2489,7 @@ pub const App = struct {
                     }
                     if (self.config.debug_overlay) total_cwd_ns += io.nanoTimestamp() - start_ns;
                 }
-                while (pane.term.osc99_notifications.popNotification()) |notification_value| {
+                while (term.osc99_notifications.popNotification()) |notification_value| {
                     var notification = notification_value;
                     defer notification.deinit(self.allocator);
                     const now_notification_ns = io.nanoTimestamp();
@@ -2545,54 +2555,54 @@ pub const App = struct {
                         self.last_visual_activity_ns = now_bell_ns;
                     }
                 }
-                if (!pane.term.render_state_ready) {
+                if (!term.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
                 pane.tickImageAnimation(runtime, now_ns);
-                if (!pane.term.synchronized_output_active and pane.term.image_animation_deadline_ns != 0) {
-                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, pane.term.image_animation_deadline_ns);
+                if (!term.synchronized_output_active and term.image_animation_deadline_ns != 0) {
+                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, term.image_animation_deadline_ns);
                 }
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
-                const pane_idle_deadline_ns = pane.term.last_render_state_update_ns + idle_poll_ns;
-                const needs_update = if (pane.term.synchronized_output_active)
-                    pane.term.render_state_fresh
+                const pane_idle_deadline_ns = term.last_render_state_update_ns + idle_poll_ns;
+                const needs_update = if (term.synchronized_output_active)
+                    term.render_state_fresh
                 else
-                    pane.term.pty_received_data or
+                    term.pty_received_data or
                         pane.render_dirty != .false_value or
-                        (now_ns - pane.term.last_render_state_update_ns >= idle_poll_ns);
+                        (now_ns - term.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
-                    if (pane.term.render_state_fresh) {
-                        pane.term.render_state_fresh = false;
-                        pane.term.pty_received_data = false;
+                    if (term.render_state_fresh) {
+                        term.render_state_fresh = false;
+                        term.pty_received_data = false;
                     } else {
-                        pane.term.pty_received_data = false;
-                        pane.term.last_render_state_update_ns = now_ns;
-                        runtime.clearRenderStateDirty(pane.term.render_state);
-                        runtime.updateRenderState(pane.term.render_state, pane.term.terminal) catch |err| {
+                        term.pty_received_data = false;
+                        term.last_render_state_update_ns = now_ns;
+                        runtime.clearRenderStateDirty(term.render_state);
+                        runtime.updateRenderState(term.render_state, term.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
                     }
                     if (self.config.debug_overlay) total_renderstate_ns += io.nanoTimestamp() - renderstate_start_ns;
-                    const post_dirty = runtime.getRenderStateDirty(pane.term.render_state) orelse .true_value;
+                    const post_dirty = runtime.getRenderStateDirty(term.render_state) orelse .true_value;
                     if (self.config.debug_terminal_trace and pane_is_active) {
-                        const cursor_pos = runtime.cursorPos(pane.term.render_state);
+                        const cursor_pos = runtime.cursorPos(term.render_state);
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
                             pane.id,
-                            pane.term.render_state_fresh,
-                            pane.term.pty_received_data,
+                            term.render_state_fresh,
+                            term.pty_received_data,
                             @tagName(pane.render_dirty),
                             @tagName(post_dirty),
-                            runtime.cursorVisible(pane.term.render_state),
-                            runtime.cursorBlinking(pane.term.render_state),
-                            runtime.cursorPasswordInput(pane.term.render_state),
-                            @tagName(runtime.cursorVisualStyle(pane.term.render_state)),
+                            runtime.cursorVisible(term.render_state),
+                            runtime.cursorBlinking(term.render_state),
+                            runtime.cursorPasswordInput(term.render_state),
+                            @tagName(runtime.cursorVisualStyle(term.render_state)),
                             cursor_pos,
                         });
                     }
@@ -2602,13 +2612,13 @@ pub const App = struct {
                     if (self.copy_mode_active and self.copy_mode_pane == pane and !self.copy_mode_needs_refresh) {
                         copy_mode.refreshCopyModeVisibleSlice(self, pane) catch {};
                     }
-                    if (builtin.os.tag != .windows and pane.term.logged_first_pty_read and pane.title.len == 0) {
-                        if (runtime.cursorPos(pane.term.render_state)) |cp| {
+                    if (builtin.os.tag != .windows and term.logged_first_pty_read and pane.title.len == 0) {
+                        if (runtime.cursorPos(term.render_state)) |cp| {
                             std.log.info("linux startup cursor row={d} col={d} render_rows={d} render_cols={d}", .{
                                 cp.y,
                                 cp.x,
-                                runtime.renderStateRows(pane.term.render_state) orelse 0,
-                                runtime.renderStateCols(pane.term.render_state) orelse 0,
+                                runtime.renderStateRows(term.render_state) orelse 0,
+                                runtime.renderStateCols(term.render_state) orelse 0,
                             });
                         }
                     }
@@ -2618,52 +2628,52 @@ pub const App = struct {
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
-                } else if (!pane.term.synchronized_output_active and pane.term.last_render_state_update_ns != 0) {
+                } else if (!term.synchronized_output_active and term.last_render_state_update_ns != 0) {
                     if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
                 }
-                if (pane.term.pending_alt_screen_nudge) {
-                    if (pane.term.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
-                        pane.term.pending_alt_screen_nudge = false;
-                        pane.term.alt_screen_nudge_quiet_ticks = 0;
-                        pane.term.alt_screen_nudge_not_before_ns = 0;
-                    } else if (now_ns < pane.term.alt_screen_nudge_not_before_ns) {
-                        pane.term.alt_screen_nudge_quiet_ticks = 0;
+                if (term.pending_alt_screen_nudge) {
+                    if (term.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
+                        term.pending_alt_screen_nudge = false;
+                        term.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_not_before_ns = 0;
+                    } else if (now_ns < term.alt_screen_nudge_not_before_ns) {
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize) {
-                        pane.term.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (had_pty_output_this_tick) {
-                        pane.term.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else {
-                        pane.term.alt_screen_nudge_quiet_ticks +|= 1;
-                        if (pane.term.alt_screen_nudge_quiet_ticks >= 3) {
+                        term.alt_screen_nudge_quiet_ticks +|= 1;
+                        if (term.alt_screen_nudge_quiet_ticks >= 3) {
                             std.log.info("app: pane alt-screen repaint nudge pane={x} rows={d} cols={d}", .{
                                 pane.id,
                                 pane.rows,
                                 pane.cols,
                             });
                             pane.nudgeTerminal(runtime, self.cell_width_px, self.cell_height_px);
-                            pane.term.pending_alt_screen_nudge = false;
-                            pane.term.alt_screen_nudge_quiet_ticks = 0;
-                            pane.term.alt_screen_nudge_not_before_ns = 0;
+                            term.pending_alt_screen_nudge = false;
+                            term.alt_screen_nudge_quiet_ticks = 0;
+                            term.alt_screen_nudge_not_before_ns = 0;
                             self.last_visual_activity_ns = now_ns;
                         } else {
                             self.last_visual_activity_ns = now_ns;
                         }
                     }
                 }
-                pane.term.tickCompression(runtime, now_ns);
-                if (pane.term.compression_deadline_ns != 0 and
-                    (next_idle_render_poll_ns == 0 or pane.term.compression_deadline_ns < next_idle_render_poll_ns))
+                term.tickCompression(runtime, now_ns);
+                if (term.compression_deadline_ns != 0 and
+                    (next_idle_render_poll_ns == 0 or term.compression_deadline_ns < next_idle_render_poll_ns))
                 {
-                    next_idle_render_poll_ns = pane.term.compression_deadline_ns;
+                    next_idle_render_poll_ns = term.compression_deadline_ns;
                 }
                 if (!pane.hasLiveChild()) {
                     pane_lifecycle.exited(self, pane);
-                    if (!pane.term.retain_on_exit) has_dead = true;
+                    if (!term.retain_on_exit) has_dead = true;
                 }
                 pane_idx += 1;
             }
@@ -2700,7 +2710,7 @@ pub const App = struct {
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
-                    if (active.isTerminal()) runtime.registerCallbacks(active.term.terminal, terminal_callbacks.terminalCallbacks());
+                    registerTerminalCallbacks(runtime, active);
                 }
                 self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
                 if (mux.activeTab()) |tab| {
@@ -2799,8 +2809,10 @@ pub const App = struct {
                         actual_left,
                         actual_right,
                     );
-                    leaf.pane.term.render_state_ready = true;
-                    leaf.pane.term.terminal_output_ready = true;
+                    if (leaf.pane.asTerminal()) |term| {
+                        term.render_state_ready = true;
+                        term.terminal_output_ready = true;
+                    }
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
@@ -2838,8 +2850,10 @@ pub const App = struct {
                         actual_left,
                         actual_right,
                     );
-                    pane.term.render_state_ready = true;
-                    pane.term.terminal_output_ready = true;
+                    if (pane.asTerminal()) |term| {
+                        term.render_state_ready = true;
+                        term.terminal_output_ready = true;
+                    }
                 }
             }
             if (self.debug_split_trace_frames > 0) self.debug_split_trace_frames -|= 1;

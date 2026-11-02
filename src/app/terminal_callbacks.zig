@@ -27,18 +27,20 @@ pub fn terminalCallbacks() ghostty.TerminalCallbacks {
 }
 
 fn paneFromUserdata(userdata: ?*anyopaque) ?*Pane {
-    return @ptrCast(@alignCast(userdata orelse return null));
+    const pane: *Pane = @ptrCast(@alignCast(userdata orelse return null));
+    return if (pane.isTerminal()) pane else null;
 }
 
 fn writePtyCallback(_: ?*anyopaque, userdata: ?*anyopaque, bytes: ?[*]const u8, len: usize) callconv(.c) void {
     if (bytes == null or len == 0) return;
     const bytes_ptr = bytes.?;
     const pane = paneFromUserdata(userdata) orelse return;
-    if (pane.term.paste_output) |output| {
+    const term = pane.asTerminal() orelse return;
+    if (term.paste_output) |output| {
         output.append(bytes_ptr[0..len]);
         return;
     }
-    pane.sendText(bytes_ptr[0..len]);
+    term.sendText(bytes_ptr[0..len]);
 }
 
 fn bellCallback(_: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
@@ -114,22 +116,23 @@ fn titleChangedCallback(_: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void
 
 fn renderHoldCallback(terminal: ?*anyopaque, userdata: ?*anyopaque, held: bool) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
-    if (!pane.term.synchronized_output_enabled) return;
+    const term = pane.asTerminal() orelse return;
+    if (!term.synchronized_output_enabled) return;
     if (held) {
-        const runtime = pane.term.terminal_runtime orelse return;
-        if (pane.term.render_state) |state| {
+        const runtime = term.terminal_runtime orelse return;
+        if (term.render_state) |state| {
             // Runs at the exact stream boundary, before any held bytes.
             runtime.updateRenderState(state, terminal) catch return;
-            pane.term.render_state_fresh = true;
+            term.render_state_fresh = true;
             pane.render_dirty = .full;
         }
-        pane.term.synchronized_output_started_ns = @import("../io.zig").nanoTimestamp();
+        term.synchronized_output_started_ns = @import("../io.zig").nanoTimestamp();
     } else {
-        pane.term.synchronized_output_started_ns = 0;
+        term.synchronized_output_started_ns = 0;
         pane.render_dirty = .full;
-        pane.term.render_state_fresh = false;
+        term.render_state_fresh = false;
     }
-    pane.term.synchronized_output_active = held;
+    term.synchronized_output_active = held;
 }
 
 fn programStatusCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.ProgramStatus) callconv(.c) void {
@@ -141,8 +144,9 @@ fn programStatusCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const g
 
 fn desktopNotificationCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.DesktopNotification) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
+    const term = pane.asTerminal() orelse return;
     if (report.size < @sizeOf(ghostty.DesktopNotification)) return;
-    pane.term.osc99_notifications.enqueueSimple(pane.allocator, report.title.slice(), report.body.slice(), .info) catch {};
+    term.osc99_notifications.enqueueSimple(pane.allocator, report.title.slice(), report.body.slice(), .info) catch {};
 }
 
 fn progressReportCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.ProgressReport) callconv(.c) void {
@@ -176,7 +180,8 @@ fn resetCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void
 
 fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
-    const runtime = pane.term.terminal_runtime orelse return;
+    const term = pane.asTerminal() orelse return;
+    const runtime = term.terminal_runtime orelse return;
     var pwd: ghostty.String = .{ .ptr = null, .len = 0 };
     if (runtime.terminal_get(terminal, @backingInt(ghostty.TerminalData.pwd), &pwd) != ghostty.success) return;
     var path = pwd.slice();
@@ -186,8 +191,8 @@ fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c)
         if (std.mem.indexOfScalar(u8, path, '/')) |idx| path = path[idx..];
     }
     const owned = pane.allocator.dupe(u8, path) catch return;
-    if (pane.term.pending_cwd) |old| pane.allocator.free(old);
-    pane.term.pending_cwd = owned;
+    if (term.pending_cwd) |old| pane.allocator.free(old);
+    term.pending_cwd = owned;
     pane.cwd_dirty = true;
 }
 
@@ -217,6 +222,25 @@ fn commitClipboardWrite(allocator: std.mem.Allocator, request: *const ghostty.Cl
     defer allocator.free(owned);
     commit(owned);
     return 0;
+}
+
+test "native callbacks ignore non-terminal pane userdata" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(std.testing.allocator);
+    pane.kind = .lua;
+    defer pane.deinit(&runtime);
+    const userdata: ?*anyopaque = &pane;
+    const terminal = try runtime.createTerminal(80, 24, 0);
+    defer runtime.freeTerminal(terminal);
+    runtime.setTerminalUserdata(terminal, userdata);
+    runtime.registerCallbacks(terminal, terminalCallbacks());
+    runtime.terminalWrite(terminal, "\x07\x1b]2;ignored\x07\x1b]7;file://host/ignored\x07\x1b]9;ignored\x07\x1b]7501;state=working\x07\x1b[?2026h");
+    try std.testing.expect(!pane.bell_dirty and !pane.title_dirty and !pane.cwd_dirty);
+    try std.testing.expect(pane.term.pending_cwd == null);
+    try std.testing.expect(!pane.term.osc99_notifications.hasNotifications());
+    try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
+    try std.testing.expect(!pane.term.synchronized_output_active);
 }
 
 test "color scheme follows configured terminal background" {
