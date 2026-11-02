@@ -86,18 +86,7 @@ pub const LuaSurface = struct {
         }
         api.get_field(state, owner, "snapshot");
         api.push_value(state, owner);
-        api.create_table(state, 0, 8);
-        inline for (.{ "pane_id", "width", "height", "cols", "rows", "focused", "cell_w", "cell_h" }) |field| {
-            const value = @field(viewport, field);
-            if (@TypeOf(value) == bool) {
-                api.push_boolean(state, @intFromBool(value));
-            } else if (@TypeOf(value) == f32) {
-                api.push_number(state, value);
-            } else {
-                api.push_number(state, @floatFromInt(value));
-            }
-            api.set_field(state, -2, field);
-        }
+        pushContext(runtime, viewport);
         if (api.pcall(state, 2, 1, 0) != 0) {
             logError(runtime);
             return true;
@@ -110,6 +99,23 @@ pub const LuaSurface = struct {
     fn logError(runtime: *lua.Runtime) void {
         var len: usize = 0;
         if (runtime.context.api.to_lstring(runtime.state, -1, &len)) |ptr| std.log.err("Lua pane snapshot: {s}", .{ptr[0..len]});
+    }
+
+    pub fn pushContext(runtime: *lua.Runtime, viewport: Viewport) void {
+        const api = runtime.context.api;
+        const state = runtime.state;
+        api.create_table(state, 0, 8);
+        inline for (.{ "pane_id", "width", "height", "cols", "rows", "focused", "cell_w", "cell_h" }) |field| {
+            const value = @field(viewport, field);
+            if (@TypeOf(value) == bool) {
+                api.push_boolean(state, @intFromBool(value));
+            } else if (@TypeOf(value) == f32) {
+                api.push_number(state, value);
+            } else {
+                api.push_number(state, @floatFromInt(value));
+            }
+            api.set_field(state, -2, field);
+        }
     }
 
     pub fn deinit(self: *LuaSurface, allocator: std.mem.Allocator) void {

@@ -1585,6 +1585,7 @@ pub const App = struct {
     pub fn refreshActivePaneBinding(self: *App) void {
         if (self.activePane()) |pane| {
             pane.invalidate();
+            if (pane.asLua() != null) @import("app/lua_panes.zig").focus(self, pane, self.window_focused);
             if (self.ghostty) |*runtime| {
                 registerTerminalCallbacks(runtime, pane);
             }
@@ -1750,10 +1751,10 @@ pub const App = struct {
         return false;
     }
 
-    /// Send focus state to a child terminal without treating mux focus as user input.
+    /// Notify pane content without treating mux focus as terminal user input.
     fn sendFocusToPane(self: *App, pane: *Pane, gained: bool) void {
         const term = pane.asTerminal() orelse {
-            pane.invalidate();
+            @import("app/lua_panes.zig").focus(self, pane, gained);
             return;
         };
         const rt = if (self.ghostty) |*r| r else return;
@@ -2996,7 +2997,13 @@ test "public Lua pane host API queues creation title invalidation close and relo
     try tab.appendPane(initial);
     try app.lua.?.runString(
         \\destroyed = 0
-        \\owner = {direction='horizontal', ratio=0.4, destroy=function() destroyed=destroyed+1 end}
+        \\focuses = {}
+        \\owner = {direction='horizontal', ratio=0.4, destroy=function() destroyed=destroyed+1 end,
+        \\  focus=function(_, ctx, focused)
+        \\    assert(ctx.focused == focused and ctx.pane_id == id)
+        \\    assert(type(ctx.cols)=='number' and type(ctx.cell_w)=='number')
+        \\    focuses[#focuses+1] = focused
+        \\  end}
         \\id = host_api.create_lua_pane(owner)
         \\assert(type(id)=='number')
         \\host_api.title_lua_pane(id, 'Lua tasks')
@@ -3010,6 +3017,19 @@ test "public Lua pane host API queues creation title invalidation close and relo
     try std.testing.expect(pane.asLua() != null);
     try std.testing.expectEqualStrings("Lua tasks", pane.title);
     try std.testing.expect(pane.asLua().?.dirty);
+    try app.lua.?.runString("assert(#focuses == 1 and focuses[1])");
+    try app.sendFocus(false);
+    mux_ops.focusPaneById(app, initial.id);
+    try app.sendFocus(true);
+    mux_ops.focusPaneById(app, id);
+    try app.lua.?.runString("assert(#focuses == 3 and not focuses[2] and focuses[3])");
+    // Stale owners are never looked up in the new runtime's registry.
+    pane.asLua().?.runtime_generation +%= 1;
+    try app.sendFocus(false);
+    pane.asLua().?.runtime_generation -%= 1;
+    try app.lua.?.runString("assert(#focuses == 3)");
+    try app.sendFocus(true);
+    try app.lua.?.runString("assert(#focuses == 4 and focuses[4])");
     try app.lua.?.runString("assert(host_api.close_pane_by_id(id))");
     input.processInputQueue(app);
     try std.testing.expect(app.findPaneById(id) == null);

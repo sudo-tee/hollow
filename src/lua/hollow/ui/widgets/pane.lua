@@ -6,6 +6,27 @@ local M, instances = {}, {}
 local Pane = {}
 Pane.__index = Pane
 
+local function context(self, ctx)
+  ctx.state = self.opts.state
+  ctx.theme = self.opts.theme or shared.palette("select")
+  return ctx
+end
+
+local function focus(self, ctx, focused)
+  if self.closed then
+    return
+  end
+  self.context = context(self, ctx)
+  self.context.focused = focused
+  if self.mounted and self.focused ~= focused then
+    self.focused = focused
+    self.surface:invalidate()
+    if self.opts.on_focus then
+      self.opts.on_focus(self.context, focused)
+    end
+  end
+end
+
 function Pane:invalidate()
   if not self.closed then
     self.surface:invalidate()
@@ -34,21 +55,31 @@ local function destroy(self)
   end
   self.closed, instances[self.id] = true, nil
   local ok, err = true, nil
-  if self.mounted and self.opts.on_unmount then
-    ok, err = pcall(self.opts.on_unmount, self.context)
+  if self.mounted then
+    if self.focused then
+      self.focused, self.context.focused = false, false
+      if self.opts.on_focus then
+        ok, err = pcall(self.opts.on_focus, self.context, false)
+      end
+    end
+    if self.opts.on_unmount then
+      local unmount_ok, unmount_err = pcall(self.opts.on_unmount, self.context)
+      if not unmount_ok then
+        ok, err = false, unmount_err
+      end
+    end
   end
   self.surface:destroy()
-  self.opts, self.context = nil, nil
+  self.opts, self.context, self.snapshot_context = nil, nil, nil
   if not ok then
     error(err, 0)
   end
 end
 
 local function snapshot(self, ctx)
-  ctx.state = self.opts.state
-  ctx.theme = self.opts.theme or shared.palette("select")
-  local old = self.context
-  self.context = ctx
+  context(self, ctx)
+  local old = self.snapshot_context
+  self.context, self.snapshot_context = ctx, ctx
   if not self.mounted then
     self.mounted = true
     if self.opts.on_mount then
@@ -65,6 +96,7 @@ local function snapshot(self, ctx)
   then
     self.opts.on_resize(ctx)
   end
+  focus(self, ctx, ctx.focused)
   local ok, nodes = pcall(self.surface.snapshot, self.surface, ctx)
   if ok then
     return nodes
@@ -110,6 +142,9 @@ local function create(opts, floating)
     destroy = function()
       destroy(self)
     end,
+    focus = function(_, ctx, focused)
+      focus(self, ctx, focused)
+    end,
   }
   self.id = host.create_lua_pane(owner)
   if not self.id then
@@ -133,6 +168,40 @@ end
 
 function M.get(id)
   return instances[id]
+end
+
+-- Called by the shared keymap, under the Lua lock. Overlays and pending global
+-- sequences take priority; plain pane keys precede unmodified global bindings.
+function M._dispatch_key(key, mods)
+  if next(instances) == nil then
+    return false
+  end
+  local id = host.current_pane_id and host.current_pane_id()
+  local self = instances[id]
+  if not self or self.closed or self.closing or not self.mounted or not self.focused then
+    return false
+  end
+  local canonical_mods = _G.hollow.keymap.format_mods(mods)
+  local ok, handled = pcall(function()
+    if self.surface:focus_key(key, canonical_mods) then
+      return true
+    end
+    if self.opts.on_key and self.opts.on_key(key, canonical_mods, self.context) == true then
+      return true
+    end
+    return key == "tab"
+      and (canonical_mods == "" or canonical_mods == "<S>")
+      and self.surface:focus_move(canonical_mods == "<S>" and -1 or 1)
+  end)
+  if not ok then
+    _G.hollow.log("Lua pane key: " .. tostring(handled))
+    return false
+  end
+  if handled then
+    self:invalidate()
+    return true
+  end
+  return false
 end
 
 ui.pane = M

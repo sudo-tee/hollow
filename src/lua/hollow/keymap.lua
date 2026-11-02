@@ -270,7 +270,9 @@ local function parse_chord(chord)
   end
 
   if #chord ~= 1 then
-    error("plain key chords must be a single character; use Vim-style tokens like <Tab> for special keys")
+    error(
+      "plain key chords must be a single character; use Vim-style tokens like <Tab> for special keys"
+    )
   end
 
   local key, mods = canonicalize_plain_char(chord)
@@ -840,7 +842,8 @@ function M.setup(hollow, host_api, state)
   hollow.keymap.parse_chord = parse_chord
 
   function hollow.keymap.set(chord, action, opts)
-    local mode_state = get_mode_state(keymap_state, type(opts) == "table" and opts.mode or nil, true)
+    local mode_state =
+      get_mode_state(keymap_state, type(opts) == "table" and opts.mode or nil, true)
     local use_leader, resolved, style = split_leader_chord(chord)
     if use_leader then
       set_leader_binding(mode_state, resolved, style, action, opts)
@@ -1042,8 +1045,28 @@ function M.setup(hollow, host_api, state)
       return true
     end
 
-    if keymap_state.leader ~= nil and key == keymap_state.leader.key and mods == keymap_state.leader.mods then
-      if mode_state.leader_bindings.action == nil and not has_sequence_children(mode_state.leader_bindings) then
+    local pane_attempted = false
+    local function pane_key()
+      if pane_attempted or keymap_state.active_mode ~= "normal" then
+        return false
+      end
+      pane_attempted = true
+      return hollow.ui.pane._dispatch_key(key, mods)
+    end
+
+    if mods == 0 and pane_key() then
+      return true
+    end
+
+    if
+      keymap_state.leader ~= nil
+      and key == keymap_state.leader.key
+      and mods == keymap_state.leader.mods
+    then
+      if
+        mode_state.leader_bindings.action == nil
+        and not has_sequence_children(mode_state.leader_bindings)
+      then
         return keymap_state.active_mode ~= "normal"
       end
       set_sequence_state(keymap_state, mode_state.leader_bindings, "<leader>", {})
@@ -1062,16 +1085,15 @@ function M.setup(hollow, host_api, state)
 
     local action = get_runtime_binding(mode_state.bindings, key, mods)
     if action ~= nil then
-      return run_action(hollow, action)
+      return run_action(hollow, action) or pane_key()
     end
 
     if keymap_state.active_mode ~= "normal" then
       return true
     end
 
-    return false
+    return pane_key()
   end)
-
 end
 
 return M

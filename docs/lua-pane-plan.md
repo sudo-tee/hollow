@@ -90,13 +90,13 @@ non-terminal nodes.
 | `bfb6722` | B3: `kind`/`term`/`lua_surface` replaced by `content: Content` (`terminal: TerminalPane`, `lua: *LuaSurface`); `Pane.initLua` takes surface ownership; `asLua()` added. Inactive-arm access now panics in safe builds, so tests that flipped `kind` in place use separate Lua panes. Remaining `isTerminal()` calls are behaviour gates (reject, skip, return early) and stay |
 | `7a4ed3b` | B4: Windows GUI A/B, `5024e8d` vs `bfb6722`; no regression (see §8) |
 | `92b2041` | P1: pane-owned Clay snapshots, clipping, retained pane textures, dirty-only Lua rendering |
+| `4948a4a` | P2: public creation/lookup/instance API, mount/unmount/resize hooks, error rows, reload-safe ownership; Windows GUI smoke screenshots |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| P2 | Implemented, uncommitted: public `split`/`float`/`get`, instance `invalidate`/`close`/`set_title`, mount/unmount/resize hooks, render-error row, runtime-generation-safe cleanup. Example: `examples/lua-pane.lua`. GUI validation below |
-| P3 | Keys and focus: `on_key`, `on_focus`; unhandled keys fall through to global bindings |
+| P3 | Implemented, uncommitted: `on_key`/`on_focus`, surface keyboard focus, global-binding fallback, OS/mux focus and blur-before-unmount; tests and Windows GUI screenshot below |
 | P4 | Mouse: click and hover through the pane's surface callback namespace |
 | P5 | Snapshots/CLI `kind`, `module` + factories, workspace `lua` leaf (§5) |
 | P6 | Types (`types/hollow.lua`) and docs (`docs/reference/lua/ui.md`, `docs/custom-ui.md`) |
@@ -117,13 +117,24 @@ non-terminal nodes.
 
 ## 4. Lua API
 
-P2 implements creation, lookup, instance methods and mount/unmount/resize hooks.
-`on_key`/`on_focus` remain P3; `register`/factory restore remain P5.
+P2/P3 implement creation, lookup, instance methods and lifecycle/input hooks.
+`register`/factory restore remain P5.
 Creation reserves an ID immediately and queues layout insertion on the frame
 thread. Returns `nil` when unavailable (for example, before GUI initialization).
 Mount runs once at the first snapshot with valid pane geometry; unmount runs
 once on destruction for mounted instances. Closing before first paint does not
 invoke mount/unmount. `on_resize` receives subsequent geometry changes.
+`on_focus(ctx, focused)` reports initial focus after mount and subsequent mux/OS
+focus transitions (deduplicated), then blur before unmount when needed.
+`ctx.focused` includes OS window focus. `on_key(key, mods, ctx)` receives key-down
+and repeat events, using normalized key names and canonical modifier strings
+(`""`, `"<C>"`, `"<S>"`, etc.). Only `true` consumes the key. Errors log and fall
+through rather than trapping global shortcuts. Key-up and text/IME callbacks are
+not exposed in v1. Terminal-only CLI send helpers still reject Lua panes.
+Routing priority: overlays/modal handlers and pending global sequences first;
+modified global bindings next; then pane-local surface focus, `on_key`, and Tab
+navigation; finally unmodified global bindings when the pane declines. Copy-mode
+bindings keep their existing priority. A handled pane key invalidates its surface.
 Config reload unmounts against the old runtime and drops native snapshots; until
 P5 restore exists, old Lua pane nodes remain blank and can still be closed.
 
@@ -196,8 +207,9 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
 
 ## 7. Open questions
 
-- Pane-local keymaps: should `on_key` run before or after global keybindings?
-  (Proposed: global bindings with explicit mods first, then `on_key`.)
+- Pane-local key priority resolved in P3: explicit-modifier global bindings first,
+  pane keys before unmodified global bindings; overlay/modal and pending sequence
+  capture stays ahead of both. See §4.
 - Should a Lua pane embed a terminal later (a "terminal widget")?
 - Theme: terminal theme, widget theme, or a per-pane `theme` override?
   (Proposed: widget theme plus `opts.theme`.)
@@ -304,3 +316,23 @@ hollow.ui.pane.register(name, factory)   -- factory(args) -> opts, used by resto
   ![Terminal beside pane-owned Lua task UI](examples/lua-pane-split.png)
 
   ![Floating Lua pane containing a clipped render-error row](examples/lua-pane-float-error.png)
+- **P3 input/focus.** Pane key dispatch lives in the existing shared Lua keymap,
+  so key/CHAR swallowing and terminal routing stay unchanged. Focus notifications
+  enter Lua under its runtime lock and generation guard; no Clay dependency leaks
+  into headless lifecycle paths. Native pane snapshots now include OS focus, not
+  just active-pane identity. The last snapshot context stays separate from live
+  focus context so a focus event cannot swallow a pending resize notification.
+- **P3 validation.** Native build, Windows dev cross-build, full Zig suite and
+  801 Lua tests pass. Eight new Lua tests cover priority/fallback, callback errors,
+  nonfocused/unmounted/closed panes, overlay/sequence capture, Tab/activation,
+  deduplicated focus and blur-before-unmount cleanup. Native host tests cover mux
+  and OS focus, stale-runtime rejection and unchanged reference ownership.
+  Windows GUI validation used targeted synthetic Win32 focus/F6/F7 events on a
+  disposable instance: F6 reached the pane exactly once without running its
+  conflicting global binding; declined F7 reached its global binding exactly
+  once. CLI left/right pane switches produced blur/focus transitions. Modified
+  global priority is covered by Lua tests (not physical keyboard automation).
+  Screenshot PNGs are losslessly compressed with normal file permissions.
+  Demo instance closed; P4 mouse routing is next.
+
+  ![Lua pane handling F6 and falling back to a global F7 binding](examples/lua-pane-keyboard-focus.png)

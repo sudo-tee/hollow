@@ -65,7 +65,7 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
         .app = app,
         .renderer = renderer,
         .surface = surface,
-        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane(), .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
+        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane() and app.window_focused, .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
     };
     if (app.lua) |*runtime| {
         g_lua_pane_prepare = &ctx;

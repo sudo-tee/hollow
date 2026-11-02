@@ -3,6 +3,7 @@ const std = @import("std");
 const App = @import("../app.zig").App;
 const LuaSurface = @import("../ui/lua_surface.zig").LuaSurface;
 const SplitDirection = @import("../mux.zig").SplitDirection;
+const Pane = @import("../pane.zig").Pane;
 
 pub const Create = struct {
     id: usize,
@@ -78,6 +79,39 @@ pub fn beforeReload(app: *App) void {
 fn unmount(surface: *LuaSurface) void {
     const app: *App = @ptrCast(@alignCast(surface.context.?));
     release(app, surface.ref, surface.runtime_generation);
+}
+
+pub fn focus(app: *App, pane: *Pane, focused: bool) void {
+    pane.invalidate();
+    const surface = pane.asLua() orelse return;
+    const runtime = if (app.lua) |*r| r else return;
+    if (surface.ref < 0 or surface.runtime_generation != runtime.generation) return;
+    runtime.mutex.lock();
+    defer runtime.mutex.unlock();
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.rawgeti(state, -10000, surface.ref);
+    api.get_field(state, -1, "focus");
+    if (api.value_type(state, -1) != @backingInt(@import("../lua_bridge.zig").LuaType.function)) return;
+    api.push_value(state, -2);
+    LuaSurface.pushContext(runtime, .{
+        .pane_id = pane.id,
+        .width = @floatFromInt(pane.width_px),
+        .height = @floatFromInt(pane.height_px),
+        .cols = pane.cols,
+        .rows = pane.rows,
+        .cell_w = @floatFromInt(app.cell_width_px),
+        .cell_h = @floatFromInt(app.cell_height_px),
+        .focused = focused,
+    });
+    api.push_boolean(state, @intFromBool(focused));
+    if (api.pcall(state, 3, 0, 0) != 0) {
+        var len: usize = 0;
+        const err = api.to_lstring(state, -1, &len);
+        std.log.err("Lua pane focus: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
+    }
 }
 
 pub fn process(app: *App, payload: Create) void {
