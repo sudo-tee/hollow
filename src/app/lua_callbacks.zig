@@ -252,7 +252,8 @@ pub fn luaGetPaneActiveScreenCallback(app_ptr: *anyopaque, pane_id: usize) usize
 pub fn luaGetPanePidCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;
-    return pane.childPid();
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.childPid();
 }
 
 pub fn luaGetPaneTitleCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {

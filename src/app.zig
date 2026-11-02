@@ -578,7 +578,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(if (pane.asTerminalConst()) |term| term.childPid() else 0) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
@@ -1557,7 +1557,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    if (!mux.activeTabContainsPane(pane)) pane.releaseRenderHelpers(runtime);
+                    if (!mux.activeTabContainsPane(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
                 }
             }
         }
@@ -1911,8 +1911,9 @@ pub const App = struct {
     }
 
     pub fn hasLiveChild(self: *App) bool {
-        if (self.activePane()) |pane| return pane.hasLiveChild();
-        return false;
+        const pane = self.activePane() orelse return false;
+        const term = pane.asTerminal() orelse return false;
+        return term.hasLiveChild();
     }
 
     pub fn activeWorkspace(self: *App) ?*Workspace {
@@ -2395,7 +2396,7 @@ pub const App = struct {
                 const pty_read_bytes: usize = if (pane_is_active) pane_mod.PTY_HARD_BYTE_LIMIT else background_budget.byteQuota();
                 const pending_output_bytes: usize = if (pane_is_active) blk: {
                     const deferred_output_bytes = term.boot_output.items.len +| term.pending_terminal_inject.items.len;
-                    break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
+                    break :blk term.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
                 const pty_now_ns = io.nanoTimestamp();
                 const recent_pty_output = term.last_pty_output_ns != 0 and pty_now_ns - term.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
@@ -2417,7 +2418,7 @@ pub const App = struct {
                 if (!self.config.synchronized_output) term.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
                 if (term.pty) |*pty| pty.setFocused(pane_is_active);
-                const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
+                const pty_bytes_read = term.pollPty(pane, runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
                 };
@@ -2425,7 +2426,8 @@ pub const App = struct {
                     background_budget.consume(pty_bytes_read, io.nanoTimestamp() - poll_start_ns);
                 }
                 const sync_now_ns = io.nanoTimestamp();
-                if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
+                if (term.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
+                    pane.render_dirty = .full;
                     std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});
                 }
                 if (term.synchronized_output_active) {
@@ -2445,7 +2447,7 @@ pub const App = struct {
                         0;
                     self.requestLayoutResize(false);
                 }
-                if (!pane.hasLiveChild()) pane.program_status.childExited(self.allocator);
+                if (!term.hasLiveChild()) pane.program_status.childExited(self.allocator);
                 if (pane.program_status.dirty) {
                     pane.program_status.dirty = false;
                     automation_changed = true;
@@ -2561,7 +2563,7 @@ pub const App = struct {
                 }
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
-                pane.tickImageAnimation(runtime, now_ns);
+                if (term.tickImageAnimation(runtime, now_ns)) pane.render_dirty = .full;
                 if (!term.synchronized_output_active and term.image_animation_deadline_ns != 0) {
                     next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, term.image_animation_deadline_ns);
                 }
@@ -2655,7 +2657,7 @@ pub const App = struct {
                                 pane.rows,
                                 pane.cols,
                             });
-                            pane.nudgeTerminal(runtime, self.cell_width_px, self.cell_height_px);
+                            term.nudgeTerminal(pane, runtime, self.cell_width_px, self.cell_height_px);
                             term.pending_alt_screen_nudge = false;
                             term.alt_screen_nudge_quiet_ticks = 0;
                             term.alt_screen_nudge_not_before_ns = 0;
@@ -2671,7 +2673,7 @@ pub const App = struct {
                 {
                     next_idle_render_poll_ns = term.compression_deadline_ns;
                 }
-                if (!pane.hasLiveChild()) {
+                if (!term.hasLiveChild()) {
                     pane_lifecycle.exited(self, pane);
                     if (!term.retain_on_exit) has_dead = true;
                 }
@@ -2770,8 +2772,8 @@ pub const App = struct {
                     if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
                     const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
                     const grid = self.paneGridSize(leaf.pane, leaf.bounds);
-                    if (recreate_render_helpers or !leaf.pane.hasRenderHelpers()) {
-                        leaf.pane.recreateRenderHelpers(runtime);
+                    if (leaf.pane.asTerminal()) |term| {
+                        if (recreate_render_helpers or !term.hasRenderHelpers()) term.recreateRenderHelpers(runtime);
                     }
                     leaf.pane.width_px = leaf.bounds.width;
                     leaf.pane.height_px = leaf.bounds.height;
@@ -2798,18 +2800,18 @@ pub const App = struct {
                             grid.cols,
                         });
                     }
-                    leaf.pane.setMouseSize(
-                        runtime,
-                        leaf.bounds.width,
-                        leaf.bounds.height,
-                        self.cell_width_px,
-                        self.cell_height_px,
-                        actual_top,
-                        actual_bottom,
-                        actual_left,
-                        actual_right,
-                    );
                     if (leaf.pane.asTerminal()) |term| {
+                        term.setMouseSize(
+                            runtime,
+                            leaf.bounds.width,
+                            leaf.bounds.height,
+                            self.cell_width_px,
+                            self.cell_height_px,
+                            actual_top,
+                            actual_bottom,
+                            actual_left,
+                            actual_right,
+                        );
                         term.render_state_ready = true;
                         term.terminal_output_ready = true;
                     }
@@ -2826,8 +2828,8 @@ pub const App = struct {
                     const inner_height = inner.height;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
-                    if (recreate_render_helpers or !pane.hasRenderHelpers()) {
-                        pane.recreateRenderHelpers(runtime);
+                    if (pane.asTerminal()) |term| {
+                        if (recreate_render_helpers or !term.hasRenderHelpers()) term.recreateRenderHelpers(runtime);
                     }
                     pane.width_px = pixel_width;
                     pane.height_px = pane_h;
@@ -2839,18 +2841,18 @@ pub const App = struct {
                     const actual_top = inner.y - outer.y;
                     const actual_right = outer.width - actual_left - inner.width;
                     const actual_bottom = outer.height - actual_top - inner.height;
-                    pane.setMouseSize(
-                        runtime,
-                        layout_width,
-                        pane_h,
-                        self.cell_width_px,
-                        self.cell_height_px,
-                        actual_top,
-                        actual_bottom,
-                        actual_left,
-                        actual_right,
-                    );
                     if (pane.asTerminal()) |term| {
+                        term.setMouseSize(
+                            runtime,
+                            layout_width,
+                            pane_h,
+                            self.cell_width_px,
+                            self.cell_height_px,
+                            actual_top,
+                            actual_bottom,
+                            actual_left,
+                            actual_right,
+                        );
                         term.render_state_ready = true;
                         term.terminal_output_ready = true;
                     }
@@ -2994,7 +2996,7 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expect(pane.cols > 0 and pane.rows > 0);
     try std.testing.expectEqualStrings("Lua pane", pane.title);
     try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
-    try std.testing.expect(!pane.hasRenderHelpers());
+    try std.testing.expect(!pane.term.hasRenderHelpers());
     try std.testing.expect(!app.pending_quit);
 
     pane.lua_surface.?.dirty = false;
@@ -3090,14 +3092,14 @@ test "mux pane changes forward focus events to child terminals" {
     defer previous.deinit(&app.ghostty.?);
     previous.term.terminal_runtime = runtime;
     previous.term.terminal = try runtime.createTerminal(80, 24, 0);
-    try previous.queueStartupInput("previous");
+    try previous.term.queueStartupInput(std.testing.allocator, "previous");
     try std.testing.expect(runtime.setTerminalMode(previous.term.terminal, .focus_event, true));
 
     var current = pane_mod.Pane.init(std.testing.allocator);
     defer current.deinit(&app.ghostty.?);
     current.term.terminal_runtime = runtime;
     current.term.terminal = try runtime.createTerminal(80, 24, 0);
-    try current.queueStartupInput("current");
+    try current.term.queueStartupInput(std.testing.allocator, "current");
     try std.testing.expect(runtime.setTerminalMode(current.term.terminal, .focus_event, true));
 
     app.syncActivePaneChange(&previous, &current);
@@ -3156,8 +3158,8 @@ test "Lua terminal jobs queue shared backend operations without focus changes" {
     };
     const pane = owned orelse return error.MissingJobPane;
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
-        _ = try pane.pollPty(runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+    while (pane.term.hasLiveChild() or pane.term.pty.?.jobOutputPending()) {
+        _ = try pane.term.pollPty(pane, runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }

@@ -83,30 +83,15 @@ non-terminal nodes.
 | `0ea9eed` | Bootstrap, PTY poll, parsing, title/cwd refresh, and resize move to `src/term/pane_runtime.zig`; PTY limits in `src/term/pty_policy.zig` |
 | `06263fb` | Selection, scrolling, hyperlinks narrowed to `*TerminalPane` |
 | `5024e8d` | Copy mode, quick select, screen/text queries narrowed; `TerminalPane.beginRead` borrows render helpers |
-
-### Done (uncommitted)
-
-- Input, paste/session operations, HTP, exit lifecycle, background jobs, and
-  native callbacks narrowed. Includes the fix for a missed HTP guard (shell
-  command observations could write terminal automation state on a Lua node).
-- **B1:** the `app.zig` frame loop, resize, theme reload and display refresh,
-  the renderer (`readyTerminal`, sync-output/scroll/mouse-tracking queries),
-  `mux/mux.zig` and `app/lua_callbacks.zig` now narrow at entry. Outside
-  `src/term/` and `src/pane.zig`, only tests read `pane.term`. New generic
-  `Pane.domainName()` (empty for non-terminals). For Lua panes,
-  `refreshActivePaneDisplay` now invalidates and returns instead of
-  touching null terminal handles. Resize no longer flips terminal readiness
-  flags on Lua panes, and the blit readiness check applies only to terminals.
-  Terminal paths are unchanged (independent review found no behaviour
-  change).
+| `3d65006` | B1: input, paste, HTP, jobs, native callbacks, app frame loop, resize, renderer, mux and Lua callbacks narrowed. Only tests read `pane.term` outside `src/term/` and `src/pane.zig`. Adds `Pane.domainName()`; fixes the missed HTP guard |
+| (next) | B2: terminal pass-through methods removed from `Pane`. Callers use `TerminalPane` methods after narrowing; `pollPty`, `bootstrap` and `nudgeTerminal` take the node explicitly. `Pane` keeps only content-dispatching operations: `deinit`, `invalidate`, `resize`, `applyTerminalTheme`, `refreshTitle`, `refreshCwd`, `setCwd`, `setManualTitle`, `domainName` |
 
 ### Remaining
 
 | Step | What |
 | --- | --- |
-| B2 | Remove `Pane` compatibility facades (`pollPty`, `sendText`, `resize`, ...) in favour of `TerminalPane` methods |
 | B3 | Replace `kind`/`term`/`lua_surface` with `content: Content`; drop the `isTerminal()` guards the compiler makes redundant |
-| B4 | Benchmarks (`make bench`) before and after B2 and B3 (B1 is still unmeasured) |
+| B4 | GUI benchmarks for B1 to B3 (none measured yet) |
 | P1 | Clay surface ownership by a pane: draw into the pane rect, reuse `PaneCacheEntry` texture, render only when dirty |
 | P2 | Lua API (§4): `split`/`float`/`invalidate`/`close`/`set_title`, `on_mount`/`on_unmount`, error row on render failure |
 | P3 | Keys and focus: `on_key`, `on_focus`; unhandled keys fall through to global bindings |

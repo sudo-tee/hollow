@@ -249,7 +249,7 @@ test "spawn filters reach initial panes tabs workspaces and splits before PTY la
     const expected = try std.fmt.bufPrint(&expected_buf, "filter:/:filtered:{d}", .{pane.id});
     while (std.mem.indexOf(u8, pane.term.boot_output.items, expected) == null) {
         if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
-        _ = try pane.pollPty(&runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        _ = try pane.term.pollPty(pane, &runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
     _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
@@ -297,10 +297,10 @@ test "Lua pane allocation has no terminal resources and rolls back on allocation
             try std.testing.expect(pane.id != 0);
             try std.testing.expect(pane.term.pty == null and pane.term.terminal == null);
             try std.testing.expect(pane.term.key_encoder == null and pane.term.mouse_encoder == null);
-            try std.testing.expect(!pane.hasRenderHelpers());
+            try std.testing.expect(pane.asTerminal() == null);
+            try std.testing.expect(!pane.term.hasRenderHelpers());
             try std.testing.expectEqual(@as(usize, 0), pane.term.domain_name.len);
             try std.testing.expect(pane.lua_surface.?.dirty);
-            try std.testing.expectError(error.NotATerminal, pane.queueStartupInput("input"));
             try std.testing.expectError(error.NoActiveTab, mux.splitActivePaneWith(pane, .vertical, 0.5, false));
         }
     };

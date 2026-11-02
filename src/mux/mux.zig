@@ -313,7 +313,7 @@ pub const Mux = struct {
         term.pty_host = self.pty_host;
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
-        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
+        try term.bootstrap(pane, runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
         return pane;
     }
 

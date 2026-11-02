@@ -419,7 +419,8 @@ fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
 
 fn writeFramedHtp(context: *anyopaque, bytes: []const u8) void {
     const pane: *Pane = @ptrCast(@alignCast(context));
-    pane.writeEscapeSequence(bytes);
+    const term = pane.asTerminal() orelse return;
+    term.writeEscapeSequence(bytes);
 }
 
 fn nextHtpMessageId(self: *App) u64 {

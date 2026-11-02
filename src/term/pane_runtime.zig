@@ -1443,7 +1443,7 @@ test "bootstrap callbacks retain pane node after runtime context returns" {
     cfg.shell = try a.dupe(u8, "/bin/sh");
     var pane = Pane.init(a);
     defer pane.deinit(&runtime);
-    try pane.bootstrap(&runtime, @import("../app/terminal_callbacks.zig").terminalCallbacks(), cfg, 8, 16, 640, 384, null, null, .{
+    try pane.term.bootstrap(&pane, &runtime, @import("../app/terminal_callbacks.zig").terminalCallbacks(), cfg, 8, 16, 640, 384, null, null, .{
         .command = "read -r reply",
     }, null);
 
@@ -1482,7 +1482,7 @@ test "background PTY parses blocked and error after rendering helpers are releas
         fn poll(p: *Pane, rt: *GhosttyRuntime, expected: Expected) !void {
             const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
             while (io.nanoTimestamp() < deadline) {
-                _ = try p.pollPty(rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+                _ = try p.term.pollPty(p, rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
                 switch (expected) {
                     .state => |state| if (p.program_status.records.items.len == 1 and p.program_status.records.items[0].state == state) return,
                     .startup => if (p.term.boot_output.items.len > 0) return,
@@ -1496,25 +1496,25 @@ test "background PTY parses blocked and error after rendering helpers are releas
     // Preserve startup deferral until the initial layout completes.
     try Wait.poll(&pane, &runtime, .startup);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
-    pane.recreateRenderHelpers(&runtime);
+    pane.term.recreateRenderHelpers(&runtime);
     pane.term.render_state_ready = true;
     pane.term.terminal_output_ready = true;
     try Wait.poll(&pane, &runtime, .{ .state = .working });
 
     // This is the resource transition used when switching tabs/workspaces.
-    pane.releaseRenderHelpers(&runtime);
+    pane.term.releaseRenderHelpers(&runtime);
     try std.testing.expect(!pane.term.render_state_ready);
-    pane.sendText("\n");
+    pane.term.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .blocked });
     try std.testing.expectEqual(@import("program_status.zig").BlockKind.permission, pane.program_status.records.items[0].kind);
     // Prompt return clears transient blocked state. Observe that separately
     // rather than racing it against the blocked report in the same PTY chunk.
-    pane.sendText("\n");
+    pane.term.sendText("\n");
     try Wait.poll(&pane, &runtime, .cleared);
-    pane.sendText("\n");
+    pane.term.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .failure });
     try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.term.active_screen);
-    try std.testing.expect(!pane.hasRenderHelpers());
+    try std.testing.expect(!pane.term.hasRenderHelpers());
     try std.testing.expectEqual(@as(usize, 0), pane.term.boot_output.items.len);
 }
 
@@ -1620,17 +1620,14 @@ test "image animation invalidates fresh snapshots and schedules next frame" {
         "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\" ++
         "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
     pane.term.render_state_fresh = true;
-    pane.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms);
+    try std.testing.expect(pane.term.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms));
     try std.testing.expect(!pane.term.render_state_fresh);
-    try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
     try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.term.image_animation_deadline_ns);
-    pane.render_dirty = .false_value;
     pane.term.render_state_fresh = true;
-    pane.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms);
+    try std.testing.expect(!pane.term.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms));
     try std.testing.expect(pane.term.render_state_fresh);
-    pane.tickImageAnimation(&runtime, pane.term.image_animation_deadline_ns);
+    try std.testing.expect(pane.term.tickImageAnimation(&runtime, pane.term.image_animation_deadline_ns));
     try std.testing.expect(!pane.term.render_state_fresh);
-    try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
 }
 
 test "sanitizePtyOutput forwards native OSC 9 and OSC 777 protocols" {
@@ -1659,8 +1656,8 @@ test "sendUserText queues raw input behind pending startup input" {
     var pane = Pane.init(std.testing.allocator);
     defer if (pane.term.pending_startup_input.len > 0) std.testing.allocator.free(pane.term.pending_startup_input);
 
-    try pane.queueStartupInput("cd -- '/tmp'");
-    pane.sendUserText("nvim\r");
+    try pane.term.queueStartupInput(std.testing.allocator, "cd -- '/tmp'");
+    pane.term.sendUserText(std.testing.allocator, "nvim\r");
 
     try std.testing.expectEqualStrings("cd -- '/tmp'\rnvim\r", pane.term.pending_startup_input);
 }

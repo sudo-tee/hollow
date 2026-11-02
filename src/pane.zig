@@ -4,7 +4,6 @@ const ghostty = @import("term/ghostty.zig");
 const GhosttyRuntime = ghostty.Runtime;
 const TerminalPane = @import("term/terminal_pane.zig").TerminalPane;
 const LuaSurface = @import("ui/lua_surface.zig").LuaSurface;
-const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const policy = @import("term/pty_policy.zig");
 
 pub const PTY_PARSE_CHUNK_BYTES = policy.parse_chunk_bytes;
@@ -103,41 +102,6 @@ pub const Pane = struct {
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: ghostty.TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
-        std.debug.assert(self.isTerminal());
-        try self.term.bootstrap(self, runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
-    }
-
-    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, budget_ns: i128, parse_chunk_bytes: usize, debug_overlay: bool) !usize {
-        std.debug.assert(self.isTerminal());
-        return self.term.pollPty(self, runtime, max_read_loops, max_total_read, budget_ns, parse_chunk_bytes, debug_overlay);
-    }
-
-    pub fn sendText(self: *Pane, text: []const u8) void {
-        if (self.isTerminal()) self.term.sendText(text);
-    }
-
-    pub fn sendUserText(self: *Pane, text: []const u8) void {
-        if (self.isTerminal()) self.term.sendUserText(self.allocator, text);
-    }
-
-    pub fn queueStartupInput(self: *Pane, text: []const u8) !void {
-        if (!self.isTerminal()) return error.NotATerminal;
-        try self.term.queueStartupInput(self.allocator, text);
-    }
-
-    pub fn tickImageAnimation(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128) void {
-        std.debug.assert(self.isTerminal());
-        if (self.term.tickImageAnimation(runtime, now_ns)) self.render_dirty = .full;
-    }
-
-    pub fn expireRenderHold(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128, timeout_ns: i128) bool {
-        std.debug.assert(self.isTerminal());
-        if (!self.term.expireRenderHold(runtime, now_ns, timeout_ns)) return false;
-        self.render_dirty = .full;
-        return true;
-    }
-
     pub fn setCwd(self: *Pane, cwd: []const u8) void {
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
         self.cwd = if (cwd.len > 0) self.allocator.dupe(u8, cwd) catch &.{} else &.{};
@@ -156,15 +120,6 @@ pub const Pane = struct {
         self.title_dirty = false;
     }
 
-    pub fn childPid(self: *const Pane) usize {
-        return self.term.childPid();
-    }
-
-    pub fn setHtpMessageHandler(self: *Pane, handler: ?HtpMessageHandler) void {
-        std.debug.assert(self.isTerminal());
-        self.term.htp_message_handler = handler;
-    }
-
     pub fn refreshCwd(self: *Pane) bool {
         return self.isTerminal() and self.term.refreshCwd(self);
     }
@@ -179,48 +134,8 @@ pub const Pane = struct {
         self.term.resize(self, runtime, cols, rows, cell_width_px, cell_height_px, skip_pty);
     }
 
-    pub fn nudgeTerminal(self: *Pane, runtime: *GhosttyRuntime, cell_width_px: u32, cell_height_px: u32) void {
-        if (self.isTerminal()) self.term.nudgeTerminal(self, runtime, cell_width_px, cell_height_px);
-    }
-
-    pub fn setMouseSize(self: *Pane, runtime: *GhosttyRuntime, screen_width: u32, screen_height: u32, cell_width_px: u32, cell_height_px: u32, padding_top: u32, padding_bottom: u32, padding_left: u32, padding_right: u32) void {
-        if (self.isTerminal()) self.term.setMouseSize(runtime, screen_width, screen_height, cell_width_px, cell_height_px, padding_top, padding_bottom, padding_left, padding_right);
-    }
-
-    pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {
-        self.term.writeEscapeSequence(sequence);
-    }
-
-    pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
-        if (self.isTerminal()) self.term.recreateRenderHelpers(runtime);
-    }
-
-    pub fn releaseRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
-        if (self.isTerminal()) self.term.releaseRenderHelpers(runtime);
-    }
-
-    pub fn hasRenderHelpers(self: *const Pane) bool {
-        return self.isTerminal() and self.term.hasRenderHelpers();
-    }
-
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
         if (self.isTerminal()) self.term.refreshTitle(self, runtime, fallback_title, shell_command);
-    }
-
-    pub fn usesAgent(self: *const Pane) bool {
-        return self.term.usesAgent();
-    }
-
-    pub fn hasLiveChild(self: *Pane) bool {
-        return self.term.hasLiveChild();
-    }
-
-    pub fn pendingPtyOutputBytes(self: *Pane) usize {
-        return self.term.pendingPtyOutputBytes();
-    }
-
-    pub fn scrollbar(self: *const Pane) ghostty.TerminalScrollbar {
-        return self.term.scrollbar();
     }
 };
 

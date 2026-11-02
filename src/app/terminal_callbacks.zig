@@ -307,9 +307,9 @@ test "render hold captures each exact boundary including end and restart in one 
     try std.testing.expect(!pane.term.synchronized_output_active);
     runtime.terminalWrite(pane.term.terminal, "\x1b[?2026h");
     const deadline = pane.term.synchronized_output_started_ns + std.time.ns_per_s;
-    try std.testing.expect(!pane.expireRenderHold(&runtime, deadline - 1, std.time.ns_per_s));
+    try std.testing.expect(!pane.term.expireRenderHold(&runtime, deadline - 1, std.time.ns_per_s));
     runtime.terminalWrite(pane.term.terminal, "still busy\x1b[?2026h");
-    try std.testing.expect(pane.expireRenderHold(&runtime, deadline, std.time.ns_per_s));
+    try std.testing.expect(pane.term.expireRenderHold(&runtime, deadline, std.time.ns_per_s));
     try std.testing.expect(!runtime.terminalMode(pane.term.terminal, .synchronized_output));
 }
 
