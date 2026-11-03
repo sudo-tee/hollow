@@ -15,6 +15,13 @@ theme. For persistent exploration, use `hollow.ui.lua_repl.open({ text = "1 + 2"
 `text` replaces its draft, including when the REPL is already open.
 
 For the conceptual model see [Custom UI](../../custom-ui.md).
+
+Leader-key hints use a passive overlay by default.
+`hollow.ui.leader_preview.configure({ delay_ms = 200, align = "bottom_right", width = 48, max_height = 20 })`
+customizes it; `{ mode = "bottombar" }` restores inline hints, and `false`
+disables hints without changing keybindings. Options merge; `{ enabled = true }`
+re-enables them. `theme` overrides the `leader_preview` widget palette.
+See [Leader discovery](../../keybindings.md#discovering-bindings).
 For recipes see [UI recipes](../../examples/ui-recipes.md).
 For the LuaLS schema see
 [`types/hollow.lua`](../../../types/hollow.lua) (`HollowWidget`,

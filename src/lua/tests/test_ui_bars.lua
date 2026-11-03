@@ -269,6 +269,7 @@ describe("UI bars test suite", function()
 
   describe("leader mode", function()
     it("shows the mode widget and legend, then clears", function()
+      hollow.ui.leader_preview.configure({ mode = "bottombar" })
       hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
       hollow.keymap.set("<leader>x", function() end, { desc = "test leader" })
       local leader_key, leader_mods = hollow.keymap.parse_chord("<C-Space>")
@@ -276,7 +277,7 @@ describe("UI bars test suite", function()
       local leader_bar = hollow.ui._bottombar_state()
       harness.assert_true(leader_bar ~= nil, "bottombar should show in leader mode")
       harness.assert_true(
-        leader_bar.items[1].text:find("LEADER", 1, true) ~= nil,
+        leader_bar.items[1].text:find("<leader>", 1, true) ~= nil,
         "leader mode widget should identify leader mode"
       )
       harness.assert_true(

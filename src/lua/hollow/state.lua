@@ -97,6 +97,8 @@ function M.new(host_api)
       },
       leader = nil,
       sequence_timeout_ms = 1000,
+      leader_timeout_ms = 5000,
+      sequence_started_at_ms = nil,
       sequence_pending_until = nil,
       sequence_active_node = nil,
       sequence_steps = {},

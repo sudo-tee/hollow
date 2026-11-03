@@ -37,15 +37,59 @@ Every binding belongs to a mode. Hollow ships two:
 
 ## The leader key
 
-The leader key is a prefix that opens a small mini-language of two-key
-sequences. The shipped base config sets `<C-Space>` with a 1200 ms timeout:
+The leader key starts a sequence of keys. The shipped base config uses
+`<C-Space>` with a **5-second idle timeout per step**:
 
 ```lua
-hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
+hollow.keymap.set_leader("<C-Space>", { timeout_ms = 5000 })
 ```
 
 Override from your personal config with a different chord.
 `hollow.keymap.clear_leader()` removes the leader entirely.
+
+### Discovering bindings
+
+Pause for 200 ms after pressing the leader to see a compact, non-focusable
+overlay in the bottom-right corner. It shows the current prefix, aligned next
+keys and descriptions; `›` marks a group. Known shortcuts execute immediately,
+without waiting for the overlay. Once visible, hints update immediately as you
+enter groups. Each valid step renews the idle timeout.
+
+Press **Escape** to cancel or **Backspace** to go up a group (at the root,
+Backspace cancels). An explicitly bound Backspace takes precedence. Unmatched
+keys cancel and are consumed, not sent to the terminal. Hints close on execution,
+timeout, loss of window focus, copy-mode changes, or opening a modal.
+Ordinary sequences such as copy-mode `gg` retain a separate 1-second timeout.
+
+```lua
+hollow.ui.leader_preview.configure({
+  delay_ms = 200,          -- 0 shows hints immediately
+  align = "bottom_right",
+  width = 48,             -- cells
+  max_height = 20,        -- rows; long lists scroll with the mouse
+})
+
+-- Alternatives (choose one):
+hollow.ui.leader_preview.configure({ mode = "bottombar" })
+hollow.ui.leader_preview.configure(false) -- hide hints, keep bindings/status
+```
+
+Settings merge with the current configuration; `{ enabled = true }` re-enables
+hints. The bottom bar keeps only the current prefix in overlay/disabled modes.
+The overlay follows `ui.widgets.all` and `ui.widgets.leader_preview` theme colors;
+`configure({ theme = { title = "#88c0d0" } })` overrides this widget only.
+
+Give custom callbacks a `desc`, and optionally label groups:
+
+```lua
+hollow.keymap.group("<leader>w", "Workspace")
+hollow.keymap.set("<leader>wn", "new_workspace", { desc = "New workspace" })
+```
+
+Group labels do not replace bindings. Without a description, named actions use
+their readable action name and callbacks show “Lua callback”. Preview rendering
+is bounded to 70 next keys per prefix; all bindings remain executable.
+See [`hollow.keymap`](reference/lua/keymap.md) for the state API.
 
 ## The default keymap
 
