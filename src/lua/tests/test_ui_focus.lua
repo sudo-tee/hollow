@@ -121,6 +121,24 @@ describe("keyboard focus", function()
     assert.same({}, widget_keys)
   end)
 
+  it("draws a hollow caret unless the input can take typing", function()
+    local hollow_caret = node("field:caret")
+    assert.is_truthy(hollow_caret.border)
+    surface():focus("field")
+    local solid = node("field:caret")
+    assert.is_nil(solid.border)
+    assert.are_not.equal(hollow_caret.bg, solid.bg)
+    surface():invalidate()
+    local unfocused_ctx = { width = 800, height = 600, cell_w = 8, cell_h = 19, focused = false }
+    local caret
+    for _, entry in ipairs(surface():snapshot(unfocused_ctx)) do
+      if entry.id == surface().namespace .. "field:caret" then
+        caret = entry
+      end
+    end
+    assert.is_truthy(caret.border)
+  end)
+
   it("gives each gallery input its own text", function()
     local gallery = ui.components.demo()
     local s = gallery._layout_surface

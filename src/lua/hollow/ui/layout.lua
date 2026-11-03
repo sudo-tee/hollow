@@ -80,6 +80,7 @@ function Surface:snapshot(ctx)
       render_ctx[key] = value
     end
     render_ctx.metrics = self.metrics
+    render_ctx.focus_id = self:focused_id()
     local palette = self.palette or shared.palette("select")
     local previous = props._scope
     props._scope = { theme = palette, ctx = render_ctx }

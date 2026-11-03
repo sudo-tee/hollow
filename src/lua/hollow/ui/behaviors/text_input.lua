@@ -12,7 +12,11 @@ local function input_style(theme)
   return { fg = theme.input_fg, bg = theme.input_bg }
 end
 
-local function cursor_style(theme)
+local function cursor_style(theme, focused)
+  if focused == false then
+    -- Hollow caret, like an unfocused terminal: an outline, no fill.
+    return { fg = theme.input_fg, bg = theme.input_bg, border = theme.cursor_bg }
+  end
   return { fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }
 end
 
@@ -49,7 +53,8 @@ function M.text_input(opts)
     self.cursor = cursor or #self.value
   end
 
-  function self.render(theme)
+  ---@param opts? { focused?: boolean } `focused = false` draws a hollow caret.
+  function self.render(theme, opts)
     local before = self.value:sub(1, self.cursor)
     local after = self.value:sub(self.cursor + 1)
     local cursor_char = after:sub(1, 1)
@@ -61,7 +66,7 @@ function M.text_input(opts)
 
     return {
       ui.text(before, input_style(theme)),
-      ui.text(cursor_char, cursor_style(theme)),
+      ui.text(cursor_char, cursor_style(theme, opts and opts.focused)),
       ui.text(after, input_style(theme)),
     }
   end

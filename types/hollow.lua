@@ -2378,6 +2378,7 @@ local workspace = {}
 ---@field behavior HollowUiTextInput
 ---@field boxed? boolean Defaults to true.
 ---@field focusable? boolean Tab and clicks focus the field; defaults to true.
+---@field focused? boolean Caret look: solid when true, hollow when false. Defaults to solid only while a focusable field has keyboard focus in a focused surface.
 
 ---@class HollowUiTabComponentItem
 ---@field id string
@@ -2530,6 +2531,7 @@ local workspace = {}
 ---@field height? number Host window height in pixels.
 ---@field cell_w? number Existing renderer cell width.
 ---@field cell_h? number Existing renderer cell height.
+---@field focus_id? string Local ID of the keyboard-focused control, if any.
 
 ---@class HollowUiLayoutSurfaceOptions
 ---@field render fun(ctx: HollowUiLayoutContext): HollowUiLayoutNode

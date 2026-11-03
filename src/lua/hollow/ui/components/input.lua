@@ -17,8 +17,15 @@ return function(value)
   local boxed = options.boxed ~= false
   local prefix = options.id or "input"
   local cell_h = props.cell_h(ctx)
+  -- A focusable field only takes keys while focused (and its pane is), so show
+  -- a hollow caret otherwise; widget-routed fields pass `focused = true`.
+  local focused = options.focused
+  if focused == nil then
+    focused = options.focusable == false or (ctx.focus_id == prefix and ctx.focused ~= false)
+  end
+  options.focused = nil
   local runs = {}
-  for index, span in ipairs(input.render(theme)) do
+  for index, span in ipairs(input.render(theme, { focused = focused })) do
     local style = explicit and shared.resolve_tokens(span.style, theme) or span.style
     runs[index] = c.column({ c.text(span.text, style, { wrap = "none" }) }, {
       id = index == 2 and (prefix .. ":caret") or nil,

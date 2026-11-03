@@ -81,6 +81,9 @@ colors. Recipe-backed atoms accept component theme overrides.
   Focusable (Tab or click) unless `focusable = false`; the root takes `id`
   (default `"input"`). A picker's filter is focusable only with
   `filter_focusable = true`, since picker widgets route keys to it themselves.
+  A focusable field draws a hollow (outlined) caret until it has keyboard
+  focus in a focused pane, so it does not look ready for typing; pass
+  `focused = true` when your widget routes keys to the field itself.
 - **`tabs`** — one row plus two nodes per tab and two per painted badge.
   Pass `{ tabs = { { id = "a", label = "A" } }, active = "a", on_select = fn }`.
 
