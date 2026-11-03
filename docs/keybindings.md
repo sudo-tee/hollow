@@ -71,11 +71,13 @@ hollow.ui.leader_preview.configure({
 
 -- Alternatives (choose one):
 hollow.ui.leader_preview.configure({ mode = "bottombar" })
-hollow.ui.leader_preview.configure(false) -- hide hints, keep bindings/status
+hollow.ui.leader_preview.configure(false) -- hide leader UI, keep bindings
 ```
 
 Settings merge with the current configuration; `{ enabled = true }` re-enables
-hints. The bottom bar keeps only the current prefix in overlay/disabled modes.
+hints. Overlay and disabled modes do not show a leader bottom bar or reserve
+terminal space, including during the preview delay. Bottom-bar mode retains the
+prefix and inline hints. Copy-mode and quick-select bars are unaffected.
 The overlay follows `ui.widgets.all` and `ui.widgets.leader_preview` theme colors;
 `configure({ theme = { title = "#88c0d0" } })` overrides this widget only.
 

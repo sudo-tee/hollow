@@ -21,6 +21,8 @@ Leader-key hints use a passive overlay by default.
 customizes it; `{ mode = "bottombar" }` restores inline hints, and `false`
 disables hints without changing keybindings. Options merge; `{ enabled = true }`
 re-enables them. `theme` overrides the `leader_preview` widget palette.
+The leader bottom bar appears only in `bottombar` mode; overlay and disabled
+modes reserve no terminal space. Copy-mode and quick-select bars are unchanged.
 See [Leader discovery](../../keybindings.md#discovering-bindings).
 For recipes see [UI recipes](../../examples/ui-recipes.md).
 For the LuaLS schema see

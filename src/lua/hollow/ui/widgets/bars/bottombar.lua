@@ -8,6 +8,14 @@ local tbl = hollow.tbl
 local M = {}
 function M.leader_state()
   local value = hollow.keymap.get_leader_state()
+  if
+    value
+    and value.prefix == "<leader>"
+    and ui.leader_preview
+    and ui.leader_preview._mode() ~= "bottombar"
+  then
+    return nil
+  end
   return value and value.active and value or nil
 end
 
@@ -93,12 +101,6 @@ end
 
 local function special_mode_legend(copy_mode, quick_select, theme)
   local leader = copy_mode == nil and quick_select == nil and M.leader_state() or nil
-  local show_leader_keys = leader ~= nil
-    and (
-      leader.prefix ~= "<leader>"
-      or not ui.leader_preview
-      or ui.leader_preview._mode() == "bottombar"
-    )
   local hints = copy_mode ~= nil
       and {
         special_mode_hint("h/j/k/l", "move", theme),
@@ -114,7 +116,7 @@ local function special_mode_legend(copy_mode, quick_select, theme)
       special_mode_hint("Backspace", "undo", theme),
       special_mode_hint("Esc", "exit", theme),
     }
-    or (show_leader_keys and leader.next_display and #leader.next_display > 0) and tbl(leader.next_display)
+    or (leader ~= nil and leader.next_display and #leader.next_display > 0) and tbl(leader.next_display)
       :map(function(item)
         local key, label = item:match("^([^:]+):(.+)$")
         return special_mode_hint(key or item, label or "", theme)
