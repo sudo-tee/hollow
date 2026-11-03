@@ -184,6 +184,11 @@ local function new_instance(opts, floating, placement, name)
   assert(type(opts) == "table" and type(opts.render) == "function", "pane requires render(ctx)")
   local direction = opts.direction or "vertical"
   assert(direction == "vertical" or direction == "horizontal", "invalid pane direction")
+  local edge = opts.edge
+  assert(
+    edge == nil or edge == "left" or edge == "right" or edge == "top" or edge == "bottom",
+    "invalid pane edge"
+  )
   local ratio = opts.ratio or 0.5
   assert(type(ratio) == "number" and ratio > 0 and ratio < 1, "pane ratio must be in (0, 1)")
   assert(type(host.create_lua_pane) == "function", "Lua panes require GUI host")
@@ -203,6 +208,7 @@ local function new_instance(opts, floating, placement, name)
       args = owned.args,
       title = owned.title,
       placement = placement or "split",
+      edge = owned.edge,
       name = name,
       floating = floating,
       x = owned.x,
@@ -296,8 +302,12 @@ end
 -- The native reload path attaches this new owner to the existing pane ID/tree.
 function M._restore(id, descriptor)
   descriptor = json.decode(descriptor)
-  local opts =
-    resolve({ module = descriptor.module, args = descriptor.args, title = descriptor.title })
+  local opts = resolve({
+    module = descriptor.module,
+    args = descriptor.args,
+    title = descriptor.title,
+    edge = descriptor.edge,
+  })
   local self, owner = new_instance(opts, false)
   self.id, instances[id] = id, self
   if opts.title then

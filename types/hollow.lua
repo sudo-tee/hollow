@@ -1374,6 +1374,7 @@
 ---@field bottombar_hovered_shifted boolean
 ---@field mounted_sidebar HollowUiWidget|nil
 ---@field sidebar_visible boolean
+---@field sidebar_docked boolean
 ---@field overlay_stack HollowUiWidget[]
 ---@field notifications HollowUiWidget[]
 
@@ -1987,8 +1988,17 @@ function sidebar.mount(widget) end
 
 function sidebar.unmount() end
 
+---Hide or show the sidebar; hiding a docked sidebar closes its pane.
 ---@return boolean
 function sidebar.toggle() end
+
+---Toggle between the window-edge overlay and a split Lua pane; nil when undocking or unavailable.
+---@param opts? { edge?: "left"|"right"|"top"|"bottom", ratio?: number, focus?: boolean }
+---@return HollowUiPane|nil
+function sidebar.dock(opts) end
+
+---@return boolean
+function sidebar.is_docked() end
 
 ---@return boolean
 function sidebar.invalidate() end
@@ -2571,6 +2581,7 @@ local workspace = {}
 ---@field title? string
 ---@field direction? "horizontal"|"vertical" Default vertical.
 ---@field ratio? number New split fraction, strictly between 0 and 1; default 0.5.
+---@field edge? "left"|"right"|"top"|"bottom" Split the whole tiled layout and place the pane on this window edge, instead of beside the active pane; overrides direction.
 ---@field fullscreen? boolean Maximize after insertion.
 ---@field x? number Normalized floating x coordinate, 0–1.
 ---@field y? number Normalized floating y coordinate, 0–1.

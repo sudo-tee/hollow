@@ -151,6 +151,35 @@ pub const Tab = struct {
         self.maximized_pane = null;
     }
 
+    /// Split the whole tiled layout so `new_pane` spans one window edge:
+    /// first (left/top) or second (right/bottom). `ratio` is the new pane's size.
+    pub fn splitEdge(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        const root = self.root_split orelse return error.NoActivePane;
+        try self.panes.ensureUnusedCapacity(self.allocator, 1);
+
+        const existing = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(existing);
+        existing.* = root.*;
+
+        const new_leaf = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(new_leaf);
+        new_leaf.* = SplitNode.initPane(new_pane);
+
+        root.* = if (place_first)
+            SplitNode.initSplit(new_leaf, existing, direction, ratio)
+        else
+            SplitNode.initSplit(existing, new_leaf, direction, 1.0 - ratio);
+        // Any pane in the other subtree anchors the root split for restore.
+        var leaves = LeafIterator.init(existing);
+        new_pane.restore_anchor_id = if (leaves.next()) |leaf| leaf.pane.id else 0;
+        new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
+        new_pane.restore_split_horizontal = direction == .horizontal;
+        new_pane.restore_place_first = place_first;
+        self.panes.appendAssumeCapacity(new_pane);
+        self.active_pane = new_pane;
+        self.maximized_pane = null;
+    }
+
     pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
         return self.root_split;
     }

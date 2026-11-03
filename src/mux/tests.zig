@@ -474,6 +474,53 @@ test "pane focus follows nearest matching split subtree" {
     try std.testing.expect(tab.active_pane == top);
 }
 
+test "edge split spans the whole layout on the requested side" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    var panes: [4]*Pane = undefined;
+    for (&panes, 0..) |*slot, index| {
+        slot.* = try allocator.create(Pane);
+        slot.*.* = Pane.init(allocator);
+        slot.*.id = index + 2;
+    }
+    try tab.appendPane(panes[0]);
+    try tab.splitActivePane(panes[1], .vertical, 0.5);
+    tab.active_pane = panes[0];
+    try tab.splitEdge(panes[2], .vertical, 0.2, false);
+    try tab.splitEdge(panes[3], .vertical, 0.25, true);
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 100 };
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
+    try std.testing.expectEqual(@as(usize, 4), leaves.len);
+    var left = leaves[0];
+    var right = leaves[0];
+    for (leaves) |leaf| {
+        if (leaf.bounds.x < left.bounds.x) left = leaf;
+        if (leaf.bounds.x > right.bounds.x) right = leaf;
+    }
+    try std.testing.expect(left.pane == panes[3]);
+    try std.testing.expect(right.pane == panes[2]);
+    try std.testing.expectEqual(bounds.width, right.bounds.x + right.bounds.width);
+    try std.testing.expect(tab.active_pane == panes[3]);
+
+    const info = tab.splitInfoForPane(panes[3]).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), info.size, 1e-6);
+    try std.testing.expect(panes[3].restore_place_first);
+}
+
 test "split pane ratio applies to new pane" {
     const allocator = std.testing.allocator;
 

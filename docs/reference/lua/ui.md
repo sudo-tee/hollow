@@ -420,7 +420,22 @@ hollow.ui.sidebar.mount(widget)
 hollow.ui.sidebar.unmount()
 hollow.ui.sidebar.toggle()
 hollow.ui.sidebar.invalidate()
+hollow.ui.sidebar.dock(opts)   -- toggle overlay <-> split pane
+hollow.ui.sidebar.is_docked()
 ```
+
+The mounted sidebar is a window-edge overlay by default. `dock()` moves the same
+widget into a [Lua pane](#lua-panes) spanning the window edge given by `side`
+(focus stays on the previous pane unless `focus = true`) and returns it; calling
+`dock()` again undocks back to the overlay and returns `nil`. Options: `edge`
+(default: the sidebar `side`) and `ratio` (default: `width` columns as a
+fraction of the window, clamped to `0.1–0.5`). Closing the pane any other way also undocks; `toggle()`
+and `unmount()` close it and leave the sidebar hidden. The docked pane survives
+config reload, renders the widget rows as Clay nodes, and is retained rather
+than repainted every frame: it refreshes on hover, clicks, the bar invalidation
+events and `invalidate()`. Span hover styles, clicks and `on_mouse_enter`/
+`on_mouse_leave` work in both modes; the `sidebar:*` events are emitted only by
+the overlay.
 
 Sidebar options:
 
@@ -476,6 +491,7 @@ snapshot. Use `hollow.term.pane_by_id(id)` for a snapshot.
 | `theme` | Explicit token palette; otherwise the current `select` widget palette |
 | `title` | Optional pane title; an explicit title is restored on config reload |
 | `direction`, `ratio` | `"vertical"` (default) or `"horizontal"`; new pane fraction in `(0, 1)`, default `0.5` |
+| `edge` | `"left"`, `"right"`, `"top"` or `"bottom"`: split the whole tiled layout and span that window edge instead of splitting the active pane; overrides `direction` |
 | `x`, `y`, `width`, `height` | Floating bounds as normalized fractions `0–1`, not pixels |
 | `fullscreen` | Maximize after insertion |
 | `on_mount(ctx)` | Once, on first snapshot with valid geometry |

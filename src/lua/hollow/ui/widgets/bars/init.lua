@@ -88,6 +88,10 @@ function ui._register_bar_invalidation_hooks()
   local function invalidate_bars()
     ui.topbar.invalidate()
     ui.bottombar.invalidate()
+    -- The overlay sidebar repaints every frame; a docked one is retained.
+    if ui.sidebar.is_docked() then
+      ui.sidebar.invalidate()
+    end
   end
 
   hollow.events.on("config:reloaded", invalidate_bars)

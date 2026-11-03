@@ -317,7 +317,10 @@ pub fn process(app: *App, payload: Create) void {
         return;
     };
     const previous = mux.activePane();
-    const insertion = if (std.mem.eql(u8, placement, "split"))
+    const edge: ?[]const u8 = if (object.get("edge")) |value| (if (value == .string) value.string else null) else null;
+    const insertion = if (std.mem.eql(u8, placement, "split") and !payload.floating and edge != null)
+        splitEdge(mux, pane, edge.?, payload.ratio)
+    else if (std.mem.eql(u8, placement, "split"))
         mux.splitActivePaneWith(pane, payload.direction, payload.ratio, payload.floating)
     else if (std.mem.eql(u8, placement, "tab"))
         mux.newTabWithPane(runtime, pane)
@@ -345,6 +348,16 @@ pub fn process(app: *App, payload: Create) void {
         app.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     }
     complete(app, payload, true);
+}
+
+fn splitEdge(mux: anytype, pane: *Pane, edge: []const u8, ratio: f32) !void {
+    const Edge = enum { left, right, top, bottom };
+    const side = std.meta.stringToEnum(Edge, edge) orelse return error.InvalidEdge;
+    const direction: SplitDirection = switch (side) {
+        .left, .right => .vertical,
+        .top, .bottom => .horizontal,
+    };
+    return mux.splitEdgeWith(pane, direction, ratio, side == .left or side == .top);
 }
 
 fn number(value: ?std.json.Value, fallback: f32) f32 {

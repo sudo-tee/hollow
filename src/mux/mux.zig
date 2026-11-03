@@ -636,6 +636,13 @@ pub const Mux = struct {
         self.notifyCreated(new_pane);
     }
 
+    /// Insert `new_pane` along a window edge of the active tab's tiled layout.
+    pub fn splitEdgeWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        try tab.splitEdge(new_pane, direction, ratio, place_first);
+        self.notifyCreated(new_pane);
+    }
+
     /// Resize the active pane by adjusting the ratio of the nearest enclosing
     /// split node along the given axis. `delta` is a fraction in (-1, 1) —
     /// positive means "grow the first child" (i.e. push the divider right/down).

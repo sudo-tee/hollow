@@ -126,6 +126,7 @@ function M.new(host_api)
       bottombar_handlers = {},
       mounted_sidebar = nil,
       sidebar_visible = false,
+      sidebar_docked = false,
       overlay_stack = {},
       notifications = {},
       workspace_switcher = {
