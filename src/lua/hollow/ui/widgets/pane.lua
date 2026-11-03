@@ -23,6 +23,13 @@ local function focus(self, ctx, focused)
   self.context.focused = focused
   if self.mounted and self.focused ~= focused then
     self.focused = focused
+    self.autofocus_pending = focused and ctx.keyboard_focus == true
+    local first = (self.surface.focus_order or {})[1]
+    if self.autofocus_pending and first then
+      -- Focus immediately for incoming keys, then reconcile with the next
+      -- snapshot in case controls changed while this pane was inactive.
+      self.surface:focus(first)
+    end
     self.surface:invalidate()
     if self.opts.on_focus then
       self.opts.on_focus(self.context, focused)
@@ -99,7 +106,17 @@ local function lifecycle(self, ctx)
     self.opts.on_resize(ctx)
   end
   focus(self, ctx, ctx.focused)
-  return self.surface:snapshot(ctx)
+  local nodes = self.surface:snapshot(ctx)
+  if self.autofocus_pending then
+    self.autofocus_pending = false
+    -- Refocus only if the snapshot dropped focus (or had none); keys pressed
+    -- since entry may already have moved it.
+    local first = (self.surface.focus_order or {})[1]
+    if not self.surface.focused and first and self.surface:focus(first) then
+      nodes = self.surface:snapshot(ctx)
+    end
+  end
+  return nodes
 end
 
 local function snapshot(self, ctx)
@@ -234,10 +251,25 @@ local function new_instance(opts, floating, placement, name)
     focus = function(_, ctx, focused)
       focus(self, ctx, focused)
     end,
-    -- Returns true when Lua consumed the event (native wheel scroll is skipped).
-    pointer = function(_, kind, id, detail)
+    geometry = function(_, bounds)
+      self.surface.focus_bounds = bounds
+    end,
+    -- True consumes clicks/wheel; for hover it requests a repaint.
+    pointer = function(_, kind, id, detail, x, y)
       if self.closed or self.closing then
         return false
+      end
+      local was_visible = self.surface.focus_visible
+      if kind ~= "hover" then
+        self.surface:pointer_mode()
+      elseif x and y and x >= 0 and y >= 0 then
+        -- Anchor resets on each key, so jitter and layout-driven hovers keep
+        -- the ring; only deliberate motion hides it.
+        self.pointer_x, self.pointer_y = x, y
+        self.anchor_x, self.anchor_y = self.anchor_x or x, self.anchor_y or y
+        if math.abs(x - self.anchor_x) >= 4 or math.abs(y - self.anchor_y) >= 4 then
+          self.surface:pointer_mode()
+        end
       end
       if kind ~= "hover" and owned.on_pointer and self.context then
         local event = {
@@ -254,14 +286,20 @@ local function new_instance(opts, floating, placement, name)
       if kind == "click" then
         if id and (detail == nil or detail == "left") then
           self.surface:dispatch(id)
+          self.surface:pointer_mode()
           self.surface:invalidate()
         end
       elseif kind == "hover" then
-        self.hovered_id = id and self.surface:local_id(id) or nil
+        local hovered_id = id and self.surface:local_id(id) or nil
+        local changed = self.hovered_id ~= hovered_id or self.surface.focus_visible ~= was_visible
+        self.hovered_id = hovered_id
         if self.context then
           self.context.hovered_id = self.hovered_id
         end
-        self.surface:invalidate()
+        if changed then
+          self.surface:invalidate()
+        end
+        return changed
       end
       return false
     end,
@@ -345,6 +383,13 @@ function M._captures_keys()
   return self ~= nil and self.opts.capture_keys == true
 end
 
+local ARROWS = {
+  arrow_left = "left",
+  arrow_right = "right",
+  arrow_up = "up",
+  arrow_down = "down",
+}
+
 -- Called by the shared keymap, under the Lua lock. Overlays and pending global
 -- sequences take priority; plain pane keys precede unmodified global bindings.
 function M._dispatch_key(key, mods)
@@ -353,12 +398,18 @@ function M._dispatch_key(key, mods)
     return false
   end
   local canonical_mods = _G.hollow.keymap.format_mods(mods)
+  self.anchor_x, self.anchor_y = self.pointer_x, self.pointer_y
+  local was_visible = self.surface.focus_visible
   local ok, handled = pcall(function()
-    if self.surface:focus_key(key, canonical_mods) then
+    if self.surface:focus_key(key, canonical_mods, true) then
       return true
     end
     if self.opts.on_key and self.opts.on_key(key, canonical_mods, self.context) == true then
       return true
+    end
+    local direction = canonical_mods == "" and ARROWS[key]
+    if direction then
+      return self.surface:focus_direction(direction)
     end
     return key == "tab"
       and (canonical_mods == "" or canonical_mods == "<S>")
@@ -371,6 +422,9 @@ function M._dispatch_key(key, mods)
   if handled then
     self:invalidate()
     return true
+  end
+  if self.surface.focus_visible ~= was_visible then
+    self:invalidate()
   end
   return false
 end

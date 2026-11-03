@@ -2568,6 +2568,7 @@ local workspace = {}
 ---@field cell_w number Renderer cell width in pixels.
 ---@field cell_h number Renderer cell height in pixels.
 ---@field focused boolean Active pane and OS window focus combined.
+---@field keyboard_focus? boolean Whether the most recent input source was the keyboard; used for pane-entry autofocus.
 ---@field hovered_id? string Pane-local node ID, nil when none is hovered.
 ---@field state table Instance state supplied in options; never serialized.
 ---@field theme HollowUiTheme Explicit theme or current select palette.

@@ -187,6 +187,270 @@ describe("Lua pane keys and focus", function()
     assert.is_true(on_key("tab", 1))
   end)
 
+  local function spatial_pane(opts)
+    opts = opts or {}
+    local input = h.ui.text_input({ initial = "text" })
+    opts.render = function()
+      local c = h.ui.components
+      return c.column({
+        c.button({ id = "first", text = "First", on_click = function() end }),
+        c.button({ id = "diagonal", text = "Diagonal", on_click = function() end }),
+        c.button({ id = "right", text = "Right", on_click = function() end }),
+        c.button({ id = "below", text = "Below", on_click = function() end }),
+        c.input({ id = "field", behavior = input }),
+      })
+    end
+    local instance, owner = pane(opts)
+    local bounds = {}
+    local function rect(id, x, y)
+      bounds[instance.surface.namespace .. id] = { x = x, y = y, width = 40, height = 20 }
+    end
+    rect("first", 0, 0)
+    rect("diagonal", 45, 25)
+    rect("right", 150, 0)
+    rect("below", 0, 250)
+    rect("field", 300, 0)
+    owner:geometry(bounds)
+    return instance, owner, input
+  end
+
+  it("navigates rendered positions, prefers alignment, and does not wrap", function()
+    local instance = spatial_pane()
+    assert.is_true(on_key("arrow_down", 0))
+    assert.equals("first", instance.surface:focused_id())
+    assert.is_true(instance.surface.focus_visible)
+    assert.is_true(on_key("arrow_right", 0))
+    assert.equals("right", instance.surface:focused_id())
+    assert.is_true(on_key("arrow_left", 0))
+    assert.equals("first", instance.surface:focused_id())
+    assert.is_true(on_key("arrow_left", 0))
+    assert.equals("first", instance.surface:focused_id())
+    assert.is_true(on_key("arrow_down", 0))
+    assert.equals("below", instance.surface:focused_id())
+    assert.is_true(on_key("arrow_down", 0))
+    assert.equals("below", instance.surface:focused_id())
+  end)
+
+  it("starts reverse navigation at the last control", function()
+    local instance = spatial_pane()
+    assert.is_true(on_key("arrow_up", 0))
+    assert.equals("field", instance.surface:focused_id())
+  end)
+
+  it("focuses the first enabled control immediately on keyboard pane entry", function()
+    local instance, owner = spatial_pane()
+    owner:focus(ctx(false), false)
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    owner:focus(keyboard_ctx, true)
+    assert.equals("first", instance.surface:focused_id())
+    assert.is_true(instance.surface.focus_visible)
+    local nodes = owner:snapshot(keyboard_ctx)
+    assert.is_truthy(nodes[2].border)
+    assert.is_true(on_key("arrow_right", 0))
+    assert.equals("right", instance.surface:focused_id())
+    owner:snapshot(keyboard_ctx)
+    assert.equals("right", instance.surface:focused_id())
+    owner:focus(ctx(false), false)
+    owner:focus(keyboard_ctx, true)
+    assert.equals("first", instance.surface:focused_id())
+  end)
+
+  it("autofocuses after the first keyboard-mounted snapshot, skipping disabled controls", function()
+    local c = h.ui.components
+    local instance = h.ui.pane.split({
+      render = function()
+        return c.column({
+          c.button({
+            id = "disabled",
+            text = "Disabled",
+            disabled = true,
+            on_click = function() end,
+          }),
+          c.button({ id = "enabled", text = "Enabled", on_click = function() end }),
+        })
+      end,
+    })
+    active = instance.id
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    local nodes = owners[active]:snapshot(keyboard_ctx)
+    assert.equals("enabled", instance.surface:focused_id())
+    assert.is_true(instance.surface.focus_visible)
+    assert.is_truthy(nodes[4].border)
+  end)
+
+  it("does not autofocus on mouse pane entry or repeated keyboard snapshots", function()
+    local instance, owner = spatial_pane()
+    assert.is_nil(instance.surface:focused_id())
+    owner:focus(ctx(false), false)
+    owner:focus(ctx(), true)
+    assert.is_nil(instance.surface:focused_id())
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    owner:snapshot(keyboard_ctx)
+    assert.is_nil(instance.surface:focused_id())
+    owner:pointer("click", instance.surface.namespace .. "right", "left")
+    assert.equals("right", instance.surface:focused_id())
+    assert.is_false(instance.surface.focus_visible)
+    owner:focus(ctx(false), false)
+    owner:focus(ctx(), true)
+    assert.equals("right", instance.surface:focused_id())
+    assert.is_false(instance.surface.focus_visible)
+  end)
+
+  it("reconciles keyboard entry with controls changed while the pane was inactive", function()
+    local disabled = false
+    local c = h.ui.components
+    local instance, owner = pane({
+      render = function()
+        return c.column({
+          c.button({ id = "first", text = "First", disabled = disabled, on_click = function() end }),
+          c.button({ id = "second", text = "Second", on_click = function() end }),
+        })
+      end,
+    })
+    owner:focus(ctx(false), false)
+    disabled = true
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    owner:focus(keyboard_ctx, true)
+    owner:snapshot(keyboard_ctx)
+    assert.equals("second", instance.surface:focused_id())
+    assert.is_true(instance.surface.focus_visible)
+  end)
+
+  it("keeps keyboard moves made before the entry snapshot", function()
+    local instance, owner = spatial_pane()
+    owner:focus(ctx(false), false)
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    owner:focus(keyboard_ctx, true)
+    assert.is_true(on_key("arrow_right", 0))
+    owner:snapshot(keyboard_ctx)
+    assert.equals("right", instance.surface:focused_id())
+  end)
+
+  it("does not autofocus controls that appear after a control-less entry", function()
+    local show = false
+    local c = h.ui.components
+    local instance, owner = pane({
+      render = function()
+        return c.column({
+          show and c.button({ id = "late", text = "Late", on_click = function() end })
+            or c.text("none"),
+        })
+      end,
+    })
+    owner:focus(ctx(false), false)
+    local keyboard_ctx = ctx()
+    keyboard_ctx.keyboard_focus = true
+    owner:focus(keyboard_ctx, true)
+    owner:snapshot(keyboard_ctx)
+    show = true
+    instance.surface:invalidate()
+    owner:snapshot(keyboard_ctx)
+    assert.is_nil(instance.surface:focused_id())
+  end)
+
+  it("uses diagonal candidates when none align and ignores disabled or removed nodes", function()
+    local instance = spatial_pane()
+    local s = instance.surface
+    s:focus("first")
+    s.focus_bounds[s.namespace .. "right"] = nil
+    s.focus_bounds[s.namespace .. "field"] = nil
+    s.focus_bounds[s.namespace .. "disabled"] = { x = 45, y = 0, width = 40, height = 20 }
+    assert.is_true(on_key("arrow_right", 0))
+    assert.equals("diagonal", s:focused_id())
+    s:focus("first")
+    s.focus_order = { s.namespace .. "first", s.namespace .. "below" }
+    assert.is_true(on_key("arrow_right", 0))
+    assert.equals("first", s:focused_id())
+  end)
+
+  it("preserves input arrows, including unhandled directions and cursor boundaries", function()
+    local instance, _, input = spatial_pane()
+    instance.surface:focus("field")
+    input.cursor = 0
+    assert.is_true(on_key("arrow_left", 0))
+    assert.equals(0, input.cursor)
+    assert.equals("field", instance.surface:focused_id())
+    assert.is_false(on_key("arrow_down", 0))
+    assert.equals("field", instance.surface:focused_id())
+    assert.is_true(on_key("tab", 0))
+    assert.equals("first", instance.surface:focused_id())
+  end)
+
+  it("lets pane handlers override spatial navigation and ignores modified arrows", function()
+    local instance = spatial_pane({
+      on_key = function(key)
+        return key == "arrow_right"
+      end,
+    })
+    instance.surface:focus("first")
+    assert.is_true(on_key("arrow_right", 0))
+    assert.equals("first", instance.surface:focused_id())
+    on_key("arrow_down", 1)
+    assert.equals("first", instance.surface:focused_id())
+  end)
+
+  it("hides rings on deliberate motion, not hover-only layout changes or jitter", function()
+    local instance, owner = spatial_pane()
+    local id = instance.surface.namespace .. "first"
+    owner:pointer("hover", id, nil, 10, 10)
+    instance.surface:focus("first")
+    owner:pointer("hover", nil, nil, 10, 10)
+    owner:pointer("hover", id, nil, 12, 11)
+    assert.is_true(instance.surface.focus_visible)
+    owner:pointer("hover", id, nil, 14, 10)
+    assert.is_false(instance.surface.focus_visible)
+    assert.equals("first", instance.surface:focused_id())
+    owner:snapshot(ctx())
+    assert.is_false(owner:pointer("hover", id, nil, 20, 10))
+    assert.is_false(instance.surface.dirty)
+    assert.is_true(on_key("arrow_left", 0))
+    assert.is_true(instance.surface.focus_visible)
+    owner:pointer("hover", id, nil, 20, 10)
+    assert.is_true(instance.surface.focus_visible)
+    owner:pointer("scroll", nil, 1)
+    assert.is_false(instance.surface.focus_visible)
+    assert.equals("first", instance.surface:focused_id())
+  end)
+
+  it("keeps clicked inputs editable without pointer focus decoration", function()
+    local instance, owner, input = spatial_pane()
+    owner:pointer("click", instance.surface.namespace .. "field", "left")
+    assert.is_false(instance.surface.focus_visible)
+    assert.equals("field", instance.surface:focused_id())
+    assert.is_true(on_key("x", 0))
+    assert.equals("textx", input.value)
+    assert.is_true(instance.surface.focus_visible)
+    owner:pointer("click", nil, "right")
+    assert.is_false(instance.surface.focus_visible)
+    assert.equals("field", instance.surface:focused_id())
+  end)
+
+  it("reveals offscreen spatial targets in their scroll viewport", function()
+    local c = h.ui.components
+    local instance, owner = pane({
+      render = function()
+        return c.column({
+          c.button({ id = "top", text = "Top", on_click = function() end }),
+          c.button({ id = "bottom", text = "Bottom", on_click = function() end }),
+        }, { id = "viewport", scroll = true })
+      end,
+    })
+    local ns = instance.surface.namespace
+    owner:geometry({
+      [ns .. "top"] = { x = 0, y = 0, width = 40, height = 20 },
+      [ns .. "bottom"] = { x = 0, y = 1000, width = 40, height = 20 },
+    })
+    instance.surface:focus("top")
+    assert.is_true(on_key("arrow_down", 0))
+    local nodes = owner:snapshot(ctx())
+    assert.equals(ns .. "bottom", nodes[1].reveal)
+  end)
+
   it("notifies initial focus and transitions once, then blurs before unmount", function()
     local events = {}
     local _, owner = pane({

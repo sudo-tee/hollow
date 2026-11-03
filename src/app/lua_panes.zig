@@ -41,7 +41,11 @@ pub fn pointer(app: *App, event: Pointer) void {
         surface.pointer_x = event.x;
         surface.pointer_y = event.y;
         const same = if (event.id) |id| (if (surface.hovered_id) |old| std.mem.eql(u8, id, old) else false) else surface.hovered_id == null;
-        if (same) return;
+        // Same-node motion only needs a repaint when it changes input modality.
+        if (same) {
+            if (callPointer(runtime, surface, event)) pane.invalidate();
+            return;
+        }
         const owned = if (event.id) |id| pane.allocator.dupe(u8, id) catch return else null;
         if (surface.hovered_id) |old| pane.allocator.free(old);
         surface.hovered_id = owned;
@@ -83,7 +87,9 @@ fn callPointer(runtime: anytype, surface: *LuaSurface, event: Pointer) bool {
         .scroll => api.push_number(state, event.delta),
         .hover => api.push_nil(state),
     }
-    if (api.pcall(state, 4, 1, 0) != 0) {
+    api.push_number(state, event.x);
+    api.push_number(state, event.y);
+    if (api.pcall(state, 6, 1, 0) != 0) {
         var len: usize = 0;
         const err = api.to_lstring(state, -1, &len);
         std.log.err("Lua pane pointer: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
@@ -267,6 +273,7 @@ pub fn focus(app: *App, pane: *Pane, focused: bool) void {
         .cell_w = @floatFromInt(app.cell_width_px),
         .cell_h = @floatFromInt(app.cell_height_px),
         .focused = focused,
+        .keyboard_focus = app.keyboard_navigation,
     });
     api.push_boolean(state, @intFromBool(focused));
     if (api.pcall(state, 3, 0, 0) != 0) {

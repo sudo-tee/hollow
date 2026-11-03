@@ -29,6 +29,7 @@ pub const LuaSurface = struct {
         cols: u16,
         rows: u16,
         focused: bool,
+        keyboard_focus: bool = false,
         cell_w: f32,
         cell_h: f32,
     };
@@ -46,11 +47,19 @@ pub const LuaSurface = struct {
         return @ptrCast(@alignCast(self.clay orelse return null));
     }
 
+    fn sameViewport(a: Viewport, b: Viewport) bool {
+        // Input source matters on focus entry, not on every modality change
+        // in an already-focused or background pane.
+        var current = b;
+        current.keyboard_focus = a.keyboard_focus;
+        return std.meta.eql(a, current);
+    }
+
     /// Lock-free precheck so clean panes never contend for the Lua mutex.
     pub fn needsPrepare(self: *const LuaSurface, generation: u64, viewport: Viewport) bool {
         if (self.ref < 0) return false;
         if (self.runtime_generation != generation or self.dirty) return true;
-        return self.prepared == null or !std.meta.eql(self.prepared.?, viewport);
+        return self.prepared == null or !sameViewport(self.prepared.?, viewport);
     }
 
     /// Called under the Lua lock, before atlas upload. Clean panes do not enter
@@ -63,7 +72,7 @@ pub const LuaSurface = struct {
             self.dirty = false;
             return true;
         }
-        if (!self.dirty and self.prepared != null and std.meta.eql(self.prepared.?, viewport)) return false;
+        if (!self.dirty and self.prepared != null and sameViewport(self.prepared.?, viewport)) return false;
         if (self.clay == null) {
             const surface = allocator.create(ClaySurface) catch return false;
             surface.* = .{};
@@ -112,11 +121,42 @@ pub const LuaSurface = struct {
         if (runtime.context.api.to_lstring(runtime.state, -1, &len)) |ptr| std.log.err("Lua pane snapshot: {s}", .{ptr[0..len]});
     }
 
+    /// Called under the Lua lock after layout, including native wheel scrolling.
+    /// Unclipped bounds let directional focus reach and reveal offscreen controls.
+    pub fn reportGeometry(self: *LuaSurface, runtime: *lua.Runtime) void {
+        if (self.ref < 0 or self.runtime_generation != runtime.generation) return;
+        const tree = self.clayState() orelse return;
+        if (!tree.active or tree.context == null) return;
+        const clay = @import("clay_c");
+        const api = runtime.context.api;
+        const state = runtime.state;
+        const top = api.get_top(state);
+        defer api.set_top(state, top);
+        api.rawgeti(state, -10000, self.ref);
+        api.get_field(state, -1, "geometry");
+        if (api.value_type(state, -1) != @backingInt(lua.LuaType.function)) return;
+        api.push_value(state, -2);
+        api.create_table(state, 0, @intCast(tree.len));
+        for (tree.nodes[0..tree.len], 0..) |node, index| {
+            if (!node.clickable or node.id.length == 0) continue;
+            const element = clay.hollow_clay_bounds(tree.context, &tree.nodes, @intCast(index));
+            if (!element.found) continue;
+            api.push_lstring(state, node.id.chars, @intCast(node.id.length));
+            api.create_table(state, 0, 4);
+            inline for (.{ "x", "y", "width", "height" }) |field| {
+                api.push_number(state, @field(element.boundingBox, field));
+                api.set_field(state, -2, field);
+            }
+            api.set_table(state, -3);
+        }
+        if (api.pcall(state, 2, 0, 0) != 0) logError(runtime);
+    }
+
     pub fn pushContext(runtime: *lua.Runtime, viewport: Viewport) void {
         const api = runtime.context.api;
         const state = runtime.state;
-        api.create_table(state, 0, 8);
-        inline for (.{ "pane_id", "width", "height", "cols", "rows", "focused", "cell_w", "cell_h" }) |field| {
+        api.create_table(state, 0, 9);
+        inline for (.{ "pane_id", "width", "height", "cols", "rows", "focused", "keyboard_focus", "cell_w", "cell_h" }) |field| {
             const value = @field(viewport, field);
             if (@TypeOf(value) == bool) {
                 api.push_boolean(state, @intFromBool(value));
@@ -183,6 +223,12 @@ test "Lua pane snapshots are owned isolated and prepared only when invalidated" 
         \\calls = 0
         \\pane_surface = {
         \\  invalidate = function(self) self.dirty = true end,
+        \\  geometry = function(self, bounds)
+        \\    assert(bounds['pane:42:button'].x == 0)
+        \\    assert(bounds['pane:42:button'].width == 100)
+        \\    assert(bounds['pane:42:button'].height == 20)
+        \\    self.geometry_received = true
+        \\  end,
         \\  snapshot = function(self, ctx)
         \\    calls = calls + 1
         \\    assert(ctx.pane_id == 42 and ctx.cols == 20 and ctx.rows == 5)
@@ -210,11 +256,16 @@ test "Lua pane snapshots are owned isolated and prepared only when invalidated" 
     var viewport: LuaSurface.Viewport = .{ .pane_id = 42, .width = 200, .height = 100, .cols = 20, .rows = 5, .focused = true, .cell_w = 10, .cell_h = 20 };
     try std.testing.expect(surface.prepare(allocator, &runtime, &renderer, viewport));
     try std.testing.expect(!surface.prepare(allocator, &runtime, &renderer, viewport));
+    viewport.keyboard_focus = true;
+    try std.testing.expect(!surface.needsPrepare(runtime.generation, viewport));
+    try std.testing.expect(!surface.prepare(allocator, &runtime, &renderer, viewport));
     try std.testing.expectEqual(@as(usize, 1), renderer.labels);
     const tree = surface.clayState().?;
     try std.testing.expect(tree.active);
     try std.testing.expectEqualStrings("owned text", tree.nodes[2].text.chars[0..10]);
     try std.testing.expect(tree.layout(200, 100, 10, 20, 0).length > 0);
+    surface.reportGeometry(&runtime);
+    try runtime.runString("assert(pane_surface.geometry_received)");
     tree.area = .{ .x = 300, .y = 100, .width = 200, .height = 100 };
     try std.testing.expect(tree.hitTest(.clickable, 305, 105) != null);
     try std.testing.expect(tree.hitTest(.clickable, 5, 5) == null);

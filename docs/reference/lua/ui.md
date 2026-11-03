@@ -527,9 +527,21 @@ and invalidate to retry. Unknown style tokens remain errors.
 ### Input
 
 Focusable components share pane-local Tab/Shift-Tab navigation and activation.
+Entering a pane through keyboard navigation automatically focuses its first
+enabled control and shows its outline, including when revisiting a pane.
+Mouse entry does not automatically select the first control.
+Unmodified arrow keys move focus spatially using rendered positions, preferring
+aligned controls. Arrows start at the first control (Down/Right) or last
+(Up/Left), and stop at pane edges without wrapping. Focused controls with
+`on_key` retain their arrows, even when their handler declines a key; use Tab
+to leave an input. Pane `on_key` can override default navigation.
+Keyboard interaction shows the focus outline; clicks, scrolling, or pointer
+movement of at least four pixels hide it without clearing focus. Clicked inputs
+still accept typing. Keyboard-focused offscreen controls scroll into view.
 Clicks focus the pane and dispatch its component `on_click`; IDs are namespaced
 per instance, while callback `event.id` and `ctx.hovered_id` remain local IDs.
-Hover transitions invalidate; moving within the same node does not rebuild Lua.
+Hover transitions update pane-local hover. Same-node movement rebuilds the
+snapshot only when it switches from keyboard to pointer modality.
 Lua presses never initiate terminal selection or leak releases into terminals.
 Only left clicks dispatch component `on_click`; `on_pointer` also sees right and
 middle clicks with `event.button`. Wheel input reaches `on_pointer` as
@@ -539,7 +551,7 @@ consumed, native `scroll = true` containers scroll.
 
 Keyboard priority is: overlays/modal capture and pending global sequences;
 explicit-modifier global bindings (after the leader, for `capture_keys` panes);
-pane-local focused components, `on_key`, then Tab navigation; finally unmodified
+pane-local focused components, `on_key`, then Tab/spatial navigation; finally unmodified
 global bindings when the pane declines.
 Existing copy-mode priority is unchanged. Keys are normalized (for example
 `"f6"`, `"enter"`, `"arrow_left"`); modifier strings are canonical (`""`,

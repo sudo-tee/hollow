@@ -403,6 +403,8 @@ pub const App = struct {
     topbar_cache_visible: bool = false,
     topbar_cache_dirty: bool = true,
     window_focused: bool = true,
+    /// Input source used when entering a Lua pane.
+    keyboard_navigation: bool = false,
     topbar_cache_expires_at_ns: i128 = 0,
     config_watcher: ?*ConfigWatcher = null,
     config_watch_reload_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -3019,8 +3021,8 @@ test "public Lua pane host API queues creation title invalidation close and relo
         \\    assert(type(ctx.cols)=='number' and type(ctx.cell_w)=='number')
         \\    focuses[#focuses+1] = focused
         \\  end,
-        \\  pointer=function(_, kind, node)
-        \\    pointers[#pointers+1] = {kind=kind, id=node}
+        \\  pointer=function(_, kind, node, _, x)
+        \\    pointers[#pointers+1] = {kind=kind, id=node, x=x}
         \\  end}
         \\id = host_api.create_lua_pane(owner)
         \\assert(type(id)=='number')
@@ -3075,7 +3077,8 @@ test "public Lua pane host API queues creation title invalidation close and relo
     lua_panes.pointer(app, pointer);
     try std.testing.expectEqual(@as(f32, 11), pane.asLua().?.pointer_x);
     try std.testing.expect(!pane.asLua().?.dirty);
-    try app.lua.?.runString("assert(#pointers == 1 and pointers[1].kind == 'hover')");
+    // Same-node motion reaches Lua for modality, but repaints only on request.
+    try app.lua.?.runString("assert(#pointers == 2 and pointers[2].kind == 'hover' and pointers[2].x == 11)");
     mux.setActivePane(initial);
     app.syncActivePaneChange(pane, initial);
     pointer.kind = .click;
@@ -3090,18 +3093,18 @@ test "public Lua pane host API queues creation title invalidation close and relo
     stale = pointer;
     stale.layout_generation +%= 1;
     lua_panes.pointer(app, stale);
-    try app.lua.?.runString("assert(#pointers == 2 and pointers[2].kind == 'click' and pointers[2].id == 'layout:test:button'); assert(pane_focus_events == 1)");
+    try app.lua.?.runString("assert(#pointers == 3 and pointers[3].kind == 'click' and pointers[3].id == 'layout:test:button'); assert(pane_focus_events == 1)");
     pointer.kind = .hover;
     pointer.id = null;
     pointer.x = -1;
     pointer.y = -1;
     lua_panes.pointer(app, pointer);
     try std.testing.expect(pane.asLua().?.hovered_id == null);
-    try app.lua.?.runString("assert(#pointers == 3 and pointers[3].id == nil)");
+    try app.lua.?.runString("assert(#pointers == 4 and pointers[4].id == nil)");
     pointer.id = try a.dupe(u8, "owned queued node");
     try std.testing.expect(app.enqueueMouse(.{ .lua_pane_pointer = pointer }));
     input.deinitInputQueue(app);
-    try app.lua.?.runString("assert(#pointers == 3)");
+    try app.lua.?.runString("assert(#pointers == 4)");
     try app.lua.?.runString("assert(host_api.close_pane_by_id(id))");
     input.processInputQueue(app);
     try std.testing.expect(app.findPaneById(id) == null);

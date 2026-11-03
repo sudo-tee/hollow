@@ -54,6 +54,11 @@ fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
     ctx.changed = ctx.surface.prepare(ctx.app.allocator, runtime, ctx.renderer, ctx.viewport);
 }
 
+fn reportLuaPaneGeometry(runtime: *lua_mod.Runtime) void {
+    const ctx = g_lua_pane_prepare orelse return;
+    ctx.surface.reportGeometry(runtime);
+}
+
 /// Lua content always uses the pane's existing retained texture, including
 /// when terminals use a diagnostic direct path. No Ghostty handles are needed.
 fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds) void {
@@ -65,7 +70,7 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
         .app = app,
         .renderer = renderer,
         .surface = surface,
-        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane() and app.window_focused, .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
+        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane() and app.window_focused, .keyboard_focus = app.keyboard_navigation, .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
     };
     if (app.lua) |*runtime| {
         if (surface.needsPrepare(runtime.generation, ctx.viewport)) {
@@ -100,6 +105,11 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
         drawClaySurface(tree, renderer, pw, ph, 0, 0);
         tree.area.x = @floatFromInt(bounds.x);
         tree.area.y = @floatFromInt(bounds.y);
+    }
+    if (app.lua) |*runtime| {
+        g_lua_pane_prepare = &ctx;
+        defer g_lua_pane_prepare = null;
+        runtime.withLockedState(void, reportLuaPaneGeometry);
     }
     const bg = app.config.terminal_theme.background;
     var pass = std.mem.zeroes(c.sg_pass);
@@ -5593,6 +5603,7 @@ fn flushPendingMouseMove(app: *App) void {
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
+    app.keyboard_navigation = true;
     if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const key = mapKey(event.key_code);
     if (key == .alt_right) g_right_alt_down = true;
@@ -5728,6 +5739,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 }
 
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {
+    if (action == .press) app.keyboard_navigation = false;
     const button = switch (event.mouse_button) {
         c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
         c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
@@ -6317,6 +6329,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
+    app.keyboard_navigation = false;
     if (g_block_all_mouse_until_up) {
         c.sapp_consume_event();
         return;
