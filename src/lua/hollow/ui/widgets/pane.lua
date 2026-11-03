@@ -24,11 +24,11 @@ local function focus(self, ctx, focused)
   if self.mounted and self.focused ~= focused then
     self.focused = focused
     self.autofocus_pending = focused and ctx.keyboard_focus == true
-    local first = (self.surface.focus_order or {})[1]
-    if self.autofocus_pending and first then
-      -- Focus immediately for incoming keys, then reconcile with the next
-      -- snapshot in case controls changed while this pane was inactive.
-      self.surface:focus(first)
+    local target = self.surface.focused or (self.surface.focus_order or {})[1]
+    if self.autofocus_pending and target then
+      -- Restore focus immediately for incoming keys, then reconcile with the
+      -- next snapshot in case controls changed while this pane was inactive.
+      self.surface:focus(target)
     end
     self.surface:invalidate()
     if self.opts.on_focus then
