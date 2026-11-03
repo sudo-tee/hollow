@@ -1348,6 +1348,7 @@
 ---@class HollowKeymapSequenceNode
 ---@field action any
 ---@field desc string|nil
+---@field group_desc? string
 ---@field children HollowKeymapSequenceChildren
 
 ---@class HollowKeymapLeader
@@ -1358,6 +1359,8 @@
 ---@field modes table<HollowKeyMode, HollowKeymapModeState>
 ---@field leader HollowKeymapLeader|nil
 ---@field sequence_timeout_ms integer
+---@field leader_timeout_ms integer
+---@field sequence_started_at_ms integer|nil
 ---@field sequence_pending_until integer|nil
 ---@field sequence_active_node HollowKeymapSequenceNode|nil
 ---@field sequence_steps string[]
@@ -1831,8 +1834,16 @@ function events.apply_filters(name, payload) end
 ---@class HollowKeymapOpts
 ---@field desc? string
 ---@field args? table Named arguments passed to a registered action
----@field timeout_ms? integer
 ---@field mode? HollowKeyMode
+
+---@class HollowLeaderOpts
+---@field timeout_ms? integer Idle timeout per leader step (default 5000); ordinary sequences stay at 1000 ms
+
+---@class HollowLeaderNextKey
+---@field key string
+---@field desc? string
+---@field complete boolean
+---@field has_children boolean
 
 ---@class HollowKeymapValue
 ---@field action HollowKeyAction
@@ -1845,7 +1856,8 @@ function events.apply_filters(name, payload) end
 ---@field prefix string
 ---@field sequence string[]
 ---@field display string
----@field next string[]
+---@field next HollowLeaderNextKey[]
+---@field started_at_ms integer
 ---@field next_display string[]
 ---@field desc? string
 ---@field remaining_ms integer
@@ -1884,10 +1896,19 @@ function keymap.del(chord, opts) end
 function keymap.get(chord, opts) end
 
 ---@param chord? HollowKeyChord
----@param opts? HollowKeymapOpts
+---@param opts? HollowLeaderOpts
 function keymap.set_leader(chord, opts) end
 
 function keymap.clear_leader() end
+
+---Cancel any in-flight key sequence and its preview.
+function keymap.cancel() end
+
+---Label a leader prefix without replacing its action or child bindings.
+---@param chord HollowKeyChord
+---@param desc string
+---@param opts? HollowKeymapOpts
+function keymap.group(chord, desc, opts) end
 
 ---@return boolean
 function keymap.is_leader_active() end
@@ -2649,7 +2670,24 @@ function ui_pane.get(id) end
 ---@param factory fun(args: HollowUiPaneArgs): HollowUiPaneOptions Must return a render function.
 function ui_pane.register(name, factory) end
 
+---@class HollowLeaderPreviewOptions
+---@field enabled? boolean Default true; disabling hints does not disable the leader
+---@field mode? 'overlay'|'bottombar' Default overlay
+---@field delay_ms? integer Default 200; execution is never delayed
+---@field align? HollowOverlayAlign Default bottom_right
+---@field width? integer Width in cells, 20–240 (default 48)
+---@field max_height? integer Height in rows, 6–100 (default 20)
+---@field theme? HollowUiTheme Overrides for the leader_preview widget palette
+
+---@class HollowLeaderPreviewNamespace
+local leader_preview = {}
+
+---Merge and validate preview settings. Pass false to hide hints.
+---@param opts HollowLeaderPreviewOptions|false
+function leader_preview.configure(opts) end
+
 ---@class HollowUi
+---@field leader_preview HollowLeaderPreviewNamespace Passive, delayed leader-key hints
 ---@field pane HollowUiPaneNamespace GUI-only native split/floating panes backed by Clay surfaces.
 ---@field layout HollowUiLayout Clay-backed surface engine behind overlays and Lua panes.
 ---@field components HollowUiComponents Clay node constructors and components for overlays and Lua panes.
@@ -2817,6 +2855,7 @@ ui.bottombar = bottombar
 ui.sidebar = sidebar
 ui.pane = ui_pane
 ui.overlay = overlay
+ui.leader_preview = leader_preview
 ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette

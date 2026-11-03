@@ -80,6 +80,11 @@ hollow.events.on("window:focused", function()
 end)
 hollow.events.on("window:blurred", function()
   state.ui.window_focused = false
+  hollow.keymap.cancel()
+end)
+-- A mode transition must not leave a stale leader HUD over the new interaction.
+hollow.events.on("copy_mode:changed", function()
+  hollow.keymap.cancel()
 end)
 require("hollow.activity").setup(hollow, host_api)
 copy_mode.setup()

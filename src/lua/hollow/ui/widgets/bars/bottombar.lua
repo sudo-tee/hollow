@@ -8,6 +8,14 @@ local tbl = hollow.tbl
 local M = {}
 function M.leader_state()
   local value = hollow.keymap.get_leader_state()
+  if
+    value
+    and value.prefix == "<leader>"
+    and ui.leader_preview
+    and ui.leader_preview._mode() ~= "bottombar"
+  then
+    return nil
+  end
   return value and value.active and value or nil
 end
 
@@ -183,7 +191,7 @@ function M.widget()
           ui.bar.custom({
             id = "mode:leader",
             render = function()
-              return special_mode_chip(" LEADER ", theme, "leader")
+              return special_mode_chip(" " .. (leader.display or "LEADER") .. " ", theme, "leader")
             end,
           }),
         }

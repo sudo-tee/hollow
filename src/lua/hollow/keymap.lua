@@ -29,6 +29,19 @@ local function push_leader_state(active, expires_at_ms)
   end
 end
 
+local function sequence_changed()
+  invalidate_bars()
+  local preview = _G.hollow and _G.hollow.ui and _G.hollow.ui.leader_preview
+  if preview then
+    preview._changed()
+  end
+end
+
+local function sequence_timeout(keymap_state)
+  return keymap_state.sequence_prefix == "<leader>" and keymap_state.leader_timeout_ms
+    or keymap_state.sequence_timeout_ms
+end
+
 local MODS_SHIFT = 0x01
 local MODS_CTRL = 0x02
 local MODS_ALT = 0x04
@@ -500,8 +513,22 @@ local function copy_list(items)
   return out
 end
 
+local is_bound
+
+-- Label-only group nodes do not count: they must not swallow keys.
 local function has_sequence_children(node)
-  return node ~= nil and node.children ~= nil and next(node.children) ~= nil
+  for _, modmap in pairs(node and node.children or {}) do
+    for _, child in pairs(modmap) do
+      if is_bound(child) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+is_bound = function(node)
+  return node.action ~= nil or has_sequence_children(node)
 end
 
 local function get_leader_next_keys(node)
@@ -512,12 +539,16 @@ local function get_leader_next_keys(node)
 
   for key, modmap in pairs(node.children) do
     for mods, child in pairs(modmap) do
-      table.insert(items, {
-        key = format_chord(key, mods),
-        desc = child.desc,
-        complete = child.action ~= nil,
-        has_children = has_sequence_children(child),
-      })
+      local has_children = has_sequence_children(child)
+      if child.action ~= nil or has_children then
+        local fallback = type(child.action) == "string" and child.action:gsub("_", " ") or nil
+        table.insert(items, {
+          key = format_chord(key, mods),
+          desc = child.desc or child.group_desc or fallback,
+          complete = child.action ~= nil,
+          has_children = has_children,
+        })
+      end
     end
   end
 
@@ -561,7 +592,8 @@ local function get_sequence_child(node, key, mods)
     if not key_bindings then
       return nil
     end
-    return key_bindings[candidate_mods]
+    local child = key_bindings[candidate_mods]
+    return child and is_bound(child) and child or nil
   end
 
   local child = lookup(key, mods)
@@ -577,21 +609,29 @@ local function get_sequence_child(node, key, mods)
 end
 
 local function reset_sequence_state(keymap_state)
+  keymap_state.suppress_next_key = nil
   keymap_state.sequence_pending_until = nil
   keymap_state.sequence_active_node = nil
   keymap_state.sequence_steps = {}
   keymap_state.sequence_prefix = nil
+  keymap_state.sequence_started_at_ms = nil
   push_leader_state(false, 0)
-  invalidate_bars()
+  sequence_changed()
 end
 
-local function set_sequence_state(keymap_state, node, prefix, steps)
+-- Each step restarts the idle deadline.
+local function move_sequence(keymap_state, node)
   keymap_state.sequence_active_node = node
-  keymap_state.sequence_prefix = prefix
-  keymap_state.sequence_steps = steps or {}
-  keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
+  keymap_state.sequence_pending_until = time_now_ms() + sequence_timeout(keymap_state)
   push_leader_state(true, keymap_state.sequence_pending_until)
-  invalidate_bars()
+end
+
+local function set_sequence_state(keymap_state, node, prefix)
+  keymap_state.sequence_prefix = prefix
+  keymap_state.sequence_steps = {}
+  keymap_state.sequence_started_at_ms = time_now_ms()
+  move_sequence(keymap_state, node)
+  sequence_changed()
 end
 
 local function set_leader_binding(keymap_state, chord, style, action, opts)
@@ -621,46 +661,6 @@ local function set_sequence_binding(root, steps, action, opts)
   node.args = binding.args
 end
 
-local function del_leader_binding(keymap_state, chord, style)
-  local steps = parse_leader_sequence(chord, style)
-  if not steps then
-    return false
-  end
-
-  local path = {}
-  local node = keymap_state.leader_bindings
-  for _, step in ipairs(steps) do
-    local key, mods = parse_chord(step)
-    local next_node = get_sequence_child(node, key, mods)
-    if not next_node then
-      return false
-    end
-    table.insert(path, { parent = node, key = key, mods = mods, node = next_node })
-    node = next_node
-  end
-
-  if node.action == nil then
-    return false
-  end
-
-  node.action = nil
-  node.desc = nil
-
-  for i = #path, 1, -1 do
-    local item = path[i]
-    if item.node.action ~= nil or has_sequence_children(item.node) then
-      break
-    end
-
-    item.parent.children[item.key][item.mods] = nil
-    if next(item.parent.children[item.key]) == nil then
-      item.parent.children[item.key] = nil
-    end
-  end
-
-  return true
-end
-
 local function del_sequence_binding(root, steps)
   local path = {}
   local node = root
@@ -683,7 +683,8 @@ local function del_sequence_binding(root, steps)
 
   for i = #path, 1, -1 do
     local item = path[i]
-    if item.node.action ~= nil or has_sequence_children(item.node) then
+    -- Group labels outlive their bindings so re-adding a child keeps the label.
+    if item.node.group_desc ~= nil or is_bound(item.node) then
       break
     end
 
@@ -696,19 +697,25 @@ local function del_sequence_binding(root, steps)
   return true
 end
 
-local function get_sequence_binding(root, steps)
+local function del_leader_binding(keymap_state, chord, style)
+  local steps = parse_leader_sequence(chord, style)
+  return steps ~= nil and del_sequence_binding(keymap_state.leader_bindings, steps)
+end
+
+local function get_sequence_binding_node(root, steps)
   local node = root
   for _, step in ipairs(steps) do
-    local key, mods = parse_chord(step)
-    node = get_sequence_child(node, key, mods)
+    node = get_sequence_child(node, parse_chord(step))
     if node == nil then
       return nil
     end
   end
-  if node.action == nil then
-    return nil
-  end
   return node
+end
+
+local function get_sequence_binding(root, steps)
+  local node = get_sequence_binding_node(root, steps)
+  return node ~= nil and node.action ~= nil and node or nil
 end
 
 local function run_action(hollow, binding)
@@ -738,7 +745,7 @@ local function is_sequence_active(keymap_state)
     return false
   end
 
-  if time_now_ms() > keymap_state.sequence_pending_until then
+  if time_now_ms() >= keymap_state.sequence_pending_until then
     reset_sequence_state(keymap_state)
     return false
   end
@@ -909,8 +916,26 @@ function M.setup(hollow, host_api, state)
     reset_sequence_state(keymap_state)
 
     if type(opts) == "table" and type(opts.timeout_ms) == "number" and opts.timeout_ms > 0 then
-      keymap_state.sequence_timeout_ms = math.floor(opts.timeout_ms)
+      keymap_state.leader_timeout_ms = math.max(1, math.floor(opts.timeout_ms))
     end
+  end
+
+  -- Labels do not replace an action or appear in the action/palette registry.
+  function hollow.keymap.group(chord, desc, opts)
+    assert(type(desc) == "string" and desc ~= "", "group description must be a non-empty string")
+    local use_leader, resolved = split_leader_chord(chord)
+    assert(use_leader, "group expects a <leader> prefix")
+    local steps = assert(parse_vim_sequence(resolved), "invalid group prefix")
+    local mode = get_mode_state(keymap_state, mode_for_lookup(opts), true)
+    local node = mode.leader_bindings
+    for _, step in ipairs(steps) do
+      node = ensure_sequence_child(node, step)
+    end
+    node.group_desc = desc
+  end
+
+  function hollow.keymap.cancel()
+    reset_sequence_state(keymap_state)
   end
 
   function hollow.keymap.clear_leader()
@@ -967,11 +992,12 @@ function M.setup(hollow, host_api, state)
       prefix = prefix,
       sequence = steps,
       display = display,
+      started_at_ms = keymap_state.sequence_started_at_ms,
       next = next_items,
       next_display = format_next_items(next_items),
-      desc = node.desc,
+      desc = node.desc or node.group_desc,
       remaining_ms = math.max(0, keymap_state.sequence_pending_until - time_now_ms()),
-      timeout_ms = keymap_state.sequence_timeout_ms,
+      timeout_ms = sequence_timeout(keymap_state),
       complete = node.action ~= nil,
     }
   end
@@ -1010,7 +1036,11 @@ function M.setup(hollow, host_api, state)
     end
     keymap_state.suppress_next_key = nil
 
-    if hollow.ui.dispatch_overlay_key(key, mods) then
+    -- Once leader owns a sequence, passive overlays (including toast Escape
+    -- handlers) must not intercept its continuation. Opening a modal cancels it.
+    local leader_active = keymap_state.sequence_prefix == "<leader>"
+      and is_sequence_active(keymap_state)
+    if not leader_active and hollow.ui.dispatch_overlay_key(key, mods) then
       return true
     end
 
@@ -1029,16 +1059,31 @@ function M.setup(hollow, host_api, state)
 
     if is_sequence_active(keymap_state) then
       local node = get_sequence_child(keymap_state.sequence_active_node, key, mods)
+      -- Explicit Backspace bindings win; otherwise navigate without leaving leader mode.
+      if
+        node == nil
+        and key == "backspace"
+        and mods == 0
+        and keymap_state.sequence_prefix == "<leader>"
+      then
+        local steps = keymap_state.sequence_steps
+        if #steps == 0 then
+          reset_sequence_state(keymap_state)
+          return true
+        end
+        table.remove(steps)
+        move_sequence(keymap_state, get_sequence_binding_node(mode_state.leader_bindings, steps))
+        sequence_changed()
+        return true
+      end
       if node ~= nil then
-        keymap_state.sequence_active_node = node
         table.insert(keymap_state.sequence_steps, format_chord(key, mods))
-        keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
-        push_leader_state(true, keymap_state.sequence_pending_until)
-        invalidate_bars()
+        move_sequence(keymap_state, node)
         if node.action ~= nil and not has_sequence_children(node) then
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)
         end
+        sequence_changed()
         return true
       end
       reset_sequence_state(keymap_state)
@@ -1063,13 +1108,10 @@ function M.setup(hollow, host_api, state)
       and key == keymap_state.leader.key
       and mods == keymap_state.leader.mods
     then
-      if
-        mode_state.leader_bindings.action == nil
-        and not has_sequence_children(mode_state.leader_bindings)
-      then
+      if not is_bound(mode_state.leader_bindings) then
         return keymap_state.active_mode ~= "normal"
       end
-      set_sequence_state(keymap_state, mode_state.leader_bindings, "<leader>", {})
+      set_sequence_state(keymap_state, mode_state.leader_bindings, "<leader>")
       keymap_state.suppress_next_key = { key = key, mods = mods }
       return true
     end
@@ -1079,7 +1121,7 @@ function M.setup(hollow, host_api, state)
       if sequence_node.action ~= nil and not has_sequence_children(sequence_node) then
         return run_action(hollow, sequence_node)
       end
-      set_sequence_state(keymap_state, sequence_node, format_chord(key, mods), {})
+      set_sequence_state(keymap_state, sequence_node, format_chord(key, mods))
       return true
     end
 

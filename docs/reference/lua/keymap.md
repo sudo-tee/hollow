@@ -35,6 +35,8 @@ hollow.keymap.set_leader(chord?, opts?)         -- set the leader key
 hollow.keymap.clear_leader()                    -- remove the leader
 hollow.keymap.is_leader_active()                -- boolean
 hollow.keymap.get_leader_state()                -- HollowLeaderState or nil
+hollow.keymap.group(prefix, desc, opts?)         -- label a leader group
+hollow.keymap.cancel()                          -- cancel the current sequence
 ```
 
 `default` has the same signature as `set` but stores the binding as a
@@ -50,9 +52,9 @@ effect.
 
 ```lua
 {
-  desc = "shown in the key-legend widget",
+  desc = "shown in the leader preview",
   mode = "normal",                              -- "normal" or "copy_mode"
-  timeout_ms = 1200,                            -- for the leader only
+  args = {},                                    -- named action arguments
 }
 ```
 
@@ -91,9 +93,29 @@ hollow.keymap.del("<C-S-c>")
 Configure the leader:
 
 ```lua
-hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
+hollow.keymap.set_leader("<C-Space>", { timeout_ms = 5000 })
 hollow.keymap.clear_leader()
 ```
+
+`timeout_ms` belongs to `set_leader`, not `set`: it is the idle time allowed
+between leader steps (default 5000 ms). Ordinary key sequences keep their
+independent 1000 ms timeout. Valid steps and Backspace navigation renew the
+leader timeout; the preview delay never delays execution.
+
+`group(prefix, desc, opts?)` labels a leader prefix without replacing its action
+or children. `opts.mode` selects normal or copy mode. Labels can be declared
+before bindings; description-only groups do not activate the leader.
+
+```lua
+hollow.keymap.group("<leader>u", "Configuration")
+hollow.keymap.set("<leader>uu", "reload_config", { desc = "Reload config" })
+```
+
+The passive overlay appears after 200 ms by default. Use
+`hollow.ui.leader_preview.configure({...})` to change delay, position, geometry,
+theme, or choose `mode = "bottombar"`; pass `false` to hide hints without
+disabling bindings. See [Leader discovery](../../keybindings.md#discovering-bindings)
+for configuration examples and navigation behavior.
 
 ## Leader state
 
@@ -107,7 +129,10 @@ HollowLeaderState = {
   prefix = string,        -- leader key
   sequence = string[],    -- keys pressed so far
   display = string,       -- pretty version of `sequence`
-  next = string[],        -- valid next keys
+  started_at_ms = integer, -- start of the entire sequence (host clock)
+  next = {                -- valid next keys, sorted by key
+    { key = string, desc = string | nil, complete = boolean, has_children = boolean },
+  },
   next_display = string[],
   desc = string | nil,    -- description of the matching action, if any
   remaining_ms = integer, -- ms until the sequence times out
@@ -116,7 +141,8 @@ HollowLeaderState = {
 }
 ```
 
-Useful for showing a leader HUD in the top bar.
+Also describes in-flight ordinary sequences; `prefix == "<leader>"` identifies
+leader sequences. Useful for custom hints or a leader HUD in a bar.
 
 ## Modal notes
 

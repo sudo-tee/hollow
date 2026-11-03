@@ -27,6 +27,11 @@ function M.modal(spec)
     end
   end
 
+  -- An externally opened dialog supersedes an in-flight leader sequence.
+  if hollow.keymap.cancel then
+    hollow.keymap.cancel()
+  end
+
   local theme
   if type(spec.theme) == "table" then
     theme = spec.theme
