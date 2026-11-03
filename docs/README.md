@@ -73,8 +73,6 @@ Per-OS notes for the targets Hollow actually supports or works on today.
 
 Runnable recipes and small, complete snippets.
 
-Design reference: [Rex comparison and borrowing priorities](architecture/rex-comparison.md).
-
 - [Config snippets](examples/config-snippets.md)
 - [UI recipes](examples/ui-recipes.md)
 - [Plugin authoring](examples/plugin-authoring.md)

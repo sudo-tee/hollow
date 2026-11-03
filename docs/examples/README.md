@@ -11,7 +11,7 @@ personal `init.lua` or a plugin.
   docked Lua pane; pairs with
   [`lua-pane-workspace.json`](lua-pane-workspace.json) for workspace layouts
 - [Plugin authoring](plugin-authoring.md) — a complete plugin walkthrough
-- [Smart splits](../examples/plugins/smart-splits) — bidirectional pane
+- [Smart splits](../../examples/plugins/smart-splits) — bidirectional pane
   navigation between hollow and nvim via smart-splits.nvim
 
 The recipes assume the API surface described in

@@ -250,8 +250,8 @@ shell. `hollow.ui.is_focused()` queries OS window focus. The composable
 `hollow.ui.text_view({ text?, width?, row_budget?, id? })` behavior supplies wrapped,
 read-only rows with keyboard and mouse scrolling, without creating a modal.
 
-See [Activity API](docs/reference/lua/activity.md) and
-[UI reference](docs/reference/lua/ui.md) for lifecycle rules and options.
+See [Activity API](reference/lua/activity.md) and
+[UI reference](reference/lua/ui.md) for lifecycle rules and options.
 
 ## hollow.ui — Rendering Primitives
 
