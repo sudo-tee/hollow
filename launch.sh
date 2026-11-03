@@ -107,6 +107,8 @@ if [[ $BUILD -eq 1 ]]; then
   fi
   zig build "${BUILD_ARGS[@]}"
   mkdir -p "$SCRIPT_DIR/zig-out"
+  # The binary embeds this module list; dev.sh rebuilds when it changes.
+  find "$SCRIPT_DIR/src/lua/hollow" -type f -name '*.lua' -printf '%P\n' | LC_ALL=C sort >"$SCRIPT_DIR/zig-out/.lua-modules"
   if [[ $DEV -eq 1 ]]; then
     printf '%s dev\n' "$TARGET" > "$SCRIPT_DIR/zig-out/.launch-build-mode"
   else
