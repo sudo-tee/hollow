@@ -318,7 +318,8 @@ navigation, cleanup in `on_unmount`, and a `<leader>T` toggle that survives
 config reload. Each task runs on a domain: `local` ones use
 `hollow.process.spawn`, and domains with a host (WSL, SSH, containers) run
 through the agent with [`hollow.host.for_domain`](reference/lua/host.md#domain-hosts).
-Pick the domain with the `@` button or type `@name command`.
+Pick the domain with the `@` button or by typing `@` into the empty input, or
+type `@name command`.
 
 ![Tasks Lua pane docked on the right edge: header with task count, Run buttons, command output, status pills, and an input with an Add button](examples/lua-pane-tasks.png)
 

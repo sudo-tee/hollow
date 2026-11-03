@@ -161,6 +161,8 @@ describe("Lua pane example", function()
         return promise
       end,
     }
+    -- The leading @ opens the picker; canceling it keeps the @ for a prefix.
+    h.ui.select.open = function() end
     local pane = h.ui.pane.get(active)
     pane.surface:focus("command")
     for char in ("@dev uname -a"):gmatch(".") do
@@ -216,6 +218,30 @@ describe("Lua pane example", function()
       end
     end
     assert.equals(2, count)
+  end)
+
+  it("opens the domain picker when @ is typed into the empty input", function()
+    local opened = 0
+    local picker
+    h.ui.select.open = function(opts)
+      opened, picker = opened + 1, opts
+    end
+    h.ui.select.close = function() end
+    local pane = h.ui.pane.get(active)
+    pane.surface:focus("command")
+    on_key("digit_2", 1)
+    assert.equals(1, opened)
+    picker.actions[1].fn("dev")
+    local nodes = snapshot()
+    assert.is_true(has_text(nodes, "@dev"))
+    assert.is_false(has_text(nodes, "@"))
+
+    on_key("x", 0)
+    on_key("digit_2", 1)
+    on_key("backspace", 0)
+    on_key("backspace", 0)
+    on_key("digit_2", 1)
+    assert.equals(2, opened)
   end)
 
   it("toggles with <leader>T and cancels running jobs on close", function()

@@ -10,7 +10,8 @@
 -- Each task runs on a domain. `local` and domains without a host run on this
 -- machine with hollow.process.spawn; domains with a host (WSL, SSH, containers)
 -- run through hollow-agent on that host via hollow.host.for_domain. Pick the
--- domain for new commands with the @ button, or type `@name command`.
+-- domain for new commands with the @ button or by typing @ into the empty
+-- input, or type `@name command`.
 --
 -- Commands are split on whitespace and are not passed through a shell, so
 -- quoting is not supported.
@@ -128,7 +129,23 @@ hollow.ui.pane.register("tasks", function(args)
   for _, command in ipairs(commands) do
     tasks[#tasks + 1] = parse(command, LOCAL)
   end
-  local input = ui.text_input({ initial = "" })
+  local pick_domain
+  -- Typing @ into an empty input opens the domain picker. Picking a domain
+  -- clears the @; canceling keeps it so you can type `@name command`.
+  local input, previous = nil, ""
+  input = ui.text_input({
+    initial = "",
+    on_change = function(value)
+      local typed_at = value == "@" and previous == ""
+      previous = value
+      if typed_at then
+        pick_domain(function()
+          input.set("", 0)
+          previous = ""
+        end)
+      end
+    end,
+  })
 
   -- Clicks and handled keys repaint automatically; async work must invalidate.
   local function refresh()
@@ -176,10 +193,11 @@ hollow.ui.pane.register("tasks", function(args)
     if text ~= "" then
       tasks[#tasks + 1] = parse(text, target)
       input.set("", 0)
+      previous = ""
     end
   end
 
-  local function pick_domain()
+  function pick_domain(on_pick)
     ui.select.open({
       items = domain_names(),
       label = function(name)
@@ -194,6 +212,9 @@ hollow.ui.pane.register("tasks", function(args)
             ui.select.close()
             if name then
               target = name
+              if on_pick then
+                on_pick()
+              end
               refresh()
             end
           end,
@@ -274,7 +295,9 @@ hollow.ui.pane.register("tasks", function(args)
             text = "@" .. target,
             appearance = "quiet",
             size = "sm",
-            on_click = pick_domain,
+            on_click = function()
+              pick_domain()
+            end,
           }),
           -- Inputs own their arrows; Enter adds, Tab moves on.
           c.input({ id = "command", behavior = input, on_key = ui.keys(input, { enter = add }) }),
