@@ -164,6 +164,27 @@ describe("leader discovery", function()
     assert.is_nil(h.keymap.get_leader_state())
   end)
 
+  it("closes even when the expiry timer fires early", function()
+    press("<C-Space>")
+    advance(200)
+    for _, timer in ipairs(timers) do
+      timer.at = timer.at - 1
+    end
+    advance(4799)
+    assert.equal(1, #stack())
+    advance(1)
+    assert.equal(0, #stack())
+    assert.is_nil(h.keymap.get_leader_state())
+  end)
+
+  it("drops an expired preview before layout when the timer is late", function()
+    press("<C-Space>")
+    advance(200)
+    env.recorded.now_ms = clock + 4800
+    h.ui._layout_prepare(800, 600, 8, 19)
+    assert.equal(0, #stack())
+  end)
+
   it("leaves ordinary sequences on their independent short timeout", function()
     h.keymap.set_leader("<C-Space>", { timeout_ms = 9000 })
     h.keymap.set("gg", function()

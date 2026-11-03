@@ -40,6 +40,8 @@ local options = {
   width = 48,
   max_height = 20,
 }
+-- Leaves room for panel/header/footer under the shared 512-node surface budget.
+local MAX_ROWS = 70
 local active, generation = nil, 0
 
 local function redraw()
@@ -79,9 +81,8 @@ local function render(ctx)
       c.label({ leader.display, theme = theme, tone = "muted" }),
     }, { width = "grow", gap = cw }),
     c.column({
-      -- Leave room for panel/header/footer under the shared 512-node surface budget.
       c.each(leader.next, function(item, index)
-        return c.when(index <= 70, function()
+        return c.when(index <= MAX_ROWS, function()
           return c.row({
             c.column(
               { c.text(item.key, { fg = theme.title, bold = true }) },
@@ -96,7 +97,7 @@ local function render(ctx)
           }, { width = "grow", gap = cw, min_height = ch, align_y = "center" })
         end)
       end),
-      c.when(#leader.next > 70, function()
+      c.when(#leader.next > MAX_ROWS, function()
         return c.label({
           "More bindings — type a group key to narrow",
           theme = theme,
@@ -138,46 +139,54 @@ local function show()
   active._palette = theme
   -- No focusable nodes, on_key handler, or backdrop: never captures shortcuts.
   ui.overlay.push(active)
-  redraw()
+end
+
+-- Wakes a quiet window at the deadline even when the preview is disabled.
+-- Timers may fire early, so keep watching until the keymap reports expiry.
+local function watch_expiry(ticket, delay_ms)
+  host.defer(function()
+    if generation ~= ticket then
+      return
+    end
+    local leader = hollow.keymap.get_leader_state()
+    if leader then
+      watch_expiry(ticket, leader.remaining_ms)
+    end
+    redraw()
+  end, math.max(1, delay_ms))
 end
 
 function M._changed()
   generation = generation + 1
   local ticket = generation
   local leader = hollow.keymap.get_leader_state()
-  if not leader or leader.prefix ~= "<leader>" then
+  local leading = leader ~= nil and leader.prefix == "<leader>"
+  if leading then
+    watch_expiry(ticket, leader.remaining_ms)
+  end
+  if not leading or M._mode() ~= "overlay" then
     close()
     return
   end
 
-  -- Expiry still wakes a quiet window when the preview is disabled.
-  host.defer(function()
-    if generation ~= ticket then
-      return
-    end
-    hollow.keymap.is_leader_active()
-    redraw()
-  end, math.max(1, leader.remaining_ms))
-
-  if M._mode() ~= "overlay" then
-    close()
-    return
-  end
-  if active then
-    active._layout_surface:invalidate()
-    redraw()
-    return
-  end
-  local delay = math.max(0, options.delay_ms - (util.host_now_ms(host) - leader.started_at_ms))
+  local now = util.host_now_ms(host)
+  local deadline = now + leader.remaining_ms
   local function reveal()
-    if generation ~= ticket then
+    if generation ~= ticket or not hollow.keymap.is_leader_active() then
       return
     end
-    local current = hollow.keymap.get_leader_state()
-    if current and current.prefix == "<leader>" and M._mode() == "overlay" then
+    if active then
+      active._layout_surface:invalidate()
+    else
       show()
     end
+    -- Layout expires the surface before rendering, so render never tears itself down.
+    active._expires_at = deadline
+    redraw()
   end
+
+  -- The reveal deadline counts from the leader press, not from each step.
+  local delay = active and 0 or math.max(0, options.delay_ms - (now - leader.started_at_ms))
   if delay == 0 then
     reveal()
   else
