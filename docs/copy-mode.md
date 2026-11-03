@@ -60,8 +60,27 @@ line range.
 | `n` | `copy_mode_search_next` |
 | `N` | `copy_mode_search_prev` |
 
-`/` opens a prompt; typing filters and the first match is highlighted.
+`/` opens a prompt; press Enter to search and highlight the first match.
 The status line shows `match_index / match_count`.
+
+Plain queries retain the existing case-sensitive pattern syntax (`.`, `*`,
+`+`, `?`, `^`, `$`, `\d`, `\s`, and `\w`). Prefix a query with `\V` to
+search literally using Ghostty's incremental terminal search:
+
+```text
+\Verror.log
+```
+
+Literal search treats punctuation as text and ignores ASCII letter case.
+It searches scrollback and the active screen, including text wrapped across
+rows. Counts grow as the search progresses; `n` moves toward newer matches,
+and `N` toward older matches, wrapping at either end. Output, resize, and
+primary/alternate screen switches are picked up while copy mode is active.
+Submitting an empty query (or just `\V`) clears the search.
+
+The incremental backend is independent of the UI; a standalone Find bar is
+not part of copy mode. Copy mode still captures terminal rows for display
+and copying, so entering its snapshot is separate from incremental searching.
 
 `hollow.events.on("copy_mode:search_requested", ...)` lets your config
 open a custom search prompt. After the user submits, call

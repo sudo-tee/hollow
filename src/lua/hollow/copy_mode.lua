@@ -53,7 +53,7 @@ local function open_search()
   close_search_prompt()
   cs.prompt_depth = hollow.ui.overlay.depth() + 1
   hollow.ui.input.open({
-    prompt = "Scrollback search",
+    prompt = "Scrollback search (pattern; \\V literal)",
     default = cs.query,
     width = 48,
     backdrop = false,

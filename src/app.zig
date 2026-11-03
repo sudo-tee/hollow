@@ -364,6 +364,10 @@ pub const App = struct {
     copy_mode_matches: std.ArrayListUnmanaged(copy_mode.CopyModeMatch) = .empty,
     copy_mode_match_index: ?usize = null,
     copy_mode_query: []u8 = &.{},
+    copy_mode_search: @import("term/search.zig").Search = .{},
+    copy_mode_search_pending_jump: ?bool = null,
+    copy_mode_snapshot_cols: u16 = 0,
+    copy_mode_snapshot_screen: ghostty.TerminalScreen = .primary,
     copy_mode_needs_refresh: bool = false,
     copy_mode_top_row: usize = 0,
     copy_mode_block_selection: bool = false,
@@ -1335,6 +1339,9 @@ pub const App = struct {
         if (self.ghostty) |*runtime| {
             const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
+            copy_mode.tickSearch(self) catch |err| {
+                std.log.err("copy mode search failed: {s}", .{@errorName(err)});
+            };
             quick_select.refreshAfterPanes(self);
             if (self.config.debug_overlay) tick_panes_ns = io.nanoTimestamp() - start_ns;
         }
