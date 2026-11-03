@@ -1995,8 +1995,11 @@ pub const App = struct {
         std.log.info("config: command_timing={}", .{self.config.command_timing});
         cmd_ipc.syncCommandTimingEnv(self);
 
-        if (self.config.window_width == 1280 and old_window_width != 0) self.config.window_width = old_window_width;
-        if (self.config.window_height == 800 and old_window_height != 0) self.config.window_height = old_window_height;
+        if (self.lua) |*lua| lua.markGuiReady();
+        // The OS window keeps its size across reload, so keep the live size
+        // even when the config sets window_width/window_height.
+        if (old_window_width != 0) self.config.window_width = old_window_width;
+        if (old_window_height != 0) self.config.window_height = old_window_height;
         self.cell_width_px = @max(1, old_cell_width);
         self.cell_height_px = @max(1, old_cell_height);
 

@@ -34,7 +34,7 @@ in the shipped base config.
 | `scrollback`                                                                      | integer                        | Lines of history                                                |
 | `cols`, `rows`                                                                    | integer                        | Initial grid size                                               |
 | `padding`                                                                         | integer                        | Cell padding in pixels                                          |
-| `window_title`, `window_width`, `window_height`                                   | string, integer                | Window geometry                                                 |
+| `window_title`, `window_width`, `window_height`                                   | string, integer                | Window title; window size at startup only                       |
 | `window_titlebar_show`                                                            | boolean                        | Show the OS title bar                                           |
 | `top_bar_mode`                                                                    | `"always"` \| `"tabs"`         | When to show the top bar                                        |
 | `top_bar_height`, `top_bar_bg`                                                    | integer, color                 | Top bar geometry                                                |

@@ -983,6 +983,14 @@ pub const Runtime = struct {
         }
     }
 
+    /// A runtime created by config reload starts after the window is up;
+    /// gui:ready fires once per process and will not reach it.
+    pub fn markGuiReady(self: *Runtime) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.context.gui_ready_fired = true;
+    }
+
     pub fn fireGuiReady(self: *Runtime) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -4206,6 +4214,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
 
         if (value_type == .number) {
             const value = api.to_number(state, -1);
+            // These size the window at creation; once it exists the fields
+            // track the live framebuffer, which config cannot resize.
+            if (ctx.gui_ready_fired and (std.mem.eql(u8, key, "window_width") or std.mem.eql(u8, key, "window_height"))) {
+                std.log.info("config: {s} only applies at startup; ignored", .{key});
+                continue;
+            }
             applyNumber(ctx.cfg, key, value) catch |err| std.log.err("config numeric field {s} failed: {s}", .{ key, @errorName(err) });
             continue;
         }
@@ -7716,6 +7730,23 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "set_config ignores window size once the GUI is ready" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("host_api.set_config({ window_width = 1100, window_height = 720 })");
+    try std.testing.expectEqual(@as(u32, 1100), cfg.window_width);
+    try std.testing.expectEqual(@as(u32, 720), cfg.window_height);
+    cfg.window_width = 1920;
+    cfg.window_height = 1080;
+    runtime.markGuiReady();
+    try runtime.runString("host_api.set_config({ window_width = 1100, window_height = 720, cols = 90 })");
+    try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
+    try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
+    try std.testing.expectEqual(@as(u16, 90), cfg.cols);
 }
 
 test "spawn filter bridge commits valid results atomically and preserves stack" {
