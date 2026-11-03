@@ -11,6 +11,7 @@ local hollow = _G.hollow
 local ui = hollow.ui
 
 ui.activity = {}
+local active
 
 local DEFAULT_WIDTH = 100
 local DEFAULT_HEIGHT = 24
@@ -159,6 +160,9 @@ end
 ---@param opts? HollowUiActivityOptions
 ---@return HollowUiModalHandle | nil
 function ui.activity.open(opts)
+  if active then
+    return active
+  end
   opts = opts or {}
   local view = opts.view or "inbox"
   assert(view == "inbox" or view == "history", "activity view must be inbox or history")
@@ -779,6 +783,10 @@ function ui.activity.open(opts)
 
   modal = ui.modal({
     title = "Activity",
+    exclusive = false,
+    on_unmount = function()
+      active = nil
+    end,
     theme = theme,
     width = width,
     height = opts.height,
@@ -862,6 +870,7 @@ function ui.activity.open(opts)
       return detail_view.keys(key, mods)
     end,
   })
+  active = modal
   return modal
 end
 

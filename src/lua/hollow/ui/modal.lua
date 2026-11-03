@@ -16,12 +16,13 @@ local M = {}
 --- delay in milliseconds (or nil) after each layout render. Both are opt-in.
 --- semantic_hover opts custom hover-dependent content into snapshot rebuilds;
 --- ordinary hover paint stays native through hover_bg. Consumed events also rebuild.
----@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any, theme_backdrop?: boolean, layout_events?: string[], layout_refresh_after?: function, on_unmount?: function }
+---@param spec HollowUiModalSpec
 ---@return HollowUiModalHandle|nil
 function M.modal(spec)
-  -- Preserve unfinished input and questions; never replace an active modal.
+  -- Exclusivity protects unfinished dialogs, not every surface using this shell.
+  -- Stackable tools may be suspended by another overlay without losing state.
   for _, existing in ipairs(overlay_stack) do
-    if existing._modal then
+    if existing._exclusive then
       return nil
     end
   end
@@ -145,6 +146,7 @@ function M.modal(spec)
   widget._palette = theme
   widget._theme_backdrop = spec.theme_backdrop == true
   widget._modal = true
+  widget._exclusive = spec.exclusive ~= false
   widget._layout_live = spec.layout_live == true
   do
     local align = shared.normalize_overlay_align(widget.align)

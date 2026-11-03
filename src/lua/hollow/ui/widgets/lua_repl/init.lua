@@ -186,6 +186,7 @@ function console.open(opts)
   editor.start_history()
   active = ui.modal({
     title = "Lua REPL",
+    exclusive = false,
     theme = shared.widget_theme("input", opts.theme),
     width = opts.width or 80,
     height = opts.height,

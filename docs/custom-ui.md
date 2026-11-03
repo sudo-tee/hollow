@@ -231,6 +231,13 @@ m = hollow.ui.modal({
 })
 ```
 
+`ui.modal` is exclusive by default: while open, it rejects new composed overlays
+with `nil`, preserving unfinished input and confirmation callbacks. Use
+`exclusive = false` for stackable tools, such as the REPL and Activity. New
+overlays suspend these tools without unmounting them; closing the top overlay
+resumes the previous one with its state intact. An existing exclusive dialog
+still blocks stackable tools. Notifications and direct overlays are independent.
+
 Behaviors (`hollow.ui.list_nav`, `hollow.ui.scroll_nav`,
 `hollow.ui.text_input`) encapsulate state and key handlers, while
 `hollow.ui.layout` composes hierarchical Clay trees. See

@@ -1150,6 +1150,7 @@
 ---@field hovered? integer
 
 ---@class HollowUiModalSpec
+---@field exclusive? boolean Defaults to true: blocks new composed overlays while open. False allows stacking without unmounting this surface; existing exclusive dialogs still block opening.
 ---@field theme? HollowUiTheme|string Widget-kind name for a live palette, or an authoritative explicit palette table.
 ---@field render fun(theme: HollowUiTheme, state: table, ctx: HollowUiLayoutContext): HollowUiLayoutNode, number? Clay tree and optional preferred content height in pixels.
 ---@field keys? function
@@ -2065,7 +2066,7 @@ local lua_repl = {}
 
 ---Open the Clay console in the live Lua runtime. Not sandboxed.
 ---@param opts? HollowUiLuaReplOptions
----@return HollowUiModalHandle? handle Nil if another modal is active.
+---@return HollowUiModalHandle? handle Nil if an exclusive dialog is active.
 function lua_repl.open(opts) end
 
 function lua_repl.close() end
@@ -2717,7 +2718,7 @@ function ui.tab(opts) end
 function ui.tab_bar(opts) end
 
 ---@param spec HollowUiModalSpec
----@return HollowUiModalHandle|nil Returns nil if another modal is already open.
+---@return HollowUiModalHandle|nil Returns nil if an exclusive dialog is already open.
 function ui.modal(spec) end
 
 ---@param ... table
