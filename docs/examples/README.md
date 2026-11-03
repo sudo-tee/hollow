@@ -6,7 +6,10 @@ personal `init.lua` or a plugin.
 
 - [Config snippets](config-snippets.md) — common `hollow.config.set`
   recipes
-- [UI recipes](ui-recipes.md) — widgets, bars, pickers, overlays
+- [UI recipes](ui-recipes.md) — widgets, bars, pickers, overlays, Lua panes
+- [Tasks Lua pane](../../examples/lua-pane.lua) — runnable task runner in a
+  docked Lua pane; pairs with
+  [`lua-pane-workspace.json`](lua-pane-workspace.json) for workspace layouts
 - [Plugin authoring](plugin-authoring.md) — a complete plugin walkthrough
 - [Smart splits](../examples/plugins/smart-splits) — bidirectional pane
   navigation between hollow and nvim via smart-splits.nvim

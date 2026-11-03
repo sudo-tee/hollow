@@ -1,6 +1,17 @@
+-- Tasks: a docked task runner built on hollow.ui.pane.
+--
 -- Launch with: hollow --config /path/to/examples/lua-pane.lua
+-- or copy the factory and keybinding into your own config.
+--
+--   <leader>t  toggle the Tasks pane on the right edge (default leader: Ctrl+Space)
+--   arrows     move between buttons; Tab/Shift-Tab cycle all controls
+--   Enter      run/cancel the focused task, or add the typed command
+--
+-- Commands are split on whitespace and run with hollow.process.spawn; they are
+-- not passed through a shell, so quoting is not supported.
 local hollow = require("hollow")
-local c = hollow.ui.components
+local ui = hollow.ui
+local c = ui.components
 
 hollow.config.set({
   window_width = 1100,
@@ -11,52 +22,173 @@ hollow.config.set({
   },
 })
 
--- Register during config loading, not gui:ready, so reload can rebuild owners.
+local DEFAULT_COMMANDS = hollow.platform.is_windows
+    and { "cmd /c ver", "ping -n 3 127.0.0.1", "cmd /c exit 3" }
+  or { "uname -sr", "sleep 2", "false" }
+-- Without cwd, jobs inherit the app's working directory.
+local HOME = os.getenv(hollow.platform.is_windows and "USERPROFILE" or "HOME")
+
+local function argv(command)
+  local parts = {}
+  for part in command:gmatch("%S+") do
+    parts[#parts + 1] = part
+  end
+  return parts
+end
+
+local function last_line(text)
+  local line
+  for each in (text or ""):gmatch("[^\r\n]+") do
+    line = each
+  end
+  return line
+end
+
+-- Register at config load (not in gui:ready) so config reload and workspace
+-- restore can rebuild the pane. Only `args` persist; live state starts fresh.
 hollow.ui.pane.register("tasks", function(args)
+  -- Per-instance state: every factory call gets its own tables.
+  local tasks, jobs, pane_id = {}, {}, nil
+  for _, command in ipairs(args.commands or DEFAULT_COMMANDS) do
+    tasks[#tasks + 1] = { command = command, status = "idle" }
+  end
+  local input = ui.text_input({ initial = "" })
+
+  -- Clicks and handled keys repaint automatically; async work must invalidate.
+  local function refresh()
+    local pane = pane_id and ui.pane.get(pane_id)
+    if pane then
+      pane:invalidate()
+    end
+  end
+
+  local function toggle(task)
+    if jobs[task] then
+      jobs[task]:cancel()
+      return
+    end
+    task.status, task.output = "running", nil
+    jobs[task] = hollow.process.spawn({
+      cmd = argv(task.command),
+      cwd = args.cwd or HOME,
+      timeout_ms = 60000,
+      on_complete = function(result)
+        jobs[task] = nil
+        if result.canceled then
+          task.status = "canceled"
+        else
+          task.status = result.code == 0 and "ok" or "failed"
+        end
+        task.output = last_line(result.error or result.stdout)
+          or last_line(result.stderr)
+          or ("exit " .. result.code)
+        refresh()
+      end,
+    })
+  end
+
+  local function add()
+    local command = input.value:match("^%s*(.-)%s*$")
+    if command ~= "" then
+      tasks[#tasks + 1] = { command = command, status = "idle" }
+      input.set("", 0)
+    end
+  end
+
+  local function status_pill(task, theme)
+    local bg = ({
+      running = theme.primary_bg,
+      ok = theme.selection_bg,
+      failed = theme.destructive_bg,
+    })[task.status]
+    return c.pill({ text = task.status, bg = bg })
+  end
+
   return {
-    title = args.title or "Lua tasks",
-    state = { renders = 0, mounted = false, key = "Press F6", focused = false, clicks = 0 },
+    title = args.title or "Tasks",
     on_mount = function(ctx)
-      ctx.state.mounted = true
+      pane_id = ctx.pane_id
     end,
-    on_focus = function(ctx, focused)
-      ctx.state.focused = focused
-    end,
-    on_key = function(key, mods, ctx)
-      if key == "f6" and mods == "" then
-        ctx.state.key = "F6 handled by Lua pane"
-        return true
+    -- Release anything acquired while mounted: close, teardown and reload.
+    on_unmount = function()
+      for _, job in pairs(jobs) do
+        job:cancel()
       end
-      return false
     end,
     render = function(ctx)
-      ctx.state.renders = ctx.state.renders + 1
+      local running = 0
+      for _ in pairs(jobs) do
+        running = running + 1
+      end
       return c.column({
-        c.text("Lua pane / Tasks", { bold = true }),
-        c.text("Native split. No PTY. Retained Clay surface."),
-        c.text("Factory: tasks | creation args survive reload"),
-        c.text(string.format("Grid: %d x %d | pane: %d", ctx.cols, ctx.rows, ctx.pane_id)),
-        c.text("Mounted: " .. tostring(ctx.state.mounted)),
-        c.text("Render calls: " .. ctx.state.renders),
-        c.text("Focused: " .. tostring(ctx.state.focused) .. " | " .. ctx.state.key),
-        c.text("Hovered node: " .. (ctx.hovered_id or "none")),
-        c.button({
-          id = "increment",
-          text = "Clicks: " .. ctx.state.clicks,
-          on_click = function()
-            ctx.state.clicks = ctx.state.clicks + 1
-          end,
+        c.header({
+          width = "grow",
+          title = args.title or "Tasks",
+          meta = running > 0 and (running .. " running") or (#tasks .. " tasks"),
         }),
-        c.text("[done] Pane-owned surface and isolated IDs"),
-        c.text("[done] Mount, resize and unmount lifecycle"),
-        c.text("[done] Keyboard and focus routing"),
-        c.text("[done] Isolated click and hover routing"),
-        c.text("[done] Factory restore; transient state resets"),
-      }, { width = "grow", height = "grow", padding = 16, gap = 10 })
+        c.column(
+          ui.each(tasks, function(task, index)
+            return c.row({
+              c.button({
+                id = "run:" .. index,
+                text = jobs[task] and "Cancel" or "Run",
+                size = "sm",
+                variant = jobs[task] and "destructive" or "primary",
+                on_click = function()
+                  toggle(task)
+                end,
+              }),
+              c.column({
+                c.label(task.command),
+                task.output and c.label({ text = task.output, tone = "muted" }),
+              }, { width = "grow" }),
+              status_pill(task, ctx.theme),
+              c.button({
+                id = "remove:" .. index,
+                text = "Remove",
+                appearance = "quiet",
+                size = "sm",
+                disabled = jobs[task] ~= nil,
+                on_click = function()
+                  table.remove(tasks, index)
+                end,
+              }),
+            }, { width = "grow", gap = 8 })
+          end),
+          { width = "grow", gap = 6 }
+        ),
+        c.row({
+          -- Inputs own their arrows; Enter adds, Tab moves on.
+          c.input({ id = "command", behavior = input, on_key = ui.keys(input, { enter = add }) }),
+          c.button({ id = "add", text = "Add", size = "sm", on_click = add }),
+        }, { width = "grow", gap = 8 }),
+        c.hints({ { "Arrows", "move" }, { "Enter", "run" }, { "Tab", "next" } }),
+      }, { width = "grow", height = "grow", padding = 16, gap = 12 })
     end,
   }
 end)
 
+-- Look the pane up in the current tab instead of remembering its ID, so the
+-- toggle keeps working after config reload or workspace restore.
+local function find_tasks_pane()
+  local tab = hollow.term.current_tab()
+  for _, pane in ipairs(tab and tab.panes or {}) do
+    if pane.kind == "lua" and pane.module == "tasks" then
+      return pane.id
+    end
+  end
+end
+
+hollow.keymap.set("<leader>t", function()
+  local id = find_tasks_pane()
+  local pane = id and ui.pane.get(id)
+  if pane then
+    pane:close()
+  else
+    ui.pane.split({ module = "tasks", edge = "right", ratio = 0.4 })
+  end
+end, { desc = "toggle tasks pane" })
+
 hollow.events.on("gui:ready", function()
-  hollow.ui.pane.split({ module = "tasks", args = { title = "Lua tasks" }, ratio = 0.45 })
+  ui.pane.split({ module = "tasks", edge = "right", ratio = 0.4 })
 end)

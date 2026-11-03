@@ -310,8 +310,22 @@ before `gui:ready` so reload can find them.
 
 See [Lua pane reference](reference/lua/ui.md#lua-panes) for lifecycle, keyboard
 priority, bounded JSON args and v1 limitations; [workspace leaves](reference/lua/workspace-api.md#lua-pane-leaves)
-for loading layouts. A runnable config lives in
-[`examples/lua-pane.lua`](../examples/lua-pane.lua).
+for loading layouts.
+
+[`examples/lua-pane.lua`](../examples/lua-pane.lua) is a complete, runnable
+task runner: Run/Cancel buttons backed by `hollow.process.spawn`, an input for
+adding commands, arrow-key navigation, cleanup in `on_unmount`, and a
+`<leader>t` toggle that survives config reload.
+
+![Tasks Lua pane docked on the right edge: header with task count, Run buttons, command output, status pills, and an input with an Add button](examples/lua-pane-tasks.png)
+
+Keyboard entry focuses the first control; arrows then move by on-screen
+position:
+
+![Tasks pane with the focus ring on the second Run button after pressing Down](examples/lua-pane-tasks-focus.png)
+
+For a smaller toggleable pane, see the
+[git status recipe](examples/ui-recipes.md#git-status-in-a-toggleable-lua-pane).
 
 ## Widget theming
 

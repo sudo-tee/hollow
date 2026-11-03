@@ -16,7 +16,7 @@ For the keymap surface see [Keybindings](keybindings.md).
 | --------- | ------------------ | --------------------------------------------- |
 | Workspace | Lives until closed | One or more tabs                              |
 | Tab       | Lives until closed | One or more panes (tiled + optional floating) |
-| Pane      | Lives until closed | One shell process + scrollback                |
+| Pane      | Lives until closed | One shell process + scrollback, or Lua UI     |
 
 A typical flow: open a workspace, open a tab in it, split the tab into
 panes. A workspace is the unit of "I'm switching contexts" — close a
@@ -156,9 +156,45 @@ local tags = hollow.term.get_pane_tags(pane_id)
 hollow.term.set_pane_foreground_process(pane_id, "vim")
 ```
 
-`HollowPane` snapshots expose `id`, `pid`, `domain`, `cwd`, `title`,
+`HollowPane` snapshots expose `id`, `kind`, `pid`, `domain`, `cwd`, `title`,
 `is_focused`, `is_floating`, `is_maximized`, `has_bell`, `frame`, and
 `size`. Snapshots are read-only values, not live references.
+
+### Lua panes
+
+A pane can show UI rendered from Lua instead of a shell. Lua panes split,
+float, maximize, move, focus and close like terminal panes, but run no process
+and have no scrollback. Use them for tools you want to keep open next to your
+terminals: task runners, dashboards, file lists, the docked
+[Lua REPL](lua-repl.md).
+
+```lua
+local c = hollow.ui.components
+
+-- Register at config load so reloads and saved workspaces can rebuild it.
+hollow.ui.pane.register("notes", function(args)
+  return {
+    title = args.title or "Notes",
+    render = function()
+      return c.column({ c.title("Notes"), c.label("Nothing yet.") }, { padding = 16 })
+    end,
+  }
+end)
+
+hollow.keymap.set("<leader>o", function()
+  hollow.ui.pane.split({ module = "notes", edge = "right", ratio = 0.3 })
+end, { desc = "open notes" })
+```
+
+Snapshots report `kind = "lua"` plus the factory `module` and `args`; guard
+terminal-only calls such as `send_text` by `kind`. Inside a Lua pane, Tab and
+the arrow keys move between buttons and inputs.
+
+![A Tasks Lua pane docked to the right of a terminal, with Run buttons, status pills, and an input for adding commands](examples/lua-pane-tasks.png)
+
+See [Custom UI → Lua panes](custom-ui.md#lua-panes) for a walkthrough,
+[`hollow.ui.pane`](reference/lua/ui.md#lua-panes) for the full API, and
+[`examples/lua-pane.lua`](../examples/lua-pane.lua) for a runnable task runner.
 
 ## Async sequencing
 
