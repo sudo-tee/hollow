@@ -140,6 +140,84 @@ describe("Lua pane example", function()
     assert.equals("run:2", pane.surface:focused_id())
   end)
 
+  it("runs @domain tasks through the domain's agent host", function()
+    local async = require("hollow.async")
+    local connect, exec, ops, requested = nil, nil, {}, {}
+    h.host.for_domain = function(name)
+      requested[#requested + 1] = name
+      return async.promise(function(resolve)
+        connect = resolve
+      end)
+    end
+    local host = {
+      exec = function(_, opts)
+        ops[#ops + 1] = opts
+        local promise = async.promise(function(resolve)
+          exec = resolve
+        end)
+        function promise:cancel()
+          ops.canceled = true
+        end
+        return promise
+      end,
+    }
+    local pane = h.ui.pane.get(active)
+    pane.surface:focus("command")
+    for char in ("@dev uname -a"):gmatch(".") do
+      on_key(char == " " and "space" or char, 0)
+    end
+    on_key("enter", 0)
+    local nodes = snapshot()
+    assert.is_true(has_text(nodes, "uname -a"))
+    assert.is_true(has_text(nodes, "@dev"))
+    assert.is_true(has_text(nodes, "@local"))
+
+    owners[active]:pointer("click", pane.surface.namespace .. "run:4", "left")
+    assert.are.same({ "dev" }, requested)
+    assert.is_true(has_text(snapshot(), "connecting"))
+    connect(host)
+    env.flush_deferred()
+    assert.are.same({ "uname", "-a" }, ops[1].argv)
+    assert.is_true(has_text(snapshot(), "running"))
+    exec({ exit_code = 0, stdout = "Linux dev 6.6\n", stderr = "" })
+    env.flush_deferred()
+    nodes = snapshot()
+    assert.is_true(has_text(nodes, "Linux dev 6.6"))
+    assert.is_true(has_text(nodes, "ok"))
+
+    owners[active]:pointer("click", pane.surface.namespace .. "run:4", "left")
+    connect(host)
+    env.flush_deferred()
+    owners[active]:pointer("click", pane.surface.namespace .. "run:4", "left")
+    assert.is_true(ops.canceled)
+    assert.is_true(has_text(snapshot(), "canceled"))
+  end)
+
+  it("picks the domain for new tasks with the @ button", function()
+    local picker
+    h.ui.select.open = function(opts)
+      picker = opts
+    end
+    h.ui.select.close = function() end
+    local pane = h.ui.pane.get(active)
+    owners[active]:pointer("click", pane.surface.namespace .. "domain", "left")
+    assert.equals("local", picker.items[1])
+    picker.actions[1].fn("dev")
+    assert.is_true(has_text(snapshot(), "@dev"))
+    pane.surface:focus("command")
+    on_key("w", 0)
+    on_key("enter", 0)
+    local nodes = snapshot()
+    assert.is_true(has_text(nodes, "w"))
+    local count = 0
+    for _, node in ipairs(nodes) do
+      if node.text == "@dev" then
+        count = count + 1
+      end
+    end
+    assert.equals(2, count)
+  end)
+
   it("toggles with <leader>t and cancels running jobs on close", function()
     local pane = h.ui.pane.get(active)
     owners[active]:pointer("click", pane.surface.namespace .. "run:2", "left")

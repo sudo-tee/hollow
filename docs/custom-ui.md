@@ -313,9 +313,12 @@ priority, bounded JSON args and v1 limitations; [workspace leaves](reference/lua
 for loading layouts.
 
 [`examples/lua-pane.lua`](../examples/lua-pane.lua) is a complete, runnable
-task runner: Run/Cancel buttons backed by `hollow.process.spawn`, an input for
-adding commands, arrow-key navigation, cleanup in `on_unmount`, and a
-`<leader>t` toggle that survives config reload.
+task runner: Run/Cancel buttons, an input for adding commands, arrow-key
+navigation, cleanup in `on_unmount`, and a `<leader>t` toggle that survives
+config reload. Each task runs on a domain: `local` ones use
+`hollow.process.spawn`, and domains with a host (WSL, SSH, containers) run
+through the agent with [`hollow.host.for_domain`](reference/lua/host.md#domain-hosts).
+Pick the domain with the `@` button or type `@name command`.
 
 ![Tasks Lua pane docked on the right edge: header with task count, Run buttons, command output, status pills, and an input with an Add button](examples/lua-pane-tasks.png)
 
