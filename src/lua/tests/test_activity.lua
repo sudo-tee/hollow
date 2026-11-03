@@ -203,6 +203,29 @@ describe("activity center", function()
     assert.is_false(hollow.clipboard.write("text"))
   end)
 
+  for _, state in ipairs({ "done", "blocked", "error" }) do
+    it("prioritizes pending program " .. state .. " over notifications in the topbar", function()
+      emit("window:blurred", {})
+      emit("term:notification", {
+        pane_id = 101,
+        title = "Notification",
+        message = "Unrelated error",
+        level = "error",
+      })
+      report(state)
+      local button = require("hollow.ui.widgets.attention").topbar_button()
+      local levels = require("hollow.ui.shared").palette("select").notify_levels
+      local level = ({ done = "success", blocked = "warn", error = "error" })[state]
+      assert.equals(levels[level], button.render().style.fg)
+      assert.equals("󰂚 2 ", button.render().text)
+
+      local program = hollow.activity.list({ view = "inbox", activity_kind = "program" })[1]
+      hollow.activity.dismiss(program.id)
+      assert.equals(levels.error, button.render().style.fg)
+      assert.equals("󰂚 1 ", button.render().text)
+    end)
+  end
+
   it("reserves horizontal space around the serialized topbar bell", function()
     hollow.ui.topbar.configure({})
     for _, item in ipairs(hollow.ui._topbar_state().items) do

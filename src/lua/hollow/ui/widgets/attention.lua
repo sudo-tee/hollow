@@ -6,6 +6,7 @@ local styles = require("hollow.ui.recipes.topbar")
 
 local M = {}
 local LEVELS = styles.slots.attention.variants
+local severity = { info = 1, success = 1, warn = 2, error = 3 }
 
 function M.topbar_button()
   local style = styles(shared.bar_palette()).attention_button
@@ -16,7 +17,16 @@ function M.topbar_button()
     render = function()
       local summary = hollow.activity.summary()
       local pending = summary.count > 0
-      local level = pending and LEVELS[summary.level] and summary.level or nil
+      local program_level
+      if pending then
+        for _, entry in ipairs(hollow.activity.list({ view = "inbox", activity_kind = "program" })) do
+          if (severity[entry.level] or 0) > (severity[program_level] or 0) then
+            program_level = entry.level
+          end
+        end
+      end
+      local selected_level = program_level or summary.level
+      local level = pending and LEVELS[selected_level] and selected_level or nil
       return ui.span(
         pending and (icons.bell .. " " .. summary.count .. " ") or (icons.bell_outline .. " "),
         styles(shared.palette("select"), { variant = level }).attention
