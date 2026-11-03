@@ -559,6 +559,14 @@ Existing copy-mode priority is unchanged. Keys are normalized (for example
 text/IME callbacks, drag widgets, selection and copy mode inside Lua panes are
 outside v1.
 
+For automation, `hollow-cli send-keys --id`, `pane send-text`, and
+`hollow.term.send_text(text, pane_id)` deliver terminal input bytes to a Lua
+pane as key events, whether or not it has focus. Arrows, Home/End,
+Page Up/Down, Insert/Delete, Shift-Tab, xterm modifier sequences, Ctrl letters,
+and Alt (an Esc prefix) are decoded; unknown escape sequences are dropped.
+This input goes straight to the pane's components, `on_key`, and Tab/arrow
+navigation, skipping global bindings.
+
 ### Factories and persistence
 
 Register factories at config load time, **not inside `gui:ready`**. Each factory

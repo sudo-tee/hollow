@@ -275,7 +275,9 @@ semantic UI changes. `wait R` blocks until the current revision is greater than
 requests so other clients can use command transport during longer waits.
 
 `send-keys` decodes a kit/kb-style key sequence; for example
-`{Up}{Enter}` sends the Up arrow followed by Enter.
+`{Up}{Enter}` sends the Up arrow followed by Enter. Lua panes receive the
+same input as key events, focused or not, so `--id` can drive buttons and
+inputs in a [Lua pane](../lua/ui.md#lua-panes) from scripts.
 
 `pane bell --level` uses built-in Hollow notification level color for visual flash.
 An explicit `--color #RRGGBB` overrides it.

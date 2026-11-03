@@ -948,6 +948,14 @@ function M.setup(hollow, host_api)
     if type(text) ~= "string" then
       error("hollow.term.send_text(text) expects a string")
     end
+    local target = pane_id or (host_api.current_pane_id and host_api.current_pane_id())
+    local content = target and host_api.get_pane_content and host_api.get_pane_content(target)
+    if content and content.kind == "lua" then
+      if not require("hollow.ui.widgets.pane")._send_input(target, text) then
+        error("Lua pane is not ready: " .. tostring(target))
+      end
+      return
+    end
     if pane_id ~= nil then
       if not host_api.send_text_to_pane(pane_id, text) then
         error("unknown pane id: " .. tostring(pane_id))

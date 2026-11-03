@@ -98,6 +98,31 @@ fn callPointer(runtime: anytype, surface: *LuaSurface, event: Pointer) bool {
     return api.to_boolean(state, -1) != 0;
 }
 
+/// Automation input: terminal bytes decoded by Lua into pane key events.
+pub fn input(app: *App, pane: *Pane, text: []const u8) bool {
+    const surface = pane.asLua() orelse return false;
+    const runtime = if (app.lua) |*r| r else return false;
+    if (surface.ref < 0 or surface.runtime_generation != runtime.generation) return false;
+    runtime.mutex.lock();
+    defer runtime.mutex.unlock();
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.rawgeti(state, -10000, surface.ref);
+    api.get_field(state, -1, "input");
+    if (api.value_type(state, -1) != @backingInt(bridge.LuaType.function)) return false;
+    api.push_value(state, -2);
+    api.push_lstring(state, text.ptr, text.len);
+    if (api.pcall(state, 2, 1, 0) != 0) {
+        var len: usize = 0;
+        const err = api.to_lstring(state, -1, &len);
+        std.log.err("Lua pane input: {s}", .{if (err) |ptr| ptr[0..len] else "unknown error"});
+        return false;
+    }
+    return api.to_boolean(state, -1) != 0;
+}
+
 pub const Create = struct {
     id: usize,
     ref: c_int,

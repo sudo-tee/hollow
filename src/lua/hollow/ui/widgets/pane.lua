@@ -254,6 +254,10 @@ local function new_instance(opts, floating, placement, name)
     geometry = function(_, bounds)
       self.surface.focus_bounds = bounds
     end,
+    -- Automation input (send-keys/send-text): terminal bytes decoded to keys.
+    input = function(_, text)
+      return M._input(self, text)
+    end,
     -- True consumes clicks/wheel; for hover it requests a repaint.
     pointer = function(_, kind, id, detail, x, y)
       if self.closed or self.closing then
@@ -390,13 +394,7 @@ local ARROWS = {
   arrow_down = "down",
 }
 
--- Called by the shared keymap, under the Lua lock. Overlays and pending global
--- sequences take priority; plain pane keys precede unmodified global bindings.
-function M._dispatch_key(key, mods)
-  local self = focused_instance()
-  if not self then
-    return false
-  end
+local function dispatch(self, key, mods)
   local canonical_mods = _G.hollow.keymap.format_mods(mods)
   self.anchor_x, self.anchor_y = self.pointer_x, self.pointer_y
   local was_visible = self.surface.focus_visible
@@ -427,6 +425,143 @@ function M._dispatch_key(key, mods)
     self:invalidate()
   end
   return false
+end
+
+-- Called by the shared keymap, under the Lua lock. Overlays and pending global
+-- sequences take priority; plain pane keys precede unmodified global bindings.
+function M._dispatch_key(key, mods)
+  local self = focused_instance()
+  if not self then
+    return false
+  end
+  return dispatch(self, key, mods)
+end
+
+local SHIFT, CTRL, ALT = 0x01, 0x02, 0x04
+local CONTROL_KEYS = {
+  ["\r"] = "enter",
+  ["\n"] = "enter",
+  ["\t"] = "tab",
+  ["\8"] = "backspace",
+  ["\127"] = "backspace",
+  ["\27"] = "escape",
+  [" "] = "space",
+}
+local CSI_KEYS = {
+  A = "arrow_up",
+  B = "arrow_down",
+  C = "arrow_right",
+  D = "arrow_left",
+  H = "home",
+  F = "end",
+}
+local TILDE_KEYS = {
+  ["1"] = "home",
+  ["2"] = "insert",
+  ["3"] = "delete",
+  ["4"] = "end",
+  ["5"] = "page_up",
+  ["6"] = "page_down",
+  ["7"] = "home",
+  ["8"] = "end",
+}
+
+-- xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4).
+local function xterm_mods(param)
+  local bits = math.max(0, (tonumber(param) or 1) - 1)
+  local mods = 0
+  if bits % 2 == 1 then
+    mods = mods + SHIFT
+  end
+  if math.floor(bits / 2) % 2 == 1 then
+    mods = mods + ALT
+  end
+  if math.floor(bits / 4) % 2 == 1 then
+    mods = mods + CTRL
+  end
+  return mods
+end
+
+local function char_key(char)
+  local named = CONTROL_KEYS[char]
+  if named then
+    return named, 0
+  end
+  local byte = char:byte()
+  if #char == 1 and byte >= 1 and byte <= 26 then
+    return string.char(byte + 96), CTRL
+  end
+  if #char == 1 and (byte < 32 or byte == 127) then
+    return nil
+  end
+  -- Same canonical names as native key events ("A" -> a + Shift, "-" -> minus).
+  local ok, key, mods = pcall(_G.hollow.keymap.parse_chord, char)
+  if ok and key then
+    return key, mods
+  end
+  return char, 0
+end
+
+--- Decode terminal input bytes, as produced by `send-keys`, into key events.
+--- Unknown escape sequences are dropped.
+---@param text string
+---@return { [1]: string, [2]: integer }[]
+function M._decode_input(text)
+  local events, index = {}, 1
+  while index <= #text do
+    local params, final, after = text:match("^\27%[([%d;]*)([%a~])()", index)
+    if not final then
+      final, after = text:match("^\27O([ABCDHF])()", index)
+      params = ""
+    end
+    if final then
+      local fields = {}
+      for field in params:gmatch("%d+") do
+        fields[#fields + 1] = field
+      end
+      local key, mods
+      if final == "~" then
+        key, mods = TILDE_KEYS[fields[1] or ""], xterm_mods(fields[2])
+      elseif final == "Z" then
+        key, mods = "tab", SHIFT
+      else
+        key, mods = CSI_KEYS[final], xterm_mods(fields[2])
+      end
+      if key then
+        events[#events + 1] = { key, mods }
+      end
+      index = after
+    else
+      local alt = 0
+      if text:sub(index, index) == "\27" and index < #text then
+        alt, index = ALT, index + 1
+      end
+      local char = text:match("^[%z\1-\127\194-\244][\128-\191]*", index) or text:sub(index, index)
+      local key, mods = char_key(char)
+      if key then
+        events[#events + 1] = { key, mods + alt }
+      end
+      index = index + #char
+    end
+  end
+  return events
+end
+
+function M._input(self, text)
+  if self.closed or self.closing or not self.mounted then
+    return false
+  end
+  for _, event in ipairs(M._decode_input(text)) do
+    dispatch(self, event[1], event[2])
+  end
+  return true
+end
+
+--- Feed terminal input bytes to a Lua pane as key events, whether or not it
+--- has focus. Returns false for unknown or unmounted panes.
+function M._send_input(id, text)
+  local self = instances[id]
+  return self ~= nil and M._input(self, text)
 end
 
 ui.pane = M

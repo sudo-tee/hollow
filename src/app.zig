@@ -3015,7 +3015,9 @@ test "public Lua pane host API queues creation title invalidation close and relo
         \\destroyed = 0
         \\focuses = {}
         \\pointers = {}
+        \\inputs = {}
         \\owner = {direction='horizontal', ratio=0.4, destroy=function() destroyed=destroyed+1 end,
+        \\  input=function(_, text) inputs[#inputs+1] = text; return true end,
         \\  focus=function(_, ctx, focused)
         \\    assert(ctx.focused == focused and ctx.pane_id == id)
         \\    assert(type(ctx.cols)=='number' and type(ctx.cell_w)=='number')
@@ -3101,6 +3103,10 @@ test "public Lua pane host API queues creation title invalidation close and relo
     lua_panes.pointer(app, pointer);
     try std.testing.expect(pane.asLua().?.hovered_id == null);
     try app.lua.?.runString("assert(#pointers == 4 and pointers[4].id == nil)");
+    var keys = try cmd_ipc.executeCommand(app, .{ .data = .{ .send_keys = .{ .id = id, .text = "\x1b[B\r" } } });
+    defer keys.deinit(a);
+    try std.testing.expect(keys.success);
+    try app.lua.?.runString("assert(#inputs == 1 and inputs[1] == '\\27[B\\r')");
     pointer.id = try a.dupe(u8, "owned queued node");
     try std.testing.expect(app.enqueueMouse(.{ .lua_pane_pointer = pointer }));
     input.deinitInputQueue(app);
@@ -3294,7 +3300,8 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     var response = try cmd_ipc.executeCommand(app, .{ .data = .{ .pane_send_text = .{ .id = id, .text = "text" } } });
     defer response.deinit(a);
     try std.testing.expect(!response.success);
-    try std.testing.expectEqualStrings("not_a_terminal", response.status);
+    // No Lua owner is attached, so automation input has nowhere to go.
+    try std.testing.expectEqualStrings("unavailable", response.status);
     try std.testing.expectError(error.NotATerminal, app.paneScreenValue(id));
     try std.testing.expectError(error.NotATerminal, app.paneScreenValue(0));
     try std.testing.expectError(error.NotATerminal, app.paneTextValue(id));

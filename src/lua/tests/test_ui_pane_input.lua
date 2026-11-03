@@ -519,4 +519,42 @@ describe("Lua pane keys and focus", function()
     assert.are.equal(1, leader)
     assert.same({ "<C>v" }, hits)
   end)
+
+  it("decodes send-keys bytes into canonical key events", function()
+    local decode = h.ui.pane._decode_input
+    assert.same({
+      { "arrow_down", 0 },
+      { "enter", 0 },
+      { "a", 1 },
+      { "minus", 0 },
+      { "space", 0 },
+      { "tab", 1 },
+      { "arrow_up", 2 },
+      { "r", 2 },
+      { "x", 4 },
+      { "page_down", 0 },
+      { "backspace", 0 },
+      { "escape", 0 },
+    }, decode("\27[B\rA- \27[Z\27[1;5A\18\27x\27[6~\127\27"))
+    assert.same({ { "arrow_left", 0 } }, decode("\27[99q\27OD"))
+  end)
+
+  it("routes send_text to Lua panes as keys, focused or not", function()
+    local keys = {}
+    local instance = pane({
+      on_key = function(key, mods)
+        keys[#keys + 1] = mods .. key
+        return true
+      end,
+    })
+    env.host_api.get_pane_content = function(id)
+      return { kind = owners[id] and "lua" or "terminal" }
+    end
+    owners[active]:focus(ctx(false), false)
+    h.term.send_text("q\27[A", instance.id)
+    assert.same({ "q", "arrow_up" }, keys)
+    assert.is_true(owners[active].input(owners[active], "\r"))
+    assert.same({ "q", "arrow_up", "enter" }, keys)
+    assert.is_false(h.ui.pane._send_input(999, "x"))
+  end)
 end)
