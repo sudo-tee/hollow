@@ -561,7 +561,7 @@ outside v1.
 
 For automation, `hollow-cli send-keys --id`, `pane send-text`, and
 `hollow.term.send_text(text, pane_id)` deliver terminal input bytes to a Lua
-pane as key events, whether or not it has focus. Arrows, Home/End,
+pane as key events, whether or not it has focus. Arrows, Home/End, F1-F12,
 Page Up/Down, Insert/Delete, Shift-Tab, xterm modifier sequences, Ctrl letters,
 and Alt (an Esc prefix) are decoded; unknown escape sequences are dropped.
 This input goes straight to the pane's components, `on_key`, and Tab/arrow

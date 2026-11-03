@@ -454,6 +454,10 @@ local CSI_KEYS = {
   D = "arrow_left",
   H = "home",
   F = "end",
+  P = "f1",
+  Q = "f2",
+  R = "f3",
+  S = "f4",
 }
 local TILDE_KEYS = {
   ["1"] = "home",
@@ -464,6 +468,18 @@ local TILDE_KEYS = {
   ["6"] = "page_down",
   ["7"] = "home",
   ["8"] = "end",
+  ["11"] = "f1",
+  ["12"] = "f2",
+  ["13"] = "f3",
+  ["14"] = "f4",
+  ["15"] = "f5",
+  ["17"] = "f6",
+  ["18"] = "f7",
+  ["19"] = "f8",
+  ["20"] = "f9",
+  ["21"] = "f10",
+  ["23"] = "f11",
+  ["24"] = "f12",
 }
 
 -- xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4).
@@ -511,7 +527,7 @@ function M._decode_input(text)
   while index <= #text do
     local params, final, after = text:match("^\27%[([%d;]*)([%a~])()", index)
     if not final then
-      final, after = text:match("^\27O([ABCDHF])()", index)
+      final, after = text:match("^\27O([ABCDHFPQRS])()", index)
       params = ""
     end
     if final then

@@ -537,6 +537,10 @@ describe("Lua pane keys and focus", function()
       { "escape", 0 },
     }, decode("\27[B\rA- \27[Z\27[1;5A\18\27x\27[6~\127\27"))
     assert.same({ { "arrow_left", 0 } }, decode("\27[99q\27OD"))
+    assert.same(
+      { { "f1", 0 }, { "f1", 1 }, { "f5", 2 }, { "f12", 0 }, { "delete", 1 } },
+      decode("\27OP\27[1;2P\27[15;5~\27[24~\27[3;2~")
+    )
   end)
 
   it("routes send_text to Lua panes as keys, focused or not", function()

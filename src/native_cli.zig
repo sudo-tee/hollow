@@ -1831,25 +1831,27 @@ fn decodeKeyToken(allocator: std.mem.Allocator, token_text: []const u8) ![]u8 {
     if (parts.items.len == 1) return try allocator.dupe(u8, try namedKeySequence(parts.items[0]));
 
     const key_name = parts.items[parts.items.len - 1];
-    const key_text = modifiedKeyText(key_name) orelse return error.InvalidKeySequence;
     var ctrl = false;
     var alt = false;
     var shift = false;
     for (parts.items[0 .. parts.items.len - 1]) |part| {
-        if (std.mem.eql(u8, part, "ctrl") or std.mem.eql(u8, part, "control")) {
+        if (std.mem.eql(u8, part, "ctrl") or std.mem.eql(u8, part, "control") or std.mem.eql(u8, part, "c")) {
             ctrl = true;
             continue;
         }
-        if (std.mem.eql(u8, part, "alt") or std.mem.eql(u8, part, "meta")) {
+        if (std.mem.eql(u8, part, "alt") or std.mem.eql(u8, part, "meta") or std.mem.eql(u8, part, "a") or std.mem.eql(u8, part, "m")) {
             alt = true;
             continue;
         }
-        if (std.mem.eql(u8, part, "shift")) {
+        if (std.mem.eql(u8, part, "shift") or std.mem.eql(u8, part, "s")) {
             shift = true;
             continue;
         }
         return error.InvalidKeySequence;
     }
+    if (shift and !ctrl and !alt and std.mem.eql(u8, key_name, "tab")) return try allocator.dupe(u8, "\x1b[Z");
+    if (try modifiedNamedKey(allocator, key_name, ctrl, alt, shift)) |sequence| return sequence;
+    const key_text = modifiedKeyText(key_name) orelse return error.InvalidKeySequence;
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
@@ -1870,6 +1872,17 @@ fn decodeKeyToken(allocator: std.mem.Allocator, token_text: []const u8) ![]u8 {
 
     try out.appendSlice(allocator, key_text);
     return try out.toOwnedSlice(allocator);
+}
+
+/// xterm form of a modified cursor, editing, or function key: Ctrl+Up is
+/// ESC[1;5A and Shift+Delete is ESC[3;2~.
+fn modifiedNamedKey(allocator: std.mem.Allocator, key_name: []const u8, ctrl: bool, alt: bool, shift: bool) !?[]u8 {
+    const plain = namedKeySequence(key_name) catch return null;
+    if (plain.len < 3 or plain[0] != 0x1b) return null;
+    const modifier = 1 + @as(u8, @intFromBool(shift)) + 2 * @as(u8, @intFromBool(alt)) + 4 * @as(u8, @intFromBool(ctrl));
+    const final = plain[plain.len - 1];
+    if (final == '~') return try std.fmt.allocPrint(allocator, "{s};{d}~", .{ plain[0 .. plain.len - 1], modifier });
+    return try std.fmt.allocPrint(allocator, "\x1b[1;{d}{c}", .{ modifier, final });
 }
 
 fn modifiedKeyText(key_name: []const u8) ?[]const u8 {
@@ -1940,4 +1953,10 @@ test "decodeKeySequence handles modifiers and escapes" {
     const decoded = try decodeKeySequence(std.testing.allocator, "{ctrl-c}{alt-x}\\n{f5}");
     defer std.testing.allocator.free(decoded);
     try std.testing.expectEqualStrings("\x03\x1bx\n\x1b[15~", decoded);
+}
+
+test "decodeKeySequence keeps modifiers on special keys" {
+    const decoded = try decodeKeySequence(std.testing.allocator, "{S-Tab}{shift-tab}{C-c}{s-a}{C-Up}{A-S-left}{S-Delete}{C-PgDn}{S-f1}{C-f5}");
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings("\x1b[Z\x1b[Z\x03A\x1b[1;5A\x1b[1;4D\x1b[3;2~\x1b[6;5~\x1b[1;2P\x1b[15;5~", decoded);
 }

@@ -275,7 +275,10 @@ semantic UI changes. `wait R` blocks until the current revision is greater than
 requests so other clients can use command transport during longer waits.
 
 `send-keys` decodes a kit/kb-style key sequence; for example
-`{Up}{Enter}` sends the Up arrow followed by Enter. Lua panes receive the
+`{Up}{Enter}` sends the Up arrow followed by Enter. Modifiers are
+`C-`/`ctrl-`, `A-`/`M-`/`alt-`, and `S-`/`shift-`: `{S-Tab}` sends back-tab,
+and modified cursor, editing, and function keys use xterm sequences
+(`{C-Up}` is `ESC[1;5A`). Lua panes receive the
 same input as key events, focused or not, so `--id` can drive buttons and
 inputs in a [Lua pane](../lua/ui.md#lua-panes) from scripts.
 
