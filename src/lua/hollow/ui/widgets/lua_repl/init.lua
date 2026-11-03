@@ -15,10 +15,15 @@ local view = require("hollow.ui.widgets.lua_repl.view")
 local console = {}
 ui.lua_repl = console
 
-local active
+local active, docked
+-- True while dispatching a key from the docked pane rather than the modal.
+local docked_key = false
 transcript.on_change = function()
   if active then
     active.invalidate()
+  end
+  if docked then
+    docked:invalidate()
   end
 end
 
@@ -62,6 +67,7 @@ end
 
 -- Handlers receive (key, mods); only _else uses them.
 local KEY_ACTIONS = {
+  -- The docked pane stays open on Escape; it closes like any other pane.
   escape = menu_or(completion.close, function()
     console.close()
   end),
@@ -97,9 +103,11 @@ local KEY_ACTIONS = {
     local text = shared.printable_char_for_key(key, mods)
     if text then
       editor.insert(text)
+      return true
     end
-    -- Never let console keystrokes reach terminal shortcuts or the PTY.
-    return true
+    -- The modal never lets keystrokes reach terminal shortcuts or the PTY. The
+    -- docked pane releases unbound keys so pane focus/navigation bindings work.
+    return not docked_key
   end,
 }
 
@@ -110,11 +118,44 @@ local function on_key(key, mods)
   if not MENU_KEYS[key] then
     completion.close()
   end
-  local ok, err = pcall(keys, key, mods)
+  local ok, handled = pcall(keys, key, mods)
   if not ok then
-    transcript.append(err, "error")
+    transcript.append(handled, "error")
+    return true
   end
-  return true
+  return handled or not docked_key
+end
+
+-- Chords bound with explicit non-Shift modifiers, as "<mods>:key".
+local exact_chords
+local function bound_exactly(key, mods)
+  if not exact_chords then
+    exact_chords = {}
+    for spec in pairs(KEY_ACTIONS) do
+      for alias in spec:gmatch("[^|]+") do
+        if alias:sub(1, 1) == "<" then
+          local k, m = hollow.keymap.parse_chord(alias)
+          exact_chords[hollow.keymap.format_mods(m) .. ":" .. k] = true
+        end
+      end
+    end
+  end
+  return exact_chords[mods .. ":" .. key] == true
+end
+
+local function on_docked_key(key, mods)
+  -- Bare bindings match any modifiers, so Ctrl/Alt chords would otherwise be
+  -- eaten (e.g. <C-S-Left> as arrow_left) instead of reaching pane focus/close.
+  if mods ~= "" and mods ~= "<S>" and not bound_exactly(key, mods) then
+    return false
+  end
+  docked_key = true
+  local ok, handled = pcall(on_key, key, mods)
+  docked_key = false
+  if not ok then
+    error(handled, 0)
+  end
+  return handled
 end
 
 local function on_event(name, payload)
@@ -145,6 +186,7 @@ function console.open(opts)
   editor.start_history()
   active = ui.modal({
     title = "Lua REPL",
+    exclusive = false,
     theme = shared.widget_theme("input", opts.theme),
     width = opts.width or 80,
     height = opts.height,
@@ -166,6 +208,47 @@ function console.close()
   if active then
     active.close()
   end
+end
+
+-- Docked variant: the same console state rendered in a native Lua pane, which
+-- survives config reload through this factory.
+ui.pane.register("hollow.lua_repl", function()
+  return {
+    title = "Lua REPL",
+    capture_keys = true,
+    on_mount = function(ctx)
+      docked = ui.pane.get(ctx.pane_id)
+      editor.start_history()
+    end,
+    on_unmount = function(ctx)
+      if docked and docked.id == ctx.pane_id then
+        docked = nil
+      end
+    end,
+    on_key = on_docked_key,
+    on_pointer = function(event)
+      if event.kind == "scroll" then
+        return on_event("overlay:scroll", { delta = event.delta, id = event.id })
+      end
+    end,
+    render = function(ctx)
+      return (view.render(shared.widget_theme("input"), ctx, { height = ctx.rows, docked = true }))
+    end,
+  }
+end)
+
+--- Toggle the REPL as a split pane; the modal stays available separately.
+function console.dock(opts)
+  opts = opts or {}
+  if docked then
+    docked:close()
+    return nil
+  end
+  return ui.pane.split({
+    module = "hollow.lua_repl",
+    direction = opts.direction or "horizontal",
+    ratio = opts.ratio or 0.35,
+  })
 end
 
 return console

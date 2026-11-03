@@ -93,6 +93,25 @@ Connections never replay RPCs after a disconnect; reconnecting gets a new
 missing or host unreachable), `unsupported_arch`, `checksum_mismatch`, `timeout`
 or `agent_install_unavailable`, with a readable `message`.
 
+### Domain hosts
+
+`for_domain(name?)` returns the host a terminal domain's panes run on, so Lua
+can run commands where that domain's shells live. It resolves the domain the
+same way as [pane PTYs](#pane-ptys) (`host`, `wsl_distro`, or a
+`wsl.exe -d X` shell; `name` defaults to `default_domain`) and returns `nil`
+when the domain runs natively. The connection is cached per domain under ID
+`domain:<name>`, and a disconnected one is replaced on the next call. An
+invalid host descriptor rejects with `invalid_args`.
+
+```lua
+local connecting = hollow.host.for_domain("Ubuntu-26.04WSL")
+if connecting then
+  connecting:next(function(host)
+    host:exec({ argv = { "uname", "-sr" } }):next(function(result) print(result.stdout) end)
+  end, function(err) print(err.code, err.message) end)
+end
+```
+
 `connect` takes the same shape directly:
 `connect({ id, connector = { argv, remote_shell? }, agent? = { path?, dir?, artifacts?, timeout_ms? } })`.
 

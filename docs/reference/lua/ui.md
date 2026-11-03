@@ -2,7 +2,7 @@
 
 The widget runtime.
 The same widget model powers the top bar, the bottom bar, sidebars,
-and overlays (modals, prompts, pickers, notifications).
+overlays (modals, prompts, pickers, notifications), and Lua pane content.
 
 The [Activity Center](activity.md) combines an inbox, session history, and running
 programs. `hollow.ui.activity.open({ view = "inbox" | "history" })` opens it.
@@ -37,7 +37,7 @@ hollow.ui.style(...)                -- merge style layers
 hollow.ui.styled(theme, ...)  -- merge and resolve tokens now
 ```
 
-Widget `render` functions return exactly one `row` or `column`. Rows
+Inline widget `render` functions return exactly one `row` or `column`. Rows
 contain inline children and own row-level presentation and interaction:
 
 ```lua
@@ -420,7 +420,22 @@ hollow.ui.sidebar.mount(widget)
 hollow.ui.sidebar.unmount()
 hollow.ui.sidebar.toggle()
 hollow.ui.sidebar.invalidate()
+hollow.ui.sidebar.dock(opts)   -- toggle overlay <-> split pane
+hollow.ui.sidebar.is_docked()
 ```
+
+The mounted sidebar is a window-edge overlay by default. `dock()` moves the same
+widget into a [Lua pane](#lua-panes) spanning the window edge given by `side`
+(focus stays on the previous pane unless `focus = true`) and returns it; calling
+`dock()` again undocks back to the overlay and returns `nil`. Options: `edge`
+(default: the sidebar `side`) and `ratio` (default: `width` columns as a
+fraction of the window, clamped to `0.1–0.5`). Closing the pane any other way also undocks; `toggle()`
+and `unmount()` close it and leave the sidebar hidden. The docked pane survives
+config reload, renders the widget rows as Clay nodes, and is retained rather
+than repainted every frame: it refreshes on hover, clicks, the bar invalidation
+events and `invalidate()`. Span hover styles, clicks and `on_mouse_enter`/
+`on_mouse_leave` work in both modes; the `sidebar:*` events are emitted only by
+the overlay.
 
 Sidebar options:
 
@@ -437,6 +452,167 @@ Sidebar options:
 Sidebar spans take the same `id`, `on_click`, `on_mouse_enter`,
 `on_mouse_leave` and `hover` fields as bar spans. They emit `sidebar:hover`,
 `sidebar:leave` and `sidebar:click`.
+
+## Lua panes
+
+`hollow.ui.pane` creates GUI-only panes whose content is a
+[`hollow.ui.components`](components.md) Clay tree, not a terminal or an overlay.
+They participate in normal split, float, maximize, focus, move and close actions,
+but own no PTY and are never automatically reaped for child exit. Terminal-only
+send/query operations are not supported; Lua send helpers return `false` and
+terminal-only CLI verbs report `NotATerminal`.
+
+```lua
+local pane = hollow.ui.pane.split(opts) -- HollowUiPane or nil
+local floating = hollow.ui.pane.float(opts)
+hollow.ui.pane.get(id)                 -- current Lua owner or nil
+hollow.ui.pane.register(name, factory) -- factory(args) -> options
+if pane then
+  pane:invalidate()
+  pane:set_title("Tasks")
+  pane:close()                         -- boolean: close was queued
+end
+```
+
+Creation reserves `.id` immediately and queues native insertion. `nil` means
+creation could not be queued (for example before GUI initialization).
+`on_complete(result)` reports later insertion success with
+`{ success = boolean, pane_id = id_or_nil }`; it does not run for an immediate
+`nil` return. `get(id)` returns only the current runtime's Lua owner, not a pane
+snapshot. Use `hollow.term.pane_by_id(id)` for a snapshot.
+
+### Options and context
+
+| Option | Meaning |
+| --- | --- |
+| `render(ctx)` | Required unless supplied by `module`; returns one Clay component tree, not inline `ui.row`/`ui.column` |
+| `module`, `args` | Optional registered factory name and creation-time JSON table; `args` defaults to `{}` |
+| `state` | Mutable instance table, available as `ctx.state`; defaults to `{}` |
+| `theme` | Explicit token palette; otherwise the current `select` widget palette |
+| `title` | Optional pane title; an explicit title is restored on config reload |
+| `direction`, `ratio` | `"vertical"` (default) or `"horizontal"`; new pane fraction in `(0, 1)`, default `0.5` |
+| `edge` | `"left"`, `"right"`, `"top"` or `"bottom"`: split the whole tiled layout and span that window edge instead of splitting the active pane; overrides `direction` |
+| `x`, `y`, `width`, `height` | Floating bounds as normalized fractions `0–1`, not pixels |
+| `fullscreen` | Maximize after insertion |
+| `on_mount(ctx)` | Once, on first snapshot with valid geometry |
+| `on_unmount(ctx)` | Once for mounted owners on close, teardown or config reload |
+| `on_resize(ctx)` | Subsequent pixel/grid size changes |
+| `on_focus(ctx, focused)` | Initial focus after mount, subsequent transitions, and blur before unmount |
+| `on_key(key, mods, ctx)` | Key-down/repeat; only `true` consumes the event |
+| `capture_keys` | `true` routes modified keys to the pane before global bindings; the leader still escapes |
+| `on_pointer(event, ctx)` | Clicks (any button) and wheel: `{ kind = "click"\|"scroll", id, button, delta }`; `true` consumes |
+| `on_complete(result)` | Queued native insertion result |
+
+Closing before first paint invokes neither mount nor unmount. Allocate independent
+state in each factory invocation rather than sharing one table between instances.
+
+Pane callbacks receive their own context, not the bar/widget context below:
+
+```lua
+-- ctx.pane_id, ctx.cols, ctx.rows
+-- ctx.width, ctx.height       -- pane content pixels
+-- ctx.cell_w, ctx.cell_h      -- renderer cell pixels
+-- ctx.focused                -- active pane AND OS window focus
+-- ctx.hovered_id             -- local node ID or nil
+-- ctx.state, ctx.theme
+```
+
+Snapshots are retained until invalidated: there is no per-frame `render` call
+while idle. Resize, focus, theme and hover transitions invalidate automatically,
+as do handled keys and clicks. After asynchronous state changes call
+`pane:invalidate()`. Render/serialization failures replace stale content with an
+error row, as do errors from `on_mount`, `on_resize` and `on_focus`; fix state
+and invalidate to retry. Unknown style tokens remain errors.
+
+### Input
+
+Focusable components share pane-local Tab/Shift-Tab navigation and activation.
+Entering a pane through keyboard navigation automatically focuses its first
+enabled control and shows its outline, including when revisiting a pane.
+Mouse entry does not automatically select the first control.
+Unmodified arrow keys move focus spatially using rendered positions, preferring
+aligned controls. Arrows start at the first control (Down/Right) or last
+(Up/Left), and stop at pane edges without wrapping. Focused controls with
+`on_key` retain their arrows, even when their handler declines a key; use Tab
+to leave an input. Pane `on_key` can override default navigation.
+Keyboard interaction shows the focus outline; clicks, scrolling, or pointer
+movement of at least four pixels hide it without clearing focus. Clicked inputs
+still accept typing. Keyboard-focused offscreen controls scroll into view.
+Clicks focus the pane and dispatch its component `on_click`; IDs are namespaced
+per instance, while callback `event.id` and `ctx.hovered_id` remain local IDs.
+Hover transitions update pane-local hover. Same-node movement rebuilds the
+snapshot only when it switches from keyboard to pointer modality.
+Lua presses never initiate terminal selection or leak releases into terminals.
+Only left clicks dispatch component `on_click`; `on_pointer` also sees right and
+middle clicks with `event.button`. Wheel input reaches `on_pointer` as
+`kind = "scroll"` with `delta` in notches (positive scrolls toward earlier
+content) and the local ID of the scroll container under the pointer; if it is not
+consumed, native `scroll = true` containers scroll.
+
+Keyboard priority is: overlays/modal capture and pending global sequences;
+explicit-modifier global bindings (after the leader, for `capture_keys` panes);
+pane-local focused components, `on_key`, then Tab/spatial navigation; finally unmodified
+global bindings when the pane declines.
+Existing copy-mode priority is unchanged. Keys are normalized (for example
+`"f6"`, `"enter"`, `"arrow_left"`); modifier strings are canonical (`""`,
+`"<C>"`, `"<S>"`, etc.). Key-handler errors log and fall through. Key-up,
+text/IME callbacks, drag widgets, selection and copy mode inside Lua panes are
+outside v1.
+
+For automation, `hollow-cli send-keys --id`, `pane send-text`, and
+`hollow.term.send_text(text, pane_id)` deliver terminal input bytes to a Lua
+pane as key events, whether or not it has focus. Arrows, Home/End, F1-F12,
+Page Up/Down, Insert/Delete, Shift-Tab, xterm modifier sequences, Ctrl letters,
+and Alt (an Esc prefix) are decoded; unknown escape sequences are dropped.
+This input goes straight to the pane's components, `on_key`, and Tab/arrow
+navigation, skipping global bindings.
+
+### Factories and persistence
+
+Register factories at config load time, **not inside `gui:ready`**. Each factory
+must return options with a `render` function. Creation calls the factory when
+`module` is set and `render` is omitted; explicit creation options override its
+options. Supplying both `module` and `render` bypasses the factory on creation,
+but restore still uses that named factory.
+
+```lua
+local h = require("hollow")
+local c = h.ui.components
+h.ui.pane.register("tasks", function(args)
+  return {
+    title = args.title or "Tasks",
+    state = { count = 0 },
+    render = function(ctx)
+      return c.column({ c.text(ctx.state.count) }, {
+        width = "grow", height = "grow", padding = 16,
+      })
+    end,
+  }
+end)
+h.events.on("gui:ready", function()
+  h.ui.pane.split({ module = "tasks", args = { title = "Build" }, ratio = 0.4 })
+end)
+```
+
+Args are copied plain JSON data: strings, booleans, finite numbers, dense arrays
+or string-keyed objects. No functions, metatables, cycles or sparse/mixed arrays.
+Limits are depth 32, 4096 table entries and a 64 KiB descriptor. Empty tables use
+the existing JSON bridge's representation; JSON null is not a distinct Lua value.
+The factory gets a separate copy, so factory mutation cannot alter saved args.
+
+Snapshots/CLI listings expose `kind = "terminal" | "lua"`; named Lua panes also
+expose `module` and creation `args`. Config reload preserves native IDs/layout,
+unmounts old owners, then builds fresh owners before `config:reloaded`. Live
+state/functions are not saved. A missing/broken factory logs a warning and leaves
+a blank, closable node that a later reload can retry. Anonymous panes also remain
+blank after config reload and are omitted from workspace export.
+
+[Workspace layouts](workspace-api.md#lua-pane-leaves) use
+`{ "lua": "tasks", "args": { "title": "Build" } }`. File import creates new
+IDs, unlike config reload. Lua panes live only in the GUI process, not in remote
+agents; register their factories in the GUI config. See runnable
+[`examples/lua-pane.lua`](../../../examples/lua-pane.lua) and
+[`lua-pane-workspace.json`](../../examples/lua-pane-workspace.json).
 
 ## Overlays
 

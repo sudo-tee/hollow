@@ -5,6 +5,16 @@ Open with `<leader>l` (default leader: `Ctrl+Space`), choose **Open Lua REPL
 The bottom-aligned console uses Clay layout and sizes itself to its content,
 with a bounded transcript instead of an empty fixed-height panel.
 
+To keep it open next to your terminals, run the `lua_repl_dock` action or call
+`hollow.ui.lua_repl.dock({ direction = "horizontal", ratio = 0.35 })`. It
+toggles a native [Lua pane](reference/lua/ui.md#lua-panes) sharing the modal's
+transcript and history. The docked console captures modified keys such as
+`Ctrl+V` and `Ctrl+L`, while the leader and any Ctrl/Alt chord the console
+doesn't bind (such as `Ctrl+Shift+Arrow` focus or `Ctrl+Shift+W` close) still
+reach global bindings. Escape
+only closes the completion menu; close the pane like any other. The pane is
+restored after a config reload, with an empty transcript.
+
 **This is not a sandbox. Code runs synchronously in Hollow's live Lua runtime
 with config/plugin privileges. Execute only trusted code; infinite loops block
 the UI. Changes are immediate, not automatically saved to your config.**

@@ -1,0 +1,16 @@
+{
+  "tabs": [
+    {
+      "name": "Lua workspace",
+      "panes": [
+        { "lua": "tasks", "args": { "title": "Tasks" }, "main": true },
+        {
+          "lua": "tasks",
+          "args": { "title": "Second instance" },
+          "direction": "horizontal",
+          "size": 0.4
+        }
+      ]
+    }
+  ]
+}

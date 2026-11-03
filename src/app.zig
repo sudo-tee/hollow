@@ -41,6 +41,7 @@ const nodeIsInTree = mux_mod.nodeIsInTree;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const pane_mod = @import("pane.zig");
 const Pane = pane_mod.Pane;
+const TerminalPane = @import("term/terminal_pane.zig").TerminalPane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
@@ -402,6 +403,8 @@ pub const App = struct {
     topbar_cache_visible: bool = false,
     topbar_cache_dirty: bool = true,
     window_focused: bool = true,
+    /// Input source used when entering a Lua pane.
+    keyboard_navigation: bool = false,
     topbar_cache_expires_at_ns: i128 = 0,
     config_watcher: ?*ConfigWatcher = null,
     config_watch_reload_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -521,7 +524,7 @@ pub const App = struct {
 
     pub fn currentPaneIdValue(self: *App) usize {
         const pane = self.activePane() orelse return 0;
-        return @intFromPtr(pane);
+        return pane.id;
     }
 
     pub fn currentWorkspaceIdValue(self: *App) ?usize {
@@ -534,7 +537,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domain_name, name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domainName(), name) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
@@ -547,8 +550,8 @@ pub const App = struct {
 
     pub fn currentDomainValue(self: *App) !?std.json.Value {
         const pane = self.activePane() orelse return null;
-        if (pane.domain_name.len == 0) return null;
-        return try self.domainValue(pane.domain_name);
+        if (pane.domainName().len == 0) return null;
+        return try self.domainValue(pane.domainName());
     }
 
     pub fn paneFrameValue(self: *App, pane: *Pane) !std.json.Value {
@@ -577,8 +580,20 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+        try putJsonField(self.allocator, &object, "kind", .{ .string = try self.allocator.dupe(u8, if (pane.asLua() != null) "lua" else "terminal") });
+        if (pane.asLua()) |surface| {
+            if (surface.descriptor_json) |text| {
+                const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+                defer parsed.deinit();
+                if (parsed.value == .object) {
+                    inline for (.{ "module", "args" }) |field| if (parsed.value.object.get(field)) |value| {
+                        try putJsonField(self.allocator, &object, field, try cloneJsonValue(self.allocator, value));
+                    };
+                }
+            }
+        }
+        try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(if (pane.asTerminalConst()) |term| term.childPid() else 0) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
@@ -598,10 +613,13 @@ pub const App = struct {
 
     pub fn currentPaneValue(self: *App) !?std.json.Value {
         const pane = self.activePane() orelse return null;
-        return try self.snapshotPane(@intFromPtr(pane));
+        return try self.snapshotPane(pane.id);
     }
 
     pub fn paneTextValue(self: *App, pane_id: usize) !std.json.Value {
+        if (if (pane_id == 0) self.activePane() else self.findPaneById(pane_id)) |pane| {
+            if (!pane.isTerminal()) return error.NotATerminal;
+        }
         const buf = try self.allocator.alloc(u8, 256 * 1024);
         defer self.allocator.free(buf);
         const text = self.getPaneText(pane_id, buf);
@@ -616,18 +634,18 @@ pub const App = struct {
         return .{ .object = line };
     }
 
-    fn screenLinesValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane, rows: u16, cols: u16) !std.json.Value {
+    fn screenLinesValue(self: *App, runtime: *GhosttyRuntime, term: *TerminalPane, rows: u16, cols: u16) !std.json.Value {
         var lines = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = lines });
         const row_buffer = try self.allocator.alloc(u8, @max(@as(usize, cols) * 64, 1));
         defer self.allocator.free(row_buffer);
 
         var iterator_index: usize = 0;
-        while (iterator_index < rows and runtime.nextRow(pane.row_iterator)) : (iterator_index += 1) {
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+        while (iterator_index < rows and runtime.nextRow(term.row_iterator)) : (iterator_index += 1) {
+            if (!runtime.populateRowCells(term.row_iterator, &term.row_cells)) break;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.row_cells, row_buffer, &row_len);
+            while (runtime.nextCell(term.row_cells)) {
+                text_helpers.appendCellText(runtime, term.row_cells, row_buffer, &row_len);
             }
             while (row_len > 0 and row_buffer[row_len - 1] == ' ') row_len -= 1;
             const visual_row = viewportIteratorRowIndex(iterator_index, rows) orelse continue;
@@ -648,41 +666,42 @@ pub const App = struct {
         return .{ .object = point };
     }
 
-    fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !std.json.Value {
+    fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, term: *const TerminalPane) !std.json.Value {
         var cursor = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = cursor });
-        if (runtime.cursorPos(pane.render_state)) |position| {
+        if (runtime.cursorPos(term.render_state)) |position| {
             try putJsonField(self.allocator, &cursor, "position", try self.cursorPositionValue(position.y, position.x));
         } else {
             try putJsonField(self.allocator, &cursor, "position", .null);
         }
-        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(pane.render_state) });
-        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(pane.render_state))) });
+        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(term.render_state) });
+        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(term.render_state))) });
         return .{ .object = cursor };
     }
 
     pub fn paneScreenValue(self: *App, pane_id: usize) !?std.json.Value {
         const runtime = if (self.ghostty) |*value| value else return null;
         const pane = if (pane_id == 0) self.activePane() orelse return null else self.findPaneById(pane_id) orelse return null;
-        if (!paneRenderHelpersReady(pane)) return null;
+        const term = pane.asTerminal() orelse return error.NotATerminal;
+        if (!term.renderHelpersReady()) return null;
 
-        const rows = runtime.renderStateRows(pane.render_state) orelse pane.rows;
-        const cols = runtime.renderStateCols(pane.render_state) orelse pane.cols;
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+        const rows = runtime.renderStateRows(term.render_state) orelse pane.rows;
+        const cols = runtime.renderStateCols(term.render_state) orelse pane.cols;
+        if (!runtime.populateRowIterator(term.render_state, &term.row_iterator)) return null;
 
         var screen = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = screen });
         try putJsonField(self.allocator, &screen, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
-        try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(@intFromPtr(pane)) });
+        try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(pane.id) });
         try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
         try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
         try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
-        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
-        try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, pane));
-        try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, pane, rows, cols));
+        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
+        try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, term));
+        try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, term, rows, cols));
         return .{ .object = screen };
     }
 
@@ -787,14 +806,14 @@ pub const App = struct {
         var panes = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = panes });
         for (tab.panes.items) |pane| {
-            const pane_value = try self.snapshotPane(@intFromPtr(pane));
+            const pane_value = try self.snapshotPane(pane.id);
             if (pane_value) |value| try panes.append(value);
         }
 
         var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
         const active_pane = tab.activePane();
-        const pane_value = if (active_pane) |pane| try self.snapshotPane(@intFromPtr(pane)) else null;
+        const pane_value = if (active_pane) |pane| try self.snapshotPane(pane.id) else null;
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(tab.id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, if (active_pane) |pane| pane.title else "") });
         try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
@@ -840,7 +859,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                const pane_id = @intFromPtr(pane);
+                const pane_id = pane.id;
                 if (wanted_tag) |tag| {
                     const entry = cmd_ipc.findPaneTagEntry(self, pane_id) orelse continue;
                     if (!entry.tags.contains(tag)) continue;
@@ -860,7 +879,7 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
-                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
             } else {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .null);
             }
@@ -968,6 +987,9 @@ pub const App = struct {
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
 
+        // Lua-pane unmount hooks may have queued actions during mux teardown.
+        // Release owned payloads/references while their runtime still exists.
+        input.deinitInputQueue(self);
         if (self.lua) |*lua| {
             std.log.info("App.shutdownRuntime lua.deinit", .{});
             lua.deinit();
@@ -1113,6 +1135,10 @@ pub const App = struct {
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
             .split_pane = lua_callbacks.luaSplitPaneCallback,
+            .create_lua_pane = @import("app/lua_panes.zig").create,
+            .get_pane_content = @import("app/lua_panes.zig").contentInfo,
+            .invalidate_lua_pane = @import("app/lua_panes.zig").invalidate,
+            .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
@@ -1530,8 +1556,8 @@ pub const App = struct {
     fn invalidateFocusedPaneCache(self: *App, previous: ?*Pane, current: ?*Pane) void {
         _ = self;
         if (previous == current) return;
-        if (previous) |pane| pane.render_dirty = .full;
-        if (current) |pane| pane.render_dirty = .full;
+        if (previous) |pane| pane.invalidate();
+        if (current) |pane| pane.invalidate();
     }
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
@@ -1552,7 +1578,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    if (!mux.activeTabContainsPane(pane)) pane.releaseRenderHelpers(runtime);
+                    if (!mux.activeTabContainsPane(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
                 }
             }
         }
@@ -1565,26 +1591,38 @@ pub const App = struct {
             }
         }
         if (self.ghostty) |*runtime| {
-            if (current) |pane| runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+            if (current) |pane| {
+                registerTerminalCallbacks(runtime, pane);
+            }
         }
     }
 
     pub fn refreshActivePaneBinding(self: *App) void {
         if (self.activePane()) |pane| {
-            pane.render_dirty = .full;
+            pane.invalidate();
+            if (pane.asLua() != null) @import("app/lua_panes.zig").focus(self, pane, self.window_focused);
             if (self.ghostty) |*runtime| {
-                runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+                registerTerminalCallbacks(runtime, pane);
             }
         }
+    }
+
+    fn registerTerminalCallbacks(runtime: *GhosttyRuntime, pane: *Pane) void {
+        const term = pane.asTerminal() orelse return;
+        runtime.registerCallbacks(term.terminal, terminal_callbacks.terminalCallbacks());
     }
 
     pub fn refreshActivePaneDisplay(self: *App) void {
         const pane = self.activePane() orelse return;
         const runtime = if (self.ghostty) |*rt| rt else return;
-        runtime.terminalScrollBottom(pane.terminal);
+        const term = pane.asTerminal() orelse {
+            pane.invalidate();
+            return;
+        };
+        runtime.terminalScrollBottom(term.terminal);
         pane.render_dirty = .full;
-        pane.last_render_state_update_ns = 0;
-        pane.pty_received_data = true;
+        term.last_render_state_update_ns = 0;
+        term.pty_received_data = true;
         self.scroll_accum = 0;
         _ = scroll.refreshPaneScrollbar(self, runtime, pane);
     }
@@ -1641,7 +1679,8 @@ pub const App = struct {
     }
 
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
-        return if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+        const term = pane.asTerminalConst() orelse return self.config.terminal_padding;
+        return if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
             self.config.alternate_screen_padding
         else
             self.config.terminal_padding;
@@ -1665,7 +1704,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                if (@intFromPtr(pane) == pane_id) return pane;
+                if (pane.id == pane_id) return pane;
             }
         }
         return null;
@@ -1687,54 +1726,28 @@ pub const App = struct {
     }
 
     pub fn paneRenderHelpersReady(pane: *const Pane) bool {
-        return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
-    }
-
-    const PaneRead = struct {
-        runtime: *GhosttyRuntime,
-        pane: *Pane,
-        transient: bool,
-
-        fn end(self: PaneRead) void {
-            if (self.transient) self.pane.releaseRenderHelpers(self.runtime);
-        }
-    };
-
-    fn beginPaneRead(runtime: *GhosttyRuntime, pane: *Pane) ?PaneRead {
-        if (paneRenderHelpersReady(pane)) return .{ .runtime = runtime, .pane = pane, .transient = false };
-        if (pane.terminal == null) return null;
-
-        var transient = false;
-        if (!pane.hasRenderHelpers()) {
-            pane.recreateRenderHelpers(runtime);
-            if (!pane.hasRenderHelpers()) return null;
-            transient = true;
-        }
-        const read: PaneRead = .{ .runtime = runtime, .pane = pane, .transient = transient };
-        runtime.updateRenderState(pane.render_state, pane.terminal) catch {
-            read.end();
-            return null;
-        };
-        return read;
+        const term = pane.asTerminalConst() orelse return false;
+        return term.renderHelpersReady();
     }
 
     pub fn getPaneText(self: *App, pane_id: usize, out: []u8) []const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return "";
         const pane = self.findPaneById(pane_id) orelse return "";
         if (pane.rows == 0) return "";
-        const read = beginPaneRead(runtime, pane) orelse return "";
+        const term = pane.asTerminal() orelse return "";
+        const read = term.beginRead(runtime) orelse return "";
         defer read.end();
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
+        if (!runtime.populateRowIterator(term.render_state, &term.row_iterator)) return "";
 
         var writer: std.Io.Writer = .fixed(out);
         var row_index: usize = 0;
-        while (runtime.nextRow(pane.row_iterator) and row_index < pane.rows) : (row_index += 1) {
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+        while (runtime.nextRow(term.row_iterator) and row_index < pane.rows) : (row_index += 1) {
+            if (!runtime.populateRowCells(term.row_iterator, &term.row_cells)) break;
 
             var row_text: [4096]u8 = undefined;
             var row_len: usize = 0;
-            while (runtime.nextCell(pane.row_cells)) {
-                text_helpers.appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
+            while (runtime.nextCell(term.row_cells)) {
+                text_helpers.appendCellText(runtime, term.row_cells, row_text[0..], &row_len);
             }
             while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
             writer.writeAll(row_text[0..row_len]) catch break;
@@ -1753,13 +1766,17 @@ pub const App = struct {
         return false;
     }
 
-    /// Send focus state to a child terminal without treating mux focus as user input.
+    /// Notify pane content without treating mux focus as terminal user input.
     fn sendFocusToPane(self: *App, pane: *Pane, gained: bool) void {
+        const term = pane.asTerminal() orelse {
+            @import("app/lua_panes.zig").focus(self, pane, gained);
+            return;
+        };
         const rt = if (self.ghostty) |*r| r else return;
-        if (!rt.terminalMode(pane.terminal, .focus_event)) return;
+        if (!rt.terminalMode(term.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
         const bytes = rt.encodeFocus(if (gained) .gained else .lost, &buf) orelse return;
-        pane.sendUserText(bytes);
+        term.sendUserText(pane.allocator, bytes);
         self.signalWake();
     }
 
@@ -1771,6 +1788,7 @@ pub const App = struct {
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
+        const term = pane.asTerminal() orelse return false;
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
             return true;
@@ -1787,7 +1805,7 @@ pub const App = struct {
         var derived_text_buf: [4]u8 = undefined;
         const effective_text = text orelse text_helpers.legacyPrintableKeyText(key, mods, &derived_text_buf);
         const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
-        if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+        if (term.encodeKey(rt, key, mods, action, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
             mux_ops.sendText(self, bytes);
             return true;
         }
@@ -1808,6 +1826,7 @@ pub const App = struct {
     };
 
     pub fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
+        if (!pane.isTerminal()) return bounds;
         const pad = self.panePadding(pane);
         const scrollbar_gutter = @min(bounds.width, scroll.paneScrollbarGutter(self, pane));
         const inset_left = @min(pad.left, bounds.width -| scrollbar_gutter);
@@ -1914,8 +1933,9 @@ pub const App = struct {
     }
 
     pub fn hasLiveChild(self: *App) bool {
-        if (self.activePane()) |pane| return pane.hasLiveChild();
-        return false;
+        const pane = self.activePane() orelse return false;
+        const term = pane.asTerminal() orelse return false;
+        return term.hasLiveChild();
     }
 
     pub fn activeWorkspace(self: *App) ?*Workspace {
@@ -1965,6 +1985,7 @@ pub const App = struct {
         self.invalidateCachedBarLayouts();
 
         if (self.lua) |*lua| {
+            @import("app/lua_panes.zig").beforeReload(self);
             lua.deinit();
             self.lua = null;
         }
@@ -1974,8 +1995,11 @@ pub const App = struct {
         std.log.info("config: command_timing={}", .{self.config.command_timing});
         cmd_ipc.syncCommandTimingEnv(self);
 
-        if (self.config.window_width == 1280 and old_window_width != 0) self.config.window_width = old_window_width;
-        if (self.config.window_height == 800 and old_window_height != 0) self.config.window_height = old_window_height;
+        if (self.lua) |*lua| lua.markGuiReady();
+        // The OS window keeps its size across reload, so keep the live size
+        // even when the config sets window_width/window_height.
+        if (old_window_width != 0) self.config.window_width = old_window_width;
+        if (old_window_height != 0) self.config.window_height = old_window_height;
         self.cell_width_px = @max(1, old_cell_width);
         self.cell_height_px = @max(1, old_cell_height);
 
@@ -1984,10 +2008,12 @@ pub const App = struct {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
                     pane.applyTerminalTheme(runtime, &self.config.terminal_theme);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domainName().len > 0) pane.domainName() else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
-                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                if (mux.activePane()) |active| {
+                    registerTerminalCallbacks(runtime, active);
+                }
             }
             self.pending_renderer_refresh = self.config.backend == .sokol or self.config.backend == .webgpu;
             self.resize(self.config.window_width, self.config.window_height);
@@ -2008,6 +2034,7 @@ pub const App = struct {
                 return false;
             };
         }
+        @import("app/lua_panes.zig").restoreAll(self);
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
     }
@@ -2103,7 +2130,7 @@ pub const App = struct {
 
     pub fn windowTitleCString(self: *App) [256:0]u8 {
         const agent = if (self.activePane()) |pane|
-            if (pane.pty) |*pty| @import("pty/pty.zig").usesAgent(pty) else false
+            if (pane.asTerminalConst()) |term| term.usesAgent() else false
         else
             false;
         return text_helpers.windowTitleCString(self.activeTitle(), agent);
@@ -2362,6 +2389,7 @@ pub const App = struct {
             };
             var count_panes = mux.paneIterator();
             while (count_panes.next()) |pane| {
+                if (!pane.isTerminal()) continue;
                 if (pane == active_pane) continue;
                 const is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
@@ -2385,7 +2413,8 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 pane.program_status.setFocused(pane_is_active);
-                const active_screen_before = pane.active_screen;
+                const term = pane.asTerminal() orelse continue;
+                const active_screen_before = term.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
                 } else false;
@@ -2393,11 +2422,11 @@ pub const App = struct {
                 const pty_read_loops: usize = (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_read_bytes: usize = if (pane_is_active) pane_mod.PTY_HARD_BYTE_LIMIT else background_budget.byteQuota();
                 const pending_output_bytes: usize = if (pane_is_active) blk: {
-                    const deferred_output_bytes = pane.boot_output.items.len +| pane.pending_terminal_inject.items.len;
-                    break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
+                    const deferred_output_bytes = term.boot_output.items.len +| term.pending_terminal_inject.items.len;
+                    break :blk term.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
                 const pty_now_ns = io.nanoTimestamp();
-                const recent_pty_output = pane.last_pty_output_ns != 0 and pty_now_ns - pane.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
+                const recent_pty_output = term.last_pty_output_ns != 0 and pty_now_ns - term.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
                 const recent_input = self.last_input_activity_ns != 0 and pty_now_ns - self.last_input_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const recent_resize = self.last_resize_activity_ns != 0 and pty_now_ns - self.last_resize_activity_ns < PTY_RECENT_ACTIVITY_NS;
                 const use_pressure_chunk = pane_is_active and !recent_input and !recent_resize and
@@ -2407,16 +2436,16 @@ pub const App = struct {
                 else
                     pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_budget_ns: i128 = if (pane_is_active)
-                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
+                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, term.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
                 else if (pty_read_bytes > 0)
                     background_budget.timeQuota()
                 else
                     0;
-                pane.synchronized_output_enabled = self.config.synchronized_output;
-                if (!self.config.synchronized_output) pane.synchronized_output_active = false;
+                term.synchronized_output_enabled = self.config.synchronized_output;
+                if (!self.config.synchronized_output) term.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
-                if (pane.pty) |*pty| pty.setFocused(pane_is_active);
-                const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
+                if (term.pty) |*pty| pty.setFocused(pane_is_active);
+                const pty_bytes_read = term.pollPty(pane, runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
                 };
@@ -2424,52 +2453,53 @@ pub const App = struct {
                     background_budget.consume(pty_bytes_read, io.nanoTimestamp() - poll_start_ns);
                 }
                 const sync_now_ns = io.nanoTimestamp();
-                if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
-                    std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
+                if (term.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
+                    pane.render_dirty = .full;
+                    std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});
                 }
-                if (pane.synchronized_output_active) {
-                    const sync_deadline_ns = pane.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
+                if (term.synchronized_output_active) {
+                    const sync_deadline_ns = term.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
                     if (next_idle_render_poll_ns == 0 or sync_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = sync_deadline_ns;
                     }
                 }
-                if (pane.active_screen != active_screen_before) {
+                if (term.active_screen != active_screen_before) {
                     automation_changed = true;
-                    pane.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
-                        pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
-                    pane.alt_screen_nudge_quiet_ticks = 0;
-                    pane.alt_screen_nudge_not_before_ns = if (pane.pending_alt_screen_nudge)
+                    term.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
+                        term.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
+                    term.alt_screen_nudge_quiet_ticks = 0;
+                    term.alt_screen_nudge_not_before_ns = if (term.pending_alt_screen_nudge)
                         io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS
                     else
                         0;
                     self.requestLayoutResize(false);
                 }
-                if (!pane.hasLiveChild()) pane.program_status.childExited(self.allocator);
+                if (!term.hasLiveChild()) pane.program_status.childExited(self.allocator);
                 if (pane.program_status.dirty) {
                     pane.program_status.dirty = false;
                     automation_changed = true;
                     self.topbar_cache_dirty = true;
-                    self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = @intFromPtr(pane) });
-                    _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = @intFromPtr(pane) });
+                    self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = pane.id });
+                    _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = pane.id });
                 }
-                const had_pty_output_this_tick = pane.pty_received_data;
-                const had_notifications = pane.osc99_notifications.hasNotifications();
+                const had_pty_output_this_tick = term.pty_received_data;
+                const had_notifications = term.osc99_notifications.hasNotifications();
                 if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or had_notifications) automation_changed = true;
-                total_pty_read_ns += pane.last_pty_read_ns;
-                total_terminal_write_ns += pane.last_terminal_write_ns;
-                total_terminal_write_bytes += pane.last_terminal_write_bytes;
-                total_terminal_write_chunks += pane.last_terminal_write_chunks;
-                total_has_pending_ns += pane.last_has_pending_ns;
-                total_sanitize_ns += pane.last_sanitize_ns;
-                total_child_alive_ns += pane.last_child_alive_ns;
-                total_encoder_sync_ns += pane.last_encoder_sync_ns;
+                total_pty_read_ns += term.last_pty_read_ns;
+                total_terminal_write_ns += term.last_terminal_write_ns;
+                total_terminal_write_bytes += term.last_terminal_write_bytes;
+                total_terminal_write_chunks += term.last_terminal_write_chunks;
+                total_has_pending_ns += term.last_has_pending_ns;
+                total_sanitize_ns += term.last_sanitize_ns;
+                total_child_alive_ns += term.last_child_alive_ns;
+                total_encoder_sync_ns += term.last_encoder_sync_ns;
                 if (pane.title_dirty) {
                     const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (term.domain_name.len > 0) term.domain_name else null) catch self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
-                        .pane_id = @intFromPtr(pane),
+                        .pane_id = pane.id,
                         .old_title = if (old_title) |value| value else "",
                         .new_title = pane.title,
                     } });
@@ -2481,20 +2511,20 @@ pub const App = struct {
                     defer if (old_cwd) |value| self.allocator.free(value);
                     if (pane.refreshCwd()) {
                         self.emitLuaBuiltInEvent("term:cwd_changed", .{ .pane_cwd_changed = .{
-                            .pane_id = @intFromPtr(pane),
+                            .pane_id = pane.id,
                             .old_cwd = if (old_cwd) |value| value else "",
                             .new_cwd = pane.cwd,
                         } });
                     }
                     if (self.config.debug_overlay) total_cwd_ns += io.nanoTimestamp() - start_ns;
                 }
-                while (pane.osc99_notifications.popNotification()) |notification_value| {
+                while (term.osc99_notifications.popNotification()) |notification_value| {
                     var notification = notification_value;
                     defer notification.deinit(self.allocator);
                     const now_notification_ns = io.nanoTimestamp();
                     if (notification.close) {
                         self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
-                            .pane_id = @intFromPtr(pane),
+                            .pane_id = pane.id,
                             .title = "",
                             .message = "",
                             .level = @tagName(notification.level),
@@ -2513,7 +2543,7 @@ pub const App = struct {
                     self.last_visual_activity_ns = now_notification_ns;
                     self.topbar_cache_dirty = true;
                     self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
-                        .pane_id = @intFromPtr(pane),
+                        .pane_id = pane.id,
                         .title = notification.title,
                         .message = notification.message,
                         .level = @tagName(notification.level),
@@ -2537,7 +2567,7 @@ pub const App = struct {
                     // Tab labels may render an attention marker, so force the
                     // top bar to re-layout on the next frame.
                     self.topbar_cache_dirty = true;
-                    self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = @intFromPtr(pane) });
+                    self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = pane.id });
                 }
                 if (pane.bell_active) {
                     const now_bell_ns = io.nanoTimestamp();
@@ -2554,54 +2584,54 @@ pub const App = struct {
                         self.last_visual_activity_ns = now_bell_ns;
                     }
                 }
-                if (!pane.render_state_ready) {
+                if (!term.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
-                pane.tickImageAnimation(runtime, now_ns);
-                if (!pane.synchronized_output_active and pane.image_animation_deadline_ns != 0) {
-                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, pane.image_animation_deadline_ns);
+                if (term.tickImageAnimation(runtime, now_ns)) pane.render_dirty = .full;
+                if (!term.synchronized_output_active and term.image_animation_deadline_ns != 0) {
+                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, term.image_animation_deadline_ns);
                 }
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
-                const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
-                const needs_update = if (pane.synchronized_output_active)
-                    pane.render_state_fresh
+                const pane_idle_deadline_ns = term.last_render_state_update_ns + idle_poll_ns;
+                const needs_update = if (term.synchronized_output_active)
+                    term.render_state_fresh
                 else
-                    pane.pty_received_data or
+                    term.pty_received_data or
                         pane.render_dirty != .false_value or
-                        (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
+                        (now_ns - term.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
-                    if (pane.render_state_fresh) {
-                        pane.render_state_fresh = false;
-                        pane.pty_received_data = false;
+                    if (term.render_state_fresh) {
+                        term.render_state_fresh = false;
+                        term.pty_received_data = false;
                     } else {
-                        pane.pty_received_data = false;
-                        pane.last_render_state_update_ns = now_ns;
-                        runtime.clearRenderStateDirty(pane.render_state);
-                        runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
+                        term.pty_received_data = false;
+                        term.last_render_state_update_ns = now_ns;
+                        runtime.clearRenderStateDirty(term.render_state);
+                        runtime.updateRenderState(term.render_state, term.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
                     }
                     if (self.config.debug_overlay) total_renderstate_ns += io.nanoTimestamp() - renderstate_start_ns;
-                    const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                    const post_dirty = runtime.getRenderStateDirty(term.render_state) orelse .true_value;
                     if (self.config.debug_terminal_trace and pane_is_active) {
-                        const cursor_pos = runtime.cursorPos(pane.render_state);
+                        const cursor_pos = runtime.cursorPos(term.render_state);
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
-                            @intFromPtr(pane),
-                            pane.render_state_fresh,
-                            pane.pty_received_data,
+                            pane.id,
+                            term.render_state_fresh,
+                            term.pty_received_data,
                             @tagName(pane.render_dirty),
                             @tagName(post_dirty),
-                            runtime.cursorVisible(pane.render_state),
-                            runtime.cursorBlinking(pane.render_state),
-                            runtime.cursorPasswordInput(pane.render_state),
-                            @tagName(runtime.cursorVisualStyle(pane.render_state)),
+                            runtime.cursorVisible(term.render_state),
+                            runtime.cursorBlinking(term.render_state),
+                            runtime.cursorPasswordInput(term.render_state),
+                            @tagName(runtime.cursorVisualStyle(term.render_state)),
                             cursor_pos,
                         });
                     }
@@ -2611,13 +2641,13 @@ pub const App = struct {
                     if (self.copy_mode_active and self.copy_mode_pane == pane and !self.copy_mode_needs_refresh) {
                         copy_mode.refreshCopyModeVisibleSlice(self, pane) catch {};
                     }
-                    if (builtin.os.tag != .windows and pane.logged_first_pty_read and pane.title.len == 0) {
-                        if (runtime.cursorPos(pane.render_state)) |cp| {
+                    if (builtin.os.tag != .windows and term.logged_first_pty_read and pane.title.len == 0) {
+                        if (runtime.cursorPos(term.render_state)) |cp| {
                             std.log.info("linux startup cursor row={d} col={d} render_rows={d} render_cols={d}", .{
                                 cp.y,
                                 cp.x,
-                                runtime.renderStateRows(pane.render_state) orelse 0,
-                                runtime.renderStateCols(pane.render_state) orelse 0,
+                                runtime.renderStateRows(term.render_state) orelse 0,
+                                runtime.renderStateCols(term.render_state) orelse 0,
                             });
                         }
                     }
@@ -2627,52 +2657,52 @@ pub const App = struct {
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
-                } else if (!pane.synchronized_output_active and pane.last_render_state_update_ns != 0) {
+                } else if (!term.synchronized_output_active and term.last_render_state_update_ns != 0) {
                     if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
                 }
-                if (pane.pending_alt_screen_nudge) {
-                    if (pane.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
-                        pane.pending_alt_screen_nudge = false;
-                        pane.alt_screen_nudge_quiet_ticks = 0;
-                        pane.alt_screen_nudge_not_before_ns = 0;
-                    } else if (now_ns < pane.alt_screen_nudge_not_before_ns) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                if (term.pending_alt_screen_nudge) {
+                    if (term.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
+                        term.pending_alt_screen_nudge = false;
+                        term.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_not_before_ns = 0;
+                    } else if (now_ns < term.alt_screen_nudge_not_before_ns) {
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else if (had_pty_output_this_tick) {
-                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        term.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
                     } else {
-                        pane.alt_screen_nudge_quiet_ticks +|= 1;
-                        if (pane.alt_screen_nudge_quiet_ticks >= 3) {
+                        term.alt_screen_nudge_quiet_ticks +|= 1;
+                        if (term.alt_screen_nudge_quiet_ticks >= 3) {
                             std.log.info("app: pane alt-screen repaint nudge pane={x} rows={d} cols={d}", .{
-                                @intFromPtr(pane),
+                                pane.id,
                                 pane.rows,
                                 pane.cols,
                             });
-                            pane.nudgeTerminal(runtime, self.cell_width_px, self.cell_height_px);
-                            pane.pending_alt_screen_nudge = false;
-                            pane.alt_screen_nudge_quiet_ticks = 0;
-                            pane.alt_screen_nudge_not_before_ns = 0;
+                            term.nudgeTerminal(pane, runtime, self.cell_width_px, self.cell_height_px);
+                            term.pending_alt_screen_nudge = false;
+                            term.alt_screen_nudge_quiet_ticks = 0;
+                            term.alt_screen_nudge_not_before_ns = 0;
                             self.last_visual_activity_ns = now_ns;
                         } else {
                             self.last_visual_activity_ns = now_ns;
                         }
                     }
                 }
-                tickPaneCompression(runtime, pane, now_ns);
-                if (pane.compression_deadline_ns != 0 and
-                    (next_idle_render_poll_ns == 0 or pane.compression_deadline_ns < next_idle_render_poll_ns))
+                term.tickCompression(runtime, now_ns);
+                if (term.compression_deadline_ns != 0 and
+                    (next_idle_render_poll_ns == 0 or term.compression_deadline_ns < next_idle_render_poll_ns))
                 {
-                    next_idle_render_poll_ns = pane.compression_deadline_ns;
+                    next_idle_render_poll_ns = term.compression_deadline_ns;
                 }
-                if (!pane.hasLiveChild()) {
+                if (!term.hasLiveChild()) {
                     pane_lifecycle.exited(self, pane);
-                    if (!pane.retain_on_exit) has_dead = true;
+                    if (!term.retain_on_exit) has_dead = true;
                 }
                 pane_idx += 1;
             }
@@ -2709,7 +2739,7 @@ pub const App = struct {
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
-                    runtime.registerCallbacks(active.terminal, terminal_callbacks.terminalCallbacks());
+                    registerTerminalCallbacks(runtime, active);
                 }
                 self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
                 if (mux.activeTab()) |tab| {
@@ -2720,32 +2750,6 @@ pub const App = struct {
         }
         if (automation_changed) self.markAutomationChanged();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
-    }
-
-    fn tickPaneCompression(runtime: *GhosttyRuntime, pane: *Pane, now_ns: i128) void {
-        const idle_delay_ns: i128 = 250 * std.time.ns_per_ms;
-        const continuation_delay_ns: i128 = std.time.ns_per_ms;
-
-        const activity = runtime.terminalCompressionActivity(pane.terminal) catch |err| {
-            std.log.err("pane compression activity failed: {s}", .{@errorName(err)});
-            pane.compression_deadline_ns = 0;
-            return;
-        };
-        if (pane.compression_activity == null or pane.compression_activity.? != activity) {
-            pane.compression_activity = activity;
-            pane.compression_deadline_ns = now_ns + idle_delay_ns;
-            return;
-        }
-        if (pane.compression_deadline_ns == 0 or now_ns < pane.compression_deadline_ns) return;
-
-        pane.compression_deadline_ns = switch (runtime.terminalCompress(pane.terminal) catch |err| {
-            std.log.err("pane compression failed: {s}", .{@errorName(err)});
-            pane.compression_deadline_ns = 0;
-            return;
-        }) {
-            .pending => now_ns + continuation_delay_ns,
-            .complete, .unsupported => 0,
-        };
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
@@ -2795,8 +2799,8 @@ pub const App = struct {
                     if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
                     const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
                     const grid = self.paneGridSize(leaf.pane, leaf.bounds);
-                    if (recreate_render_helpers or !leaf.pane.hasRenderHelpers()) {
-                        leaf.pane.recreateRenderHelpers(runtime);
+                    if (leaf.pane.asTerminal()) |term| {
+                        if (recreate_render_helpers or !term.hasRenderHelpers()) term.recreateRenderHelpers(runtime);
                     }
                     leaf.pane.width_px = leaf.bounds.width;
                     leaf.pane.height_px = leaf.bounds.height;
@@ -2810,7 +2814,7 @@ pub const App = struct {
                     const actual_bottom = leaf.bounds.height - actual_top - inner.height;
                     if (self.debug_split_trace_frames > 0) {
                         std.log.info("split-trace leaf pane={x} outer={d}x{d} inner={d}x{d} insets=t{d} r{d} b{d} l{d} rows={d} cols={d}", .{
-                            @intFromPtr(leaf.pane),
+                            leaf.pane.id,
                             leaf.bounds.width,
                             leaf.bounds.height,
                             inner.width,
@@ -2823,19 +2827,21 @@ pub const App = struct {
                             grid.cols,
                         });
                     }
-                    leaf.pane.setMouseSize(
-                        runtime,
-                        leaf.bounds.width,
-                        leaf.bounds.height,
-                        self.cell_width_px,
-                        self.cell_height_px,
-                        actual_top,
-                        actual_bottom,
-                        actual_left,
-                        actual_right,
-                    );
-                    leaf.pane.render_state_ready = true;
-                    leaf.pane.terminal_output_ready = true;
+                    if (leaf.pane.asTerminal()) |term| {
+                        term.setMouseSize(
+                            runtime,
+                            leaf.bounds.width,
+                            leaf.bounds.height,
+                            self.cell_width_px,
+                            self.cell_height_px,
+                            actual_top,
+                            actual_bottom,
+                            actual_left,
+                            actual_right,
+                        );
+                        term.render_state_ready = true;
+                        term.terminal_output_ready = true;
+                    }
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
@@ -2849,8 +2855,8 @@ pub const App = struct {
                     const inner_height = inner.height;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
-                    if (recreate_render_helpers or !pane.hasRenderHelpers()) {
-                        pane.recreateRenderHelpers(runtime);
+                    if (pane.asTerminal()) |term| {
+                        if (recreate_render_helpers or !term.hasRenderHelpers()) term.recreateRenderHelpers(runtime);
                     }
                     pane.width_px = pixel_width;
                     pane.height_px = pane_h;
@@ -2862,19 +2868,21 @@ pub const App = struct {
                     const actual_top = inner.y - outer.y;
                     const actual_right = outer.width - actual_left - inner.width;
                     const actual_bottom = outer.height - actual_top - inner.height;
-                    pane.setMouseSize(
-                        runtime,
-                        layout_width,
-                        pane_h,
-                        self.cell_width_px,
-                        self.cell_height_px,
-                        actual_top,
-                        actual_bottom,
-                        actual_left,
-                        actual_right,
-                    );
-                    pane.render_state_ready = true;
-                    pane.terminal_output_ready = true;
+                    if (pane.asTerminal()) |term| {
+                        term.setMouseSize(
+                            runtime,
+                            layout_width,
+                            pane_h,
+                            self.cell_width_px,
+                            self.cell_height_px,
+                            actual_top,
+                            actual_bottom,
+                            actual_left,
+                            actual_right,
+                        );
+                        term.render_state_ready = true;
+                        term.terminal_output_ready = true;
+                    }
                 }
             }
             if (self.debug_split_trace_frames > 0) self.debug_split_trace_frames -|= 1;
@@ -2913,8 +2921,8 @@ test "HTP queue owns cwd at receipt including earlier OSC 7 in the same batch" {
     var pane = Pane.init(std.testing.allocator);
     pane.setCwd("/launch");
     defer std.testing.allocator.free(pane.cwd);
-    pane.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
-    defer if (pane.pending_cwd) |cwd| std.testing.allocator.free(cwd);
+    pane.content.terminal.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
+    defer if (pane.content.terminal.pending_cwd) |cwd| std.testing.allocator.free(cwd);
 
     htp.queueHtpMessage(app, &pane, "start");
     try std.testing.expect(pane.refreshCwd());
@@ -2935,19 +2943,19 @@ test "initial pane callbacks retain the App-owned runtime after initialization r
     var pane = pane_mod.Pane.init(std.testing.allocator);
     const runtime = try app.initTerminalRuntime();
     try std.testing.expectEqual(@intFromPtr(&app.ghostty.?), @intFromPtr(runtime));
-    pane.terminal_runtime = runtime;
-    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    pane.content.terminal.terminal_runtime = runtime;
+    pane.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
     defer pane.deinit(&app.ghostty.?);
-    pane.render_state = try runtime.createRenderState();
-    runtime.setTerminalUserdata(pane.terminal, &pane);
-    runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+    pane.content.terminal.render_state = try runtime.createRenderState();
+    runtime.setTerminalUserdata(pane.content.terminal.terminal, &pane);
+    runtime.registerCallbacks(pane.content.terminal.terminal, terminal_callbacks.terminalCallbacks());
 
     // Initial shell output invokes both callbacks after startup's stack unwinds.
-    app.ghostty.?.terminalWrite(pane.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
+    app.ghostty.?.terminalWrite(pane.content.terminal.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
     try std.testing.expect(pane.refreshCwd());
     try std.testing.expectEqualStrings("/startup", pane.cwd);
-    try std.testing.expect(pane.synchronized_output_active);
-    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.render_state).?.x);
+    try std.testing.expect(pane.content.terminal.synchronized_output_active);
+    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.content.terminal.render_state).?.x);
 }
 
 test "closePaneById synchronizes surviving focus without accessing the destroyed pane" {
@@ -2971,7 +2979,7 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
         closing.program_status.setFocused(true);
         survivor.program_status.setFocused(false);
         survivor.has_bell_attention = true;
-        mux_ops.closePaneById(app, @intFromPtr(closing));
+        mux_ops.closePaneById(app, closing.id);
         try std.testing.expectEqual(survivor, mux.activePane().?);
         try std.testing.expect(survivor.program_status.focused);
         try std.testing.expect(!survivor.has_bell_attention);
@@ -2979,13 +2987,349 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
     // A background close must still synchronize the surviving active pane.
     _ = try mux.splitActivePane(runtime, callbacks, app.config, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
     const background = mux.activePane().?;
-    try std.testing.expect(mux.focusPaneById(@intFromPtr(survivor)));
+    try std.testing.expect(mux.focusPaneById(survivor.id));
     survivor.program_status.setFocused(true);
-    mux_ops.closePaneById(app, @intFromPtr(background));
+    mux_ops.closePaneById(app, background.id);
     try std.testing.expectEqual(survivor, mux.activePane().?);
     try std.testing.expect(survivor.program_status.focused);
     mux_ops.closePaneById(app, 0);
     try std.testing.expectEqual(survivor, mux.activePane().?);
+}
+
+test "public Lua pane host API queues creation title invalidation close and reload cleanup" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const initial = try mux.createLuaPane();
+    try tab.appendPane(initial);
+    try app.lua.?.runString(
+        \\destroyed = 0
+        \\focuses = {}
+        \\pointers = {}
+        \\inputs = {}
+        \\owner = {direction='horizontal', ratio=0.4, destroy=function() destroyed=destroyed+1 end,
+        \\  input=function(_, text) inputs[#inputs+1] = text; return true end,
+        \\  focus=function(_, ctx, focused)
+        \\    assert(ctx.focused == focused and ctx.pane_id == id)
+        \\    assert(type(ctx.cols)=='number' and type(ctx.cell_w)=='number')
+        \\    focuses[#focuses+1] = focused
+        \\  end,
+        \\  pointer=function(_, kind, node, _, x)
+        \\    pointers[#pointers+1] = {kind=kind, id=node, x=x}
+        \\  end}
+        \\id = host_api.create_lua_pane(owner)
+        \\assert(type(id)=='number')
+        \\host_api.title_lua_pane(id, 'Lua tasks')
+        \\host_api.invalidate_lua_pane(id)
+    );
+    try std.testing.expectEqual(@as(usize, 1), tab.panes.items.len);
+    input.processInputQueue(app);
+    const pane = mux.activePane().?;
+    const id = pane.id;
+    try std.testing.expectEqual(@as(usize, 2), tab.panes.items.len);
+    try std.testing.expect(pane.asLua() != null);
+    try std.testing.expectEqualStrings("Lua tasks", pane.title);
+    try std.testing.expect(pane.asLua().?.dirty);
+    try app.lua.?.runString("assert(#focuses == 1 and focuses[1])");
+    try app.sendFocus(false);
+    mux_ops.focusPaneById(app, initial.id);
+    try app.sendFocus(true);
+    mux_ops.focusPaneById(app, id);
+    try app.lua.?.runString("assert(#focuses == 3 and not focuses[2] and focuses[3])");
+    // Stale owners are never looked up in the new runtime's registry.
+    pane.asLua().?.runtime_generation +%= 1;
+    try app.sendFocus(false);
+    pane.asLua().?.runtime_generation -%= 1;
+    try app.lua.?.runString("assert(#focuses == 3)");
+    try app.sendFocus(true);
+    try app.lua.?.runString("assert(#focuses == 4 and focuses[4])");
+    try app.lua.?.runString(
+        \\pane_focus_events = 0
+        \\hollow = {_emit_builtin_event=function(name, payload)
+        \\  if name == 'term:pane_focused' then
+        \\    assert(payload.pane_id == id)
+        \\    pane_focus_events = pane_focus_events + 1
+        \\  end
+        \\end}
+    );
+    const lua_panes = @import("app/lua_panes.zig");
+    var pointer: lua_panes.Pointer = .{
+        .pane_id = id,
+        .generation = app.lua.?.generation,
+        .revision = pane.asLua().?.revision,
+        .layout_generation = app.currentLayoutGeneration(),
+        .kind = .hover,
+        .id = "layout:test:button",
+        .x = 10,
+        .y = 20,
+    };
+    lua_panes.pointer(app, pointer);
+    try std.testing.expectEqualStrings(pointer.id.?, pane.asLua().?.hovered_id.?);
+    pane.asLua().?.dirty = false;
+    pointer.x = 11;
+    lua_panes.pointer(app, pointer);
+    try std.testing.expectEqual(@as(f32, 11), pane.asLua().?.pointer_x);
+    try std.testing.expect(!pane.asLua().?.dirty);
+    // Same-node motion reaches Lua for modality, but repaints only on request.
+    try app.lua.?.runString("assert(#pointers == 2 and pointers[2].kind == 'hover' and pointers[2].x == 11)");
+    mux.setActivePane(initial);
+    app.syncActivePaneChange(pane, initial);
+    pointer.kind = .click;
+    lua_panes.pointer(app, pointer);
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    var stale = pointer;
+    stale.revision += 1;
+    lua_panes.pointer(app, stale);
+    stale = pointer;
+    stale.generation +%= 1;
+    lua_panes.pointer(app, stale);
+    stale = pointer;
+    stale.layout_generation +%= 1;
+    lua_panes.pointer(app, stale);
+    try app.lua.?.runString("assert(#pointers == 3 and pointers[3].kind == 'click' and pointers[3].id == 'layout:test:button'); assert(pane_focus_events == 1)");
+    pointer.kind = .hover;
+    pointer.id = null;
+    pointer.x = -1;
+    pointer.y = -1;
+    lua_panes.pointer(app, pointer);
+    try std.testing.expect(pane.asLua().?.hovered_id == null);
+    try app.lua.?.runString("assert(#pointers == 4 and pointers[4].id == nil)");
+    var keys = try cmd_ipc.executeCommand(app, .{ .data = .{ .send_keys = .{ .id = id, .text = "\x1b[B\r" } } });
+    defer keys.deinit(a);
+    try std.testing.expect(keys.success);
+    try app.lua.?.runString("assert(#inputs == 1 and inputs[1] == '\\27[B\\r')");
+    pointer.id = try a.dupe(u8, "owned queued node");
+    try std.testing.expect(app.enqueueMouse(.{ .lua_pane_pointer = pointer }));
+    input.deinitInputQueue(app);
+    try app.lua.?.runString("assert(#pointers == 4)");
+    try app.lua.?.runString("assert(host_api.close_pane_by_id(id))");
+    input.processInputQueue(app);
+    try std.testing.expect(app.findPaneById(id) == null);
+    try app.lua.?.runString("assert(destroyed == 1); id = host_api.create_lua_pane(owner)");
+    input.processInputQueue(app);
+    @import("app/lua_panes.zig").beforeReload(app);
+    try app.lua.?.runString("assert(destroyed == 2)");
+    try std.testing.expectEqual(@as(c_int, -1), mux.activePane().?.asLua().?.ref);
+    // Repeated cleanup must not unref or destroy the old owner again.
+    @import("app/lua_panes.zig").beforeReload(app);
+    try app.lua.?.runString("assert(destroyed == 2)");
+    // Pending (never mounted) owners also release on queue teardown.
+    try app.lua.?.runString("host_api.create_lua_pane(owner)");
+    input.deinitInputQueue(app);
+    try app.lua.?.runString("assert(destroyed == 3)");
+    // Creation without an active layout rolls back its registry ownership.
+    const active = mux.active_workspace;
+    mux.active_workspace = null;
+    try app.lua.?.runString("host_api.create_lua_pane(owner)");
+    input.processInputQueue(app);
+    mux.active_workspace = active;
+    try app.lua.?.runString("assert(destroyed == 4)");
+}
+
+test "factory pane metadata and reload retain native identity while rebuilding Lua state" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    try tab.appendPane(try mux.createLuaPane());
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    const configure =
+        \\local h = hollow
+        \\factory_calls = 0
+        \\h.ui.pane.register('tasks', function(args)
+        \\  factory_calls = factory_calls + 1
+        \\  assert(type(args.huge) == 'number' and args.huge == 2^63)
+        \\  assert(args['key\0x'] == 'v\0z')
+        \\  return {title='Tasks', state={n=args.n+(offset or 0)},
+        \\    render=function(ctx) return h.ui.components.text(ctx.state.n) end}
+        \\end)
+    ;
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(configure);
+    try app.lua.?.runString(
+        \\id = hollow.ui.pane.split({module='tasks', args={n=2, huge=2^63, ['key\0x']='v\0z'},
+        \\  on_complete=function(result) completed=result end}).id
+    );
+    input.processInputQueue(app);
+    const pane = mux.activePane().?;
+    const id = pane.id;
+    const old_generation = app.lua.?.generation;
+    const next_id = mux.next_pane_id.load(.monotonic);
+    const snapshot = (try app.snapshotPane(id)).?;
+    defer deinitJsonValue(a, snapshot);
+    try std.testing.expectEqualStrings("lua", snapshot.object.get("kind").?.string);
+    try std.testing.expectEqualStrings("tasks", snapshot.object.get("module").?.string);
+    try std.testing.expectEqual(@as(i64, 2), snapshot.object.get("args").?.object.get("n").?.integer);
+    try app.lua.?.runString(
+        \\assert(completed.success and completed.pane_id == id and factory_calls == 1)
+        \\local p = hollow.term.current_pane()
+        \\assert(p.kind == 'lua' and p.module == 'tasks' and p.args.n == 2 and p.args.huge == 2^63,
+        \\  tostring(p.kind)..'/'..tostring(p.module)..'/'..type(p.args.huge)..':'..tostring(p.args.huge))
+        \\hollow.ui.pane.get(id).opts.state.n = 99
+    );
+    try std.testing.expect(mux.setPaneFloating(pane, true));
+    try std.testing.expect(mux.setFloatingPaneBounds(pane, 0.2, 0.3, 0.4, 0.5));
+    @import("app/lua_panes.zig").beforeReload(app);
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString("offset = 100");
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(configure);
+    @import("app/lua_panes.zig").restoreAll(app);
+    input.processInputQueue(app);
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expectEqual(next_id, mux.next_pane_id.load(.monotonic));
+    try std.testing.expect(pane.asLua().?.ref >= 0);
+    try std.testing.expect(pane.asLua().?.runtime_generation != old_generation);
+    try std.testing.expect(pane.is_floating);
+    try std.testing.expectEqual(@as(f32, 0.4), pane.floating_width);
+    try app.lua.?.runString(
+        \\local p = hollow.term.current_pane()
+        \\assert(p.kind == 'lua' and p.module == 'tasks' and p.args.n == 2)
+        \\assert(hollow.ui.pane.get(p.id).opts.state.n == 102 and factory_calls == 1)
+        \\assert(math.abs(p.floating_bounds.x - 0.2) < 0.001)
+        \\local exported = hollow.workspace.export_current()
+        \\assert(#exported.tabs[1].panes == 1 and exported.tabs[1].panes[1].lua == 'tasks')
+        \\assert(exported.tabs[1].panes[1].args.n == 2)
+    );
+    @import("app/lua_panes.zig").restoreAll(app);
+    try app.lua.?.runString("assert(factory_calls == 1)");
+    // Missing factories disable the old owner without resolving its registry
+    // index against a new runtime, and leave the descriptor available to retry.
+    @import("app/lua_panes.zig").beforeReload(app);
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    @import("app/lua_panes.zig").restoreAll(app);
+    try std.testing.expectEqual(@as(c_int, -1), pane.asLua().?.ref);
+    try std.testing.expectEqual(next_id, mux.next_pane_id.load(.monotonic));
+    try app.lua.?.runString(configure);
+    @import("app/lua_panes.zig").restoreAll(app);
+    try std.testing.expect(pane.asLua().?.ref >= 0);
+    try std.testing.expectEqual(@as(c_int, 0), app.lua.?.context.api.get_top(app.lua.?.state));
+}
+
+test "Lua panes survive app ticks and terminal-only input without terminal handles" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    const runtime = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    mux.next_id = 3;
+    const tab = try workspace.newTab(2, false);
+    const pane = try mux.createLuaPane();
+    try tab.appendPane(pane);
+    const id = pane.id;
+
+    pane.setManualTitle("Lua pane");
+    app.resize(800, 600);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expect(pane.asTerminal() == null);
+    try std.testing.expect(pane.cols > 0 and pane.rows > 0);
+    try std.testing.expectEqualStrings("Lua pane", pane.title);
+    try std.testing.expect(!app.pending_quit);
+
+    pane.asLua().?.dirty = false;
+    pane.resize(runtime, 30, 10, 8, 16, true);
+    try std.testing.expectEqual(@as(u16, 30), pane.cols);
+    try std.testing.expectEqual(@as(u16, 10), pane.rows);
+    try std.testing.expect(pane.asLua().?.dirty);
+    pane.asLua().?.dirty = false;
+    pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
+    try std.testing.expect(pane.asLua().?.dirty);
+    pane.asLua().?.dirty = false;
+    try app.sendFocus(false);
+    try std.testing.expect(pane.asLua().?.dirty);
+
+    try std.testing.expect(!mux_ops.sendTextToPane(app, id, "text"));
+    try std.testing.expect(!mux_ops.sendKeyToPane(app, id, "enter", 0));
+    try std.testing.expectError(error.NotATerminal, mux_ops.sendPaste(app, "paste"));
+    try std.testing.expect(!try app.sendKey(.enter, 0, .press, null, false));
+    selection_mod.selectionBegin(app, pane, .{ .row = 0, .col = 0 }, false);
+    selection_mod.selectionBeginWord(app, pane, .{ .row = 0, .col = 0 });
+    selection_mod.selectionBeginLine(app, pane, .{ .row = 0, .col = 0 });
+    try std.testing.expect(!selection_mod.hasSelection(app));
+    copy_mode.enterCopyMode(app);
+    try std.testing.expect(!app.copy_mode_active);
+    quick_select.start(app, .copy);
+    try std.testing.expect(!app.quick_select_active);
+    try std.testing.expect(!quick_select.inputActive(app));
+    try copy_mode.refreshCopyModeVisibleSlice(app, pane);
+    copy_mode.handlePromptJump(app, .prev);
+    scroll.scrollPaneViewport(app, pane, 1);
+    scroll.scrollPaneViewportToRow(app, pane, 1);
+    try std.testing.expect(pane.asTerminal() == null);
+    try std.testing.expect(pane.asTerminalConst() == null);
+    try std.testing.expectEqual(@as(u32, 0), scroll.paneScrollbarGutter(app, pane));
+    try std.testing.expectEqualDeep(ghostty.TerminalScrollbar{ .total = 0, .offset = 0, .len = 0 }, scroll.refreshPaneScrollbar(app, runtime, pane));
+    try std.testing.expect(selection_mod.gridRefForHistoryRow(app, pane, 0) == null);
+    try std.testing.expect(selection_mod.gridRefForHistoryCell(app, pane, 0, 0) == null);
+    var link_buf: [128]u8 = undefined;
+    try std.testing.expect(hyperlinks.hyperlinkUriAt(app, pane, .{ .row = 0, .col = 0 }, &link_buf) == null);
+    var response = try cmd_ipc.executeCommand(app, .{ .data = .{ .pane_send_text = .{ .id = id, .text = "text" } } });
+    defer response.deinit(a);
+    try std.testing.expect(!response.success);
+    // No Lua owner is attached, so automation input has nowhere to go.
+    try std.testing.expectEqualStrings("unavailable", response.status);
+    try std.testing.expectError(error.NotATerminal, app.paneScreenValue(id));
+    try std.testing.expectError(error.NotATerminal, app.paneScreenValue(0));
+    try std.testing.expectError(error.NotATerminal, app.paneTextValue(id));
+    try std.testing.expectError(error.NotATerminal, app.paneTextValue(0));
+    pane_lifecycle.exited(app, pane);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+
+    const second = try mux.createLuaPane();
+    try mux.splitActivePaneWith(second, .horizontal, 0.5, false);
+    app.syncActivePaneChange(pane, second);
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expect(mux.setPaneFloating(second, true));
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expect(mux.setPaneFloating(second, false));
+    _ = tab.setPaneMaximized(second, true, false);
+    app.requestLayoutResize(false);
+    try app.tick();
+    _ = tab.setPaneMaximized(second, false, false);
+    app.requestLayoutResize(false);
+    try app.tick();
+    try std.testing.expectEqual(pane, app.findPaneById(id).?);
+    try std.testing.expectEqual(second, app.findPaneById(second.id).?);
 }
 
 test "window focus is retained even without an active terminal" {
@@ -3008,28 +3352,28 @@ test "mux pane changes forward focus events to child terminals" {
     const runtime = try app.initTerminalRuntime();
     var previous = pane_mod.Pane.init(std.testing.allocator);
     defer previous.deinit(&app.ghostty.?);
-    previous.terminal_runtime = runtime;
-    previous.terminal = try runtime.createTerminal(80, 24, 0);
-    try previous.queueStartupInput("previous");
-    try std.testing.expect(runtime.setTerminalMode(previous.terminal, .focus_event, true));
+    previous.content.terminal.terminal_runtime = runtime;
+    previous.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
+    try previous.content.terminal.queueStartupInput(std.testing.allocator, "previous");
+    try std.testing.expect(runtime.setTerminalMode(previous.content.terminal.terminal, .focus_event, true));
 
     var current = pane_mod.Pane.init(std.testing.allocator);
     defer current.deinit(&app.ghostty.?);
-    current.terminal_runtime = runtime;
-    current.terminal = try runtime.createTerminal(80, 24, 0);
-    try current.queueStartupInput("current");
-    try std.testing.expect(runtime.setTerminalMode(current.terminal, .focus_event, true));
+    current.content.terminal.terminal_runtime = runtime;
+    current.content.terminal.terminal = try runtime.createTerminal(80, 24, 0);
+    try current.content.terminal.queueStartupInput(std.testing.allocator, "current");
+    try std.testing.expect(runtime.setTerminalMode(current.content.terminal.terminal, .focus_event, true));
 
     app.syncActivePaneChange(&previous, &current);
-    try std.testing.expect(std.mem.endsWith(u8, previous.pending_startup_input, "\x1b[O"));
-    try std.testing.expect(std.mem.endsWith(u8, current.pending_startup_input, "\x1b[I"));
+    try std.testing.expect(std.mem.endsWith(u8, previous.content.terminal.pending_startup_input, "\x1b[O"));
+    try std.testing.expect(std.mem.endsWith(u8, current.content.terminal.pending_startup_input, "\x1b[I"));
 
-    const previous_len = previous.pending_startup_input.len;
-    const current_len = current.pending_startup_input.len;
+    const previous_len = previous.content.terminal.pending_startup_input.len;
+    const current_len = current.content.terminal.pending_startup_input.len;
     app.window_focused = false;
     app.syncActivePaneChange(&current, &previous);
-    try std.testing.expectEqual(previous_len, previous.pending_startup_input.len);
-    try std.testing.expectEqual(current_len, current.pending_startup_input.len);
+    try std.testing.expectEqual(previous_len, previous.content.terminal.pending_startup_input.len);
+    try std.testing.expectEqual(current_len, current.content.terminal.pending_startup_input.len);
 }
 
 test "viewport iterator row mapping follows platform row order" {
@@ -3071,13 +3415,13 @@ test "Lua terminal jobs queue shared backend operations without focus changes" {
     try std.testing.expect(app.mux.?.activePane() == original);
     var owned: ?*pane_mod.Pane = null;
     var panes = app.mux.?.paneIterator();
-    while (panes.next()) |pane| if (pane.automation_token != null) {
+    while (panes.next()) |pane| if (pane.asTerminal()) |term| if (term.automation_token != null) {
         owned = pane;
     };
     const pane = owned orelse return error.MissingJobPane;
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.hasLiveChild() or pane.pty.?.jobOutputPending()) {
-        _ = try pane.pollPty(runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+    while (pane.content.terminal.hasLiveChild() or pane.content.terminal.pty.?.jobOutputPending()) {
+        _ = try pane.content.terminal.pollPty(pane, runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }

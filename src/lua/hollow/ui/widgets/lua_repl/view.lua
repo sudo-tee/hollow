@@ -136,7 +136,7 @@ local function input_line(line, theme, h)
   }, { height = h })
 end
 
-local function key_hints(muted, h, scrolled)
+local function key_hints(muted, h, scrolled, docked)
   local hints = completion.menu
       and {
         { "Tab/↑/↓", "select" },
@@ -146,8 +146,11 @@ local function key_hints(muted, h, scrolled)
     or {
       { "Enter", "run" },
       { "Tab", "complete" },
-      { "Esc", "close" },
     }
+  -- The docked pane closes like any other pane, not on Escape.
+  if not completion.menu and not docked then
+    hints[#hints + 1] = { "Esc", "close" }
+  end
   if not completion.menu and scrolled then
     hints[#hints + 1] = { "PgUp/PgDn", "scroll" }
   end
@@ -221,7 +224,7 @@ function M.render(theme, ctx, opts)
         style = { bg = theme.input_bg },
       }
     ),
-    key_hints(muted, h, hidden > 0),
+    key_hints(muted, h, hidden > 0, opts.docked),
   }, { width = "grow", height = "grow", gap = GAP }),
     height
 end

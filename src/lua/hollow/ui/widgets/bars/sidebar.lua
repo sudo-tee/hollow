@@ -6,6 +6,11 @@ local shared = require("hollow.ui.shared")
 local widget_core = require("hollow.ui.widgets.core")
 local M = {}
 
+-- Loaded after hollow.ui.pane; nil only while the UI runtime is bootstrapping.
+local function dock()
+  return package.loaded["hollow.ui.widgets.sidebar_dock"]
+end
+
 local function request_layout_refresh()
   if
     type(state.host_api) == "table" and type(state.host_api.request_layout_refresh) == "function"
@@ -26,9 +31,15 @@ function M.install()
     state.ui.mounted_sidebar = widget
     state.ui.sidebar_visible = widget.hidden ~= true
     widget_core.mount_widget(widget)
+    if dock() then
+      dock().invalidate()
+    end
     request_layout_refresh()
   end
   function ui.sidebar.unmount()
+    if dock() then
+      dock().close(true)
+    end
     widget_core.unmount_widget(state.ui.mounted_sidebar)
     state.ui.mounted_sidebar = nil
     state.ui.sidebar_visible = false
@@ -39,14 +50,50 @@ function M.install()
     if not state.ui.mounted_sidebar then
       return false
     end
+    -- A docked sidebar is visible; toggling hides it and closes its pane.
+    if dock() and dock().is_docked() then
+      dock().close(true)
+      state.ui.sidebar_visible = false
+      request_layout_refresh()
+      return false
+    end
     state.ui.sidebar_visible = not state.ui.sidebar_visible
     request_layout_refresh()
     return state.ui.sidebar_visible
   end
 
+  --- Toggle between the native overlay and a split Lua pane.
+  function ui.sidebar.dock(opts)
+    if not dock() or not state.ui.mounted_sidebar then
+      return nil
+    end
+    if dock().is_docked() then
+      dock().close(false)
+      return nil
+    end
+    return dock().dock(opts)
+  end
+
+  function ui.sidebar.is_docked()
+    return dock() ~= nil and dock().is_docked()
+  end
+
+  function ui.sidebar.invalidate()
+    if not state.ui.mounted_sidebar then
+      return false
+    end
+    if dock() and dock().invalidate() then
+      return true
+    end
+    if type(state.host_api.request_redraw) == "function" then
+      state.host_api.request_redraw()
+    end
+    return true
+  end
+
   function ui._sidebar_state()
     local widget = state.ui.mounted_sidebar
-    if not widget or not state.ui.sidebar_visible then
+    if not widget or not state.ui.sidebar_visible or state.ui.sidebar_docked then
       state.ui.sidebar_handlers = nil
       return nil
     end

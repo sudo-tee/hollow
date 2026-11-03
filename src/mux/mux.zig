@@ -26,6 +26,7 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
+    next_pane_id: std.atomic.Value(usize) = .init(1),
     host_context: ?*anyopaque = null,
     host_wake: @import("../pty/wake.zig").Wake = .{},
     pane_created: ?*const fn (*anyopaque, *Pane) void = null,
@@ -192,7 +193,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
-                    if (@intFromPtr(pane) != pane_id) continue;
+                    if (pane.id != pane_id) continue;
                     self.active_workspace = ws;
                     ws.active_tab = tab;
                     tab.active_pane = pane;
@@ -303,13 +304,38 @@ pub const Mux = struct {
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
+        pane.id = self.reservePaneId();
         pane.host_context = self.host_context;
-        pane.host_wake = self.host_wake;
-        pane.spawn_filter = self.spawn_filter;
-        pane.pty_host = self.pty_host;
+        const term = pane.asTerminal().?;
+        term.host_wake = self.host_wake;
+        term.spawn_filter = self.spawn_filter;
+        term.pty_host = self.pty_host;
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
-        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
+        try term.bootstrap(pane, runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
+        return pane;
+    }
+
+    /// Allocate an unpublished GUI pane without terminal, domain, or PTY setup.
+    /// The caller owns it until splitActivePaneWith succeeds.
+    pub fn createLuaPane(self: *Mux) !*Pane {
+        return self.createLuaPaneWithId(self.reservePaneId());
+    }
+
+    /// Lua callbacks may reserve IDs before frame-thread layout insertion.
+    pub fn reservePaneId(self: *Mux) usize {
+        return self.next_pane_id.fetchAdd(1, .monotonic);
+    }
+
+    pub fn createLuaPaneWithId(self: *Mux, id: usize) !*Pane {
+        std.debug.assert(id != 0);
+        const pane = try self.allocator.create(Pane);
+        errdefer self.allocator.destroy(pane);
+        const surface = try self.allocator.create(@import("../ui/lua_surface.zig").LuaSurface);
+        surface.* = .{};
+        pane.* = Pane.initLua(self.allocator, surface);
+        pane.id = id;
+        pane.host_context = self.host_context;
         return pane;
     }
 
@@ -324,13 +350,13 @@ pub const Mux = struct {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse if (current_pane) |pane|
-            if (pane.domain_name.len > 0) pane.domain_name else cfg.defaultDomainName()
+            if (pane.domainName().len > 0) pane.domainName() else cfg.defaultDomainName()
         else
             cfg.defaultDomainName();
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
             if (value.len > 0) value else null
         else if (current_pane) |pane|
-            if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, resolved_domain orelse "")) pane.cwd else null
+            if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domainName(), resolved_domain orelse "")) pane.cwd else null
         else if (ws.default_cwd) |value|
             value
         else
@@ -362,13 +388,51 @@ pub const Mux = struct {
         }
         try tab.appendPane(pane);
         if (!activate) {
-            pane.retain_on_exit = true;
+            const term = pane.asTerminal().?;
+            term.retain_on_exit = true;
             // Hidden jobs must parse/drain output without waiting for first focus.
-            pane.terminal_output_ready = true;
+            term.terminal_output_ready = true;
             ws.active_tab = previous_active;
         }
         self.notifyCreated(pane);
         return tab;
+    }
+
+    /// Publish an owned content node without spawning a seed terminal. Ownership
+    /// transfers only after all fallible allocations have succeeded.
+    pub fn newTabWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) !void {
+        const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.appendPane(pane);
+        ws.insertTab(tab) catch unreachable;
+        self.notifyCreated(pane);
+    }
+
+    pub fn newWorkspaceWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane, name: ?[]const u8) !void {
+        const ws = try self.createWorkspace();
+        errdefer {
+            ws.deinit(runtime);
+            self.allocator.destroy(ws);
+        }
+        if (name) |value| try ws.setName(value);
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try self.workspaces.ensureUnusedCapacity(self.allocator, 1);
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.appendPane(pane);
+        ws.tabs.appendAssumeCapacity(tab);
+        ws.active_tab = tab;
+        self.workspaces.appendAssumeCapacity(ws);
+        self.active_workspace = ws;
+        self.notifyCreated(pane);
     }
 
     /// Close the active tab. Returns true if no tabs remain (app should quit).
@@ -420,7 +484,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
-                    if (@intFromPtr(pane) != pane_id) continue;
+                    if (pane.id != pane_id) continue;
 
                     if (activate) {
                         self.active_workspace = ws;
@@ -515,12 +579,12 @@ pub const Mux = struct {
         if (!floating and source_pane.is_floating) {
             if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
         }
-        const resolved_domain = domain_name orelse if (source_pane.domain_name.len > 0)
-            source_pane.domain_name
+        const resolved_domain = domain_name orelse if (source_pane.domainName().len > 0)
+            source_pane.domainName()
         else
             cfg.defaultDomainName();
         const same_domain = if (domain_name) |dn|
-            std.mem.eql(u8, source_pane.domain_name, dn)
+            std.mem.eql(u8, source_pane.domainName(), dn)
         else
             true;
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
@@ -537,6 +601,18 @@ pub const Mux = struct {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
+        try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        return new_pane;
+    }
+
+    /// Insert any content kind using the same split/floating layout path.
+    /// Ownership transfers to the tab only on success.
+    pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        const source_pane = tab.activePane() orelse return error.NoActivePane;
+        if (!floating and source_pane.is_floating) {
+            if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
+        }
         if (floating) {
             try tab.appendPane(new_pane);
             _ = tab.setPaneFloating(new_pane, true);
@@ -548,17 +624,23 @@ pub const Mux = struct {
                 }
                 break :blk null;
             };
-            if (restore_anchor) |anchor| new_pane.restore_anchor_id = @intFromPtr(anchor);
+            if (restore_anchor) |anchor| new_pane.restore_anchor_id = anchor.id;
             new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
             new_pane.restore_split_horizontal = direction == .horizontal;
             new_pane.restore_place_first = false;
             tab.active_pane = new_pane;
             self.notifyCreated(new_pane);
-            return new_pane;
+            return;
         }
         try tab.splitActivePane(new_pane, direction, ratio);
         self.notifyCreated(new_pane);
-        return new_pane;
+    }
+
+    /// Insert `new_pane` along a window edge of the active tab's tiled layout.
+    pub fn splitEdgeWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        try tab.splitEdge(new_pane, direction, ratio, place_first);
+        self.notifyCreated(new_pane);
     }
 
     /// Resize the active pane by adjusting the ratio of the nearest enclosing
@@ -660,7 +742,7 @@ pub const Mux = struct {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |p| {
-                    if (@intFromPtr(p) == pane_id) {
+                    if (p.id == pane_id) {
                         pane = p;
                         source_tab = tab;
                         source_ws = ws;
@@ -727,7 +809,8 @@ pub const Mux = struct {
             var dead_buf: [64]*Pane = undefined;
             var dead_count: usize = 0;
             for (tab.panes.items) |pane| {
-                if (!pane.retain_on_exit and !pane.hasLiveChild() and dead_count < dead_buf.len) {
+                const term = pane.asTerminal() orelse continue;
+                if (!term.retain_on_exit and !term.hasLiveChild() and dead_count < dead_buf.len) {
                     dead_buf[dead_count] = pane;
                     dead_count += 1;
                 }

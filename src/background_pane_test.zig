@@ -56,20 +56,20 @@ test "background jobs: launch preserves focus, drains output, retains failure, a
     mux.spawn_filter = .{ .context = &observer, .callback = SpawnObserver.check };
     const tab = try mux.newTabWithFocus(&runtime, Callbacks.value, config, 8, 16, 800, 600, "/", null, .{ .command = "printf 'retained failure\\n'; exit 7", .one_shot = true }, true, false);
     const pane = tab.activePane().?;
-    pane.automation_token = "0123456789abcdef0123456789abcdef".*;
+    pane.content.terminal.automation_token = "0123456789abcdef0123456789abcdef".*;
     try std.testing.expect(mux.activeWorkspace() == original_workspace);
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(mux.activePane() == original_pane);
     try std.testing.expect(observer.calls > 0 and !observer.changed);
-    try std.testing.expect(pane.retain_on_exit and pane.terminal_output_ready);
+    try std.testing.expect(pane.content.terminal.retain_on_exit and pane.content.terminal.terminal_output_ready);
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (pane.hasLiveChild() or pane.pty.?.jobOutputPending()) {
-        _ = try pane.pollPty(&runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 128 * 1024, false);
+    while (pane.content.terminal.hasLiveChild() or pane.content.terminal.pty.?.jobOutputPending()) {
+        _ = try pane.content.terminal.pollPty(pane, &runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 128 * 1024, false);
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
-    try std.testing.expectEqual(@as(?u32, 7), pane.pty.?.exitStatus());
-    const output = try pane.job_output.snapshot(a);
+    try std.testing.expectEqual(@as(?u32, 7), pane.content.terminal.pty.?.exitStatus());
+    const output = try pane.content.terminal.job_output.snapshot(a);
     defer a.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "retained failure") != null);
     try std.testing.expect(!mux.closeDeadPanes(&runtime));
@@ -77,12 +77,12 @@ test "background jobs: launch preserves focus, drains output, retains failure, a
     // A user may add a pane to a job's tab. Owned cleanup must not remove it.
     const sibling = try mux.createPane(&runtime, Callbacks.value, config, 8, 16, 800, 600, "/", null, null, null);
     try tab.splitActivePane(sibling, .vertical, 0.5);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(pane), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, pane.id, false));
     try std.testing.expect(mux.activePane() == original_pane);
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(tab.activePane() == sibling);
     try std.testing.expectEqual(@as(usize, 2), original_workspace.tabs.items.len);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(sibling), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, sibling.id, false));
     try std.testing.expectEqual(@as(usize, 1), original_workspace.tabs.items.len);
 }
 
@@ -125,7 +125,7 @@ test "background jobs: cleanup in another workspace preserves current workspace 
     const job_tab = try mux.newTabWithFocus(&runtime, Callbacks.value, config, 8, 16, 800, 600, null, null, .{ .command = "true", .one_shot = true }, true, false);
     const job = job_tab.activePane().?;
     mux.switchWorkspace(0);
-    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, @intFromPtr(job), false));
+    try std.testing.expect(!mux.closePaneByIdWithFocus(&runtime, job.id, false));
     try std.testing.expect(mux.activePane() == original);
     try std.testing.expect(mux.activeTab() == original_tab);
     try std.testing.expect(other.activeTab() == user_tab);

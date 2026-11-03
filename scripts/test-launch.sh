@@ -7,7 +7,7 @@ trap 'rm -rf -- "$TEST_DIR"' EXIT
 REPO="$TEST_DIR/repo"
 export INSTALL_DEST="$TEST_DIR/Applications/Hollow"
 export TEST_LOG="$TEST_DIR/calls"
-mkdir -p "$REPO/scripts" "$REPO/zig-out/bin" "$REPO/src/lua" "$REPO/conf" "$TEST_DIR/bin"
+mkdir -p "$REPO/scripts" "$REPO/zig-out/bin" "$REPO/src/lua/hollow/ui" "$REPO/conf" "$TEST_DIR/bin"
 cp "$ROOT/launch.sh" "$REPO/launch.sh"
 cp "$ROOT/scripts/check-zig-version.sh" "$REPO/scripts/"
 cp "$ROOT/.tool-versions" "$REPO/"
@@ -41,6 +41,8 @@ printf 'native\n' > "$REPO/zig-out/bin/hollow-native.exe"
 printf 'cli\n' > "$REPO/zig-out/bin/hollow-cli.exe"
 printf 'symbols\n' > "$REPO/zig-out/bin/hollow.pdb"
 printf 'lua\n' > "$REPO/src/lua/init.lua"
+printf 'return {}\n' > "$REPO/src/lua/hollow/app.lua"
+printf 'return {}\n' > "$REPO/src/lua/hollow/ui/pane.lua"
 printf 'config\n' > "$REPO/conf/init.lua"
 mkdir -p "$REPO/zig-out/agents/linux-x86_64" "$REPO/zig-out/agents/linux-aarch64"
 printf 'x86_64 agent\n' > "$REPO/zig-out/agents/linux-x86_64/hollow-agent"
@@ -54,6 +56,8 @@ printf 'cli manifest\n' > "$REPO/zig-out/cli/SHA256SUMS"
 # CI must build without running or invoking Windows tools.
 bash "$REPO/launch.sh" --build-only
 grep -q '^build build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast$' "$TEST_LOG"
+printf 'app.lua\nui/pane.lua\n' > "$TEST_DIR/expected-lua-modules"
+cmp "$TEST_DIR/expected-lua-modules" "$REPO/zig-out/.lua-modules"
 ! grep -Eq 'wslpath|powershell|^run ' "$TEST_LOG"
 [[ ! -e "$INSTALL_DEST" ]]
 
@@ -95,6 +99,9 @@ for name in SHA256SUMS linux-x86_64/hollow-cli linux-aarch64/hollow-cli; do
   cmp "$REPO/zig-out/cli/$name" "$INSTALL_DEST/cli/$name"
 done
 cmp "$REPO/src/lua/init.lua" "$INSTALL_DEST/src/lua/init.lua"
+for name in app.lua ui/pane.lua; do
+  cmp "$REPO/src/lua/hollow/$name" "$INSTALL_DEST/src/lua/hollow/$name"
+done
 cmp "$REPO/conf/init.lua" "$INSTALL_DEST/conf/init.lua"
 for name in SHA256SUMS linux-x86_64/hollow-agent linux-aarch64/hollow-agent; do
   cmp "$REPO/zig-out/agents/$name" "$INSTALL_DEST/agents/$name"

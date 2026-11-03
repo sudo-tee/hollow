@@ -75,6 +75,10 @@ pub const PendingInputEvent = union(enum) {
     close_tab,
     close_pane,
     close_pane_by_id: usize,
+    create_lua_pane: @import("lua_panes.zig").Create,
+    lua_pane_pointer: @import("lua_panes.zig").Pointer,
+    invalidate_lua_pane: usize,
+    title_lua_pane: struct { id: usize, text: []const u8 },
     focus_pane_by_id: usize,
     command_request: command_mod.Request,
     reload_config,
@@ -241,6 +245,9 @@ pub const PendingInputEvent = union(enum) {
 
 pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
     switch (event.*) {
+        .create_lua_pane => |payload| allocator.free(payload.descriptor_json),
+        .lua_pane_pointer => |payload| if (payload.id) |id| allocator.free(id),
+        .title_lua_pane => |payload| allocator.free(payload.text),
         .new_tab => |payload| {
             if (payload.cwd) |value| allocator.free(value);
             if (payload.domain_name) |value| allocator.free(value);
@@ -276,6 +283,7 @@ pub fn deinitInputQueue(self: *App) void {
             .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
             .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
             .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .create_lua_pane => |payload| @import("lua_panes.zig").release(self, payload.ref, payload.generation),
             else => {},
         };
         deinitPendingInputEvent(self.allocator, &event);
@@ -292,6 +300,29 @@ pub fn processInputQueue(self: *App) void {
         defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
+            .lua_pane_pointer => |payload| @import("lua_panes.zig").pointer(self, payload),
+            .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
+            .invalidate_lua_pane => |id| {
+                if (self.findPaneById(id)) |pane| if (pane.asLua() != null) {
+                    pane.invalidate();
+                };
+            },
+            .title_lua_pane => |payload| {
+                // Unchanged titles must not re-emit: a handler that sets the
+                // title again would requeue forever within this drain.
+                if (self.findPaneById(payload.id)) |pane| if (pane.asLua() != null and !std.mem.eql(u8, pane.title, payload.text)) {
+                    const old_title = self.allocator.dupe(u8, pane.title) catch null;
+                    defer if (old_title) |value| self.allocator.free(value);
+                    pane.setManualTitle(payload.text);
+                    self.topbar_cache_dirty = true;
+                    self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
+                        .pane_id = pane.id,
+                        .old_title = if (old_title) |value| value else "",
+                        .new_title = pane.title,
+                    } });
+                    self.requestRedraw();
+                };
+            },
             .none => {},
             .lua_job_request => |payload| {
                 const jobs = @import("background_jobs.zig");
@@ -531,12 +562,12 @@ pub fn processInputQueue(self: *App) void {
 
                 self.emitLuaBuiltInEvent("window:files_dropped", .{ .files_dropped = .{
                     .paths = paths,
-                    .pane_id = @intFromPtr(hit.pane),
+                    .pane_id = hit.pane.id,
                     .x = drop.x,
                     .y = drop.y,
                     .text = text,
                 } });
-                const action = self.fireFileDrop(paths, @intFromPtr(hit.pane), drop.x, drop.y, text);
+                const action = self.fireFileDrop(paths, hit.pane.id, drop.x, drop.y, text);
                 switch (action) {
                     .consume => return,
                     .text => |replacement| {
@@ -549,7 +580,8 @@ pub fn processInputQueue(self: *App) void {
                     .default => {},
                 }
 
-                if (hit.pane.is_remote) {
+                const term = hit.pane.asTerminal() orelse return;
+                if (term.is_remote) {
                     std.log.warn("file drop ignored for remote pane", .{});
                     return;
                 }
@@ -777,15 +809,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) {
-                    self.last_visual_activity_ns = now_ns;
-                    return true;
-                }
-                // Synchronized output keeps terminal damage pending until the
-                // mode is cleared or its watchdog expires. PTY wakeups still
-                // drive ticks, but idle frames should not spin on stale damage.
-                if (pane.synchronized_output_active) continue;
-                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame) {
+                if (paneHasVisualDamage(pane)) {
                     self.last_visual_activity_ns = now_ns;
                     return true;
                 }
@@ -793,6 +817,36 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         }
     }
     return false;
+}
+
+fn paneHasVisualDamage(pane: *const Pane) bool {
+    if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) return true;
+    if (pane.asTerminalConst()) |term| {
+        // Synchronized output keeps terminal damage pending until the mode is
+        // cleared or its watchdog expires. PTY wakeups still drive ticks, but
+        // idle frames should not spin on stale damage.
+        if (term.synchronized_output_active) return false;
+        if (term.pty_received_data or term.pty_wrote_this_frame) return true;
+    }
+    return pane.render_dirty != .false_value;
+}
+
+test "visual damage checks terminal hold policy without suppressing Lua damage" {
+    var pane = Pane.init(std.testing.allocator);
+    try std.testing.expect(!paneHasVisualDamage(&pane));
+    pane.content.terminal.pty_received_data = true;
+    try std.testing.expect(paneHasVisualDamage(&pane));
+    pane.content.terminal.synchronized_output_active = true;
+    pane.render_dirty = .full;
+    try std.testing.expect(!paneHasVisualDamage(&pane));
+    pane.bell_dirty = true;
+    try std.testing.expect(paneHasVisualDamage(&pane));
+    var surface: @import("../ui/lua_surface.zig").LuaSurface = .{};
+    var lua_pane = Pane.initLua(std.testing.allocator, &surface);
+    lua_pane.render_dirty = .full;
+    try std.testing.expect(paneHasVisualDamage(&lua_pane));
+    lua_pane.render_dirty = .false_value;
+    try std.testing.expect(!paneHasVisualDamage(&lua_pane));
 }
 
 fn leaderVisualActive(self: *App, now_ns: i128) bool {
@@ -843,13 +897,11 @@ pub fn hoveredHyperlinkAtPointer(self: *App) ?struct {
 }
 
 fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
+    const term = pane.asTerminal() orelse return false;
     const runtime = if (self.ghostty) |*rt| rt else return false;
-    runtime.setMouseEncoderAnyButtonPressed(pane.mouse_encoder, action != .release and button != null);
-
     var buf: [64]u8 = undefined;
-    const bytes = runtime.encodeMouse(
-        pane.mouse_encoder,
-        pane.mouse_event,
+    const bytes = term.encodeMouse(
+        runtime,
         action,
         button,
         mods,
@@ -859,7 +911,7 @@ fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, butt
         },
         &buf,
     ) orelse return false;
-    pane.sendUserText(bytes);
+    term.sendUserText(pane.allocator, bytes);
     return true;
 }
 
@@ -909,6 +961,7 @@ pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?App.ScrollbarMetrics {
 
 pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const hit = self.hitTestPane(x, y) orelse return;
+    const term = hit.pane.asTerminal() orelse return;
     if (self.copy_mode_active and self.copy_mode_pane == hit.pane) {
         if (hitTestScrollbar(self, x, y)) |metrics| {
             const ratio = std.math.clamp((y - metrics.track_y) / metrics.track_h, 0.0, 1.0);
@@ -927,7 +980,7 @@ pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const max_top = scroll_mod.scrollbarMaxTopRow(scrollbar);
     const in_scrollback = scroll_mod.scrollbarTopRow(scrollbar) < max_top;
     const over_scrollbar = hitTestScrollbar(self, x, y) != null;
-    const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.last_mouse_tracking == 0;
+    const should_scroll_viewport = in_scrollback or over_scrollbar or term.last_mouse_tracking == 0;
 
     if (should_scroll_viewport) {
         scroll_mod.scrollPaneViewport(self, hit.pane, delta);

@@ -33,8 +33,9 @@ pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 }
 
 pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
+    const term = pane.asTerminal() orelse return;
     const pending_count = self.htp_pending_messages.items.len - self.htp_pending_message_head;
-    const cwd = pane.pending_cwd orelse pane.cwd;
+    const cwd = term.pending_cwd orelse pane.cwd;
     const available_bytes = HTP_MAX_QUEUED_BYTES - self.htp_pending_message_bytes;
     if (pending_count >= HTP_MAX_QUEUED_MESSAGES or
         payload.len > available_bytes or cwd.len > available_bytes - payload.len)
@@ -49,7 +50,7 @@ pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
         return;
     };
     self.htp_pending_messages.append(self.allocator, .{
-        .pane_id = @intFromPtr(pane),
+        .pane_id = pane.id,
         .received_at_ms = io.milliTimestamp(),
         .received_cwd = received_cwd,
         .payload = owned,
@@ -66,7 +67,8 @@ pub fn bindHtpHandlers(self: *App) void {
     if (self.mux) |*mux| {
         var panes = mux.paneIterator();
         while (panes.next()) |pane| {
-            pane.setHtpMessageHandler(htpMessageCallback);
+            const term = pane.asTerminal() orelse continue;
+            term.htp_message_handler = htpMessageCallback;
         }
     }
 }
@@ -201,22 +203,22 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
         return;
     }
 
-    var assembly = self.htp_codec.findOrCreateAssembly(@intFromPtr(pane), request_id, total, io.nanoTimestamp()) catch |err| {
+    var assembly = self.htp_codec.findOrCreateAssembly(pane.id, request_id, total, io.nanoTimestamp()) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     if (assembly.total != total or assembly.next_index != index) {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "invalid_message", "unexpected chunk order");
         return;
     }
     if (data.len > HTP_MAX_ASSEMBLY_BYTES - assembly.buffer.items.len) {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "resource_limit", "chunk assembly too large");
         return;
     }
     assembly.buffer.appendSlice(self.allocator, data) catch |err| {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -224,12 +226,12 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
     if (index < total) return;
 
     const joined = assembly.buffer.toOwnedSlice(self.allocator) catch |err| {
-        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+        self.htp_codec.removeAssembly(pane.id, request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     defer self.allocator.free(joined);
-    self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
+    self.htp_codec.removeAssembly(pane.id, request_id);
     handleHtpMessage(self, pane, joined, received_at_ms, received_cwd);
 }
 
@@ -240,7 +242,7 @@ fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: [
         return;
     };
 
-    const ok = lua.dispatchHtpEvent(@intFromPtr(pane), channel, payload, received_at_ms, received_cwd) catch |err| {
+    const ok = lua.dispatchHtpEvent(pane.id, channel, payload, received_at_ms, received_cwd) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -252,7 +254,7 @@ fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: [
 }
 
 fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, channel: []const u8, params: ?std.json.Value) void {
-    const result = dispatchHtpQuerySync(self, @intFromPtr(pane), channel, params) catch |err| {
+    const result = dispatchHtpQuerySync(self, pane.id, channel, params) catch |err| {
         sendHtpQueryError(self, pane, message_id, request_id, "internal", @errorName(err));
         return;
     };
@@ -331,18 +333,19 @@ pub fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, pay
 // Observe the same shell-integration reports on socket, file and OSC paths.
 // Pair starts/ends: an unpaired end must never satisfy a completion wait.
 fn observeCommandEvent(self: *App, pane: *Pane, channel: []const u8, payload: ?std.json.Value) void {
+    const term = pane.asTerminal() orelse return;
     const value = payload orelse return;
     if (value != .object) return;
     if (std.mem.eql(u8, channel, "command_started")) {
         const text = value.object.get("command") orelse return;
         if (text != .string) return;
-        pane.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = @intFromPtr(pane) });
+        term.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = pane.id });
     } else if (std.mem.eql(u8, channel, "command_ended")) {
-        const command_id = pane.automation_command_id orelse return;
+        const command_id = term.automation_command_id orelse return;
         const status = value.object.get("exit_code") orelse return;
         if (status != .integer) return;
-        pane.automation_command_id = null;
-        _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = @intFromPtr(pane), .command_id = command_id, .status = status.integer });
+        term.automation_command_id = null;
+        _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = pane.id, .command_id = command_id, .status = status.integer });
     }
 }
 
@@ -363,14 +366,19 @@ test "external shell completion pairs reports and ignores malformed or unpaired 
     try std.testing.expectEqual(@as(u64, 0), app.automation_events.subscribe());
     observeCommandEvent(app, &pane, "command_started", started.value);
     observeCommandEvent(app, &pane, "command_ended", malformed.value);
-    try std.testing.expect(pane.automation_command_id != null);
+    try std.testing.expect(pane.content.terminal.automation_command_id != null);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     observeCommandEvent(app, &pane, "command_ended", ended.value);
     const batch = try app.automation_events.read(0, .{}, 0);
     try std.testing.expectEqual(@as(usize, 2), batch.count);
     try std.testing.expectEqual(@as(?u64, batch.events[0].sequence), batch.events[1].command_id);
     try std.testing.expectEqual(@as(?i64, 7), batch.events[1].status);
-    try std.testing.expect(pane.automation_command_id == null);
+    try std.testing.expect(pane.content.terminal.automation_command_id == null);
+    var surface: @import("../ui/lua_surface.zig").LuaSurface = .{};
+    var lua_pane = Pane.initLua(a, &surface);
+    observeCommandEvent(app, &lua_pane, "command_started", started.value);
+    observeCommandEvent(app, &lua_pane, "command_ended", ended.value);
+    try std.testing.expectEqual(@as(u64, 2), app.automation_events.subscribe());
 }
 
 fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {
@@ -411,7 +419,8 @@ fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
 
 fn writeFramedHtp(context: *anyopaque, bytes: []const u8) void {
     const pane: *Pane = @ptrCast(@alignCast(context));
-    pane.writeEscapeSequence(bytes);
+    const term = pane.asTerminal() orelse return;
+    term.writeEscapeSequence(bytes);
 }
 
 fn nextHtpMessageId(self: *App) u64 {

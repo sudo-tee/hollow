@@ -25,6 +25,13 @@ local domain    = hollow.term.current_domain()    -- HollowDomain or nil
 
 Snapshots are read-only values.
 
+`pane.kind` is `"terminal"` or `"lua"`. Lua panes share native layout and focus
+fields but have no PTY. Named Lua panes expose `pane.module` and `pane.args`
+(creation-time JSON, not live state); floating Lua snapshots also include
+normalized `pane.floating_bounds`. Use
+[`hollow.ui.pane`](ui.md#lua-panes) to create or look up a Lua UI owner. Guard
+terminal-only operations by `kind` when iterating mixed panes.
+
 ### Program status (OSC 7501)
 
 `pane.program_status` is a list of reports sent by programs that implement
@@ -259,7 +266,7 @@ Tags identify panes. They are what the
 
 ```lua
 hollow.term.bell(pane_id?)
-hollow.term.send_text("hello", pane_id?)
+hollow.term.send_text("hello", pane_id?)       -- Lua panes: decoded as key events
 hollow.term.get_pane_text(pane_id?)             -- scrollback contents
 hollow.term.set_pane_foreground_process(pane_id, "vim")
 ```

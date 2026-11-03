@@ -21,6 +21,7 @@ const FtRendererConfig = @import("font_config.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
 const PaneCache = @import("pane_cache.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
+const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 const selection = @import("../selection.zig");
 const scroll = @import("../app/scroll.zig");
 const copy_mode = @import("../app/copy_mode.zig");
@@ -37,6 +38,100 @@ const rounded_border = @import("rounded_border.zig");
 const text_width = @import("../text_width.zig");
 const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
+const LuaPaneSurface = @import("../ui/lua_surface.zig").LuaSurface;
+
+const LuaPanePrepare = struct {
+    app: *App,
+    renderer: *FtRenderer,
+    surface: *LuaPaneSurface,
+    viewport: LuaPaneSurface.Viewport,
+    changed: bool = false,
+};
+var g_lua_pane_prepare: ?*LuaPanePrepare = null;
+
+fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
+    const ctx = g_lua_pane_prepare orelse return;
+    ctx.changed = ctx.surface.prepare(ctx.app.allocator, runtime, ctx.renderer, ctx.viewport);
+}
+
+fn reportLuaPaneGeometry(runtime: *lua_mod.Runtime) void {
+    const ctx = g_lua_pane_prepare orelse return;
+    ctx.surface.reportGeometry(runtime);
+}
+
+/// Lua content always uses the pane's existing retained texture, including
+/// when terminals use a diagnostic direct path. No Ghostty handles are needed.
+fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds) void {
+    const surface = pane.asLua() orelse return;
+    if (surface.ref < 0) surface.dirty = false;
+    const pw: f32 = @floatFromInt(@max(1, bounds.width));
+    const ph: f32 = @floatFromInt(@max(1, bounds.height));
+    var ctx: LuaPanePrepare = .{
+        .app = app,
+        .renderer = renderer,
+        .surface = surface,
+        .viewport = .{ .pane_id = pane.id, .width = pw, .height = ph, .cols = pane.cols, .rows = pane.rows, .focused = pane == app.activePane() and app.window_focused, .keyboard_focus = app.keyboard_navigation, .cell_w = renderer.cell_w, .cell_h = renderer.cell_h },
+    };
+    if (app.lua) |*runtime| {
+        if (surface.needsPrepare(runtime.generation, ctx.viewport)) {
+            g_lua_pane_prepare = &ctx;
+            defer g_lua_pane_prepare = null;
+            runtime.withLockedState(void, prepareLuaPane);
+        }
+    }
+    if (surface.clayState()) |tree| tree.area = .{ .x = @floatFromInt(bounds.x), .y = @floatFromInt(bounds.y), .width = pw, .height = ph };
+    const entry = getOrCreatePaneCacheEntry(pane, @intFromFloat(pw), @intFromFloat(ph)) orelse return;
+    const atlas_stale = entry.last_atlas_reset_epoch != renderer.atlas_reset_epoch or entry.atlas_repair_pending;
+    if (!ctx.changed and pane.render_dirty == .false_value and entry.validity == .valid and !entry.needs_clear and !atlas_stale) return;
+    if (surface.clayState()) |tree| tree.preRasterize(renderer);
+    renderer.flushAtlas();
+    c.sgl_set_context(entry.cache.sgl_ctx);
+    defer c.sgl_set_context(c.sgl_default_context());
+    const saved_pipeline = renderer.atlas_pip;
+    renderer.atlas_pip = entry.cache.atlas_pip;
+    defer renderer.atlas_pip = saved_pipeline;
+    const saved_rect_pipeline = g_rect_pip;
+    g_rect_pip = entry.cache.uiRectPipeline();
+    defer g_rect_pip = saved_rect_pipeline;
+    c.sgl_defaults();
+    c.sgl_viewport(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
+    c.sgl_scissor_rect(0, 0, @intFromFloat(pw), @intFromFloat(ph), true);
+    c.sgl_matrix_mode_projection();
+    c.sgl_load_identity();
+    c.sgl_ortho(0, pw, ph, 0, -1, 1);
+    if (surface.clayState()) |tree| {
+        tree.mouse_x = surface.pointer_x;
+        tree.mouse_y = surface.pointer_y;
+        drawClaySurface(tree, renderer, pw, ph, 0, 0);
+        tree.area.x = @floatFromInt(bounds.x);
+        tree.area.y = @floatFromInt(bounds.y);
+    }
+    if (app.lua) |*runtime| {
+        g_lua_pane_prepare = &ctx;
+        defer g_lua_pane_prepare = null;
+        runtime.withLockedState(void, reportLuaPaneGeometry);
+    }
+    const bg = app.config.terminal_theme.background;
+    var pass = std.mem.zeroes(c.sg_pass);
+    pass.attachments.colors[0] = entry.cache.rt_att_view;
+    pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+    pass.action.colors[0].clear_value = .{ .r = @as(f32, @floatFromInt(bg.r)) / 255, .g = @as(f32, @floatFromInt(bg.g)) / 255, .b = @as(f32, @floatFromInt(bg.b)) / 255, .a = 1 };
+    c.sg_begin_pass(&pass);
+    c.sgl_context_draw(entry.cache.sgl_ctx);
+    c.sg_end_pass();
+    entry.validity = .valid;
+    entry.needs_clear = false;
+    entry.last_atlas_reset_epoch = renderer.atlas_reset_epoch;
+    entry.atlas_repair_pending = renderer.atlas_uploaded_this_frame and renderer.atlas_dirty;
+    // An invalidate() from render itself must survive this paint.
+    pane.render_dirty = if (surface.dirty) .full else .false_value;
+}
+
+fn blitLuaPaneCache(renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds, width: f32, height: f32) void {
+    if (getOrCreatePaneCacheEntry(pane, @max(1, bounds.width), @max(1, bounds.height))) |entry| {
+        renderer.blitCache(&entry.cache, @floatFromInt(bounds.x), @floatFromInt(bounds.y), @floatFromInt(bounds.width), @floatFromInt(bounds.height), width, height);
+    }
+}
 const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
 // Stable allocations: each lower overlay retains its Clay scroll/layout state
@@ -467,8 +562,29 @@ const Api = lua_mod.Api;
 const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
+fn readyTerminal(pane: *Pane) ?*TerminalPane {
+    const term = pane.asTerminal() orelse return null;
+    return if (term.renderHelpersReady()) term else null;
+}
+
 fn paneRenderHelpersReady(pane: *const Pane) bool {
-    return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
+    const term = pane.asTerminalConst() orelse return false;
+    return term.renderHelpersReady();
+}
+
+fn paneSynchronizedOutputActive(pane: *const Pane) bool {
+    const term = pane.asTerminalConst() orelse return false;
+    return term.synchronized_output_active;
+}
+
+fn paneViewportScrollPending(pane: *const Pane) bool {
+    const term = pane.asTerminalConst() orelse return false;
+    return term.viewport_scroll_pending;
+}
+
+fn paneMouseTracking(pane: *const Pane) u32 {
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.last_mouse_tracking;
 }
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -628,6 +744,7 @@ var g_drag_node: ?*SplitNode = null;
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
+var g_lua_pane_button: ?ghostty.MouseButton = null;
 var g_mouse_x: f32 = 0;
 var g_mouse_y: f32 = 0;
 var g_top_bar_cache: BarCache = .{};
@@ -1728,6 +1845,124 @@ fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
     if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
         app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = hit.id, .index = hit.stack_index } });
     } else app.emitLuaBuiltInEvent("overlay:leave", .none);
+}
+
+const LuaPaneHit = struct {
+    pane: *Pane,
+    surface: *LuaPaneSurface,
+    bounds: PaneBounds,
+    id: ?[]const u8 = null,
+    text_cursor: bool = false,
+};
+
+/// Pane order includes floating panes. Never look through an opaque terminal or
+/// outside the pane scissor, even when a Clay node overflows its root.
+fn luaPaneAt(leaves: []const LayoutLeaf, x: f32, y: f32) ?LuaPaneHit {
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        if (x < @as(f32, @floatFromInt(leaf.bounds.x)) or y < @as(f32, @floatFromInt(leaf.bounds.y)) or
+            x >= @as(f32, @floatFromInt(leaf.bounds.x + leaf.bounds.width)) or y >= @as(f32, @floatFromInt(leaf.bounds.y + leaf.bounds.height))) continue;
+        const surface = leaf.pane.asLua() orelse return null;
+        var hit: LuaPaneHit = .{ .pane = leaf.pane, .surface = surface, .bounds = leaf.bounds };
+        if (surface.clayState()) |tree| if (tree.active) {
+            if (tree.hitTest(.clickable_root, x, y)) |node| {
+                hit.id = tree.nodeId(node);
+                hit.text_cursor = tree.nodes[node].text_cursor;
+            }
+        };
+        return hit;
+    }
+    return null;
+}
+
+fn hitTestLuaPane(app: *App, x: f32, y: f32) ?LuaPaneHit {
+    var buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    return luaPaneAt(app.computeActiveLayout(&buf), x, y);
+}
+
+const LuaPanePointer = @import("../app/lua_panes.zig").Pointer;
+
+fn queueLuaPanePointer(app: *App, hit: LuaPaneHit, kind: @FieldType(LuaPanePointer, "kind"), x: f32, y: f32, extra: struct { button: LuaPanePointer.Button = .left, delta: f32 = 0 }) void {
+    const id = if (hit.id) |value| app.allocator.dupe(u8, value) catch return else null;
+    if (!app.enqueueMouse(.{ .lua_pane_pointer = .{
+        .pane_id = hit.pane.id,
+        .generation = hit.surface.runtime_generation,
+        .revision = hit.surface.revision,
+        .layout_generation = app.currentLayoutGeneration(),
+        .kind = kind,
+        .id = id,
+        .x = x,
+        .y = y,
+        .button = extra.button,
+        .delta = extra.delta,
+    } })) if (id) |value| app.allocator.free(value);
+}
+
+fn luaPanePointerBlocked(app: *App, x: f32, y: f32) bool {
+    return !g_mouse_over_window or g_block_all_mouse_until_up or g_block_left_mouse_until_up or
+        g_drag_node != null or g_scrollbar_drag_pane != null or g_overlay_scrollbar_drag_id_len > 0 or
+        g_selection_pointer_active or quick_select.inputActive(app) or sidebarContains(x, y) or
+        app.hitTestDividerAt(x, y, 6) != null or
+        topBarHitTest(app, x, y, c.sapp_widthf()).inBar() or bottomBarHitTest(app, x, y, c.sapp_widthf()).inBar() or
+        hitTestOverlayWheel(x, y) != null or (g_clay_surface.active and g_clay_surface.owner_index == 0);
+}
+
+/// Queue only pointer transitions. Re-probing after layout/overlay rendering
+/// clears occluded/retired hover without waking clean panes forever.
+fn updateLuaPaneHover(app: *App) void {
+    const mux = if (app.mux) |*m| m else return;
+    var hit: ?LuaPaneHit = null;
+    var probed = false;
+    var panes = mux.paneIterator();
+    while (panes.next()) |pane| {
+        const surface = pane.asLua() orelse continue;
+        if (surface.ref < 0) continue;
+        if (!probed) {
+            probed = true;
+            hit = if (luaPanePointerBlocked(app, g_mouse_x, g_mouse_y)) null else hitTestLuaPane(app, g_mouse_x, g_mouse_y);
+        }
+        if (hit) |target| if (target.pane == pane) {
+            const x = g_mouse_x - @as(f32, @floatFromInt(target.bounds.x));
+            const y = g_mouse_y - @as(f32, @floatFromInt(target.bounds.y));
+            const same_id = if (target.id) |id| (if (surface.hovered_id) |old| std.mem.eql(u8, id, old) else false) else surface.hovered_id == null;
+            if (!same_id or surface.pointer_x != x or surface.pointer_y != y) queueLuaPanePointer(app, target, .hover, x, y, .{});
+            continue;
+        };
+        if (surface.hovered_id != null or surface.pointer_x >= 0 or surface.pointer_y >= 0) {
+            queueLuaPanePointer(app, .{ .pane = pane, .surface = surface, .bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 } }, .hover, -1, -1, .{});
+        }
+    }
+}
+
+test "Lua pane pointer hit testing clips roots and respects opaque pane order" {
+    var tree: ClaySurface = .{ .active = true, .area = .{ .x = 100, .y = 50, .width = 100, .height = 100 } };
+    defer tree.deinit();
+    tree.context = clay.hollow_clay_create();
+    tree.nodes[0] = std.mem.zeroes(clay.HollowClayNode);
+    tree.nodes[0].width = 300;
+    tree.nodes[0].height = 30;
+    tree.nodes[0].clickable = true;
+    tree.nodes[0].id = .{ .chars = "layout:1:button", .length = 15 };
+    tree.len = 1;
+    _ = tree.layout(100, 100, 10, 20, 0);
+    var surface: LuaPaneSurface = .{ .clay = &tree };
+    var pane = Pane.initLua(std.testing.allocator, &surface);
+    var terminal = Pane.init(std.testing.allocator);
+    const leaves = [_]LayoutLeaf{
+        .{ .pane = &pane, .bounds = .{ .x = 100, .y = 50, .width = 100, .height = 100 } },
+        .{ .pane = &terminal, .bounds = .{ .x = 120, .y = 50, .width = 20, .height = 30 } },
+    };
+    try std.testing.expectEqualStrings("layout:1:button", luaPaneAt(&leaves, 110, 60).?.id.?);
+    try std.testing.expect(luaPaneAt(&leaves, 125, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 99, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 205, 60) == null);
+    try std.testing.expect(luaPaneAt(&leaves, 150, 100).?.id == null);
+    // Pane roots can be buttons; overlay root semantics remain unchanged.
+    try std.testing.expect(tree.hitTest(.clickable, 110, 60) == null);
+    tree.active = false;
+    try std.testing.expect(luaPaneAt(&leaves, 110, 60).?.id == null);
 }
 
 fn boundsContain(b: ui_semantics.Bounds, x: f32, y: f32) bool {
@@ -3144,6 +3379,7 @@ pub fn run(app: *App) !void {
     g_last_frame_swapchain_submit_ms = 0;
     g_drag_node = null;
     g_mouse_button_down = null;
+    g_lua_pane_button = null;
 
     var host = WindowHost.init(.{
         .context = app,
@@ -3248,8 +3484,9 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // Each pane cache ends up consuming a surprising number of sg pipelines:
     // one sokol_gl context default pipeline (5 backend pipelines) plus one
     // extra pane atlas pipeline (another 5). With 6 panes we exceed sokol_gfx's
-    // default pipeline pool size of 64 and crash during cache creation.
-    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 12 + 64;
+    // default pipeline pool size of 64 and crash during cache creation. Lua
+    // panes may lazily add a straight-alpha rectangle pipeline (another 5).
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 18 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -3267,7 +3504,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
     // context and drops overlays like the cursor. Size the pool to our cache cap.
     sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
-    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 2 + 16;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 3 + 16;
     c.sgl_setup(&sgl_desc);
 
     const swapchain = c.sglue_swapchain();
@@ -3482,9 +3719,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
-            if (paneRenderHelpersReady(pane)) {
+            if (readyTerminal(pane)) |term| {
                 if (!app.config.terminal_theme.enabled) {
-                    if (runtime.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                    if (runtime.renderStateColorsInto(term.render_state, &g_render_state_colors_scratch)) {
                         clear_r = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                         clear_g = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
                         clear_b = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
@@ -3513,8 +3750,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
-            for (leaves) |leaf| renderer.prepareKittyTextures(runtime, leaf.pane.terminal, leaf.pane.render_state);
-        } else if (app.activePane()) |pane| renderer.prepareKittyTextures(runtime, pane.terminal, pane.render_state);
+            for (leaves) |leaf| {
+                if (leaf.pane.asTerminal()) |term| renderer.prepareKittyTextures(runtime, term.terminal, term.render_state);
+            }
+        } else if (app.activePane()) |pane| {
+            if (pane.asTerminal()) |term| renderer.prepareKittyTextures(runtime, term.terminal, term.render_state);
+        }
     };
 
     // Decide once whether to use direct rendering.
@@ -3523,11 +3764,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const atlas_reset_this_frame = if (g_ft_renderer) |*renderer| renderer.atlas_reset_this_frame else false;
     const visible_sync_output = blk: {
         if (leaves.len == 0) {
-            if (app.activePane()) |pane| break :blk pane.synchronized_output_active;
+            if (app.activePane()) |pane| break :blk paneSynchronizedOutputActive(pane);
             break :blk false;
         }
         for (leaves) |leaf| {
-            if (leaf.pane.synchronized_output_active) break :blk true;
+            if (paneSynchronizedOutputActive(leaf.pane)) break :blk true;
         }
         break :blk false;
     };
@@ -3543,16 +3784,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const viewport_scroll_active = if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.viewport_scroll_pending) break true;
+            if (paneViewportScrollPending(leaf.pane)) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.viewport_scroll_pending
+        paneViewportScrollPending(pane)
     else
         false;
     if (viewport_scroll_active) {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
-                if (leaf.pane.viewport_scroll_pending) invalidatePaneCacheForPane(leaf.pane);
+                if (paneViewportScrollPending(leaf.pane)) invalidatePaneCacheForPane(leaf.pane);
             }
         } else if (single_visible_pane) |pane| {
             invalidatePaneCacheForPane(pane);
@@ -3566,11 +3807,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         false
     else if (leaves.len > 0)
         for (leaves) |leaf| {
-            if (leaf.pane.synchronized_output_active and
+            if (paneSynchronizedOutputActive(leaf.pane) and
                 !paneCacheReadyForPresent(leaf.pane, leaf.bounds.width, leaf.bounds.height)) break true;
         } else false
     else if (single_visible_pane) |pane|
-        pane.synchronized_output_active and
+        paneSynchronizedOutputActive(pane) and
             !paneCacheReadyForPresent(pane, @intFromFloat(width), @intFromFloat(height))
     else
         false;
@@ -3599,6 +3840,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_frame_pass2_glyph_ns = 0;
         g_frame_pass2_decoration_ns = 0;
         const offscreen_terminal_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
+
+        for (leaves) |leaf| renderLuaPaneToCache(app, renderer, leaf.pane, leaf.bounds);
+        if (leaves.len == 0) {
+            if (app.activePane()) |pane| renderLuaPaneToCache(app, renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) });
+        }
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -3636,6 +3882,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     _ = oy;
                     _ = fb_w;
                     _ = fb_h;
+                    const term = pane.asTerminal() orelse return .cached_clean;
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
                     const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return .cached_clean;
@@ -3644,7 +3891,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // output is active, but the user must keep seeing the
                     // last completed render. An invalid cache is rendered
                     // once to establish the initial frame.
-                    if (pane.synchronized_output_active and
+                    if (term.synchronized_output_active and
                         cache_entry.validity != .invalid and
                         !cache_entry.needs_clear)
                     {
@@ -3677,7 +3924,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
                     } else {
-                        if (rt.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                        if (rt.renderStateColorsInto(term.render_state, &g_render_state_colors_scratch)) {
                             bg_color = g_render_state_colors_scratch.background;
                             cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
                             cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
@@ -3688,19 +3935,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
-                    const cursor_pos = rt.cursorPos(pane.render_state);
+                    const cursor_pos = rt.cursorPos(term.render_state);
                     const cursor_row = if (cursor_pos) |cp| @as(usize, cp.y) else std.math.maxInt(usize);
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
-                    const cursor_visible = rt.cursorVisible(pane.render_state);
-                    const cursor_blinking = rt.cursorBlinking(pane.render_state);
-                    const cursor_password_input = rt.cursorPasswordInput(pane.render_state);
+                    const cursor_visible = rt.cursorVisible(term.render_state);
+                    const cursor_blinking = rt.cursorBlinking(term.render_state);
+                    const cursor_password_input = rt.cursorPasswordInput(term.render_state);
                     const cursor_blink_visible = cursor_pos == null or
                         !cursor_visible or
                         !cursor_blinking or
                         cursor_password_input or
                         color_math.blinkVisibleNow(io.nanoTimestamp());
-                    const cursor_wide_tail = rt.cursorWideTail(pane.render_state);
-                    const cursor_style = rt.cursorVisualStyle(pane.render_state);
+                    const cursor_wide_tail = rt.cursorWideTail(term.render_state);
+                    const cursor_style = rt.cursorVisualStyle(term.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
                         cache_entry.last_cursor_row != cursor_row or
                         cache_entry.last_cursor_col != cursor_col or
@@ -3726,7 +3973,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const expected_grid = app_ctx.paneGridSize(pane, .{ .x = 0, .y = 0, .width = pw_u, .height = ph_u });
                     const size_mismatch = pane.cols != expected_grid.cols or pane.rows != expected_grid.rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
-                    const pty_active = pane.pty_wrote_this_frame;
+                    const pty_active = term.pty_wrote_this_frame;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
@@ -3734,7 +3981,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         if (cfg.debug_terminal_trace and focused) {
                             std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
-                                @intFromPtr(pane),
+                                pane.id,
                                 @tagName(dirty_level),
                                 cursor_state_changed,
                                 cursor_visible,
@@ -3748,7 +3995,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         // Nothing changed and the pane has already survived a clean
                         // post-reflow frame, so the cached RT is safe to reuse.
                         if (g_frames_since_drag_release < 10) {
-                            std.log.info("post_release[{d}] pane={x} cached_clean (skipped render entirely)", .{ g_frames_since_drag_release, @intFromPtr(pane) });
+                            std.log.info("post_release[{d}] pane={x} cached_clean (skipped render entirely)", .{ g_frames_since_drag_release, pane.id });
                         }
                         return .cached_clean;
                     }
@@ -3762,7 +4009,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const force_full = dirty_level == .full or pty_burst_refresh or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
                     if (cfg.debug_terminal_trace and focused) {
                         std.log.info("terminal-trace cache pane={x} mode=cached_dirty dirty={s} force_full={} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d} pty_active={} size_mismatch={} grid_changed={}", .{
-                            @intFromPtr(pane),
+                            pane.id,
                             @tagName(dirty_level),
                             force_full,
                             cursor_state_changed,
@@ -3790,7 +4037,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             "post_release[{d}] pane={x} dirty={s} force_full={} ff_frames={d} geom_stale={} atlas_stale={} needs_clear={} stable={} unsettled={} size_mm={} grid_chg={} pty_active={} rows_rendered={d} rows_skipped={d}",
                             .{
                                 g_frames_since_drag_release,
-                                @intFromPtr(pane),
+                                pane.id,
                                 @tagName(dirty_level),
                                 force_full,
                                 cache_entry.force_full_frames,
@@ -3836,11 +4083,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const saved_renderer_pad_x = rend.padding_x;
                     const saved_renderer_pad_y = rend.padding_y;
                     {
-                        const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.left
                         else
                             cfg.terminal_padding.left);
-                        const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                        const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.top
                         else
                             cfg.terminal_padding.top);
@@ -3855,10 +4102,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cfg,
                         app_ctx,
                         pane,
-                        pane.terminal,
-                        pane.render_state,
-                        &pane.row_iterator,
-                        &pane.row_cells,
+                        term.terminal,
+                        term.render_state,
+                        &term.row_iterator,
+                        &term.row_cells,
                         pw,
                         ph,
                         focused,
@@ -3909,7 +4156,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // existing RT pixels are definitely stale (resize, drag-release,
                     // atlas change, background-color change). Normal PTY output and
                     // scroll frames redraw the dirty rows without forcing a CLEAR.
-                    pane.pty_wrote_this_frame = false; // consumed by renderer
+                    term.pty_wrote_this_frame = false; // consumed by renderer
                     cache_entry.needs_clear = false;
                     const now_stable = !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
@@ -3934,7 +4181,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
                     pane.render_dirty = .false_value;
-                    pane.viewport_scroll_pending = false;
+                    term.viewport_scroll_pending = false;
                     return .cached_dirty;
                 }
             }.call;
@@ -3997,7 +4244,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (leaves.len > 0) {
                     const active = app.activePane();
                     for (leaves) |leaf| {
-                        if (!paneRenderHelpersReady(leaf.pane)) continue;
+                        if (leaf.pane.asLua() != null) {
+                            blitLuaPaneCache(renderer, leaf.pane, leaf.bounds, width, height);
+                            continue;
+                        }
+                        const term = readyTerminal(leaf.pane) orelse continue;
                         const ox: f32 = @floatFromInt(leaf.bounds.x);
                         const oy: f32 = @floatFromInt(leaf.bounds.y);
                         const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -4005,11 +4256,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4022,10 +4273,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             leaf.pane,
-                            leaf.pane.terminal,
-                            leaf.pane.render_state,
-                            &leaf.pane.row_iterator,
-                            &leaf.pane.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             ox,
                             oy,
                             pw,
@@ -4051,21 +4302,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         leaf.pane.render_dirty = .false_value;
-                        leaf.pane.pty_wrote_this_frame = false;
-                        leaf.pane.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     }
                 } else if (app.activePane()) |pane| {
-                    if (!paneRenderHelpersReady(pane)) {
-                        // nothing to queue
-                    } else {
+                    if (pane.asLua() != null) blitLuaPaneCache(renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) }, width, height);
+                    if (readyTerminal(pane)) |term| {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -4078,10 +4328,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.terminal,
-                            pane.render_state,
-                            &pane.row_iterator,
-                            &pane.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             0,
                             0,
                             width,
@@ -4107,8 +4357,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         pane.render_dirty = .false_value;
-                        pane.pty_wrote_this_frame = false;
-                        pane.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     }
                 }
             }
@@ -4170,7 +4420,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // the pass. Nothing to blit here.
             } else if (do_leaves) {
                 for (leaves) |leaf| {
-                    if (!leaf.pane.render_state_ready) continue;
+                    if (leaf.pane.asTerminalConst()) |term| if (!term.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -4182,7 +4432,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                 }
             } else if (app.activePane()) |pane| {
-                if (paneRenderHelpersReady(pane)) {
+                if (pane.asLua() != null) blitLuaPaneCache(renderer, pane, .{ .x = 0, .y = 0, .width = @intFromFloat(width), .height = @intFromFloat(height) }, width, height);
+                if (readyTerminal(pane)) |term| {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
                         terminal_render_app.drawDirect(
@@ -4191,10 +4442,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             &app.config,
                             app,
                             pane,
-                            pane.terminal,
-                            pane.render_state,
-                            &pane.row_iterator,
-                            &pane.row_cells,
+                            term.terminal,
+                            term.render_state,
+                            &term.row_iterator,
+                            &term.row_cells,
                             0,
                             0,
                             width,
@@ -4202,7 +4453,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             width,
                             height,
                             true,
-                            pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
+                            pane.render_dirty == .full or term.pty_wrote_this_frame or renderer.atlas_dirty,
                             copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
                             null,
                             app.hovered_hyperlink,
@@ -4217,8 +4468,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         // Mark pane clean after direct render.
                         pane.render_dirty = .false_value;
-                        pane.pty_wrote_this_frame = false;
-                        pane.viewport_scroll_pending = false;
+                        term.pty_wrote_this_frame = false;
+                        term.viewport_scroll_pending = false;
                     } else {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
@@ -4439,6 +4690,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     } else {
         app.publishUiSemanticFrame();
     }
+    updateLuaPaneHover(app);
 
     // Flush all queued geometry — exactly once per frame.
     c.sgl_draw_layer(-3);
@@ -4674,10 +4926,10 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     var scroll_offset: u64 = 0;
     var scroll_len: u64 = 0;
     if (runtime) |*rt| {
-        if (pane) |p| {
-            cols = rt.renderStateCols(p.render_state) orelse 0;
-            rows = rt.renderStateRows(p.render_state) orelse 0;
-            if (rt.terminalScrollbar(p.terminal)) |scrollbar| {
+        if (if (pane) |p| p.asTerminal() else null) |term| {
+            cols = rt.renderStateCols(term.render_state) orelse 0;
+            rows = rt.renderStateRows(term.render_state) orelse 0;
+            if (rt.terminalScrollbar(term.terminal)) |scrollbar| {
                 scroll_total = scrollbar.total;
                 scroll_offset = scrollbar.offset;
                 scroll_len = scrollbar.len;
@@ -5093,9 +5345,112 @@ fn linuxResizeDirection(x: f32, y: f32) ?c_int {
     return null;
 }
 
+/// A click callback may open a modal before release. Retire the Lua gesture
+/// before modal/inspector routing; terminal-origin gestures remain untouched.
+fn takeLuaPaneRelease(event: c.sapp_event) bool {
+    const button = g_lua_pane_button orelse return false;
+    // A release outside the window may never arrive; a new press or a move
+    // without the held button means the gesture already ended.
+    const held_mask: u32 = switch (button) {
+        .left => c.SAPP_MODIFIER_LMB,
+        .right => c.SAPP_MODIFIER_RMB,
+        .middle => c.SAPP_MODIFIER_MMB,
+        else => 0,
+    };
+    const released = held_mask != 0 and event.modifiers & held_mask == 0;
+    const same_button = switch (button) {
+        .left => event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT,
+        .right => event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT,
+        .middle => event.mouse_button == c.SAPP_MOUSEBUTTON_MIDDLE,
+        else => false,
+    };
+    // Only X11 reports per-event button state on moves; Win32/macOS sample the
+    // live state, which can race a queued release (Windows uses capture instead).
+    const stale = (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN and (same_button or released)) or
+        (builtin.os.tag == .linux and event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE and released);
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED or stale) {
+        endLuaPaneGesture();
+        return false;
+    }
+    if (event.type != c.SAPP_EVENTTYPE_MOUSE_UP or !same_button) return false;
+    endLuaPaneGesture();
+    return true;
+}
+
+/// Capture like divider/scrollbar drags so the release is delivered even
+/// when it happens outside the window.
+fn beginLuaPaneGesture(button: ghostty.MouseButton) void {
+    g_lua_pane_button = button;
+    if (builtin.os.tag == .windows) {
+        if (c.sapp_win32_get_hwnd()) |raw| _ = win32.SetCapture(@ptrCast(@constCast(raw)));
+    }
+}
+
+fn endLuaPaneGesture() void {
+    g_lua_pane_button = null;
+    g_mouse_button_down = null;
+    if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+}
+
+test "Lua gesture release retires before modal routing without stealing terminal releases" {
+    const old_lua = g_lua_pane_button;
+    const old_button = g_mouse_button_down;
+    defer {
+        g_lua_pane_button = old_lua;
+        g_mouse_button_down = old_button;
+    }
+    var event = std.mem.zeroes(c.sapp_event);
+    event.type = c.SAPP_EVENTTYPE_MOUSE_UP;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    g_mouse_button_down = .left;
+    g_lua_pane_button = null;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_mouse_button_down == .left);
+    g_lua_pane_button = .left;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_RIGHT;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    try std.testing.expect(takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null and g_mouse_button_down == null);
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_UNFOCUSED;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null);
+
+    // A release lost outside the window must not stick the gesture.
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_MOUSE_MOVE;
+    event.modifiers = c.SAPP_MODIFIER_LMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == .left);
+    event.modifiers = 0;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect((g_lua_pane_button == null) == (builtin.os.tag == .linux));
+    g_lua_pane_button = .left;
+    event.type = c.SAPP_EVENTTYPE_MOUSE_DOWN;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_LEFT;
+    event.modifiers = c.SAPP_MODIFIER_LMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == null);
+    g_lua_pane_button = .left;
+    event.mouse_button = c.SAPP_MOUSEBUTTON_RIGHT;
+    event.modifiers = c.SAPP_MODIFIER_LMB | c.SAPP_MODIFIER_RMB;
+    try std.testing.expect(!takeLuaPaneRelease(event));
+    try std.testing.expect(g_lua_pane_button == .left);
+}
+
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
+
+    if (g_lua_pane_button != null and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
+    if (takeLuaPaneRelease(event)) {
+        g_mouse_x = event.mouse_x;
+        g_mouse_y = event.mouse_y;
+        updateLuaPaneHover(app);
+        c.sapp_consume_event();
+        return;
+    }
 
     if (inspectorResizeEvent(app, event)) return;
     if (gridDebugEvent(app, event)) return;
@@ -5114,6 +5469,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        updateLuaPaneHover(app);
         setMouseCursorHidden(false);
         updateSidebarHover(app, 0, 0, 0, true);
         return;
@@ -5247,6 +5603,7 @@ fn flushPendingMouseMove(app: *App) void {
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
+    app.keyboard_navigation = true;
     if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const key = mapKey(event.key_code);
     if (key == .alt_right) g_right_alt_down = true;
@@ -5382,6 +5739,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 }
 
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {
+    if (action == .press) app.keyboard_navigation = false;
     const button = switch (event.mouse_button) {
         c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
         c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
@@ -5567,6 +5925,33 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
+    if (action == .press and event.mouse_button != c.SAPP_MOUSEBUTTON_LEFT) {
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
+            if (button) |b| {
+                beginLuaPaneGesture(b);
+                if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
+                    if (target.surface.ref >= 0) {
+                        var hit = target;
+                        const lua_button: LuaPanePointer.Button = switch (b) {
+                            .right => .right,
+                            .middle => .middle,
+                            else => blk: {
+                                // Extra buttons only move focus.
+                                hit.id = null;
+                                break :blk .middle;
+                            },
+                        };
+                        queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{ .button = lua_button });
+                    } else {
+                        _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = b, .x = event.mouse_x, .y = event.mouse_y, .mods = ghosttyMods(event.modifiers) } });
+                    }
+                }
+            }
+            c.sapp_consume_event();
+            return;
+        }
+    }
+
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
         if (selection_mod.hasSelection(app)) {
             _ = app.enqueueMouse(.copy_selection);
@@ -5639,8 +6024,21 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             return;
         }
 
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
+            beginLuaPaneGesture(.left);
+            if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
+                if (hit.surface.ref >= 0) {
+                    queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{});
+                } else {
+                    _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = .left, .x = event.mouse_x, .y = event.mouse_y, .mods = mods } });
+                }
+            }
+            c.sapp_consume_event();
+            return;
+        }
+
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-            const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            const wants_selection = selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
             if (wants_selection) {
                 const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
                 const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
@@ -5707,6 +6105,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
+    defer updateLuaPaneHover(app);
     setMouseCursorHidden(false);
     if (g_linux_window_resize_active) {
         c.hollow_linux_update_window_resize();
@@ -5722,6 +6121,11 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     if (g_skip_mouse_move_frames > 0) {
         g_skip_mouse_move_frames -= 1;
+        return;
+    }
+
+    if (g_lua_pane_button != null) {
+        setTextSelectionCursor(.arrow);
         return;
     }
 
@@ -5850,10 +6254,17 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .horizontal => c.SAPP_MOUSECURSOR_RESIZE_NS,
         });
     } else {
+        if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
+            g_hover_hyperlink = false;
+            if (!g_selection_pointer_active) {
+                setTextSelectionCursor(if (hit.id != null) (if (hit.text_cursor) .ibeam else .hand) else .arrow);
+                return;
+            }
+        }
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const hover_link = hyperlinkHoverActive(app, event.modifiers);
             g_hover_hyperlink = hover_link;
-            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
             setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
         } else {
             g_hover_hyperlink = false;
@@ -5870,7 +6281,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
                     .point = point,
                     .held_button = .left,
                     .mods = mods,
-                    .tracking = pane.last_mouse_tracking,
+                    .tracking = paneMouseTracking(pane),
                     .layout_generation = app.currentLayoutGeneration(),
                 };
                 if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
@@ -5892,7 +6303,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .point = point,
             .held_button = g_mouse_button_down,
             .mods = mods,
-            .tracking = hit.pane.last_mouse_tracking,
+            .tracking = paneMouseTracking(hit.pane),
             .layout_generation = app.currentLayoutGeneration(),
         };
         if (app.enqueueMouse(.{ .motion = .{
@@ -5918,6 +6329,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
+    app.keyboard_navigation = false;
     if (g_block_all_mouse_until_up) {
         c.sapp_consume_event();
         return;
@@ -5937,6 +6349,17 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
     }
 
     if (g_scrollbar_drag_pane != null) return;
+    if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
+        if (event.scroll_y == 0 or target.surface.ref < 0) return;
+        var hit = target;
+        hit.id = null;
+        if (target.surface.clayState()) |tree| if (tree.active) {
+            if (tree.hitTest(.scroll, event.mouse_x, event.mouse_y)) |node| hit.id = tree.nodeId(node);
+        };
+        queueLuaPanePointer(app, hit, .scroll, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{ .delta = event.scroll_y });
+        c.sapp_consume_event();
+        return;
+    }
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
         _ = app.enqueueMouse(.{ .scroll = .{
             .x = event.mouse_x,

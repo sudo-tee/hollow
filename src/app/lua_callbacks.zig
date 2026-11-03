@@ -207,7 +207,7 @@ pub fn luaCurrentTabIdCallback(app_ptr: *anyopaque) usize {
 pub fn luaCurrentPaneIdCallback(app_ptr: *anyopaque) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.activePane() orelse return 0;
-    return @intFromPtr(pane);
+    return pane.id;
 }
 
 pub fn luaGetTabIdAtCallback(app_ptr: *anyopaque, index: usize) usize {
@@ -227,14 +227,14 @@ pub fn luaGetTabPaneIdAtCallback(app_ptr: *anyopaque, tab_id: usize, index: usiz
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const tab = app.tabById(tab_id) orelse return 0;
     if (index >= tab.panes.items.len) return 0;
-    return @intFromPtr(tab.panes.items[index]);
+    return tab.panes.items[index].id;
 }
 
 pub fn luaGetTabActivePaneIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const tab = app.tabById(tab_id) orelse return 0;
     const pane = tab.activePane() orelse return 0;
-    return @intFromPtr(pane);
+    return pane.id;
 }
 
 pub fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
@@ -245,13 +245,15 @@ pub fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
 pub fn luaGetPaneActiveScreenCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;
-    return pane.active_screen;
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.active_screen;
 }
 
 pub fn luaGetPanePidCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;
-    return pane.childPid();
+    const term = pane.asTerminalConst() orelse return 0;
+    return term.childPid();
 }
 
 pub fn luaGetPaneTitleCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
@@ -277,7 +279,7 @@ pub fn luaGetPaneDomainCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []
     _ = out_buf;
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return "";
-    return pane.domain_name;
+    return pane.domainName();
 }
 
 pub fn luaGetPaneSplitDirectionCallback(app_ptr: *anyopaque, pane_id: usize) ?[]const u8 {
@@ -371,7 +373,7 @@ pub fn luaPaneIsMaximizedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
 pub fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.activePane() orelse return false;
-    return @intFromPtr(pane) == pane_id;
+    return pane.id == pane_id;
 }
 
 pub fn luaPaneHasBellCallback(app_ptr: *anyopaque, pane_id: usize) bool {

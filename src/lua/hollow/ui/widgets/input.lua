@@ -40,7 +40,12 @@ function ui.input.open(opts)
     render = function(theme)
       return require("hollow.ui.components.dialog")({
         title = opts.prompt,
-        body = require("hollow.ui.components.input")({ behavior = input, theme = theme }),
+        -- The modal's keys drive the field, so it always takes typing.
+        body = require("hollow.ui.components.input")({
+          behavior = input,
+          theme = theme,
+          focused = true,
+        }),
         theme = theme,
       })
     end,

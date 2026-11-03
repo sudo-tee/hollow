@@ -617,18 +617,23 @@ class HollowCli:
 
         key_name = lowered[-1]
         modifiers = lowered[:-1]
-        key_text = self.modified_key_text(key_name)
-        if key_text is None:
-            raise CliError(f"unsupported modified key token: {{{raw}}}", code="invalid_args", status=2)
-
-        supported_mods = {"ctrl", "control", "alt", "meta", "shift"}
+        supported_mods = {"ctrl", "control", "c", "alt", "meta", "a", "m", "shift", "s"}
         for mod in modifiers:
             if mod not in supported_mods:
                 raise CliError(f"unsupported key modifier in {{{raw}}}", code="invalid_args", status=2)
 
-        ctrl = any(mod in {"ctrl", "control"} for mod in modifiers)
-        alt = any(mod in {"alt", "meta"} for mod in modifiers)
-        shift = any(mod == "shift" for mod in modifiers)
+        ctrl = any(mod in {"ctrl", "control", "c"} for mod in modifiers)
+        alt = any(mod in {"alt", "meta", "a", "m"} for mod in modifiers)
+        shift = any(mod in {"shift", "s"} for mod in modifiers)
+        if shift and not ctrl and not alt and key_name == "tab":
+            return "\x1b[Z"
+        named = self.modified_named_key(key_name, ctrl, alt, shift)
+        if named is not None:
+            return named
+
+        key_text = self.modified_key_text(key_name)
+        if key_text is None:
+            raise CliError(f"unsupported modified key token: {{{raw}}}", code="invalid_args", status=2)
 
         result = key_text.upper() if shift and len(key_text) == 1 and "a" <= key_text <= "z" else key_text
         if ctrl:
@@ -642,6 +647,19 @@ class HollowCli:
         if alt:
             result = "\x1b" + result
         return result
+
+    def modified_named_key(self, key_name, ctrl, alt, shift):
+        """xterm form of a modified cursor, editing, or function key (Ctrl+Up is ESC[1;5A)."""
+        try:
+            plain = self.named_key_sequence(key_name)
+        except CliError:
+            return None
+        if len(plain) < 3 or plain[0] != "\x1b":
+            return None
+        modifier = 1 + int(shift) + 2 * int(alt) + 4 * int(ctrl)
+        if plain[-1] == "~":
+            return f"{plain[:-1]};{modifier}~"
+        return f"\x1b[1;{modifier}{plain[-1]}"
 
     def modified_key_text(self, key_name):
         named = {

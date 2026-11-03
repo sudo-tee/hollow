@@ -8,6 +8,7 @@ const scroll = @import("scroll.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
+const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 
 pub fn pointTagForHistoryRow(row: usize, scrollback_rows: usize) ghostty.PointTag {
     return if (row < scrollback_rows) .history else .screen;
@@ -47,21 +48,23 @@ pub fn historySelectionRangeInViewport(history_range: selection.Range, visible_t
 }
 
 pub fn selectionRange(self: *const App, pane: *const Pane) ?selection.Range {
+    const term = pane.asTerminalConst() orelse return null;
     const history_range = selectionHistoryRange(self, pane) orelse return null;
     const scrollbar = if (self.ghostty) |*rt|
-        @constCast(rt).terminalScrollbar(pane.terminal) orelse return null
+        @constCast(rt).terminalScrollbar(term.terminal) orelse return null
     else
-        pane.scrollbar();
+        term.scrollbar();
     const visible_top: usize = @intCast(scroll.scrollbarTopRow(scrollbar));
     const visible_rows: usize = @intCast(@max(@as(u64, 1), @min(scrollbar.total, scrollbar.len)));
     return historySelectionRangeInViewport(history_range, visible_top, visible_rows);
 }
 
 pub fn selectionPointToHistory(self: *App, pane: *Pane, point: selection.CellPoint) selection.CellPoint {
+    const term = pane.asTerminal() orelse return point;
     const scrollbar = if (self.ghostty) |*rt|
         scroll.refreshPaneScrollbar(self, rt, pane)
     else
-        pane.scrollbar();
+        term.scrollbar();
     return .{
         .row = @as(usize, @intCast(scroll.scrollbarTopRow(scrollbar))) + point.row,
         .col = point.col,
@@ -69,20 +72,23 @@ pub fn selectionPointToHistory(self: *App, pane: *Pane, point: selection.CellPoi
 }
 
 pub fn gridRefForHistoryRow(self: *const App, pane: *Pane, history_row: usize) ?ghostty.GridRef {
-    const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
-    const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
-    const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
-    return gridRefForHistoryPoint(runtime, pane.terminal, history_row, 0, scrollback_rows);
+    return gridRefForHistoryCell(self, pane, history_row, 0);
 }
 
 pub fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, col: usize) ?ghostty.GridRef {
+    const term = pane.asTerminal() orelse return null;
     const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
-    const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
+    return terminalGridRefForHistoryCell(runtime, term, history_row, col);
+}
+
+pub fn terminalGridRefForHistoryCell(runtime: *GhosttyRuntime, term: *const TerminalPane, history_row: usize, col: usize) ?ghostty.GridRef {
+    const scrollbar = runtime.terminalScrollbar(term.terminal) orelse return null;
     const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
-    return gridRefForHistoryPoint(runtime, pane.terminal, history_row, col, scrollback_rows);
+    return gridRefForHistoryPoint(runtime, term.terminal, history_row, col, scrollback_rows);
 }
 
 pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Range {
+    if (!pane.isTerminal()) return null;
     if (self.selection_pane != pane) return null;
     const anchor = self.selection_anchor orelse return null;
     const head = self.selection_head orelse return null;
@@ -91,6 +97,7 @@ pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Ran
 
 pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, extend: bool) void {
     if (!self.hasPane(pane)) return;
+    if (!pane.isTerminal()) return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         mux.setActivePane(pane);
@@ -143,21 +150,22 @@ pub fn selectionBeginLine(self: *App, pane: *Pane, point: selection.CellPoint) v
 
 fn selectionBeginNative(self: *App, pane: *Pane, point: selection.CellPoint, line: bool) void {
     if (!self.hasPane(pane)) return;
+    const term = pane.asTerminal() orelse return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         mux.setActivePane(pane);
         self.syncActivePaneChange(previous, pane);
     }
     const runtime = if (self.ghostty) |*rt| rt else return;
-    const selected = runtime.selectAt(pane.terminal, .{
+    const selected = runtime.selectAt(term.terminal, .{
         .tag = .viewport,
         .value = .{ .coordinate = .{ .x = @intCast(point.col), .y = @intCast(point.row) } },
     }, line) orelse {
         selectionBegin(self, pane, point, false);
         return;
     };
-    const start = runtime.gridRefPoint(pane.terminal, &selected.start, .screen) orelse return;
-    const end = runtime.gridRefPoint(pane.terminal, &selected.end, .screen) orelse return;
+    const start = runtime.gridRefPoint(term.terminal, &selected.start, .screen) orelse return;
+    const end = runtime.gridRefPoint(term.terminal, &selected.end, .screen) orelse return;
     const had_selection = hasSelection(self);
 
     if (had_selection) {
@@ -195,27 +203,27 @@ pub fn copySelectionToClipboard(self: *App) !void {
         return;
     }
     const range = selectionHistoryRange(self, pane) orelse return;
+    const term = pane.asTerminal() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else return;
-    var native_selection = selectionSnapshotForRange(self, pane, range) orelse return;
+    var native_selection = selectionSnapshotForRange(runtime, term, range) orelse return;
     var required: usize = 0;
-    const query_result = runtime.formatSelectionInto(pane.terminal, &native_selection, null, &required);
+    const query_result = runtime.formatSelectionInto(term.terminal, &native_selection, null, &required);
     if (query_result != ghostty.out_of_space and query_result != ghostty.success) return;
     if (required == 0) return;
 
     const clipboard = try self.allocator.alloc(u8, required + 1);
     defer self.allocator.free(clipboard);
     var written: usize = 0;
-    if (runtime.formatSelectionInto(pane.terminal, &native_selection, clipboard[0..required], &written) != ghostty.success) return;
+    if (runtime.formatSelectionInto(term.terminal, &native_selection, clipboard[0..required], &written) != ghostty.success) return;
     if (written == 0) return;
     clipboard[written] = 0;
     c.sapp_set_clipboard_string(@ptrCast(clipboard[0..written :0].ptr));
     clearSelection(self);
 }
 
-fn selectionSnapshotForRange(self: *const App, pane: *Pane, range: selection.Range) ?ghostty.Selection {
-    if (self.ghostty == null) return null;
-    const start = gridRefForHistoryCell(self, pane, range.start.row, range.start.col) orelse return null;
-    const end = gridRefForHistoryCell(self, pane, range.end.row, range.end.col) orelse return null;
+fn selectionSnapshotForRange(runtime: *GhosttyRuntime, term: *const TerminalPane, range: selection.Range) ?ghostty.Selection {
+    const start = terminalGridRefForHistoryCell(runtime, term, range.start.row, range.start.col) orelse return null;
+    const end = terminalGridRefForHistoryCell(runtime, term, range.end.row, range.end.col) orelse return null;
     return .{
         .size = @sizeOf(ghostty.Selection),
         .start = start,
@@ -250,6 +258,23 @@ pub fn cellPointFromPaneLocal(self: *const App, pane: *const Pane, x: f32, y: f3
     const col = @min(cols - 1, @as(usize, @intFromFloat(@max(0, x) / @as(f32, @floatFromInt(cell_w)))));
     const row = @min(rows - 1, @as(usize, @intFromFloat(@max(0, y) / @as(f32, @floatFromInt(cell_h)))));
     return .{ .row = row, .col = col };
+}
+
+test "native selection snapshot accepts terminal content without pane node" {
+    var runtime = try GhosttyRuntime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var term: TerminalPane = .{};
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    defer term.deinit(&runtime, std.testing.allocator);
+    runtime.terminalWrite(term.terminal, "hello world");
+    var snapshot = selectionSnapshotForRange(&runtime, &term, .{
+        .start = .{ .row = 0, .col = 0 },
+        .end = .{ .row = 0, .col = 4 },
+    }).?;
+    var buf: [32]u8 = undefined;
+    var written: usize = 0;
+    try std.testing.expectEqual(ghostty.success, runtime.formatSelectionInto(term.terminal, &snapshot, &buf, &written));
+    try std.testing.expectEqualStrings("hello", buf[0..written]);
 }
 
 test "history selection range projects into viewport bounds" {

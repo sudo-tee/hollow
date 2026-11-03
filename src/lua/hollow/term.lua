@@ -139,6 +139,7 @@ function M.setup(hollow, host_api)
       return nil
     end
 
+    local content = host_api.get_pane_content and host_api.get_pane_content(pane_id) or {}
     local pid = host_api.get_pane_pid(pane_id)
     local command_state = command_states[pane_id]
     if command_state ~= nil and command_state.pid ~= pid then
@@ -146,20 +147,26 @@ function M.setup(hollow, host_api)
       command_states[pane_id] = nil
     end
     local running = command_state and command_state.running or nil
-    local running_snapshot = running and {
-      command = running.command,
-      ms = math.max(0, now_ms() - running.started_at_ms),
-    } or nil
+    local running_snapshot = running
+        and {
+          command = running.command,
+          ms = math.max(0, now_ms() - running.started_at_ms),
+        }
+      or nil
     local last = command_state and command_state.last or nil
 
     return {
       id = pane_id,
+      kind = content.kind or "terminal",
+      module = content.module,
+      args = content.args,
+      floating_bounds = content.floating_bounds,
       pid = pid,
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
-      direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id) or nil,
+      direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id)
+        or nil,
       split_ratio = host_api.get_pane_split_ratio and host_api.get_pane_split_ratio(pane_id) or nil,
-      active_screen = host_api.get_pane_active_screen
-          and host_api.get_pane_active_screen(pane_id)
+      active_screen = host_api.get_pane_active_screen and host_api.get_pane_active_screen(pane_id)
         or "primary",
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
@@ -394,20 +401,28 @@ function M.setup(hollow, host_api)
 
   function hollow.term.move_tab_to_workspace(tab_id, workspace_index)
     if type(tab_id) ~= "number" then
-      error("hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects tab_id to be a number")
+      error(
+        "hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects tab_id to be a number"
+      )
     end
     if type(workspace_index) ~= "number" then
-      error("hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects workspace_index to be a number")
+      error(
+        "hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects workspace_index to be a number"
+      )
     end
     return host_api.move_tab_to_workspace(tab_id, workspace_index - 1)
   end
 
   function hollow.term.move_pane_to_workspace(pane_id, workspace_index)
     if type(pane_id) ~= "number" then
-      error("hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects pane_id to be a number")
+      error(
+        "hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects pane_id to be a number"
+      )
     end
     if type(workspace_index) ~= "number" then
-      error("hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects workspace_index to be a number")
+      error(
+        "hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects workspace_index to be a number"
+      )
     end
     return host_api.move_pane_to_workspace(pane_id, workspace_index - 1)
   end
@@ -589,13 +604,18 @@ function M.setup(hollow, host_api)
 
   function hollow.term.set_pane_foreground_process(pane_id, process)
     if pane_id ~= nil and type(pane_id) ~= "number" then
-      error("hollow.term.set_pane_foreground_process(pane_id, process) expects pane_id to be a number or nil")
+      error(
+        "hollow.term.set_pane_foreground_process(pane_id, process) expects pane_id to be a number or nil"
+      )
     end
     if process ~= nil and type(process) ~= "string" then
-      error("hollow.term.set_pane_foreground_process(pane_id, process) expects process to be a string or nil")
+      error(
+        "hollow.term.set_pane_foreground_process(pane_id, process) expects process to be a string or nil"
+      )
     end
 
-    local target = resolve_pane_id(pane_id, "hollow.term.set_pane_foreground_process(pane_id, process)")
+    local target =
+      resolve_pane_id(pane_id, "hollow.term.set_pane_foreground_process(pane_id, process)")
     local previous = pane_snapshot(target)
     local old_process = previous and previous.foreground_process or ""
     local new_process = process or ""
@@ -823,30 +843,68 @@ function M.setup(hollow, host_api)
 
   local function normalize_key_name(key)
     local lower = key:lower()
-    if lower == "left" then return "arrow_left" end
-    if lower == "right" then return "arrow_right" end
-    if lower == "up" then return "arrow_up" end
-    if lower == "down" then return "arrow_down" end
-    if lower == "esc" then return "escape" end
-    if lower == "cr" or lower == "return" then return "enter" end
-    if lower == "bs" then return "backspace" end
-    if lower == "tab" then return "tab" end
-    if lower == "space" or key == " " then return "space" end
-    if lower == "pageup" or lower == "pgup" then return "page_up" end
-    if lower == "pagedown" or lower == "pgdn" or lower == "pgdown" then return "page_down" end
-    if lower == "home" then return "home" end
-    if lower == "end" then return "end" end
-    if lower == "insert" or lower == "ins" then return "insert" end
-    if lower == "delete" or lower == "del" then return "delete" end
+    if lower == "left" then
+      return "arrow_left"
+    end
+    if lower == "right" then
+      return "arrow_right"
+    end
+    if lower == "up" then
+      return "arrow_up"
+    end
+    if lower == "down" then
+      return "arrow_down"
+    end
+    if lower == "esc" then
+      return "escape"
+    end
+    if lower == "cr" or lower == "return" then
+      return "enter"
+    end
+    if lower == "bs" then
+      return "backspace"
+    end
+    if lower == "tab" then
+      return "tab"
+    end
+    if lower == "space" or key == " " then
+      return "space"
+    end
+    if lower == "pageup" or lower == "pgup" then
+      return "page_up"
+    end
+    if lower == "pagedown" or lower == "pgdn" or lower == "pgdown" then
+      return "page_down"
+    end
+    if lower == "home" then
+      return "home"
+    end
+    if lower == "end" then
+      return "end"
+    end
+    if lower == "insert" or lower == "ins" then
+      return "insert"
+    end
+    if lower == "delete" or lower == "del" then
+      return "delete"
+    end
     return lower
   end
 
   local function modifier_mask(token)
     local lower = token:lower()
-    if lower == "ctrl" or lower == "c" then return MODS_CTRL end
-    if lower == "alt" or lower == "a" or lower == "m" or lower == "meta" then return MODS_ALT end
-    if lower == "shift" or lower == "s" then return MODS_SHIFT end
-    if lower == "super" or lower == "d" or lower == "cmd" or lower == "w" then return MODS_SUPER end
+    if lower == "ctrl" or lower == "c" then
+      return MODS_CTRL
+    end
+    if lower == "alt" or lower == "a" or lower == "m" or lower == "meta" then
+      return MODS_ALT
+    end
+    if lower == "shift" or lower == "s" then
+      return MODS_SHIFT
+    end
+    if lower == "super" or lower == "d" or lower == "cmd" or lower == "w" then
+      return MODS_SUPER
+    end
     return 0
   end
 
@@ -889,6 +947,14 @@ function M.setup(hollow, host_api)
   function hollow.term.send_text(text, pane_id)
     if type(text) ~= "string" then
       error("hollow.term.send_text(text) expects a string")
+    end
+    local target = pane_id or (host_api.current_pane_id and host_api.current_pane_id())
+    local content = target and host_api.get_pane_content and host_api.get_pane_content(target)
+    if content and content.kind == "lua" then
+      if not require("hollow.ui.widgets.pane")._send_input(target, text) then
+        error("Lua pane is not ready: " .. tostring(target))
+      end
+      return
     end
     if pane_id ~= nil then
       if not host_api.send_text_to_pane(pane_id, text) then

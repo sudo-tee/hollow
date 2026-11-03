@@ -213,6 +213,7 @@ hollow-cli workspace new --cwd /repo --name repo
 hollow-cli tab rename editor --index 1
 hollow-cli pane split vertical --cmd "npm run dev"
 hollow-cli send-keys "{Up}{Enter}"
+hollow-cli send-keys "{Down}{Enter}" --id 2   # works on Lua panes too
 hollow-cli focus left
 hollow-cli scroll page-down
 hollow-cli config reload

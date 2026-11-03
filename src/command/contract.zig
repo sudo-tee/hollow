@@ -161,12 +161,12 @@ pub fn description(kind: Kind) []const u8 {
         .pane_tile => "Queue tiling a pane by id.",
         .pane_move => "Queue moving a pane by id; amount is normalized (default 0.08).",
         .pane_resize => "Queue resizing the active pane; amount is normalized; id is currently ignored.",
-        .pane_send_text => "Queue sending literal text to a pane by id.",
+        .pane_send_text => "Queue sending literal text to a pane by id; Lua panes receive it as key events.",
         .pane_bell => "Queue visual attention for a pane; defaults to the active pane.",
         .pane_set_tag => "Queue adding a tag to a pane by id.",
         .pane_remove_tag => "Queue removing a tag from a pane by id.",
         .pane_set_tags => "Queue replacing pane tags; an empty list clears tags.",
-        .send_keys => "Queue sending decoded key bytes to a pane; text is bytes, not key notation.",
+        .send_keys => "Queue sending decoded key bytes to a pane; text is bytes, not key notation. Lua panes receive them as key events.",
         .ui_click => "Activate a semantic UI node, optionally guarded by generation.",
         .wait_revision => "Wait for revision to increase; server caps each wait at 250 ms.",
         .events_subscribe => "Capture an event cursor before launching work; no historical events are included.",
@@ -369,7 +369,7 @@ const list_json = blk: {
 };
 
 pub fn describeValue(allocator: std.mem.Allocator, kind: Kind) !std.json.Value {
-    return jsonValue(allocator, description_json[@intFromEnum(kind)]);
+    return jsonValue(allocator, description_json[@backingInt(kind)]);
 }
 
 pub fn listValue(allocator: std.mem.Allocator) !std.json.Value {
@@ -431,7 +431,7 @@ test "comptime descriptions match runtime rendering" {
         var out: std.Io.Writer.Allocating = .init(a);
         defer out.deinit();
         try writeDescription(kind, &out.writer);
-        try std.testing.expectEqualStrings(out.written(), description_json[@intFromEnum(kind)]);
+        try std.testing.expectEqualStrings(out.written(), description_json[@backingInt(kind)]);
     }
 }
 

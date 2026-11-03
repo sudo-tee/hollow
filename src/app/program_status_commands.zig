@@ -174,6 +174,7 @@ test "socket and OSC queries share state, pane targeting, and validation without
         tab.panes.deinit(a);
     }
     var pane = @import("../pane.zig").Pane.init(a);
+    pane.id = 3;
     defer pane.program_status.deinit(a);
     try tab.appendPane(&pane);
     try workspace.appendTab(&tab);
@@ -181,13 +182,13 @@ test "socket and OSC queries share state, pane targeting, and validation without
     app.mux.?.active_workspace = &workspace;
     var params = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"working\",\"progress\":40}", .{});
     defer params.deinit();
-    var set = try @import("command_dispatcher.zig").executeCommand(app, .{ .ctx = .{ .pane_id = @intFromPtr(&pane) }, .data = .{ .get_htp = .{
+    var set = try @import("command_dispatcher.zig").executeCommand(app, .{ .ctx = .{ .pane_id = pane.id }, .data = .{ .get_htp = .{
         .channel = "program_status_set",
         .params = params.value,
     } } });
     defer set.deinit(a);
     try std.testing.expect(set.success);
-    var get = try @import("htp.zig").dispatchHtpQuerySync(app, @intFromPtr(&pane), "program_status_get", null);
+    var get = try @import("htp.zig").dispatchHtpQuerySync(app, pane.id, "program_status_get", null);
     defer get.deinit(a);
     try std.testing.expect(get.success);
     try std.testing.expectEqual(@as(i64, 40), get.value.?.array.items[0].object.get("progress").?.integer);
@@ -200,34 +201,34 @@ test "socket and OSC queries share state, pane targeting, and validation without
     app.syncActivePaneChange(&pane, null);
     var blocked = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"blocked\",\"kind\":\"permission\"}", .{});
     defer blocked.deinit();
-    var report = try execute(app, @intFromPtr(&pane), "program_status_set", blocked.value);
+    var report = try execute(app, pane.id, "program_status_set", blocked.value);
     defer report.deinit(a);
     try std.testing.expect(report.success);
     try std.testing.expect(pane.program_status.needsAttention());
-    var unread = try execute(app, @intFromPtr(&pane), "program_status_get", null);
+    var unread = try execute(app, pane.id, "program_status_get", null);
     defer unread.deinit(a);
     try std.testing.expect(unread.payload.?.array.items[0].object.get("attention").?.bool);
 
     app.mux.?.active_workspace = &workspace;
     app.syncActivePaneChange(null, &pane);
     try std.testing.expect(!pane.program_status.needsAttention());
-    var acknowledged = try execute(app, @intFromPtr(&pane), "program_status_get", null);
+    var acknowledged = try execute(app, pane.id, "program_status_get", null);
     defer acknowledged.deinit(a);
     try std.testing.expectEqualStrings("blocked", acknowledged.payload.?.array.items[0].object.get("state").?.string);
     try std.testing.expect(!acknowledged.payload.?.array.items[0].object.get("attention").?.bool);
-    var active_report = try execute(app, @intFromPtr(&pane), "program_status_set", blocked.value);
+    var active_report = try execute(app, pane.id, "program_status_set", blocked.value);
     defer active_report.deinit(a);
     try std.testing.expect(!pane.program_status.needsAttention());
     app.mux.?.active_workspace = &background;
     app.syncActivePaneChange(&pane, null);
     try std.testing.expect(!pane.program_status.needsAttention());
-    var repeated = try execute(app, @intFromPtr(&pane), "program_status_set", blocked.value);
+    var repeated = try execute(app, pane.id, "program_status_set", blocked.value);
     defer repeated.deinit(a);
     try std.testing.expect(pane.program_status.needsAttention());
     var unknown = try execute(app, 123, "program_status_get", null);
     defer unknown.deinit(a);
     try std.testing.expect(!unknown.success);
-    const explicit_json = try std.fmt.allocPrint(a, "{{\"pane\":{d}}}", .{@intFromPtr(&pane)});
+    const explicit_json = try std.fmt.allocPrint(a, "{{\"pane\":{d}}}", .{pane.id});
     defer a.free(explicit_json);
     var explicit = try std.json.parseFromSlice(std.json.Value, a, explicit_json, .{});
     defer explicit.deinit();
@@ -242,9 +243,9 @@ test "socket and OSC queries share state, pane targeting, and validation without
     app.mux.?.active_workspace = &workspace;
     var completed = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"done\"}", .{});
     defer completed.deinit();
-    var done = try execute(app, @intFromPtr(&pane), "program_status_set", completed.value);
+    var done = try execute(app, pane.id, "program_status_set", completed.value);
     defer done.deinit(a);
-    try std.testing.expect(@import("session_controller.zig").sendTextToPane(app, @intFromPtr(&pane), "script input"));
+    try std.testing.expect(@import("session_controller.zig").sendTextToPane(app, pane.id, "script input"));
     pane.program_status.setFocused(true);
     try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .release, false));
     @import("input.zig").processInputQueue(app);
@@ -252,7 +253,7 @@ test "socket and OSC queries share state, pane targeting, and validation without
     try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .press, false));
     @import("input.zig").processInputQueue(app);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
-    var done_again = try execute(app, @intFromPtr(&pane), "program_status_set", completed.value);
+    var done_again = try execute(app, pane.id, "program_status_set", completed.value);
     defer done_again.deinit(a);
     try std.testing.expect(app.enqueueChar("x"));
     @import("input.zig").processInputQueue(app);

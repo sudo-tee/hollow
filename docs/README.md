@@ -17,7 +17,7 @@ The is the main entry point for Hollow's documentation.
 - [Keybindings](keybindings.md) — default keymaps, modal bindings, the leader key
 - [Panes, tabs, workspaces](panes-tabs-workspaces.md) — the three layout primitives
 - [Themes](themes.md) — built-in themes, custom themes, palette overrides
-- [Custom UI](custom-ui.md) — top bar, sidebars, overlays, and the widget runtime
+- [Custom UI](custom-ui.md) — top bar, sidebars, overlays, Lua panes, and the widget runtime
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment
 - [Copy mode](copy-mode.md) — vim-like scrollback navigation and search
 - [Plugins](plugins.md) — installing, authoring, and updating plugins
@@ -72,8 +72,6 @@ Per-OS notes for the targets Hollow actually supports or works on today.
 ## Examples
 
 Runnable recipes and small, complete snippets.
-
-Design reference: [Rex comparison and borrowing priorities](architecture/rex-comparison.md).
 
 - [Config snippets](examples/config-snippets.md)
 - [UI recipes](examples/ui-recipes.md)

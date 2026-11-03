@@ -45,10 +45,13 @@ const PaneLifecycleRecorder = struct {
     created: usize = 0,
     closed: usize = 0,
     all_panes_resolved: bool = true,
+    last_created_id: usize = 0,
 
     fn recordCreated(context: *anyopaque, pane: *Pane) void {
         const self: *PaneLifecycleRecorder = @ptrCast(@alignCast(context));
         self.created += 1;
+        if (pane.id == 0 or pane.id <= self.last_created_id) self.all_panes_resolved = false;
+        self.last_created_id = pane.id;
         self.checkPublished(pane);
     }
 
@@ -60,10 +63,15 @@ const PaneLifecycleRecorder = struct {
 
     fn checkPublished(self: *PaneLifecycleRecorder, pane: *Pane) void {
         var panes = self.mux.paneIterator();
+        var found = false;
         while (panes.next()) |candidate| {
-            if (candidate == pane) return;
+            if (candidate == pane) {
+                found = true;
+            } else if (candidate.id == pane.id) {
+                self.all_panes_resolved = false;
+            }
         }
-        self.all_panes_resolved = false;
+        if (!found) self.all_panes_resolved = false;
     }
 };
 
@@ -95,10 +103,10 @@ test "pane lifecycle callbacks cover creation closure and moves without duplicat
     try std.testing.expectEqual(@as(usize, 5), recorder.created);
     try std.testing.expectEqual(@as(usize, 0), recorder.closed);
 
-    try std.testing.expect(mux.movePaneToWorkspace(&runtime, @intFromPtr(first), 1));
+    try std.testing.expect(mux.movePaneToWorkspace(&runtime, first.id, 1));
     try std.testing.expectEqual(@as(usize, 5), recorder.created);
     try std.testing.expectEqual(@as(usize, 0), recorder.closed);
-    _ = mux.closePaneById(&runtime, @intFromPtr(first));
+    _ = mux.closePaneById(&runtime, first.id);
     try std.testing.expectEqual(@as(usize, 1), recorder.closed);
     _ = mux.closeTabAt(&runtime, 0);
     try std.testing.expectEqual(@as(usize, 2), recorder.closed);
@@ -115,6 +123,55 @@ test "pane lifecycle callbacks cover creation closure and moves without duplicat
     _ = mux.closePaneById(&runtime, 0);
     try std.testing.expectEqual(@as(usize, 7), recorder.closed);
     try std.testing.expect(recorder.all_panes_resolved);
+}
+
+test "pane IDs survive moves and floating restore and are never reused after close" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    const callbacks = LifecycleTestCallbacks.callbacks;
+
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    const first = mux.activePane().?;
+    const first_id = first.id;
+    try std.testing.expect(first_id != 0);
+    // Input-resource transfer during bootstrap must retain the borrowed runtime
+    // used by parser callbacks after construction returns.
+    try std.testing.expectEqual(&runtime, first.content.terminal.terminal_runtime.?);
+    try std.testing.expectEqual(@as(usize, 1), mux.activeWorkspace().?.id);
+    try std.testing.expectEqual(@as(usize, 2), mux.activeTab().?.id);
+    const second = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.4, null, null, false, null);
+    const closed_id = second.id;
+    try std.testing.expectEqual(&runtime, second.content.terminal.terminal_runtime.?);
+    try std.testing.expect(closed_id > first_id);
+    try std.testing.expectEqual(first_id, second.restore_anchor_id);
+    try std.testing.expect(mux.setPaneFloating(second, true));
+    try std.testing.expect(mux.setPaneFloating(second, false));
+    try std.testing.expectEqual(closed_id, second.id);
+    try std.testing.expectEqual(first_id, second.restore_anchor_id);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), mux.paneSplitInfo(second).?.size, 1e-6);
+    _ = mux.closePaneById(&runtime, closed_id);
+    try std.testing.expect(!mux.focusPaneById(closed_id));
+
+    const replacement = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    const replacement_id = replacement.id;
+    try std.testing.expect(replacement_id > closed_id);
+    try std.testing.expect(!mux.focusPaneById(closed_id));
+    try std.testing.expect(!mux.focusPaneById(0));
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try std.testing.expectEqual(@as(usize, 3), mux.activeWorkspace().?.id);
+    try std.testing.expect(mux.movePaneToWorkspace(&runtime, replacement_id, 1));
+    try std.testing.expectEqual(replacement_id, replacement.id);
+    try std.testing.expect(mux.focusPaneById(first_id));
+    try std.testing.expectEqual(first, mux.activePane().?);
+    try std.testing.expect(mux.focusPaneById(replacement_id));
+    try std.testing.expectEqual(replacement, mux.activePane().?);
 }
 
 test "new tabs inherit the active pane domain and cwd unless explicitly overridden" {
@@ -134,15 +191,15 @@ test "new tabs inherit the active pane domain and cwd unless explicitly overridd
 
     try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, "/tmp", "container", null, null);
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, false);
-    try std.testing.expectEqualStrings("container", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/tmp", mux.activePane().?.cwd);
 
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, "/var", null, null, false);
-    try std.testing.expectEqualStrings("container", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/var", mux.activePane().?.cwd);
 
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, "default", null, false);
-    try std.testing.expectEqualStrings("default", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("default", mux.activePane().?.content.terminal.domain_name);
     try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
 }
 
@@ -165,6 +222,7 @@ test "spawn filters reach initial panes tabs workspaces and splits before PTY la
         \\spawn_count = 0
         \\hollow.events.filter('term:spawn', function(spec)
         \\  spawn_count = spawn_count + 1
+        \\  assert(spec.env.HOLLOW_PANE_ID == tostring(spawn_count))
         \\  spec.cwd = '/'
         \\  spec.env.FILTER_VALUE = 'filtered'
         \\  return spec
@@ -183,13 +241,15 @@ test "spawn filters reach initial panes tabs workspaces and splits before PTY la
     try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
     try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
     try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, .{
-        .command = "printf 'filter:%s:%s' \"$PWD\" \"$FILTER_VALUE\"",
+        .command = "printf 'filter:%s:%s:%s' \"$PWD\" \"$FILTER_VALUE\" \"$HOLLOW_PANE_ID\"",
     }, false);
     const pane = mux.activePane().?;
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
-    while (std.mem.indexOf(u8, pane.boot_output.items, "filter:/:filtered") == null) {
+    var expected_buf: [64]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_buf, "filter:/:filtered:{d}", .{pane.id});
+    while (std.mem.indexOf(u8, pane.content.terminal.boot_output.items, expected) == null) {
         if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
-        _ = try pane.pollPty(&runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        _ = try pane.content.terminal.pollPty(pane, &runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
     _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
@@ -214,12 +274,120 @@ test "pane lifecycle closing callback covers automatic dead pane cleanup" {
     const tab = try workspace.newTab(2, false);
     const pane = try allocator.create(Pane);
     pane.* = Pane.init(allocator);
+    pane.id = 3;
     try tab.appendPane(pane);
     try std.testing.expect(mux.closeDeadPanes(&runtime));
     try std.testing.expectEqual(@as(usize, 1), recorder.closed);
     try std.testing.expect(recorder.all_panes_resolved);
     try std.testing.expect(mux.closeDeadPanes(&runtime));
     try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+}
+
+test "Lua pane allocation has no terminal resources and rolls back on allocation failure" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var mux = Mux.init(allocator);
+            // Deliberately unusable: allocating/freeing Lua panes must not call
+            // any Ghostty function, including null-handle cleanup wrappers.
+            var runtime: ghostty.Runtime = undefined;
+            const pane = try mux.createLuaPane();
+            defer allocator.destroy(pane);
+            defer pane.deinit(&runtime);
+            try std.testing.expect(!pane.isTerminal());
+            try std.testing.expect(pane.id != 0);
+            try std.testing.expect(pane.asTerminal() == null);
+            try std.testing.expectEqual(@as(usize, 0), pane.domainName().len);
+            try std.testing.expect(pane.asLua().?.dirty);
+            try std.testing.expectError(error.NoActiveTab, mux.splitActivePaneWith(pane, .vertical, 0.5, false));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "Lua-only tabs and workspaces publish transactionally without terminal runtime calls" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var runtime: ghostty.Runtime = undefined;
+            var mux = Mux.init(allocator);
+            defer mux.deinit(&runtime);
+            const first = try mux.createLuaPane();
+            var first_published = false;
+            errdefer if (!first_published) {
+                first.deinit(&runtime);
+                allocator.destroy(first);
+            };
+            first.asLua().?.descriptor_json = try allocator.dupe(u8, "{\"module\":\"tasks\"}");
+            mux.newWorkspaceWithPane(&runtime, first, "Lua workspace") catch |err| {
+                try std.testing.expect(mux.activeWorkspace() == null);
+                try std.testing.expectEqual(@as(usize, 0), mux.workspaces.items.len);
+                return err;
+            };
+            first_published = true;
+            const previous = mux.activeTab();
+            const second = try mux.createLuaPane();
+            var second_published = false;
+            errdefer if (!second_published) {
+                second.deinit(&runtime);
+                allocator.destroy(second);
+            };
+            mux.newTabWithPane(&runtime, second) catch |err| {
+                try std.testing.expectEqual(previous, mux.activeTab());
+                return err;
+            };
+            second_published = true;
+            try std.testing.expectEqual(@as(usize, 1), mux.workspaces.items.len);
+            try std.testing.expectEqual(@as(usize, 2), mux.activeWorkspace().?.tabs.items.len);
+            try std.testing.expectEqual(second, mux.activePane().?);
+            try std.testing.expectEqualStrings("Lua workspace", mux.activeWorkspace().?.name.?);
+            try std.testing.expect(!mux.closeDeadPanes(&runtime));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "mixed Lua and terminal panes split float zoom move and close without reaping Lua panes" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    var recorder: PaneLifecycleRecorder = .{ .mux = &mux };
+    mux.host_context = &recorder;
+    mux.pane_created = PaneLifecycleRecorder.recordCreated;
+    mux.pane_closing = PaneLifecycleRecorder.recordClosing;
+    const callbacks = LifecycleTestCallbacks.callbacks;
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    const terminal = mux.activePane().?;
+    terminal.content.terminal.retain_on_exit = true;
+    const pane = try mux.createLuaPane();
+    try mux.splitActivePaneWith(pane, .vertical, 0.4, false);
+    const id = pane.id;
+    try std.testing.expectEqual(@as(usize, 2), recorder.created);
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    try std.testing.expect(pane.asTerminal() == null);
+    try std.testing.expect(!mux.closeDeadPanes(&runtime));
+    try std.testing.expect(mux.focusPaneById(id));
+    try std.testing.expect(mux.setPaneFloating(pane, true));
+    try std.testing.expect(mux.setPaneFloating(pane, false));
+    _ = mux.activeTab().?.setPaneMaximized(pane, true, false);
+    try std.testing.expect(mux.paneIsMaximized(pane));
+    _ = mux.activeTab().?.setPaneMaximized(pane, false, false);
+    try std.testing.expect(!mux.paneIsMaximized(pane));
+    const floating = try mux.createLuaPane();
+    try mux.splitActivePaneWith(floating, .horizontal, 0.3, true);
+    try std.testing.expect(floating.is_floating);
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try std.testing.expect(mux.movePaneToWorkspace(&runtime, id, 1));
+    try std.testing.expect(mux.focusPaneById(id));
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    _ = mux.closePaneById(&runtime, id);
+    try std.testing.expect(!mux.focusPaneById(id));
+    try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+    try std.testing.expect(recorder.all_panes_resolved);
 }
 
 test "workspace new tab can append after active tab" {
@@ -277,16 +445,19 @@ test "pane focus follows nearest matching split subtree" {
 
     const top = try allocator.create(Pane);
     top.* = Pane.init(allocator);
+    top.id = 3;
     try tab.appendPane(top);
 
     const bottom_left = try allocator.create(Pane);
     bottom_left.* = Pane.init(allocator);
+    bottom_left.id = 4;
     try tab.splitActivePane(bottom_left, .horizontal, 0.3);
 
     tab.active_pane = bottom_left;
 
     const bottom_right = try allocator.create(Pane);
     bottom_right.* = Pane.init(allocator);
+    bottom_right.id = 5;
     try tab.splitActivePane(bottom_right, .vertical, 0.6);
 
     const bottom_left_info = tab.splitInfoForPane(bottom_left).?;
@@ -301,6 +472,53 @@ test "pane focus follows nearest matching split subtree" {
 
     mux.focusPaneInDirection(.up, 1200, 800);
     try std.testing.expect(tab.active_pane == top);
+}
+
+test "edge split spans the whole layout on the requested side" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    var panes: [4]*Pane = undefined;
+    for (&panes, 0..) |*slot, index| {
+        slot.* = try allocator.create(Pane);
+        slot.*.* = Pane.init(allocator);
+        slot.*.id = index + 2;
+    }
+    try tab.appendPane(panes[0]);
+    try tab.splitActivePane(panes[1], .vertical, 0.5);
+    tab.active_pane = panes[0];
+    try tab.splitEdge(panes[2], .vertical, 0.2, false);
+    try tab.splitEdge(panes[3], .vertical, 0.25, true);
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 100 };
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
+    try std.testing.expectEqual(@as(usize, 4), leaves.len);
+    var left = leaves[0];
+    var right = leaves[0];
+    for (leaves) |leaf| {
+        if (leaf.bounds.x < left.bounds.x) left = leaf;
+        if (leaf.bounds.x > right.bounds.x) right = leaf;
+    }
+    try std.testing.expect(left.pane == panes[3]);
+    try std.testing.expect(right.pane == panes[2]);
+    try std.testing.expectEqual(bounds.width, right.bounds.x + right.bounds.width);
+    try std.testing.expect(tab.active_pane == panes[3]);
+
+    const info = tab.splitInfoForPane(panes[3]).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), info.size, 1e-6);
+    try std.testing.expect(panes[3].restore_place_first);
 }
 
 test "split pane ratio applies to new pane" {
@@ -320,10 +538,12 @@ test "split pane ratio applies to new pane" {
 
     const first = try allocator.create(Pane);
     first.* = Pane.init(allocator);
+    first.id = 2;
     try tab.appendPane(first);
 
     const second = try allocator.create(Pane);
     second.* = Pane.init(allocator);
+    second.id = 3;
     try tab.splitActivePane(second, .vertical, 0.3);
 
     const split_info = tab.splitInfoForPane(second).?;
@@ -359,10 +579,12 @@ test "horizontal split rounds to nearest whole row" {
 
     const first = try allocator.create(Pane);
     first.* = Pane.init(allocator);
+    first.id = 2;
     try tab.appendPane(first);
 
     const second = try allocator.create(Pane);
     second.* = Pane.init(allocator);
+    second.id = 3;
     const split_size = @as(f32, 16.0 / 34.0);
     try tab.splitActivePane(second, .horizontal, split_size);
 
@@ -399,10 +621,12 @@ test "maximized pane takes full tab bounds" {
 
     const first = try allocator.create(Pane);
     first.* = Pane.init(allocator);
+    first.id = 2;
     try tab.appendPane(first);
 
     const second = try allocator.create(Pane);
     second.* = Pane.init(allocator);
+    second.id = 3;
     try tab.splitActivePane(second, .vertical, 0.5);
 
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
@@ -433,10 +657,12 @@ test "maximized pane background keeps tiled panes visible" {
 
     const left = try allocator.create(Pane);
     left.* = Pane.init(allocator);
+    left.id = 2;
     try tab.appendPane(left);
 
     const right = try allocator.create(Pane);
     right.* = Pane.init(allocator);
+    right.id = 3;
     try tab.splitActivePane(right, .vertical, 0.5);
 
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;

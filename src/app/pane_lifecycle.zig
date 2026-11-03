@@ -14,16 +14,17 @@ pub fn ptyHost(context: *anyopaque, arena: @import("std").mem.Allocator, domain:
 
 pub fn created(context: *anyopaque, pane: *Pane) void {
     const app: *App = @ptrCast(@alignCast(context));
-    app.emitLuaBuiltInEvent("term:pane_created", .{ .pane_id = @intFromPtr(pane) });
+    app.emitLuaBuiltInEvent("term:pane_created", .{ .pane_id = pane.id });
 }
 
 pub fn exited(app: *App, pane: *Pane) void {
-    if (pane.exit_event_emitted or pane.hasLiveChild()) return;
-    pane.exit_event_emitted = true;
-    const status = if (pane.pty) |*pty| pty.exitStatus() else null;
-    _ = app.automation_events.publish(.{ .kind = "process_exited", .pane_id = @intFromPtr(pane), .status = if (status) |value| @intCast(value) else null });
+    const term = pane.asTerminal() orelse return;
+    if (term.exit_event_emitted or term.hasLiveChild()) return;
+    term.exit_event_emitted = true;
+    const status = if (term.pty) |*pty| pty.exitStatus() else null;
+    _ = app.automation_events.publish(.{ .kind = "process_exited", .pane_id = pane.id, .status = if (status) |value| @intCast(value) else null });
     app.emitLuaBuiltInEvent("term:pane_exited", .{ .pane_exited = .{
-        .pane_id = @intFromPtr(pane),
+        .pane_id = pane.id,
         .status = status,
     } });
 }
@@ -32,8 +33,8 @@ pub fn closing(context: *anyopaque, pane: *Pane) void {
     const app: *App = @ptrCast(@alignCast(context));
     // A user close may reach an exited child before the next cleanup tick.
     exited(app, pane);
-    _ = app.automation_events.publish(.{ .kind = "pane_closed", .pane_id = @intFromPtr(pane) });
-    app.emitLuaBuiltInEvent("term:pane_closed", .{ .pane_id = @intFromPtr(pane) });
+    _ = app.automation_events.publish(.{ .kind = "pane_closed", .pane_id = pane.id });
+    app.emitLuaBuiltInEvent("term:pane_closed", .{ .pane_id = pane.id });
 }
 
 test "pane lifecycle emits observed exit once before closing across Lua reloads" {
@@ -46,6 +47,7 @@ test "pane lifecycle emits observed exit once before closing across Lua reloads"
     app.lua = try Runtime.init(std.testing.allocator, &app.config);
     defer if (app.lua) |*lua| lua.deinit();
     var pane = Pane.init(std.testing.allocator);
+    pane.id = 3;
     // A pane with no PTY models an unavailable OS exit status.
     try app.lua.?.runString(
         \\received = {}
@@ -76,7 +78,7 @@ test "pane lifecycle emits observed exit once before closing across Lua reloads"
     try app.lua.?.runString(
         \\assert(#received == 1 and received[1] == "term:pane_closed")
     );
-    const batch = try app.automation_events.read(0, .{ .id = @intFromPtr(&pane) }, 0);
+    const batch = try app.automation_events.read(0, .{ .id = pane.id }, 0);
     try std.testing.expectEqual(@as(usize, 2), batch.count);
     try std.testing.expectEqualStrings("process_exited", batch.events[0].kind);
     try std.testing.expectEqual(@as(?i64, null), batch.events[0].status);

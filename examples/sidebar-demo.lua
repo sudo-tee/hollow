@@ -1,6 +1,7 @@
 -- Interactive sidebar for testing clicks, hover and the sidebar:* events.
 -- Load from your config with dofile("/path/to/hollow/examples/sidebar-demo.lua")().
--- Ctrl+Shift+B toggles it.
+-- Ctrl+Shift+B toggles it; the "dock" button moves it between the window-edge
+-- overlay and a split pane.
 return function(opts)
   opts = opts or {}
   local ui = hollow.ui
@@ -80,6 +81,15 @@ return function(opts)
           ui.text("HOLLOW", { fg = C.fg, bold = true }),
           ui.spacer(),
           ui.text(os.date("%H:%M:%S"), { fg = C.muted }),
+          ui.text(" "),
+          chip(
+            "dock",
+            ui.when(ui.sidebar.is_docked(), "undock", "dock"),
+            { fg = C.muted },
+            function()
+              ui.sidebar.dock()
+            end
+          ),
           ui.text(" "),
           chip("close", "✕", { fg = C.muted }, function()
             ui.sidebar.toggle()

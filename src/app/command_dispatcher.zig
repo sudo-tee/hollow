@@ -13,6 +13,7 @@ const ui_semantics = @import("../ui/semantics.zig");
 const screenshot = @import("../render/screenshot.zig");
 const SplitCommandMode = app_mod.SplitCommandMode;
 const mux_ops = @import("session_controller.zig");
+const lua_panes = @import("lua_panes.zig");
 const notification = @import("../notification.zig");
 
 const LUA_NOREF: c_int = -1;
@@ -921,6 +922,12 @@ fn execPaneResize(self: *App, request: command_mod.Move) command_mod.Response {
 fn execPaneSendText(self: *App, request: command_mod.Text) command_mod.Response {
     const text = request.text;
     const pane_id = request.id;
+    if (self.findPaneById(pane_id)) |pane| {
+        if (pane.asLua() != null) {
+            if (!lua_panes.input(self, pane, text)) return command_mod.Response.fail("unavailable", "Lua pane is not ready");
+            return okNull();
+        }
+    }
     if (!mux_ops.sendTextToPane(self, pane_id, text)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }

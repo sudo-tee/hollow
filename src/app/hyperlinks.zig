@@ -9,6 +9,7 @@ const lua_bridge = @import("../lua_bridge.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
+const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 const Hyperlinks = @import("../config.zig").Config.Hyperlinks;
 const CellPoint = selection.CellPoint;
 
@@ -34,22 +35,22 @@ const LinkRow = struct {
 
 const LinkRows = struct {
     runtime: *ghostty.Runtime,
-    pane: *Pane,
+    term: *TerminalPane,
     ascii: [4096]u8 = undefined,
 
     fn get(self: *LinkRows, row: usize) ?LinkRow {
-        if (!self.runtime.populateRowIterator(self.pane.render_state, &self.pane.row_iterator)) return null;
+        if (!self.runtime.populateRowIterator(self.term.render_state, &self.term.row_iterator)) return null;
         var index: usize = 0;
-        while (self.runtime.nextRow(self.pane.row_iterator)) : (index += 1) {
+        while (self.runtime.nextRow(self.term.row_iterator)) : (index += 1) {
             if (index != row) continue;
-            const raw = self.runtime.rowRaw(self.pane.row_iterator);
-            if (!self.runtime.populateRowCells(self.pane.row_iterator, &self.pane.row_cells)) return null;
+            const raw = self.runtime.rowRaw(self.term.row_iterator);
+            if (!self.runtime.populateRowCells(self.term.row_iterator, &self.term.row_cells)) return null;
             var len: usize = 0;
-            while (self.runtime.nextCell(self.pane.row_cells)) : (len += 1) {
+            while (self.runtime.nextCell(self.term.row_cells)) : (len += 1) {
                 if (len == self.ascii.len) return null;
                 var cell_buf: [16]u8 = undefined;
                 var cell_len: usize = 0;
-                text_helpers.appendCellText(self.runtime, self.pane.row_cells, &cell_buf, &cell_len);
+                text_helpers.appendCellText(self.runtime, self.term.row_cells, &cell_buf, &cell_len);
                 self.ascii[len] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
             }
             return .{
@@ -151,8 +152,13 @@ fn wrappedTokenAt(rows: anytype, point: CellPoint, cfg: Hyperlinks, out: []u8) ?
 }
 
 pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]const u8 {
-    const rt = self.ghostty orelse return null;
-    const terminal = pane.terminal orelse return null;
+    const term = pane.asTerminal() orelse return null;
+    const rt = if (self.ghostty) |*rt| rt else return null;
+    return terminalHyperlinkUriAt(rt, term, point, out);
+}
+
+pub fn terminalHyperlinkUriAt(rt: *ghostty.Runtime, term: *const TerminalPane, point: CellPoint, out: []u8) ?[]const u8 {
+    const terminal = term.terminal orelse return null;
 
     var ref = ghostty.GridRef{
         .size = @sizeOf(ghostty.GridRef),
@@ -178,26 +184,27 @@ pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]c
 }
 
 // OSC 8 links carry their URI per cell; the token is the run of cells sharing it.
-fn osc8TokenAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?HyperlinkToken {
-    const uri = hyperlinkUriAt(self, pane, point, out) orelse return null;
+fn osc8TokenAt(runtime: *ghostty.Runtime, term: *const TerminalPane, cols: u16, point: CellPoint, out: []u8) ?HyperlinkToken {
+    const uri = terminalHyperlinkUriAt(runtime, term, point, out) orelse return null;
     var start_col = point.col;
-    while (start_col > 0 and sameUriAt(self, pane, .{ .row = point.row, .col = start_col - 1 }, uri)) start_col -= 1;
+    while (start_col > 0 and sameUriAt(runtime, term, .{ .row = point.row, .col = start_col - 1 }, uri)) start_col -= 1;
     var end_col = point.col + 1;
-    while (end_col < pane.cols and sameUriAt(self, pane, .{ .row = point.row, .col = end_col }, uri)) end_col += 1;
+    while (end_col < cols and sameUriAt(runtime, term, .{ .row = point.row, .col = end_col }, uri)) end_col += 1;
     return .{ .start_col = start_col, .end_col = end_col, .text = uri, .open_text = uri };
 }
 
-fn sameUriAt(self: *App, pane: *Pane, point: CellPoint, uri: []const u8) bool {
+fn sameUriAt(runtime: *ghostty.Runtime, term: *const TerminalPane, point: CellPoint, uri: []const u8) bool {
     var buf: [8192]u8 = undefined;
-    const other = hyperlinkUriAt(self, pane, point, &buf) orelse return false;
+    const other = terminalHyperlinkUriAt(runtime, term, point, &buf) orelse return false;
     return std.mem.eql(u8, other, uri);
 }
 
 fn hyperlinkTokenAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?HyperlinkToken {
+    const term = pane.asTerminal() orelse return null;
     const runtime = if (self.ghostty) |*rt| rt else return null;
-    if (!App.paneRenderHelpersReady(pane)) return null;
-    if (osc8TokenAt(self, pane, point, out)) |token| return token;
-    var rows = LinkRows{ .runtime = runtime, .pane = pane };
+    if (!term.renderHelpersReady()) return null;
+    if (osc8TokenAt(runtime, term, pane.cols, point, out)) |token| return token;
+    var rows = LinkRows{ .runtime = runtime, .term = term };
     return wrappedTokenAt(&rows, point, self.config.hyperlinks, out);
 }
 
@@ -215,7 +222,7 @@ pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint, mods: u32) voi
     switch (routeLink(self, .{
         .url = token.open_text,
         .text = token.text,
-        .pane_id = @intFromPtr(pane),
+        .pane_id = pane.id,
         .mods = mods,
         .source = "click",
         .kind = "url",
@@ -241,7 +248,8 @@ pub fn updateHoveredHyperlink(self: *App) void {
         return;
     }
     if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
-        if (hit.pane.pty_wrote_this_frame) {
+        const term = hit.pane.asTerminal();
+        if (term != null and term.?.pty_wrote_this_frame) {
             const now_ns = io.nanoTimestamp();
             if (self.hover_probe_defer_until_ns == 0) {
                 self.hover_probe_defer_until_ns = now_ns + 50 * std.time.ns_per_ms;
@@ -275,6 +283,21 @@ const TestLinkRows = struct {
         return if (row < self.rows.len) self.rows[row] else null;
     }
 };
+
+test "OSC 8 token lookup accepts terminal content without pane node" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var term: TerminalPane = .{};
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    defer term.deinit(&runtime, std.testing.allocator);
+    runtime.terminalWrite(term.terminal, "\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\ world");
+    var buf: [128]u8 = undefined;
+    const token = osc8TokenAt(&runtime, &term, 80, .{ .row = 0, .col = 2 }, &buf).?;
+    try std.testing.expectEqualStrings("https://example.com", token.open_text);
+    try std.testing.expectEqual(@as(usize, 0), token.start_col);
+    try std.testing.expectEqual(@as(usize, 5), token.end_col);
+    try std.testing.expect(osc8TokenAt(&runtime, &term, 80, .{ .row = 0, .col = 6 }, &buf) == null);
+}
 
 test "hyperlinks reconstruct soft wraps from every segment" {
     var rows = TestLinkRows{ .rows = &.{

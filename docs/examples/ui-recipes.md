@@ -1,6 +1,6 @@
 # UI recipes
 
-Drop-in widgets, top bar replacements, and picker patterns.
+Drop-in widgets, top bar replacements, Lua panes, and picker patterns.
 Each snippet is a complete, paste-able Lua block.
 
 For the widget model see [Custom UI](../custom-ui.md).
@@ -305,6 +305,82 @@ end
 
 (Notification handles are not directly exposed today; clearing is
 done by calling `hollow.ui.notify.clear()`.)
+
+## Git status in a toggleable Lua pane
+
+A [Lua pane](../reference/lua/ui.md#lua-panes) docked to the right edge that
+runs `git status --short` in the background. `<leader>gg` opens it, or closes
+it if it's already open. `<leader>gf` opens it as a floating pane instead.
+
+```lua
+local ui, c = hollow.ui, hollow.ui.components
+
+ui.pane.register("git-status", function(args)
+  local pane_id, lines, job = nil, {}, nil
+
+  local function refresh()
+    if job then return end
+    job = hollow.process.spawn({
+      cmd = { "git", "status", "--short" },
+      cwd = args.cwd,
+      on_complete = function(result)
+        job, lines = nil, {}
+        for line in (result.stdout or result.error or ""):gmatch("[^\r\n]+") do
+          lines[#lines + 1] = line
+        end
+        -- Async results need an explicit repaint; clicks repaint on their own.
+        local pane = pane_id and ui.pane.get(pane_id)
+        if pane then pane:invalidate() end
+      end,
+    })
+  end
+
+  return {
+    title = "git status",
+    on_mount = function(ctx) pane_id = ctx.pane_id; refresh() end,
+    on_unmount = function() if job then job:cancel() end end,
+    render = function()
+      return c.column({
+        c.header({
+          width = "grow",
+          title = "git status",
+          meta = job and "running" or (#lines .. " changes"),
+        }),
+        #lines == 0 and c.empty("Clean") or c.column(ui.each(lines, function(line)
+          return c.label(line)
+        end)),
+        c.button({ id = "refresh", text = "Refresh", size = "sm", on_click = refresh }),
+      }, { width = "grow", height = "grow", padding = 12, gap = 8 })
+    end,
+  }
+end)
+
+local function find(module)
+  for _, pane in ipairs(hollow.term.current_tab().panes) do
+    if pane.kind == "lua" and pane.module == module then return pane.id end
+  end
+end
+
+local function toggle(create, opts)
+  local id = find("git-status")
+  local pane = id and ui.pane.get(id)
+  if pane then return pane:close() end
+  local cwd = hollow.term.current_pane().cwd
+  opts.module, opts.args = "git-status", { cwd = cwd ~= "" and cwd or nil }
+  create(opts)
+end
+
+hollow.keymap.set("<leader>gg", function()
+  toggle(ui.pane.split, { edge = "right", ratio = 0.3 })
+end, { desc = "toggle git status" })
+hollow.keymap.set("<leader>gf", function()
+  toggle(ui.pane.float, { x = 0.55, y = 0.08, width = 0.4, height = 0.5 })
+end, { desc = "float git status" })
+```
+
+The pane is found by its factory name in the current tab instead of by a
+remembered ID, so the toggle keeps working after a config reload. `cwd` is
+saved in `args`, so a reloaded or restored pane runs in the same directory.
 
 ## See also
 

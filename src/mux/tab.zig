@@ -141,12 +141,41 @@ pub const Tab = struct {
 
         target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         // Anchor metadata identifies this pane's split after later nested splits.
-        new_pane.restore_anchor_id = @intFromPtr(current_pane);
+        new_pane.restore_anchor_id = current_pane.id;
         new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
         new_pane.restore_split_horizontal = direction == .horizontal;
         new_pane.restore_place_first = false;
         self.panes.appendAssumeCapacity(new_pane);
         current_pane.is_floating = false;
+        self.active_pane = new_pane;
+        self.maximized_pane = null;
+    }
+
+    /// Split the whole tiled layout so `new_pane` spans one window edge:
+    /// first (left/top) or second (right/bottom). `ratio` is the new pane's size.
+    pub fn splitEdge(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        const root = self.root_split orelse return error.NoActivePane;
+        try self.panes.ensureUnusedCapacity(self.allocator, 1);
+
+        const existing = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(existing);
+        existing.* = root.*;
+
+        const new_leaf = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(new_leaf);
+        new_leaf.* = SplitNode.initPane(new_pane);
+
+        root.* = if (place_first)
+            SplitNode.initSplit(new_leaf, existing, direction, ratio)
+        else
+            SplitNode.initSplit(existing, new_leaf, direction, 1.0 - ratio);
+        // Any pane in the other subtree anchors the root split for restore.
+        var leaves = LeafIterator.init(existing);
+        new_pane.restore_anchor_id = if (leaves.next()) |leaf| leaf.pane.id else 0;
+        new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
+        new_pane.restore_split_horizontal = direction == .horizontal;
+        new_pane.restore_place_first = place_first;
+        self.panes.appendAssumeCapacity(new_pane);
         self.active_pane = new_pane;
         self.maximized_pane = null;
     }
@@ -159,7 +188,7 @@ pub const Tab = struct {
         const root = self.root_split orelse return null;
         if (pane.restore_anchor_id == 0) return null;
         for (self.panes.items) |candidate| {
-            if (@intFromPtr(candidate) != pane.restore_anchor_id) continue;
+            if (candidate.id != pane.restore_anchor_id) continue;
             return findSplitInfoBetween(root, candidate, pane);
         }
         return null;
@@ -325,7 +354,7 @@ pub const Tab = struct {
         if (floating) {
             if (self.active_pane) |active| {
                 if (active != pane and !active.is_floating) {
-                    pane.restore_anchor_id = @intFromPtr(active);
+                    pane.restore_anchor_id = active.id;
                 }
             }
             pane.is_floating = true;
@@ -400,7 +429,7 @@ pub const Tab = struct {
         var anchor: ?*Pane = null;
         if (pane.restore_anchor_id != 0) {
             for (self.panes.items) |candidate| {
-                if (@intFromPtr(candidate) == pane.restore_anchor_id and candidate != pane and !candidate.is_floating) {
+                if (candidate.id == pane.restore_anchor_id and candidate != pane and !candidate.is_floating) {
                     anchor = candidate;
                     break;
                 }
@@ -433,7 +462,7 @@ pub const Tab = struct {
         } else {
             target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         }
-        pane.restore_anchor_id = @intFromPtr(anchor_pane);
+        pane.restore_anchor_id = anchor_pane.id;
         return true;
     }
 };

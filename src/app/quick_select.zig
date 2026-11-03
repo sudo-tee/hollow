@@ -7,6 +7,8 @@ const lua_bridge = @import("../lua_bridge.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
+const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
+const GhosttyRuntime = @import("../term/ghostty.zig").Runtime;
 
 pub const label_alphabet = "asdfghjklqwertyuiopzxcvbnm";
 pub const max_candidates = label_alphabet.len * label_alphabet.len;
@@ -61,7 +63,8 @@ pub fn start(self: *App, action: Action) void {
         std.log.info("quick-select: no active pane", .{});
         return disarmInput(self);
     };
-    std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), @intFromPtr(pane) });
+    if (!pane.isTerminal()) return disarmInput(self);
+    std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), pane.id });
     self.quick_select_pane = pane;
     self.quick_select_action = action;
     self.quick_select_layout_generation = self.currentLayoutGeneration();
@@ -121,13 +124,14 @@ pub fn refreshAfterPanes(self: *App) void {
     if (!inputActive(self)) return cancel(self);
     const pane = self.quick_select_pane orelse return cancel(self);
     if (!self.hasPane(pane)) return cancel(self);
-    if (pane.pty_wrote_this_frame) {
+    const term = pane.asTerminal() orelse return cancel(self);
+    if (term.pty_wrote_this_frame) {
         self.quick_select_prefix_len = 0;
         self.quick_select_pending_capture = true;
     }
     if (!self.quick_select_pending_capture) return;
     self.quick_select_pending_capture = false;
-    capture(self, pane) catch |err| {
+    capture(self, term, pane.cols) catch |err| {
         std.log.err("quick select capture failed: {s}", .{@errorName(err)});
         cancel(self);
         return;
@@ -246,7 +250,7 @@ fn execute(self: *App, candidate: Candidate) void {
             switch (hyperlinks.routeLink(self, .{
                 .url = open_target,
                 .text = text,
-                .pane_id = @intFromPtr(pane),
+                .pane_id = pane.id,
                 .mods = 0,
                 .source = "quick_select",
                 .kind = @tagName(candidate.kind),
@@ -307,29 +311,29 @@ fn invalidatePane(self: *App, pane: *Pane) void {
     pane.render_dirty = .full;
 }
 
-fn capture(self: *App, pane: *Pane) !void {
+fn capture(self: *App, term: *TerminalPane, cols: u16) !void {
     clearCandidates(self);
     const runtime = if (self.ghostty) |*rt| rt else return;
-    if (!App.paneRenderHelpersReady(pane)) return;
-    if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
+    if (!term.renderHelpersReady()) return;
+    if (!runtime.populateRowIterator(term.render_state, &term.row_iterator)) return;
 
-    const col_capacity = @max(@as(usize, 1), @as(usize, pane.cols));
+    const col_capacity = @max(@as(usize, 1), @as(usize, cols));
     const ascii_cols = try self.allocator.alloc(u8, col_capacity);
     defer self.allocator.free(ascii_cols);
     const covered = try self.allocator.alloc(bool, col_capacity);
     defer self.allocator.free(covered);
 
     var row: usize = 0;
-    while (runtime.nextRow(pane.row_iterator) and self.quick_select_candidates.items.len < max_candidates) : (row += 1) {
-        if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) continue;
+    while (runtime.nextRow(term.row_iterator) and self.quick_select_candidates.items.len < max_candidates) : (row += 1) {
+        if (!runtime.populateRowCells(term.row_iterator, &term.row_cells)) continue;
         var col_count: usize = 0;
-        while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
+        while (runtime.nextCell(term.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
             var cell_buf: [16]u8 = undefined;
             var cell_len: usize = 0;
-            text_helpers.appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
+            text_helpers.appendCellText(runtime, term.row_cells, &cell_buf, &cell_len);
             ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
         }
-        try captureRow(self, pane, row, ascii_cols[0..col_count], covered[0..col_count]);
+        try captureRow(self, runtime, term, row, ascii_cols[0..col_count], covered[0..col_count]);
     }
 
     std.sort.insertion(Candidate, self.quick_select_candidates.items, {}, struct {
@@ -339,7 +343,7 @@ fn capture(self: *App, pane: *Pane) !void {
     }.lessThan);
 }
 
-fn captureRow(self: *App, pane: *Pane, row: usize, ascii_cols: []const u8, covered: []bool) !void {
+fn captureRow(self: *App, runtime: *GhosttyRuntime, term: *const TerminalPane, row: usize, ascii_cols: []const u8, covered: []bool) !void {
     @memset(covered, false);
     const cfg = self.config.hyperlinks;
     var active_uri: ?[]u8 = null;
@@ -350,7 +354,7 @@ fn captureRow(self: *App, pane: *Pane, row: usize, ascii_cols: []const u8, cover
         var col: usize = 0;
         while (col <= ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) : (col += 1) {
             var uri_buf: [8192]u8 = undefined;
-            const uri = if (col < ascii_cols.len) hyperlinks.hyperlinkUriAt(self, pane, .{ .row = row, .col = col }, &uri_buf) else null;
+            const uri = if (col < ascii_cols.len) hyperlinks.terminalHyperlinkUriAt(runtime, term, .{ .row = row, .col = col }, &uri_buf) else null;
             const same = if (active_uri) |current| if (uri) |value| std.mem.eql(u8, current, value) else false else uri == null;
             if (same) continue;
             if (active_uri) |current| {
@@ -628,6 +632,30 @@ fn hasPrefixMatch(candidates: []const Candidate, prefix: []const u8) bool {
         if (std.mem.startsWith(u8, candidate.label[0..candidate.label_len], prefix)) return true;
     }
     return false;
+}
+
+test "quick select captures OSC 8 targets from typed terminal content without mux pane" {
+    const allocator = std.testing.allocator;
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    var native_runtime = try GhosttyRuntime.init(allocator, null);
+    defer native_runtime.deinit();
+    const runtime = &native_runtime;
+    var term: TerminalPane = .{};
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    defer term.deinit(runtime, allocator);
+    runtime.terminalWrite(term.terminal, "\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\");
+    var covered: [5]bool = undefined;
+    try captureRow(app, runtime, &term, 0, "click", &covered);
+    try std.testing.expectEqual(@as(usize, 1), app.quick_select_candidates.items.len);
+    const candidate = app.quick_select_candidates.items[0];
+    try std.testing.expectEqualStrings("https://example.com", candidate.text);
+    try std.testing.expectEqual(CandidateKind.url, candidate.kind);
+    try std.testing.expectEqual(@as(usize, 0), candidate.start_col);
+    try std.testing.expectEqual(@as(usize, 5), candidate.end_col);
+    for (covered) |value| try std.testing.expect(value);
 }
 
 test "quick select labels use shortest fixed width" {

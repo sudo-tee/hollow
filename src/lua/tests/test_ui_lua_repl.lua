@@ -190,6 +190,52 @@ describe("Clay Lua REPL", function()
     assert.is_table(ui.lua_repl.open())
   end)
 
+  it("resumes its draft after Activity closes without duplicating either tool", function()
+    local repl = ui.lua_repl.open()
+    paste("1 + 2")
+    local activity = ui.activity.open()
+    assert.is_table(activity)
+    assert.equals(2, #stack)
+    assert.equals(repl.widget, stack[1])
+    assert.equals(activity.widget, stack[2])
+    assert.equals(activity, ui.activity.open())
+    assert.equals(repl, ui.lua_repl.open())
+    assert.equals(2, #stack)
+    contains("Activity")
+    key("escape")
+    assert.equals(1, #stack)
+    assert.equals("> 1 + 2 ", input_text())
+    key("enter")
+    contains("3")
+    local reopened = ui.activity.open()
+    assert.is_table(reopened)
+    assert.is_not_equal(activity, reopened)
+    assert.equals(2, #stack)
+  end)
+
+  it("allows an exclusive dialog above the REPL and preserves both drafts", function()
+    local repl = ui.lua_repl.open()
+    paste("40 + 2")
+    local value
+    ui.input.open({
+      prompt = "Rename",
+      default = "draft",
+      on_confirm = function(result)
+        value = result
+      end,
+    })
+    assert.equals(2, #stack)
+    key("x")
+    assert.is_nil(ui.activity.open())
+    assert.equals(2, #stack)
+    key("enter")
+    assert.equals("draftx", value)
+    assert.equals(repl.widget, stack[1])
+    assert.equals("> 40 + 2 ", input_text())
+    key("enter")
+    contains("42")
+  end)
+
   it("scrolls bounded transcript without changing input/history", function()
     ui.lua_repl.open()
     paste("for i = 1, 50 do print('line-' .. i) end")
@@ -417,5 +463,70 @@ describe("Clay Lua REPL", function()
     ui.lua_repl.open({ height = 26 })
     text()
     assert.equals(26, ui._layout_frame.height)
+  end)
+
+  it("docks into a Lua pane sharing the console and toggles closed", function()
+    local owners, closes = {}, 0
+    local host = require("hollow.state").get().host_api
+    host.create_lua_pane = function(owner)
+      owners[#owners + 1] = owner
+      return 500 + #owners
+    end
+    host.invalidate_lua_pane = function() end
+    host.title_lua_pane = function() end
+    host.current_pane_id = function()
+      return 501
+    end
+    host.close_pane_by_id = function()
+      closes = closes + 1
+      return true
+    end
+    env.hollow.action.lua_repl_dock()
+    local owner = assert(owners[1])
+    assert.are.equal("hollow.lua_repl", env.hollow.json.decode(owner._descriptor).module)
+    local context = {
+      pane_id = 501,
+      cols = 80,
+      rows = 20,
+      width = 800,
+      height = 400,
+      cell_w = 10,
+      cell_h = 20,
+      focused = true,
+    }
+    local function pane_text()
+      local result = {}
+      for _, node in ipairs(owner:snapshot(context)) do
+        if node.text then
+          result[#result + 1] = node.text
+        end
+      end
+      return table.concat(result, "\n")
+    end
+    assert.matches("Lua REPL", pane_text(), 1, true)
+    assert.is_nil(pane_text():find("close", 1, true))
+    local on_key = env.get_key_handler()
+    for _, ch in ipairs({ "1", "+", "4", "1" }) do
+      assert.is_true(on_key(ch, 0))
+    end
+    assert.is_true(on_key("enter", 0))
+    assert.matches("42", pane_text(), 1, true)
+    assert.is_true(owner:pointer("scroll", nil, 1))
+    local focused, closed = 0, 0
+    env.hollow.keymap.set("<C-S-arrow_left>", function()
+      focused = focused + 1
+    end)
+    env.hollow.keymap.set("<C-S-w>", function()
+      closed = closed + 1
+    end)
+    assert.is_true(on_key("arrow_left", 3))
+    assert.is_true(on_key("w", 3))
+    assert.are.same({ 1, 1 }, { focused, closed })
+    assert.is_true(on_key("l", 2))
+    assert.is_false(pane_text():find("42", 1, true) ~= nil)
+    assert.equals(0, #stack)
+    env.hollow.action.lua_repl_dock()
+    assert.equals(1, closes)
+    owner:destroy()
   end)
 end)

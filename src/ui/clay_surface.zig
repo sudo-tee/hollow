@@ -292,8 +292,19 @@ pub const Surface = struct {
         }
         lua.pop(api, state, 1);
         api.get_field(state, -1, "_layout_tree");
+        self.prepareSnapshot(runtime, renderer, -1, revision, surface_id);
+    }
+
+    /// Consume a pane-owned snapshot without publishing overlay globals.
+    /// Strings and nodes stay native-owned until the next snapshot revision.
+    pub fn prepareSnapshot(self: *Surface, runtime: *lua.Runtime, renderer: anytype, index: c_int, revision: f64, surface_id: f64) void {
+        const api = runtime.context.api;
+        const state = runtime.state;
+        const top = api.get_top(state);
+        defer api.set_top(state, top);
+        const tree = lua.absoluteIndex(api, state, index);
         self.active = false;
-        if (api.value_type(state, -1) != @backingInt(lua.LuaType.table)) {
+        if (api.value_type(state, tree) != @backingInt(lua.LuaType.table)) {
             self.pressed_len = 0;
             self.scroll_y = 0;
             return;
@@ -308,7 +319,6 @@ pub const Surface = struct {
         if (surface_id != self.surface_id) self.pressed_len = 0;
         self.len = 0;
         _ = self.arena.reset(.retain_capacity);
-        const tree = lua.absoluteIndex(api, state, -1);
         while (self.len < self.nodes.len) {
             api.rawgeti(state, tree, @intCast(self.len + 1));
             if (api.value_type(state, -1) != @backingInt(lua.LuaType.table)) break;
@@ -324,7 +334,7 @@ pub const Surface = struct {
         self.preRasterize(renderer);
     }
 
-    fn preRasterize(self: *Surface, renderer: anytype) void {
+    pub fn preRasterize(self: *Surface, renderer: anytype) void {
         for (self.nodes[0..self.len]) |node| {
             if (node.text.length > 0) renderer.preRasterizeLabelFace(node.text.chars[0..@intCast(node.text.length)], if (node.bold) 1 else 0);
         }
@@ -368,7 +378,7 @@ pub const Surface = struct {
         return bounds;
     }
 
-    pub const Target = enum { clickable, scroll };
+    pub const Target = enum { clickable, clickable_root, scroll };
 
     /// Last node in preorder (the deepest or latest sibling) of `target`
     /// under the window-space point. Scroll targets include the root panel.
@@ -380,6 +390,7 @@ pub const Surface = struct {
             if (node.id.length <= 0) continue;
             const wanted = switch (target) {
                 .clickable => index != 0 and node.clickable,
+                .clickable_root => node.clickable,
                 .scroll => index == 0 or node.scroll or node.scroll_x,
             };
             if (!wanted) continue;

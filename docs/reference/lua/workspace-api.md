@@ -69,6 +69,10 @@ HollowWorkspaceBootstrapTab = {
 }
 
 HollowWorkspaceBootstrapPane = {
+  lua = string | nil,         -- registered GUI Lua factory instead of a terminal
+  args = table | nil,         -- copied JSON factory args
+  title = string | nil,       -- Lua pane title override
+  tags = string[] | nil,
   cwd = string | nil,
   domain = string | nil,
   command = string | nil,
@@ -84,6 +88,44 @@ HollowWorkspaceBootstrapPane = {
   default = boolean | nil,
 }
 ```
+
+### Lua pane leaves
+
+Register a factory in the GUI config with
+[`hollow.ui.pane.register`](ui.md#factories-and-persistence), then reference it
+in the same layout as terminal leaves:
+
+```json
+{
+  "name": "Tools",
+  "tabs": [{
+    "name": "Tasks",
+    "panes": [
+      { "lua": "tasks", "args": { "title": "Build" }, "main": true },
+      { "lua": "tasks", "args": { "title": "Tests" }, "size": 0.4 }
+    ]
+  }]
+}
+```
+
+Lua leaves use `direction`, `size`, `main`, `tags`, floating bounds and
+`fullscreen`, but do not launch terminal commands. Lua-first tabs/workspaces
+are created directly without temporary PTYs. With no `replace_current`, a
+Lua-first bootstrap adds a tab and preserves the existing tab. The
+`kind = "lua", module = "tasks"` spelling is also accepted.
+
+`load`/`load_host` only read JSON; they do not invoke factories. Bootstrap
+requires registered factories and valid bounded JSON args; unknown factories
+raise an error rather than launching a terminal. Treat bootstrap as executable
+configuration: factories may have effects, just as terminal leaves may run
+commands. Loading an untrusted layout does not authorize bootstrapping it.
+
+Export includes named Lua leaves with creation args, titles, tags, focus, split
+ratios and floating geometry. It omits anonymous Lua panes and tabs left empty
+by their omission. Neither functions nor live Lua state are serialized. File
+bootstrap creates new IDs; config reload instead keeps IDs/layout and rebuilds
+owners. Workspace layouts remain linear, not arbitrary nested split trees.
+See [example layout](../../examples/lua-pane-workspace.json).
 
 ## Behaviour in v1
 

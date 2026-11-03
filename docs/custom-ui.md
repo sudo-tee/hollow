@@ -2,7 +2,7 @@
 
 Hollow exposes a small widget runtime.
 The same widget model powers the top bar, the bottom bar, sidebars, and
-overlays (modals, prompts, pickers, notifications).
+overlays (modals, prompts, pickers, notifications), and Lua pane content.
 
 For the API see [`hollow.ui`](reference/lua/ui.md).
 For recipes see [UI recipes](examples/ui-recipes.md).
@@ -27,10 +27,10 @@ A widget is a table:
 }
 ```
 
-Sidebar and overlay `render(ctx)` functions return one explicit
-`hollow.ui.row` or `hollow.ui.column`. Bars return their specialized item
-lists. The runtime draws the widget, then delivers `on_event` callbacks
-for clicks and lifecycle events.
+Sidebar `render(ctx)` functions use inline `hollow.ui.row`/`hollow.ui.column`
+nodes. Overlays and Lua panes return a Clay tree from `hollow.ui.components`.
+Bars return their specialized item lists. These surfaces share styling helpers,
+but not context or lifecycle signatures; see their API sections below.
 
 `ctx` provides:
 
@@ -102,7 +102,7 @@ It opens an example modal without replacing any bars or sidebars. Click tabs or
 choices, then Done (or Escape) to close. It uses public APIs only and refreshes
 while open when the theme changes.
 
-## The four surfaces
+## Surfaces
 
 ### Top bar
 
@@ -231,6 +231,13 @@ m = hollow.ui.modal({
 })
 ```
 
+`ui.modal` is exclusive by default: while open, it rejects new composed overlays
+with `nil`, preserving unfinished input and confirmation callbacks. Use
+`exclusive = false` for stackable tools, such as the REPL and Activity. New
+overlays suspend these tools without unmounting them; closing the top overlay
+resumes the previous one with its state intact. An existing exclusive dialog
+still blocks stackable tools. Notifications and direct overlays are independent.
+
 Behaviors (`hollow.ui.list_nav`, `hollow.ui.scroll_nav`,
 `hollow.ui.text_input`) encapsulate state and key handlers, while
 `hollow.ui.layout` composes hierarchical Clay trees. See
@@ -247,6 +254,82 @@ Built on top of overlays and the composition helpers:
 These accept `align`, `backdrop`, `chrome`, `theme`, `width`, and
 `height` options. The notify family auto-dismisses after `ttl`
 milliseconds.
+
+### Lua panes
+
+Use a Lua pane when UI should occupy a normal split or floating pane rather than
+cover the workspace as a modal. It has a native pane ID and participates in mux
+focus, movement, maximize and close, but spawns no terminal/PTY. Keep render
+nonblocking and return `hollow.ui.components` nodes, just as for Clay overlays.
+
+```lua
+local h = require("hollow")
+local c = h.ui.components
+
+-- Config-load registration is required for reload and workspace restore.
+h.ui.pane.register("counter", function(args)
+  local pane_id
+  return {
+    title = args.title or "Counter",
+    state = { count = 0 },
+    on_mount = function(ctx) pane_id = ctx.pane_id end,
+    render = function(ctx)
+      return c.column({
+        c.text("Count: " .. ctx.state.count),
+        c.button({
+          id = "increment", text = "Increment",
+          on_click = function()
+            ctx.state.count = ctx.state.count + 1
+            local pane = h.ui.pane.get(pane_id)
+            if pane then pane:invalidate() end
+          end,
+        }),
+      }, { width = "grow", height = "grow", padding = 16, gap = 8 })
+    end,
+  }
+end)
+
+h.events.on("gui:ready", function()
+  h.ui.pane.split({ module = "counter", args = { title = "Build counter" } })
+end)
+```
+
+Each factory call creates independent state and callback namespaces, so two
+instances can both use `id = "increment"`. Pane contexts provide pixel/grid
+geometry, focus, theme and your `state`, not the bar's `ctx.term` object.
+Snapshots render only when dirty; call `pane:invalidate()` after external state
+changes. Clicks and handled keys invalidate automatically. Use `pane:close()`
+for teardown and `on_unmount(ctx)` to release resources acquired at mount.
+
+Only factory names and creation args persist. Config reload keeps native IDs and
+geometry but constructs fresh Lua state. Workspace export writes named leaves
+such as `{ "lua": "counter", "args": { "title": "Build counter" } }`;
+import constructs new IDs. Anonymous render-only panes are temporary: they are
+omitted from workspace export and go blank on config reload. Register factories
+before `gui:ready` so reload can find them.
+
+See [Lua pane reference](reference/lua/ui.md#lua-panes) for lifecycle, keyboard
+priority, bounded JSON args and v1 limitations; [workspace leaves](reference/lua/workspace-api.md#lua-pane-leaves)
+for loading layouts.
+
+[`examples/lua-pane.lua`](../examples/lua-pane.lua) is a complete, runnable
+task runner: Run/Cancel buttons, an input for adding commands, arrow-key
+navigation, cleanup in `on_unmount`, and a `<leader>T` toggle that survives
+config reload. Each task runs on a domain: `local` ones use
+`hollow.process.spawn`, and domains with a host (WSL, SSH, containers) run
+through the agent with [`hollow.host.for_domain`](reference/lua/host.md#domain-hosts).
+Pick the domain with the `@` button or by typing `@` into the empty input, or
+type `@name command`.
+
+![Tasks Lua pane docked on the right edge: header with task count, Run buttons, command output, status pills, and an input with an Add button](examples/lua-pane-tasks.png)
+
+Keyboard entry focuses the first control; arrows then move by on-screen
+position:
+
+![Tasks pane with the focus ring on the second Run button after pressing Down](examples/lua-pane-tasks-focus.png)
+
+For a smaller toggleable pane, see the
+[git status recipe](examples/ui-recipes.md#git-status-in-a-toggleable-lua-pane).
 
 ## Widget theming
 

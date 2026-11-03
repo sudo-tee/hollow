@@ -27,6 +27,9 @@ pub const PaneCache = struct {
     rt_smp: c.sg_sampler,
     sgl_ctx: c.sgl_context,
     atlas_pip: c.sgl_pipeline,
+    /// Lua UI rectangles use straight alpha, unlike the premultiplied atlas.
+    /// Allocate only for Lua panes; terminal caches retain their existing path.
+    ui_rect_pip: c.sgl_pipeline = .{ .id = 0 },
     blit_smp: c.sg_sampler,
     width: u32,
     height: u32,
@@ -102,7 +105,28 @@ pub const PaneCache = struct {
         c.sg_end_pass();
     }
 
+    fn uiRectDescriptor() c.sg_pipeline_desc {
+        var desc = std.mem.zeroes(c.sg_pipeline_desc);
+        desc.colors[0].pixel_format = c.SG_PIXELFORMAT_RGBA8;
+        desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
+        desc.colors[0].blend.enabled = true;
+        desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
+        desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
+        desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        return desc;
+    }
+
+    pub fn uiRectPipeline(self: *PaneCache) c.sgl_pipeline {
+        if (self.ui_rect_pip.id == 0) {
+            const desc = uiRectDescriptor();
+            self.ui_rect_pip = c.sgl_context_make_pipeline(self.sgl_ctx, &desc);
+        }
+        return self.ui_rect_pip;
+    }
+
     pub fn deinit(self: *PaneCache) void {
+        if (self.ui_rect_pip.id != 0) c.sgl_destroy_pipeline(self.ui_rect_pip);
         c.sgl_destroy_pipeline(self.atlas_pip);
         c.sgl_destroy_context(self.sgl_ctx);
         c.sg_destroy_sampler(self.blit_smp);
@@ -116,3 +140,13 @@ pub const PaneCache = struct {
         return self.width != w or self.height != h;
     }
 };
+
+test "Lua pane rectangle pipeline matches offscreen formats and straight alpha" {
+    const desc = PaneCache.uiRectDescriptor();
+    try std.testing.expect(desc.colors[0].pixel_format == c.SG_PIXELFORMAT_RGBA8);
+    try std.testing.expect(desc.depth.pixel_format == c.SG_PIXELFORMAT_NONE);
+    try std.testing.expect(desc.colors[0].blend.enabled);
+    try std.testing.expect(desc.colors[0].blend.src_factor_rgb == c.SG_BLENDFACTOR_SRC_ALPHA);
+    try std.testing.expect(desc.colors[0].blend.dst_factor_rgb == c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA);
+    try std.testing.expect(desc.colors[0].blend.src_factor_alpha == c.SG_BLENDFACTOR_ONE);
+}

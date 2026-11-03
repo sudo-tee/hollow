@@ -140,8 +140,22 @@ fn luaModuleName(comptime path: []const u8) []const u8 {
 
 /// Callbacks from Lua into the App layer.
 /// Using function pointers keeps luajit.zig free of App imports.
+pub const PaneContentInfo = struct {
+    kind: enum { terminal, lua },
+    descriptor_json: ?[]const u8 = null,
+    floating: bool = false,
+    x: f32 = 0,
+    y: f32 = 0,
+    width: f32 = 0,
+    height: f32 = 0,
+};
+
 pub const AppCallbacks = struct {
     app: *anyopaque,
+    create_lua_pane: ?*const fn (*anyopaque, c_int, []const u8, f32, bool, []const u8) usize = null,
+    get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
+    invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
+    title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
     split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool,
@@ -393,7 +407,9 @@ fn luaValueToJson(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_
         .boolean => return .{ .bool = api.to_boolean(state, abs_idx) != 0 },
         .number => {
             const num = api.to_number(state, abs_idx);
-            if (std.math.floor(num) == num and num >= @as(f64, @floatFromInt(std.math.minInt(i64))) and num <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
+            // maxInt(i64) rounds up to 2^63 as f64; that endpoint cannot be
+            // converted back to i64. Preserve it (and larger values) as floats.
+            if (std.math.floor(num) == num and num >= @as(f64, @floatFromInt(std.math.minInt(i64))) and num < -@as(f64, @floatFromInt(std.math.minInt(i64)))) {
                 return .{ .integer = @intFromFloat(num) };
             }
             return .{ .float = num };
@@ -489,8 +505,16 @@ fn pushJsonValue(allocator: std.mem.Allocator, api: Api, state: *State, value: s
         .bool => |v| api.push_boolean(state, if (v) 1 else 0),
         .integer => |v| api.push_number(state, @floatFromInt(v)),
         .float => |v| api.push_number(state, v),
-        .number_string => |v| try pushOwnedString(allocator, api, state, v),
-        .string => |v| try pushOwnedString(allocator, api, state, v),
+        .number_string => |v| {
+            // std.json retains integer tokens outside i64 as number strings.
+            // Lua has doubles, so finite values must still round-trip as numbers.
+            const n = std.fmt.parseFloat(f64, v) catch {
+                api.push_lstring(state, v.ptr, v.len);
+                return;
+            };
+            if (std.math.isFinite(n)) api.push_number(state, n) else api.push_lstring(state, v.ptr, v.len);
+        },
+        .string => |v| api.push_lstring(state, v.ptr, v.len),
         .array => |arr| {
             api.create_table(state, @intCast(arr.items.len), 0);
             for (arr.items, 0..) |item, idx| {
@@ -502,10 +526,9 @@ fn pushJsonValue(allocator: std.mem.Allocator, api: Api, state: *State, value: s
             api.create_table(state, 0, @intCast(obj.count()));
             var it = obj.iterator();
             while (it.next()) |entry| {
+                api.push_lstring(state, entry.key_ptr.*.ptr, entry.key_ptr.*.len);
                 try pushJsonValue(allocator, api, state, entry.value_ptr.*);
-                const zkey = try allocator.dupeSentinel(u8, entry.key_ptr.*, 0);
-                defer allocator.free(zkey);
-                api.set_field(state, -2, zkey);
+                api.set_table(state, -3);
             }
         },
     }
@@ -958,6 +981,14 @@ pub const Runtime = struct {
             self.allocator.free(name);
             self.context.pending_workspace_name = null;
         }
+    }
+
+    /// A runtime created by config reload starts after the window is up;
+    /// gui:ready fires once per process and will not reach it.
+    pub fn markGuiReady(self: *Runtime) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.context.gui_ready_fired = true;
     }
 
     pub fn fireGuiReady(self: *Runtime) void {
@@ -2218,6 +2249,18 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_split_pane, 1);
         api.set_field(self.state, -2, "split_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_create_lua_pane, 1);
+        api.set_field(self.state, -2, "create_lua_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_content, 1);
+        api.set_field(self.state, -2, "get_pane_content");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_invalidate_lua_pane, 1);
+        api.set_field(self.state, -2, "invalidate_lua_pane");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_title_lua_pane, 1);
+        api.set_field(self.state, -2, "title_lua_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_toggle_pane_maximized, 1);
@@ -4171,6 +4214,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
 
         if (value_type == .number) {
             const value = api.to_number(state, -1);
+            // These size the window at creation; once it exists the fields
+            // track the live framebuffer, which config cannot resize.
+            if (ctx.gui_ready_fired and (std.mem.eql(u8, key, "window_width") or std.mem.eql(u8, key, "window_height"))) {
+                std.log.info("config: {s} only applies at startup; ignored", .{key});
+                continue;
+            }
             applyNumber(ctx.cfg, key, value) catch |err| std.log.err("config numeric field {s} failed: {s}", .{ key, @errorName(err) });
             continue;
         }
@@ -5559,6 +5608,101 @@ fn l_defer(state: *State) callconv(.c) c_int {
             api.unref(state, LUA_REGISTRYINDEX, callback_ref);
         };
     }
+    return 0;
+}
+
+fn luaPaneIdArg(api: Api, state: *State, index: c_int) ?usize {
+    if (api.value_type(state, index) != @backingInt(LuaType.number)) return null;
+    const n = api.to_number(state, index);
+    if (!std.math.isFinite(n) or n < 1 or n > 9007199254740991 or @floor(n) != n) return null;
+    return @intFromFloat(n);
+}
+
+fn l_create_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const create = cbs.create_lua_pane orelse return 0;
+    if (api.value_type(state, 1) != @backingInt(LuaType.table)) return 0;
+    const direction = luaStringField(api, state, 1, "direction") orelse "vertical";
+    api.get_field(state, 1, "ratio");
+    const ratio: f32 = if (api.value_type(state, -1) == @backingInt(LuaType.number)) @floatCast(api.to_number(state, -1)) else 0.5;
+    pop(api, state, 1);
+    api.get_field(state, 1, "floating");
+    const floating = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+    api.push_value(state, 1);
+    const ref = api.ref(state, LUA_REGISTRYINDEX);
+    const descriptor = luaStringField(api, state, 1, "_descriptor") orelse "{\"kind\":\"lua\"}";
+    const id = create(cbs.app, ref, direction, ratio, floating, descriptor);
+    if (id == 0) {
+        api.unref(state, LUA_REGISTRYINDEX, ref);
+        return 0;
+    }
+    api.push_number(state, @floatFromInt(id));
+    return 1;
+}
+
+fn l_get_pane_content(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const getter = cbs.get_pane_content orelse return 0;
+    const id = luaPaneIdArg(api, state, 1) orelse return 0;
+    const info = getter(cbs.app, id) orelse return 0;
+    const top = api.get_top(state);
+    pushPaneContent(ctx.allocator, api, state, info) catch {
+        api.set_top(state, top);
+        return api.raise_error(state, "pane descriptor unavailable");
+    };
+    return 1;
+}
+
+fn pushPaneContent(allocator: std.mem.Allocator, api: Api, state: *State, info: PaneContentInfo) !void {
+    api.create_table(state, 0, 4);
+    const kind = @tagName(info.kind);
+    api.push_lstring(state, kind.ptr, kind.len);
+    api.set_field(state, -2, "kind");
+    if (info.descriptor_json) |text| {
+        // Pane snapshots query this often; typical descriptors fit on the stack.
+        var buffer: [8192]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&buffer, allocator);
+        var arena = std.heap.ArenaAllocator.init(fallback.allocator());
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
+        if (value == .object) {
+            inline for (.{ "module", "args" }) |field| if (value.object.get(field)) |item| {
+                try pushJsonValue(scratch, api, state, item);
+                api.set_field(state, -2, field);
+            };
+        }
+    }
+    if (info.floating and info.kind == .lua) {
+        api.create_table(state, 0, 4);
+        inline for (.{ "x", "y", "width", "height" }) |field| {
+            api.push_number(state, @field(info, field));
+            api.set_field(state, -2, field);
+        }
+        api.set_field(state, -2, "floating_bounds");
+    }
+}
+
+fn l_invalidate_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    if (cbs.invalidate_lua_pane) |callback| callback(cbs.app, id);
+    return 0;
+}
+
+fn l_title_lua_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    var len: usize = 0;
+    const title = ctx.api.to_lstring(state, 2, &len) orelse return 0;
+    if (cbs.title_lua_pane) |callback| callback(cbs.app, id, title[0..len]);
     return 0;
 }
 
@@ -7586,6 +7730,23 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "set_config ignores window size once the GUI is ready" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("host_api.set_config({ window_width = 1100, window_height = 720 })");
+    try std.testing.expectEqual(@as(u32, 1100), cfg.window_width);
+    try std.testing.expectEqual(@as(u32, 720), cfg.window_height);
+    cfg.window_width = 1920;
+    cfg.window_height = 1080;
+    runtime.markGuiReady();
+    try runtime.runString("host_api.set_config({ window_width = 1100, window_height = 720, cols = 90 })");
+    try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
+    try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
+    try std.testing.expectEqual(@as(u16, 90), cfg.cols);
 }
 
 test "spawn filter bridge commits valid results atomically and preserves stack" {

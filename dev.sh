@@ -61,7 +61,7 @@ fi
 print_help() {
   echo "Usage: $0 [--force-build] [--release] [launch args]"
   echo ""
-  echo "Auto-skips rebuilds for Lua/config-only edits and rebuilds when tracked Zig/C build inputs are newer than the built artifact."
+  echo "Auto-skips rebuilds for Lua/config-only edits and rebuilds when tracked Zig/C build inputs are newer than the built artifact or Lua files were added or removed."
   echo "Pass --force-build to bypass the heuristic."
   echo "Builds in dev mode (launch.sh --dev) by default. --release builds ReleaseFast; --debug, --pdb, and --install also leave dev mode."
   echo ""
@@ -89,6 +89,10 @@ build_inputs() {
     "$SCRIPT_DIR"/third_party/**/*.h
 }
 
+lua_modules() {
+  find "$SCRIPT_DIR/src/lua/hollow" -type f -name '*.lua' -printf '%P\n' | LC_ALL=C sort
+}
+
 needs_build() {
   local artifact
   artifact="$(artifact_path)"
@@ -103,6 +107,12 @@ needs_build() {
 
   # Rebuild when switching between dev and release modes.
   if [[ "$(cat "$SCRIPT_DIR/zig-out/.launch-build-mode" 2>/dev/null)" != "$BUILD_MODE" ]]; then
+    return 0
+  fi
+
+  # Disk overrides only replace embedded modules, so an added or removed Lua
+  # file needs a rebuild even though Lua edits alone do not.
+  if ! cmp -s "$SCRIPT_DIR/zig-out/.lua-modules" <(lua_modules); then
     return 0
   fi
 

@@ -543,6 +543,10 @@
 
 ---@class HollowPane
 ---@field id integer
+---@field kind "terminal"|"lua" Content kind; terminal-only operations reject Lua panes.
+---@field module? string Registered Lua factory name, absent on anonymous Lua panes.
+---@field args? HollowUiPaneArgs Creation-time JSON args, not live Lua state.
+---@field floating_bounds? HollowFloatingPaneBounds Current normalized bounds for floating Lua panes.
 ---@field pid integer
 ---@field domain? string
 ---@field direction? "horizontal"|"vertical"
@@ -648,6 +652,12 @@
 ---@field promise fun(register: fun(resolve: fun(value: any), reject: fun(err: any))): HollowPromise<any>
 
 ---@class HollowWorkspaceBootstrapPane
+---@field lua? string Registered GUI Lua pane factory; no PTY is spawned for this leaf.
+---@field args? HollowUiPaneArgs Creation-time factory args.
+---@field kind? "terminal"|"lua" Snapshot-style alternative to `lua` when used with `module`.
+---@field module? string Factory name for snapshot-style Lua leaves.
+---@field title? string Lua pane title override.
+---@field tags? string[]
 ---@field cwd? string
 ---@field domain? string
 ---@field command? string
@@ -1140,6 +1150,7 @@
 ---@field hovered? integer
 
 ---@class HollowUiModalSpec
+---@field exclusive? boolean Defaults to true: blocks new composed overlays while open. False allows stacking without unmounting this surface; existing exclusive dialogs still block opening.
 ---@field theme? HollowUiTheme|string Widget-kind name for a live palette, or an authoritative explicit palette table.
 ---@field render fun(theme: HollowUiTheme, state: table, ctx: HollowUiLayoutContext): HollowUiLayoutNode, number? Clay tree and optional preferred content height in pixels.
 ---@field keys? function
@@ -1363,6 +1374,7 @@
 ---@field bottombar_hovered_shifted boolean
 ---@field mounted_sidebar HollowUiWidget|nil
 ---@field sidebar_visible boolean
+---@field sidebar_docked boolean
 ---@field overlay_stack HollowUiWidget[]
 ---@field notifications HollowUiWidget[]
 
@@ -1976,8 +1988,17 @@ function sidebar.mount(widget) end
 
 function sidebar.unmount() end
 
+---Hide or show the sidebar; hiding a docked sidebar closes its pane.
 ---@return boolean
 function sidebar.toggle() end
+
+---Toggle between the window-edge overlay and a split Lua pane; nil when undocking or unavailable.
+---@param opts? { edge?: "left"|"right"|"top"|"bottom", ratio?: number, focus?: boolean }
+---@return HollowUiPane|nil
+function sidebar.dock(opts) end
+
+---@return boolean
+function sidebar.is_docked() end
 
 ---@return boolean
 function sidebar.invalidate() end
@@ -2055,10 +2076,15 @@ local lua_repl = {}
 
 ---Open the Clay console in the live Lua runtime. Not sandboxed.
 ---@param opts? HollowUiLuaReplOptions
----@return HollowUiModalHandle? handle Nil if another modal is active.
+---@return HollowUiModalHandle? handle Nil if an exclusive dialog is active.
 function lua_repl.open(opts) end
 
 function lua_repl.close() end
+
+---Toggle the console docked in a split Lua pane; nil when closing or unavailable.
+---@param opts? { direction?: "horizontal"|"vertical", ratio?: number }
+---@return HollowUiPane|nil
+function lua_repl.dock(opts) end
 
 ---@class HollowUiMuxNavigatorOptions
 ---@field query? string
@@ -2352,6 +2378,7 @@ local workspace = {}
 ---@field behavior HollowUiTextInput
 ---@field boxed? boolean Defaults to true.
 ---@field focusable? boolean Tab and clicks focus the field; defaults to true.
+---@field focused? boolean Caret look: solid when true, hollow when false. Defaults to solid only while a focusable field has keyboard focus in a focused surface.
 
 ---@class HollowUiTabComponentItem
 ---@field id string
@@ -2504,6 +2531,7 @@ local workspace = {}
 ---@field height? number Host window height in pixels.
 ---@field cell_w? number Existing renderer cell width.
 ---@field cell_h? number Existing renderer cell height.
+---@field focus_id? string Local ID of the keyboard-focused control, if any.
 
 ---@class HollowUiLayoutSurfaceOptions
 ---@field render fun(ctx: HollowUiLayoutContext): HollowUiLayoutNode
@@ -2530,9 +2558,85 @@ local workspace = {}
 ---@field focus_move fun(self: HollowUiLayoutSurface, delta: integer): boolean Move focus forward (1) or back (-1), wrapping.
 ---@field focused_id fun(self: HollowUiLayoutSurface): string|nil Local ID of the focused node.
 
+---@alias HollowUiPaneJsonValue string|number|boolean|HollowUiPaneArgs
+---@alias HollowUiPaneArgs table<string, HollowUiPaneJsonValue>|HollowUiPaneJsonValue[] Plain JSON data: finite numbers, dense arrays or string-keyed objects; no cycles/metatables. Depth 32, 4096 entries, descriptor 64 KiB.
+
+---@class HollowUiPaneContext
+---@field pane_id integer Stable native pane ID.
+---@field cols integer
+---@field rows integer
+---@field width number Pane content width in pixels.
+---@field height number Pane content height in pixels.
+---@field cell_w number Renderer cell width in pixels.
+---@field cell_h number Renderer cell height in pixels.
+---@field focused boolean Active pane and OS window focus combined.
+---@field keyboard_focus? boolean Whether the most recent input source was the keyboard; used for pane-entry autofocus.
+---@field hovered_id? string Pane-local node ID, nil when none is hovered.
+---@field state table Instance state supplied in options; never serialized.
+---@field theme HollowUiTheme Explicit theme or current select palette.
+
+---@class HollowUiPaneOptions
+---@field module? string Factory name; used when render is omitted and on restore.
+---@field args? HollowUiPaneArgs Copied creation args; default {}. Factory receives a separate copy.
+---@field render? fun(ctx: HollowUiPaneContext): HollowUiLayoutNode Required unless module supplies a factory render.
+---@field state? table Per-instance mutable state; default {}.
+---@field theme? HollowUiTheme Explicit token palette.
+---@field title? string
+---@field direction? "horizontal"|"vertical" Default vertical.
+---@field ratio? number New split fraction, strictly between 0 and 1; default 0.5.
+---@field edge? "left"|"right"|"top"|"bottom" Split the whole tiled layout and place the pane on this window edge, instead of beside the active pane; overrides direction.
+---@field fullscreen? boolean Maximize after insertion.
+---@field x? number Normalized floating x coordinate, 0–1.
+---@field y? number Normalized floating y coordinate, 0–1.
+---@field width? number Normalized floating width, 0–1; not render-context pixel width.
+---@field height? number Normalized floating height, 0–1; not render-context pixel height.
+---@field on_mount? fun(ctx: HollowUiPaneContext) Once at first snapshot with geometry.
+---@field on_unmount? fun(ctx: HollowUiPaneContext) Once for mounted owners, including config reload.
+---@field on_resize? fun(ctx: HollowUiPaneContext) Subsequent content size changes.
+---@field on_focus? fun(ctx: HollowUiPaneContext, focused: boolean) Initial focus after mount, transitions and blur before unmount.
+---@field on_key? fun(key: string, mods: HollowKeyMods, ctx: HollowUiPaneContext): boolean|nil Only true consumes; normalized key-down/repeat events.
+---@field capture_keys? boolean Route modified keys to the pane before global bindings; the leader still escapes.
+---@field on_pointer? fun(event: HollowUiPanePointerEvent, ctx: HollowUiPaneContext): boolean|nil Clicks and wheel; only true consumes.
+---@field on_complete? fun(result: { success: boolean, pane_id?: integer }) Queued native insertion result; not called if creation immediately returns nil.
+
+---@class HollowUiPanePointerEvent
+---@field kind "click"|"scroll"
+---@field id? string Pane-local node ID: clickable for clicks, scroll container for wheel.
+---@field button? "left"|"right"|"middle" Click button.
+---@field delta? number Wheel notches; positive scrolls toward earlier content.
+
+---@class HollowUiPane
+---@field id integer Reserved immediately; native insertion is queued.
+---@field invalidate fun(self: HollowUiPane) Schedule a new snapshot.
+---@field set_title fun(self: HollowUiPane, title: string) Queue a title update.
+---@field close fun(self: HollowUiPane): boolean Queue close; false when already closed/closing or unavailable.
+
+---@class HollowUiPaneNamespace
+local ui_pane = {}
+
+--- Create a GUI-only tiled pane; nil if native creation cannot be queued.
+---@param opts HollowUiPaneOptions
+---@return HollowUiPane|nil
+function ui_pane.split(opts) end
+
+--- Create a GUI-only floating pane with the same ownership and input behavior.
+---@param opts HollowUiPaneOptions
+---@return HollowUiPane|nil
+function ui_pane.float(opts) end
+
+---@param id integer
+---@return HollowUiPane|nil
+function ui_pane.get(id) end
+
+--- Register during config loading, before config reload restores native nodes.
+---@param name string Nonempty name without NUL; registering again replaces the factory.
+---@param factory fun(args: HollowUiPaneArgs): HollowUiPaneOptions Must return a render function.
+function ui_pane.register(name, factory) end
+
 ---@class HollowUi
----@field layout HollowUiLayout Clay-backed surface engine behind every overlay.
----@field components HollowUiComponents Clay node constructors and components for overlays.
+---@field pane HollowUiPaneNamespace GUI-only native split/floating panes backed by Clay surfaces.
+---@field layout HollowUiLayout Clay-backed surface engine behind overlays and Lua panes.
+---@field components HollowUiComponents Clay node constructors and components for overlays and Lua panes.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
@@ -2628,7 +2732,7 @@ function ui.tab(opts) end
 function ui.tab_bar(opts) end
 
 ---@param spec HollowUiModalSpec
----@return HollowUiModalHandle|nil Returns nil if another modal is already open.
+---@return HollowUiModalHandle|nil Returns nil if an exclusive dialog is already open.
 function ui.modal(spec) end
 
 ---@param ... table
@@ -2695,6 +2799,7 @@ ui.bar = bar
 ui.topbar = topbar
 ui.bottombar = bottombar
 ui.sidebar = sidebar
+ui.pane = ui_pane
 ui.overlay = overlay
 ui.notify = notify
 ui.input = input
@@ -2892,6 +2997,12 @@ function host.connect(opts) end
 ---Get the runtime's cached native-local host; existing hollow.process defaults are unchanged.
 ---@return HollowPromise<HollowAgentHost>
 function host.local_host() end
+
+---Agent host behind a terminal domain, resolved like pane PTYs (`host`, `wsl_distro`,
+---or a `wsl.exe -d X` shell) and cached per domain. Nil when the domain runs natively.
+---@param domain? string defaults to `default_domain`
+---@return HollowPromise<HollowAgentHost>|nil
+function host.for_domain(domain) end
 
 ---Bootstrap an agent in an existing container, then use the common persistent host API.
 ---Does not create/start/remove containers or elevate the configured container user.

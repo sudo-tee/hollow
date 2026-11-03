@@ -28,7 +28,8 @@ pub fn scrollbarVisible(self: *const App, scrollbar: ghostty.TerminalScrollbar) 
 }
 
 pub fn paneScrollbarGutter(self: *const App, pane: *const Pane) u32 {
-    return if (scrollbarVisible(self, pane.scrollbar())) self.config.scrollbar.gutterWidth() else 0;
+    const term = pane.asTerminalConst() orelse return 0;
+    return if (scrollbarVisible(self, term.scrollbar())) self.config.scrollbar.gutterWidth() else 0;
 }
 
 pub fn scrollbarMaxTopRow(scrollbar: ghostty.TerminalScrollbar) u64 {
@@ -44,85 +45,71 @@ pub fn pageScrollRows(pane: *const Pane) isize {
 }
 
 pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) ghostty.TerminalScrollbar {
-    const was_visible = scrollbarVisible(self, pane.scrollbar());
-    if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
-        pane.scrollbar_total = scrollbar.total;
-        pane.scrollbar_offset = scrollbar.offset;
-        pane.scrollbar_len = scrollbar.len;
-        if (was_visible != scrollbarVisible(self, scrollbar)) self.requestLayoutResize(false);
-        return scrollbar;
-    }
-    pane.scrollbar_total = @max(@as(u64, 1), @as(u64, pane.rows));
-    pane.scrollbar_offset = 0;
-    pane.scrollbar_len = @max(@as(u64, 1), pane.rows);
-    const fallback = pane.scrollbar();
-    if (was_visible != scrollbarVisible(self, fallback)) self.requestLayoutResize(false);
-    return fallback;
+    const term = pane.asTerminal() orelse return .{ .total = 0, .offset = 0, .len = 0 };
+    const was_visible = scrollbarVisible(self, term.scrollbar());
+    const scrollbar = term.refreshScrollbar(runtime, pane.rows);
+    if (was_visible != scrollbarVisible(self, scrollbar)) self.requestLayoutResize(false);
+    return scrollbar;
 }
 
 pub fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
+    const term = pane.asTerminal() orelse return;
     if (delta == 0) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
-    runtime.terminalScroll(pane.terminal, delta);
+    runtime.terminalScroll(term.terminal, delta);
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    term.markViewportScrolled();
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
     selection_mod.syncDraggedSelectionToPointer(self, pane);
 }
 
 fn forceScrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
+    const term = pane.asTerminal() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     const scrollbar = refreshPaneScrollbar(self, runtime, pane);
     const max_top = scrollbarMaxTopRow(scrollbar);
     const clamped_target = @min(top_row, max_top);
 
     if (clamped_target == 0) {
-        runtime.terminalScrollTop(pane.terminal);
+        runtime.terminalScrollTop(term.terminal);
     } else if (clamped_target == max_top) {
-        runtime.terminalScrollBottom(pane.terminal);
+        runtime.terminalScrollBottom(term.terminal);
     } else {
-        runtime.terminalScrollTop(pane.terminal);
+        runtime.terminalScrollTop(term.terminal);
         const delta_i64: i64 = @intCast(clamped_target);
         const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.maxInt(isize);
-        runtime.terminalScroll(pane.terminal, delta);
+        runtime.terminalScroll(term.terminal, delta);
     }
 
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    term.markViewportScrolled();
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }
 
 fn restorePaneViewportFromBottom(self: *App, pane: *Pane, top_row: usize) void {
+    const term = pane.asTerminal() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     const scrollbar = refreshPaneScrollbar(self, runtime, pane);
     const max_top: usize = @intCast(scrollbarMaxTopRow(scrollbar));
     const clamped_target = @min(top_row, max_top);
 
-    runtime.terminalScrollBottom(pane.terminal);
+    runtime.terminalScrollBottom(term.terminal);
     if (clamped_target < max_top) {
         const delta_i64: i64 = -@as(i64, @intCast(max_top - clamped_target));
         const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.minInt(isize);
-        runtime.terminalScroll(pane.terminal, delta);
+        runtime.terminalScroll(term.terminal, delta);
     }
 
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    term.markViewportScrolled();
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }
 
 pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
+    const term = pane.asTerminal() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else return;
     const scrollbar = refreshPaneScrollbar(self, runtime, pane);
     const max_top = scrollbarMaxTopRow(scrollbar);
@@ -130,22 +117,20 @@ pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
     const current_top = scrollbarTopRow(scrollbar);
     if (clamped_target == current_top) return;
 
-    runtime.terminalScrollToRow(pane.terminal, @intCast(clamped_target));
+    runtime.terminalScrollToRow(term.terminal, @intCast(clamped_target));
     pane.render_dirty = .full;
-    pane.viewport_scroll_pending = true;
-    pane.render_state_fresh = false;
-    pane.last_render_state_update_ns = 0;
-    pane.pty_received_data = true;
+    term.markViewportScrolled();
     self.scroll_accum = 0;
     _ = refreshPaneScrollbar(self, runtime, pane);
 }
 
 pub fn paneScrollbarMetrics(self: *App, pane: *Pane, outer_bounds: PaneBounds) ?ScrollbarMetrics {
+    const term = pane.asTerminal() orelse return null;
     if (!self.config.scrollbar.enabled) return null;
     const gutter = paneScrollbarGutter(self, pane);
     if (gutter == 0 or outer_bounds.width <= gutter) return null;
 
-    const scrollbar = pane.scrollbar();
+    const scrollbar = term.scrollbar();
     if (scrollbar.len == 0 or scrollbar.total <= scrollbar.len) return null;
     const track_len = scrollbar.len;
     const total = scrollbar.total;
