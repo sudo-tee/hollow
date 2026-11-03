@@ -246,4 +246,35 @@ function M.wsl(opts) return deployed("wsl", opts) end
 function M.ssh(opts) return deployed("ssh", opts) end
 function M.docker(opts) return deployed("docker", opts) end
 
+local domain_connections = {}
+
+-- The agent host a terminal domain's panes run on (same resolution as pane
+-- PTYs), cached per domain; nil when the domain runs natively.
+function M.for_domain(name)
+  local get = _G.hollow.config.get
+  if name == nil then name = get("default_domain") end
+  if name == nil then return nil end
+  check_string(name, "domain", true)
+  local config = (get("domains") or {})[name]
+  local resolved, spec = pcall(require("hollow.host.pty").descriptor, name, type(config) == "table" and config.shell or nil)
+  if not resolved then return reject_later(error_value(spec, "invalid_args")) end
+  if not spec then return nil end
+  local cached = domain_connections[name]
+  if cached then
+    if cached:status() == "pending" then return cached end
+    local host = cached:value()
+    if host and not host.closed then
+      if host:status() == "ready" then return cached end
+      host:close()
+    end
+  end
+  local ok, target = pcall(require("hollow.host.options").target, spec.type, spec)
+  if not ok then
+    return reject_later({ code = "invalid_args", message = (tostring(target):gsub("^.-:%d+: ", "")) })
+  end
+  cached = M.connect({ id = "domain:" .. name, connector = target.connector, agent = target.agent })
+  domain_connections[name] = cached
+  return cached
+end
+
 return M

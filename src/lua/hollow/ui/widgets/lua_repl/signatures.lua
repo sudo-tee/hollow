@@ -48,6 +48,7 @@ return {
   ["hollow.fs.mkdir_p"] = "fun(path: string)",
   ["hollow.host.connect"] = "fun(opts: HollowHostConnectOpts): HollowPromise<HollowAgentHost>",
   ["hollow.host.docker"] = "fun(opts: HollowDockerHostOpts): HollowPromise<HollowAgentHost>",
+  ["hollow.host.for_domain"] = "fun(domain?: string): HollowPromise<HollowAgentHost>|nil",
   ["hollow.host.local_host"] = "fun(): HollowPromise<HollowAgentHost>",
   ["hollow.host.podman"] = "fun(opts: HollowPodmanHostOpts): HollowPromise<HollowAgentHost>",
   ["hollow.host.ssh"] = "fun(opts: HollowSshHostOpts): HollowPromise<HollowAgentHost>",

@@ -2996,6 +2996,12 @@ function host.connect(opts) end
 ---@return HollowPromise<HollowAgentHost>
 function host.local_host() end
 
+---Agent host behind a terminal domain, resolved like pane PTYs (`host`, `wsl_distro`,
+---or a `wsl.exe -d X` shell) and cached per domain. Nil when the domain runs natively.
+---@param domain? string defaults to `default_domain`
+---@return HollowPromise<HollowAgentHost>|nil
+function host.for_domain(domain) end
+
 ---Bootstrap an agent in an existing container, then use the common persistent host API.
 ---Does not create/start/remove containers or elevate the configured container user.
 ---@param opts HollowPodmanHostOpts

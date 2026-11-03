@@ -178,4 +178,73 @@ describe("hollow.host connector", function()
     assert.are.equal(1, closes)
     assert.has_error(function() hosts.connect({ id = "x", backend = "local", argv = { "not-run" } }) end)
   end)
+
+  describe("for_domain", function()
+    local domains, connects, status
+
+    before_each(function()
+      domains, connects, status = {}, {}, "ready"
+      env.hollow.config.get = function(key)
+        if key == "domains" then return domains end
+        if key == "default_domain" then return "dev" end
+      end
+      env.hollow.platform = { is_windows = true }
+      env.host_api.host_connect = function(opts)
+        connects[#connects + 1] = opts
+        return { generation = tostring(#connects) }
+      end
+      env.host_api.host_status = function() return status end
+      env.host_api.host_close = function() return true end
+    end)
+
+    it("returns nil for domains that run natively", function()
+      domains.shell = { shell = "powershell.exe" }
+      domains.off = { wsl_distro = "Ubuntu", host = false }
+      local hosts = require("hollow.host")
+      assert.is_nil(hosts.for_domain("shell"))
+      assert.is_nil(hosts.for_domain("off"))
+      assert.is_nil(hosts.for_domain("missing"))
+      assert.are.equal(0, #connects)
+    end)
+
+    it("connects the domain's host once and reuses it", function()
+      domains.dev = { host = { type = "podman", container = "dev" } }
+      domains.ubuntu = { shell = "wsl.exe -d Ubuntu -u me" }
+      local hosts = require("hollow.host")
+      local dev = hosts.for_domain()
+      assert.are.equal(dev, hosts.for_domain("dev"))
+      step()
+      assert.are.equal("ready", dev:value():status())
+      assert.are.equal(dev, hosts.for_domain("dev"))
+      hosts.for_domain("ubuntu")
+      assert.are.equal(2, #connects)
+      assert.are.equal("domain:dev", connects[1].id)
+      assert.are.same({ "podman", "exec", "-i", "dev" }, connects[1].connector.argv)
+      assert.are.same(
+        { "wsl.exe", "--distribution", "Ubuntu", "--user", "me", "--cd", "/", "--exec" },
+        connects[2].connector.argv
+      )
+    end)
+
+    it("reconnects after the host disconnects", function()
+      domains.dev = { wsl_distro = "Ubuntu" }
+      local hosts = require("hollow.host")
+      local first = hosts.for_domain("dev")
+      step()
+      status = "disconnected"
+      local second = hosts.for_domain("dev")
+      assert.are_not.equal(first, second)
+      assert.is_true(first:value().closed)
+      assert.are.equal(2, #connects)
+    end)
+
+    it("rejects an invalid host descriptor without connecting", function()
+      domains.dev = { host = { type = "ssh", destination = "-oProxyCommand=x" } }
+      local failure
+      require("hollow.host").for_domain("dev"):catch(function(err) failure = err end)
+      env.flush_deferred()
+      assert.are.equal("invalid_args", failure.code)
+      assert.are.equal(0, #connects)
+    end)
+  end)
 end)
