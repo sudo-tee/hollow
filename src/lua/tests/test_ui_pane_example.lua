@@ -79,6 +79,8 @@ describe("Lua pane example", function()
       jobs[handle].result = { code = -1, error = "Canceled", canceled = true }
     end
     DEFAULT_FIRST = h.platform.is_windows and "cmd /c ver" or "uname -sr"
+    -- Config load at startup runs before any tab exists.
+    h.term.current_tab = function() end
     assert(loadfile("examples/lua-pane.lua"))()
     h.term.current_tab = function()
       return { panes = panes }
@@ -94,6 +96,17 @@ describe("Lua pane example", function()
     assert.is_true(has_text(nodes, DEFAULT_FIRST))
     assert.is_not_nil(find(nodes, "run:1"))
     assert.is_not_nil(find(nodes, "command"))
+  end)
+
+  it("opens once when loaded into a running window", function()
+    assert(loadfile("examples/lua-pane.lua"))()
+    env.flush_deferred()
+    assert.equals(1, #panes)
+    owners[active]:destroy()
+    panes = {}
+    assert(loadfile("examples/lua-pane.lua"))()
+    env.flush_deferred()
+    assert.equals(1, #panes)
   end)
 
   it("runs a task asynchronously and repaints on completion", function()

@@ -179,16 +179,27 @@ local function find_tasks_pane()
   end
 end
 
+local function open()
+  if not find_tasks_pane() then
+    ui.pane.split({ module = "tasks", edge = "right", ratio = 0.4 })
+  end
+end
+
 hollow.keymap.set("<leader>t", function()
   local id = find_tasks_pane()
   local pane = id and ui.pane.get(id)
   if pane then
     pane:close()
   else
-    ui.pane.split({ module = "tasks", edge = "right", ratio = 0.4 })
+    open()
   end
 end, { desc = "toggle tasks pane" })
 
-hollow.events.on("gui:ready", function()
-  ui.pane.split({ module = "tasks", edge = "right", ratio = 0.4 })
-end)
+-- gui:ready fires once per process. When this file is loaded into a running
+-- window (dofile from the REPL, config reload) a tab already exists, so open
+-- on the next tick instead; a reloaded pane is restored and not duplicated.
+if hollow.term.current_tab() then
+  hollow.defer(open)
+else
+  hollow.events.on("gui:ready", open)
+end
