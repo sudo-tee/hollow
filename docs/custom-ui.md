@@ -314,7 +314,7 @@ for loading layouts.
 
 [`examples/lua-pane.lua`](../examples/lua-pane.lua) is a complete, runnable
 task runner: Run/Cancel buttons, an input for adding commands, arrow-key
-navigation, cleanup in `on_unmount`, and a `<leader>t` toggle that survives
+navigation, cleanup in `on_unmount`, and a `<leader>T` toggle that survives
 config reload. Each task runs on a domain: `local` ones use
 `hollow.process.spawn`, and domains with a host (WSL, SSH, containers) run
 through the agent with [`hollow.host.for_domain`](reference/lua/host.md#domain-hosts).

@@ -3,7 +3,7 @@
 -- Launch with: hollow --config /path/to/examples/lua-pane.lua
 -- or dofile() it from your own config or the Lua REPL.
 --
---   <leader>t  toggle the Tasks pane on the right edge (default leader: Ctrl+Space)
+--   <leader>T  toggle the Tasks pane on the right edge (default leader: Ctrl+Space)
 --   arrows     move between buttons; Tab/Shift-Tab cycle all controls
 --   Enter      run/cancel the focused task, or add the typed command
 --
@@ -303,7 +303,7 @@ local function open()
   end
 end
 
-hollow.keymap.set("<leader>t", function()
+hollow.keymap.set("<leader>T", function()
   local id = find_tasks_pane()
   local pane = id and ui.pane.get(id)
   if pane then
