@@ -2066,7 +2066,23 @@ function command_palette.open(opts) end
 
 function command_palette.close() end
 
+---@class HollowUiCommandLineOptions
+---@field text? string Initial action command or =-prefixed Lua draft.
+---@field width? integer Width in cells (default 80).
+---@field theme? HollowUiTheme
+
+---@class HollowUiCommandLineNamespace
+local command_line = {}
+
+---Open the one-shot Action/Lua command line. Lua is live and not sandboxed.
+---@param opts? HollowUiCommandLineOptions
+---@return HollowUiModalHandle? handle Nil if an exclusive dialog is active.
+function command_line.open(opts) end
+
+function command_line.close() end
+
 ---@class HollowUiLuaReplOptions
+---@field text? string Replace the current draft, including when already open.
 ---@field width? integer Width in cells (default 80).
 ---@field height? integer Fixed height in cells; omitted for automatic content sizing.
 ---@field theme? HollowUiTheme
@@ -2804,6 +2820,7 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
+ui.command_line = command_line
 ui.lua_repl = lua_repl
 ui.mux_navigator = mux_navigator
 ---@type HollowUiActivityNamespace

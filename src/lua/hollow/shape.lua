@@ -368,9 +368,13 @@ end
 ---@return HollowShapeSchema<table>
 function M.object(spec, options)
   options = options or {}
-  return new_schema(function(value, path)
+  local schema = new_schema(function(value, path)
     return parse_object(value, spec, path, options.strict == true, parse_rule)
   end)
+  -- Read-only consumers such as command-line completion need field names,
+  -- without invoking parsers, predicates or transforms for discovery.
+  schema._fields = spec
+  return schema
 end
 
 ---@param spec table<any, HollowShapeRule>

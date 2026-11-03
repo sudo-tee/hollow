@@ -906,6 +906,14 @@ function M.setup(hollow, host_api)
     category = "general",
   })
 
+  register(hollow, "command_line", {
+    run = function()
+      return hollow.ui.command_line.open()
+    end,
+    desc = "Run a Hollow action or =Lua expression",
+    category = "general",
+  })
+
   register(hollow, "lua_repl", {
     run = function()
       return hollow.ui.lua_repl.open()

@@ -125,6 +125,7 @@ Bind these with `{ mode = "copy_mode" }`. See [Copy mode](../copy-mode.md).
 | Action | What it does |
 | --- | --- |
 | `command_palette` | Open the command palette |
+| `command_line` | Run an action or `=Lua` in a compact bottom prompt (default `<leader>c`); see [Command line](../command-line.md) |
 | `activity_center` | Open the activity inbox and running programs (`<leader>a`) |
 | `notification_history` | Open session activity history (`<leader>h`) |
 | `mux_navigator` | Navigate workspaces, tabs, and panes (`<leader>n`) |

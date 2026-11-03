@@ -19,6 +19,7 @@ The is the main entry point for Hollow's documentation.
 - [Themes](themes.md) — built-in themes, custom themes, palette overrides
 - [Custom UI](custom-ui.md) — top bar, sidebars, overlays, Lua panes, and the widget runtime
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment
+- [Command line](command-line.md) — run one Hollow action or Lua chunk and return to work
 - [Copy mode](copy-mode.md) — vim-like scrollback navigation and search
 - [Plugins](plugins.md) — installing, authoring, and updating plugins
 - [Shell integration](shell-integration.md) — what HTP does and how to enable it

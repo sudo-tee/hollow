@@ -7,6 +7,13 @@ overlays (modals, prompts, pickers, notifications), and Lua pane content.
 The [Activity Center](activity.md) combines an inbox, session history, and running
 programs. `hollow.ui.activity.open({ view = "inbox" | "history" })` opens it.
 
+The [command line](../../command-line.md) runs one action or `=Lua` chunk:
+`hollow.ui.command_line.open({ text = "split_vertical", width = 80 })`.
+`hollow.ui.command_line.close()` closes only that prompt. Opening returns a modal
+handle, or `nil` while an exclusive dialog is active. `theme` overrides the input
+theme. For persistent exploration, use `hollow.ui.lua_repl.open({ text = "1 + 2" })`;
+`text` replaces its draft, including when the REPL is already open.
+
 For the conceptual model see [Custom UI](../../custom-ui.md).
 For recipes see [UI recipes](../../examples/ui-recipes.md).
 For the LuaLS schema see

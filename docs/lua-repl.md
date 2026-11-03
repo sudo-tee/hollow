@@ -5,6 +5,9 @@ Open with `<leader>l` (default leader: `Ctrl+Space`), choose **Open Lua REPL
 The bottom-aligned console uses Clay layout and sizes itself to its content,
 with a bounded transcript instead of an empty fixed-height panel.
 
+For a one-shot action or Lua call, use the [command line](command-line.md) instead
+(`<leader>c`). Its Lua draft can be moved into this REPL with Ctrl+R.
+
 To keep it open next to your terminals, run the `lua_repl_dock` action or call
 `hollow.ui.lua_repl.dock({ direction = "horizontal", ratio = 0.35 })`. It
 toggles a native [Lua pane](reference/lua/ui.md#lua-panes) sharing the modal's
@@ -53,6 +56,11 @@ Tab first extends input to their shared prefix. Esc dismisses the menu before
 closing the console. Elsewhere, Tab inserts two spaces. One help line shows
 shortcuts for the active context.
 
+Typing, pasting, or deleting while the menu is open recomputes candidates from
+the current input. Up/Down navigate only those matches, without changing the
+draft. With the menu closed, Up/Down browse history matching the draft's prefix;
+Down past the newest match restores the draft. Ctrl+P/Ctrl+N browse all history.
+
 Each candidate shows its value type (`fn`, `table`, `string`, …) and highlights
 the typed prefix. Private `_names` sort after public fields unless the query
 starts with `_`.
@@ -83,7 +91,7 @@ When updating API typings, regenerate hints with
 | Shift+Enter | Insert newline |
 | Ctrl+Enter | Force submission, including incomplete-code errors |
 | Ctrl+V / Ctrl+Shift+V / Shift+Insert / Cmd+V | Paste without executing |
-| Up/Down | Navigate completion when open, otherwise previous/next command |
+| Up/Down | Navigate filtered completion when open, otherwise prefix-matching history |
 | Ctrl+P/Ctrl+N | Previous/next command; restore draft after history |
 | Left/Right, Home/End, Backspace/Delete | Edit input |
 | Tab / Shift+Tab | Complete/cycle forward or backward; two spaces when no match |

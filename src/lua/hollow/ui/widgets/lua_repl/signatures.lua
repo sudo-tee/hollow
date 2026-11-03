@@ -183,6 +183,8 @@ return {
   ["hollow.ui.button"] = "fun(opts: HollowUiButtonOptions): HollowUiSpanNode",
   ["hollow.ui.close_overlay_widget"] = "fun(widget: HollowUiWidget): HollowUiWidget|nil",
   ["hollow.ui.column"] = "fun(children: HollowUiRowChild[]): HollowUiColumnNode",
+  ["hollow.ui.command_line.close"] = "fun()",
+  ["hollow.ui.command_line.open"] = "fun(opts?: HollowUiCommandLineOptions): HollowUiModalHandle? handle Nil if an exclusive dialog is active.",
   ["hollow.ui.command_palette.close"] = "fun()",
   ["hollow.ui.command_palette.open"] = "fun(opts?: HollowUiCommandPaletteOptions)",
   ["hollow.ui.confirm.close"] = "fun()",

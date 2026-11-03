@@ -61,7 +61,8 @@ local function output_view(theme, h, ctx, opts, rows)
 end
 
 -- Header plus a window of candidates centred on the selection.
-local function candidate_rows(menu, theme, h, muted)
+local function candidate_rows(menu, theme, h, muted, controller, id_prefix)
+  controller, id_prefix = controller or completion, id_prefix or "repl"
   local count = #menu.items
   local shown = math.min(MAX_CANDIDATES, count)
   local first = math.min(math.max(1, menu.index - math.floor(shown / 2)), count - shown + 1)
@@ -98,13 +99,13 @@ local function candidate_rows(menu, theme, h, muted)
       spacer(),
       text(KIND_LABELS[kind] or kind, muted),
     }, {
-      id = "repl:candidate:" .. index,
+      id = id_prefix .. ":candidate:" .. index,
       width = "grow",
       height = h,
       style = selected and { bg = theme.selected_bg or theme.cursor_bg } or nil,
       on_click = function()
-        if completion.menu then
-          completion.accept(index)
+        if controller.menu then
+          controller.accept(index)
         end
       end,
     })
@@ -113,12 +114,14 @@ local function candidate_rows(menu, theme, h, muted)
 end
 
 -- One draft line; the line holding the cursor draws it as a highlighted cell.
-local function input_line(line, theme, h)
+local function input_line(line, theme, h, input, id_prefix, prompt)
+  local editor = input or editor
+  id_prefix = id_prefix or "repl"
   local value, offset = line.text, line.offset
   local plain = { fg = theme.input_fg }
   local has_cursor = editor.cursor >= offset and editor.cursor <= offset + #value
   return c.row({
-    c.text(ui.when(offset == 0, "> ", ".. "), { fg = theme.title }),
+    c.text(ui.when(offset == 0, prompt or "> ", ".. "), { fg = theme.title }),
     ui.when(has_cursor, function()
       local col = editor.cursor - offset
       local next_col = editor.next(editor.cursor) - offset
@@ -127,7 +130,7 @@ local function input_line(line, theme, h)
         text(value:sub(1, col), plain),
         c.column({
           text(ui.when(under ~= "", under, " "), { fg = theme.cursor_fg }),
-        }, { id = "repl:caret", style = { bg = theme.cursor_bg }, height = h }),
+        }, { id = id_prefix .. ":caret", style = { bg = theme.cursor_bg }, height = h }),
         text(value:sub(next_col + 1), plain),
       }
     end, function()
@@ -229,4 +232,6 @@ function M.render(theme, ctx, opts)
     height
 end
 
+M.candidate_rows = candidate_rows
+M.input_line = input_line
 return M

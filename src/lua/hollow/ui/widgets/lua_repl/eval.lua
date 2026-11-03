@@ -18,12 +18,15 @@ end
 
 -- Assignments reach the same globals as config/plugins. Only print is local to
 -- console chunks; do not replace _G.print while arbitrary user code runs.
-M.env = setmetatable({
-  print = function(...)
-    transcript.append(format_values(pack(...), 1), "result")
-  end,
-  inspect = tools.inspect,
-}, { __index = _G, __newindex = _G })
+local function environment(append)
+  return setmetatable({
+    print = function(...)
+      append(format_values(pack(...), 1), "result")
+    end,
+    inspect = tools.inspect,
+  }, { __index = _G, __newindex = _G })
+end
+M.env = environment(transcript.append)
 
 local function short_traceback(message)
   local trace = debug.traceback(tostring(message), 2)
@@ -41,26 +44,35 @@ local function compile(source)
   return loadstring(source, "=Lua REPL")
 end
 
--- Runs `source` and writes the command and its results to the transcript.
--- Returns false, without running anything, when the code is an unfinished block
--- and `force` is not set.
-function M.run(source, force)
+-- Shared evaluator. Sends results/prints/errors to `append`, never replaces
+-- global print, and returns "ok", "error" or "incomplete". The optional start
+-- hook runs only after incomplete-input detection (used for transcript echo).
+function M.execute(source, force, append, env, before_run)
   local chunk, err = compile(source)
   if not chunk and not force and err:match("'<eof>'%s*$") then
-    return false
+    return "incomplete"
   end
-  transcript.append("> " .. source, "command")
+  if before_run then
+    before_run()
+  end
   if not chunk then
-    transcript.append(err, "error")
-    return true
+    append(err, "error")
+    return "error"
   end
-  local result = pack(xpcall(setfenv(chunk, M.env), short_traceback))
+  local result = pack(xpcall(setfenv(chunk, env or environment(append)), short_traceback))
   if not result[1] then
-    transcript.append(result[2], "error")
+    append(result[2], "error")
+    return "error"
   elseif result.n > 1 then
-    transcript.append(format_values(result, 2), "result")
+    append(format_values(result, 2), "result")
   end
-  return true
+  return "ok"
+end
+
+function M.run(source, force)
+  return M.execute(source, force, transcript.append, M.env, function()
+    transcript.append("> " .. source, "command")
+  end) ~= "incomplete"
 end
 
 return M

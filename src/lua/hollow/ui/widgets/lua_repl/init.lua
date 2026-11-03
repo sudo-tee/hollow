@@ -78,8 +78,12 @@ local KEY_ACTIONS = {
   tab = bind(completion.cycle, false),
   ["<S-tab>"] = bind(completion.cycle, true),
 
-  arrow_up = menu_or(bind(completion.cycle, true), bind(editor.recall, -1)),
-  arrow_down = menu_or(bind(completion.cycle, false), bind(editor.recall, 1)),
+  arrow_up = menu_or(bind(completion.cycle, true), function()
+    editor.recall(-1, true)
+  end),
+  arrow_down = menu_or(bind(completion.cycle, false), function()
+    editor.recall(1, true)
+  end),
   ["<C-p>"] = bind(editor.recall, -1),
   ["<C-n>"] = bind(editor.recall, 1),
 
@@ -115,10 +119,15 @@ local keys
 local function on_key(key, mods)
   -- Built on first use: ui.keys needs the keymap, which loads after this module.
   keys = keys or ui.keys(KEY_ACTIONS)
-  if not MENU_KEYS[key] then
-    completion.close()
-  end
+  local was_open, before, cursor = completion.menu ~= nil, editor.text, editor.cursor
   local ok, handled = pcall(keys, key, mods)
+  if was_open and not MENU_KEYS[key] then
+    if editor.text ~= before or editor.cursor ~= cursor then
+      completion.refresh()
+    else
+      completion.close()
+    end
+  end
   if not ok then
     transcript.append(handled, "error")
     return true
@@ -180,6 +189,13 @@ end
 
 function console.open(opts)
   opts = opts or {}
+  if opts.text ~= nil then
+    editor.set(opts.text)
+    completion.close()
+    if active then
+      active.invalidate()
+    end
+  end
   if active then
     return active
   end
