@@ -174,6 +174,21 @@ describe("copy mode test suite", function()
       )
     end)
 
+    it("preserves the literal prefix through the existing search prompt", function()
+      hollow._emit_builtin_event("copy_mode:changed", {
+        active = true,
+        query = "\\Verror.log",
+        match_count = 0,
+      })
+      harness.assert_true(on_key("slash", 0), "copy mode should reopen search")
+      harness.assert_true(on_key("enter", 0), "literal search should confirm")
+      harness.assert_equal(
+        recorded.copy_mode.query,
+        "\\Verror.log",
+        "prompt must preserve literal syntax"
+      )
+    end)
+
     it("jumps to the next match on n", function()
       harness.assert_true(on_key("n", 0), "copy mode should jump to next match")
       harness.assert_equal(

@@ -78,6 +78,8 @@ The full list, grouped by intent:
 | --- | --- |
 | `copy_selection` | Copy the current selection |
 | `paste_clipboard` | Paste from the clipboard |
+| `allow_clipboard_read` | Confirm one clipboard snapshot read for the focused pane; retry within 30 seconds |
+| `revoke_clipboard_read` | Revoke the focused pane's pending clipboard read approval |
 | `quick_select` | Open visible links or copy matched text by keyboard hint |
 | `quick_select_copy` | Copy any visible quick-select match by keyboard hint |
 
@@ -95,6 +97,9 @@ The full list, grouped by intent:
 | `prompt_jump_next` | Jump to the next prompt in scrollback |
 
 ## Copy mode
+
+The `find` action opens an independent live literal [Find bar](../find.md);
+it does not enter copy mode or change copy-mode search semantics.
 
 Bind these with `{ mode = "copy_mode" }`. See [Copy mode](../copy-mode.md).
 

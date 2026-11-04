@@ -88,6 +88,7 @@ hollow.events.on("copy_mode:changed", function()
 end)
 require("hollow.activity").setup(hollow, host_api)
 copy_mode.setup()
+require("hollow.ui.widgets.clipboard").setup()
 state.quick_select = state.quick_select or { active = false, action = "open" }
 hollow.events.on("quick_select:changed", function(payload)
   state.quick_select.active = payload and payload.active == true

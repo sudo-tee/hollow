@@ -7,6 +7,14 @@ overlays (modals, prompts, pickers, notifications), and Lua pane content.
 The [Activity Center](activity.md) combines an inbox, session history, and running
 programs. `hollow.ui.activity.open({ view = "inbox" | "history" })` opens it.
 
+The [Find bar](../../find.md) searches the current terminal pane independently
+of copy mode: `hollow.ui.find.open({ query = "error.log", width = 60 })`.
+Queries are literal and ASCII-case-insensitive; edits search live, Enter visits
+older matches, Shift+Enter visits newer ones, and Escape closes it.
+`hollow.ui.find.close()` clears highlights without restoring the viewport.
+`open()` returns a modal handle, or `nil` for Lua panes, copy mode, or an
+unfinished exclusive dialog. `theme` overrides the input palette.
+
 The [command line](../../command-line.md) runs one action or `=Lua` chunk:
 `hollow.ui.command_line.open({ text = "split_vertical", width = 80 })`.
 `hollow.ui.command_line.close()` closes only that prompt. Opening returns a modal

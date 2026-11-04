@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const fastmem = @import("../fastmem.zig");
 const c = @import("sokol_c");
 const ghostty = @import("../term/ghostty.zig");
+const terminal_search = @import("../term/search.zig");
 const GhosttyRuntime = ghostty.Runtime;
 const selection = @import("../selection.zig");
 const Pane = @import("../pane.zig").Pane;
@@ -52,6 +53,7 @@ pub const CopyModeMatch = struct {
     row: usize,
     start_col: usize,
     end_col: usize,
+    end_row: ?usize = null,
 };
 
 pub const CopyModeSnapshotLine = struct {
@@ -114,11 +116,12 @@ pub fn searchHighlightForRow(self: *const App, pane: *const Pane, row: usize) ?S
     const active_idx = self.copy_mode_match_index;
     var fallback: ?SearchHighlight = null;
     for (self.copy_mode_matches.items, 0..) |match, index| {
-        if (match.row != history_row) continue;
+        const end_row = match.end_row orelse match.row;
+        if (history_row < match.row or history_row > end_row) continue;
         const highlight = SearchHighlight{
             .row = row,
-            .start_col = match.start_col,
-            .end_col = match.end_col,
+            .start_col = if (history_row == match.row) match.start_col else 0,
+            .end_col = if (history_row == end_row) match.end_col else @as(usize, pane.cols),
             .active = active_idx != null and active_idx.? == index,
         };
         if (highlight.active) return highlight;
@@ -182,6 +185,8 @@ fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
 pub fn enterCopyMode(self: *App) void {
     const pane = self.activePane() orelse return;
     if (!pane.isTerminal()) return;
+    self.copy_mode_search.deinit(self.allocator);
+    self.copy_mode_search_pending_jump = null;
     const runtime = if (self.ghostty) |*rt| rt else null;
     const top = if (runtime) |rt| blk: {
         const scrollbar = scroll.refreshPaneScrollbar(self, rt, pane);
@@ -207,6 +212,9 @@ pub fn enterCopyMode(self: *App) void {
 
 pub fn exitCopyMode(self: *App) void {
     const pane = self.copy_mode_pane;
+    self.copy_mode_search.deinit(self.allocator);
+    self.copy_mode_search_pending_jump = null;
+    self.copy_mode_matches.clearRetainingCapacity();
     self.copy_mode_active = false;
     self.copy_mode_pane = null;
     self.copy_mode_anchor = null;
@@ -247,6 +255,8 @@ fn refreshCopyModeSnapshot(self: *App) !void {
     const term = pane.asTerminal() orelse return;
     const scrollbar = scroll.refreshPaneScrollbar(self, runtime, pane);
     const total_rows: usize = @intCast(scrollbar.total);
+    self.copy_mode_snapshot_cols = pane.cols;
+    self.copy_mode_snapshot_screen = runtime.terminalActiveScreen(term.terminal);
     var replacement: std.ArrayListUnmanaged(CopyModeLine) = .empty;
     var committed = false;
     errdefer if (!committed) {
@@ -305,7 +315,7 @@ pub fn refreshCopyModeVisibleSlice(self: *App, pane: *Pane) !void {
         freeCopyModeLine(self, previous);
     }
 
-    if (self.copy_mode_query.len > 0) {
+    if (self.copy_mode_query.len > 0 and terminal_search.Query.parse(self.copy_mode_query) == .pattern) {
         const previous_index = self.copy_mode_match_index;
         try rebuildCopyModeMatches(self);
         if (previous_index) |index| {
@@ -451,9 +461,19 @@ fn captureCopyModeVisibleLine(
 }
 
 fn rebuildCopyModeMatches(self: *App) !void {
+    switch (terminal_search.Query.parse(self.copy_mode_query)) {
+        .literal => |needle| {
+            const pane = self.copy_mode_pane orelse return;
+            const term = pane.asTerminal() orelse return;
+            try self.copy_mode_search.setNeedle(self.allocator, term.terminal, needle);
+            try updateNativeMatches(self);
+            return;
+        },
+        .pattern => {},
+    }
+    self.copy_mode_search.deinit(self.allocator);
     self.copy_mode_matches.clearRetainingCapacity();
     self.copy_mode_match_index = null;
-    if (self.copy_mode_query.len == 0) return;
     if (self.copy_mode_query.len == 0) return;
     for (self.copy_mode_history.items, 0..) |line, row| {
         var start: usize = 0;
@@ -473,8 +493,14 @@ fn rebuildCopyModeMatches(self: *App) !void {
 }
 
 pub fn copyModeSetSearchQuery(self: *App, query: []const u8) !void {
+    if (!self.copy_mode_active) return;
+    const owned = try self.allocator.dupe(u8, query);
     if (self.copy_mode_query.len > 0) self.allocator.free(self.copy_mode_query);
-    self.copy_mode_query = try self.allocator.dupe(u8, query);
+    self.copy_mode_query = owned;
+    self.copy_mode_matches.clearRetainingCapacity();
+    self.copy_mode_match_index = null;
+    self.copy_mode_anchor = null;
+    self.copy_mode_search_pending_jump = null;
     if (self.copy_mode_needs_refresh) try refreshCopyModeSnapshot(self);
     try rebuildCopyModeMatches(self);
     copyModeJumpMatch(self, true);
@@ -485,7 +511,11 @@ pub fn copyModeSetSearchQuery(self: *App, query: []const u8) !void {
 }
 
 pub fn copyModeJumpMatch(self: *App, forward: bool) void {
-    if (self.copy_mode_matches.items.len == 0) return;
+    if (self.copy_mode_matches.items.len == 0) {
+        if (self.copy_mode_search.handle != null and !self.copy_mode_search.complete) self.copy_mode_search_pending_jump = forward;
+        return;
+    }
+    self.copy_mode_search_pending_jump = null;
     const next_index = if (self.copy_mode_match_index) |current|
         if (forward)
             (current + 1) % self.copy_mode_matches.items.len
@@ -498,7 +528,7 @@ pub fn copyModeJumpMatch(self: *App, forward: bool) void {
     self.copy_mode_match_index = next_index;
     const match = self.copy_mode_matches.items[next_index];
     self.copy_mode_cursor = .{ .row = match.row, .col = match.start_col };
-    self.copy_mode_anchor = .{ .row = match.row, .col = match.end_col -| 1 };
+    self.copy_mode_anchor = .{ .row = match.end_row orelse match.row, .col = match.end_col -| 1 };
     if (self.copy_mode_pane) |pane| {
         const visible_rows = copyModeVisibleRows(self, pane);
         const top_target = if (match.row >= visible_rows / 2) match.row - visible_rows / 2 else 0;
@@ -509,6 +539,74 @@ pub fn copyModeJumpMatch(self: *App, forward: bool) void {
         pane.render_dirty = .full;
     }
     emitCopyModeChanged(self);
+}
+
+/// Driven after pane parsing on the same owner thread. Native search does one
+/// bounded feed/tick per frame; no search_run or native select (which catches
+/// up synchronously) is used by the interactive path.
+pub fn tickSearch(self: *App) !void {
+    if (!self.copy_mode_active or terminal_search.Query.parse(self.copy_mode_query) != .literal) return;
+    const pane = self.copy_mode_pane orelse return;
+    const term = pane.asTerminal() orelse return;
+    const runtime = if (self.ghostty) |*rt| rt else return;
+    const scrollbar = runtime.terminalScrollbar(term.terminal) orelse return;
+    // Copy mode still owns its display/yank snapshot. Refresh it when terminal
+    // dimensions or screen identity change, rather than applying live matches
+    // to an obsolete snapshot (e.g. after entering/leaving an alternate screen).
+    if (self.copy_mode_needs_refresh or scrollbar.total != self.copy_mode_history.items.len or
+        self.copy_mode_snapshot_cols != pane.cols or self.copy_mode_snapshot_screen != runtime.terminalActiveScreen(term.terminal))
+    {
+        try refreshCopyModeSnapshot(self);
+    } else {
+        try updateNativeMatches(self);
+    }
+    if (self.copy_mode_search_pending_jump) |forward| {
+        if (self.copy_mode_matches.items.len > 0) copyModeJumpMatch(self, forward);
+        if (self.copy_mode_search.complete) self.copy_mode_search_pending_jump = null;
+    }
+}
+
+fn updateNativeMatches(self: *App) !void {
+    const previous = if (self.copy_mode_match_index) |index|
+        if (index < self.copy_mode_matches.items.len) self.copy_mode_matches.items[index] else null
+    else
+        null;
+    try self.copy_mode_search.step(self.allocator);
+    const matches = self.copy_mode_search.matches.items;
+    var changed = matches.len != self.copy_mode_matches.items.len;
+    if (!changed) {
+        for (matches, self.copy_mode_matches.items) |native, old| {
+            if (!std.meta.eql(copyModeNativeMatch(native), old)) {
+                changed = true;
+                break;
+            }
+        }
+    }
+    if (!changed) return;
+    try self.copy_mode_matches.ensureTotalCapacity(self.allocator, matches.len);
+    self.copy_mode_matches.clearRetainingCapacity();
+    self.copy_mode_match_index = null;
+    for (matches, 0..) |native, index| {
+        const match = copyModeNativeMatch(native);
+        self.copy_mode_matches.appendAssumeCapacity(match);
+        if (previous) |old| {
+            if (std.meta.eql(match, old)) self.copy_mode_match_index = index;
+        }
+    }
+    if (previous != null and self.copy_mode_match_index == null) {
+        self.copy_mode_anchor = null;
+    }
+    if (self.copy_mode_pane) |pane| pane.render_dirty = .full;
+    emitCopyModeChanged(self);
+}
+
+fn copyModeNativeMatch(match: terminal_search.Match) CopyModeMatch {
+    return .{
+        .row = match.start.row,
+        .start_col = match.start.col,
+        .end_col = match.end.col,
+        .end_row = match.end.row,
+    };
 }
 
 pub fn copyModeMove(self: *App, kind: CopyModeMoveKind, extend: bool) void {
@@ -767,6 +865,8 @@ fn copyModeRegexFind(pattern: []const u8, text: []const u8, start: usize) ?struc
 }
 
 pub fn deinitCopyModeState(self: *App) void {
+    self.copy_mode_search.deinit(self.allocator);
+    self.copy_mode_search_pending_jump = null;
     for (self.copy_mode_history.items) |line| {
         if (line.text.len > 0) self.allocator.free(line.text);
         for (line.cells) |cell| {
@@ -968,4 +1068,67 @@ test "copy mode regex finder supports simple regexp operators" {
 
     try std.testing.expect(copyModeRegexFind("^foo", "xxfoo", 0) == null);
     try std.testing.expect(copyModeRegexFind("foo$", "foobar", 0) == null);
+}
+
+test "copy mode native search preserves pattern mode navigation wrapped selection and cleanup" {
+    const allocator = std.testing.allocator;
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    app.ghostty = try GhosttyRuntime.init(allocator, null);
+    const runtime = &app.ghostty.?;
+    app.mux = @import("../mux.zig").Mux.init(allocator);
+    const mux = &app.mux.?;
+    const Workspace = @import("../mux/workspace.zig").Workspace;
+    const workspace = try allocator.create(Workspace);
+    workspace.* = Workspace.init(allocator, 1);
+    try mux.workspaces.append(allocator, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try allocator.create(Pane);
+    pane.* = Pane.init(allocator);
+    pane.cols = 5;
+    pane.rows = 4;
+    pane.content.terminal.terminal = try runtime.createTerminal(5, 4, 0);
+    try tab.appendPane(pane);
+    runtime.terminalWrite(pane.content.terminal.terminal, "abcDEFghi\r\ndefg");
+    enterCopyMode(app);
+    try copyModeSetSearchQuery(app, "d.fg");
+    try std.testing.expectEqual(@as(usize, 1), app.copy_mode_matches.items.len);
+    try std.testing.expect(app.copy_mode_search.handle == null);
+
+    try copyModeSetSearchQuery(app, "\\Vdefg");
+    for (0..1000) |_| {
+        try tickSearch(app);
+        if (app.copy_mode_search.complete) break;
+    }
+    try std.testing.expect(app.copy_mode_search.complete);
+    try std.testing.expectEqual(@as(usize, 2), app.copy_mode_matches.items.len);
+    const wrapped = app.copy_mode_matches.items[0];
+    try std.testing.expectEqual(@as(usize, 0), wrapped.row);
+    try std.testing.expectEqual(@as(?usize, 1), wrapped.end_row);
+    // Navigate both directions, including wraparound, without running a
+    // synchronous native catch-up or losing the multirow selection.
+    app.copy_mode_match_index = null;
+    copyModeJumpMatch(app, true);
+    try std.testing.expectEqual(@as(?usize, 0), app.copy_mode_match_index);
+    try std.testing.expectEqual(@as(usize, 1), app.copy_mode_anchor.?.row);
+    try std.testing.expectEqual(@as(usize, 1), app.copy_mode_anchor.?.col);
+    try std.testing.expectEqual(@as(usize, 3), searchHighlightForRow(app, pane, 0).?.start_col);
+    try std.testing.expectEqual(@as(usize, 2), searchHighlightForRow(app, pane, 1).?.end_col);
+    copyModeJumpMatch(app, false);
+    try std.testing.expectEqual(@as(?usize, 1), app.copy_mode_match_index);
+    copyModeJumpMatch(app, true);
+    try std.testing.expectEqual(@as(?usize, 0), app.copy_mode_match_index);
+
+    try copyModeSetSearchQuery(app, "");
+    try std.testing.expectEqual(@as(usize, 0), app.copy_mode_matches.items.len);
+    try std.testing.expect(app.copy_mode_search.handle == null);
+    try copyModeSetSearchQuery(app, "\\Vdefg");
+    exitCopyMode(app);
+    try std.testing.expect(app.copy_mode_search.handle == null);
+    try std.testing.expectEqual(@as(usize, 0), app.copy_mode_matches.items.len);
+    try copyModeSetSearchQuery(app, "ignored after exit");
+    try std.testing.expectEqualStrings("\\Vdefg", app.copy_mode_query);
 }

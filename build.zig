@@ -310,6 +310,7 @@ pub fn build(b: *std.Build) void {
         gui_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
+        gui_root_module.addImport("ghostty_c", ghostty_translate.createModule());
         @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
 
         const gui_exe = b.addExecutable(.{
@@ -467,11 +468,25 @@ pub fn build(b: *std.Build) void {
     background_module.addOptions("build_options", background_options);
     addShellIntegrationOptions(b, target, optimize, background_options, background_module);
     background_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    background_module.addImport("ghostty_c", ghostty_translate.createModule());
     const background_tests = b.addTest(.{ .root_module = background_module, .filters = &.{"background jobs:"} });
     @import("src/c_build.zig").addPosix(b, background_module, target, optimize);
     const background_run = b.addRunArtifact(background_tests);
     b.step("test-background", "Run headless background pane, mux, and native PTY tests").dependOn(&background_run.step);
     test_step.dependOn(&background_run.step);
+
+    const search_module = b.createModule(.{
+        .root_source_file = b.path("src/terminal_search_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    search_module.addImport("ghostty_c", ghostty_translate.createModule());
+    search_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    const search_tests = b.addTest(.{ .root_module = search_module, .filters = &.{"terminal search"} });
+    const search_run = b.addRunArtifact(search_tests);
+    b.step("test-search", "Run headless incremental terminal search tests").dependOn(&search_run.step);
+    test_step.dependOn(&search_run.step);
 
     const command_test_module = b.createModule(.{
         .root_source_file = b.path("src/command_test.zig"),

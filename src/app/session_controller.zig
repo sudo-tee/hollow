@@ -131,6 +131,11 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     defer output.deinit();
     term.paste_output = &output;
     defer term.paste_output = null;
+    // Preserve inline/bracketed paste and its safety checks. Installing a read
+    // callback would otherwise opt into Kitty mode-5522 paste events, whose
+    // follow-up request cannot be serviced asynchronously by this C API.
+    rt.setClipboardReadCallback(term.terminal, null);
+    defer rt.setClipboardReadCallback(term.terminal, @import("terminal_callbacks.zig").terminalCallbacks().clipboard_read);
     rt.pasteText(term.terminal, text) catch |err| {
         if (err == error.UnsafePaste) {
             try term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);

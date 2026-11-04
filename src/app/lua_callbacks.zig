@@ -540,6 +540,19 @@ pub fn luaClipboardReadCallback(app_ptr: *anyopaque) []const u8 {
     return app.readClipboard();
 }
 
+pub fn luaClipboardReadAuthorizeCallback(app_ptr: *anyopaque, pane_id: usize, allow: bool, generation: ?usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return false;
+    const term = pane.asTerminal() orelse return false;
+    if (generation) |value| if (!term.clipboard_read.matchesPrompt(value)) return false;
+    term.clipboard_read.revoke(app.allocator);
+    if (!allow) return true;
+    if (!app.window_focused or app.activePane() != pane) return false;
+    // Capture only from the user's UI action, never inside the VT callback.
+    term.clipboard_read.approve(app.allocator, app.readClipboard(), io.nanoTimestamp()) catch return false;
+    return true;
+}
+
 pub fn luaScrollActiveCallback(app_ptr: *anyopaque, delta: isize) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.{ .scroll_active_delta = delta });
@@ -638,6 +651,24 @@ pub fn luaCopyModeSearchNextCallback(app_ptr: *anyopaque) void {
 pub fn luaCopyModeSearchPrevCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_mode_search_prev);
+}
+
+pub fn luaTerminalFindCallback(app_ptr: *anyopaque, pane_id: usize, session: usize, operation: []const u8, query: []const u8) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const op = std.meta.stringToEnum(@import("terminal_find.zig").Operation, operation) orelse return false;
+    // Cancellation must not fail when the input queue is full. It also acts
+    // as a barrier against already queued queries from an unmounted widget.
+    if (op == .close) {
+        app.find_cancelled_session = @max(app.find_cancelled_session, session);
+        return true;
+    }
+    if (session <= app.find_cancelled_session) return false;
+    if (query.len > 8192) return false;
+    const owned = app.allocator.dupe(u8, query) catch return false;
+    var event: input.PendingInputEvent = .{ .terminal_find = .{ .pane_id = pane_id, .session = session, .epoch = app.find_epoch, .operation = op, .query = owned } };
+    if (app.enqueueMouse(event)) return true;
+    input.deinitPendingInputEvent(app.allocator, &event);
+    return false;
 }
 
 pub fn luaQuickSelectStartCallback(app_ptr: *anyopaque, action: []const u8) void {

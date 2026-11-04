@@ -6,6 +6,10 @@ local props = require("hollow.ui.components.props")
 local variants = { default = true, primary = true, destructive = true }
 
 local function actions_row(opts, theme, cell_w)
+  local padding = opts.action_padding
+  if padding == nil then
+    padding = { x = cell_w }
+  end
   local palette = setmetatable({
     button_emphasis_bg = theme.button_emphasis_bg
       or color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg),
@@ -22,7 +26,7 @@ local function actions_row(opts, theme, cell_w)
       text = action.text,
       on_click = action.on_click,
       disabled = action.disabled,
-      padding = { x = cell_w },
+      padding = padding,
     })
     -- Dialog buttons follow the theme radius, square when it is unset.
     node.style.radius = theme.radius

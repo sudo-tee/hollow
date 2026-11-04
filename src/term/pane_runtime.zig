@@ -23,6 +23,7 @@ const is_windows = @import("builtin").os.tag == .windows;
 
 const OSC99_PREFIX = "\x1b]99;";
 const OSC1337_PREFIX = "\x1b]1337;";
+const OSC1337_FILE_PREFIX = "\x1b]1337;File=";
 const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
 const HTP_OSC_LOG_MAX = 8192;
@@ -100,14 +101,9 @@ const OscPrefixMatch = enum {
 fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
     if (std.mem.eql(u8, prefix, OSC99_PREFIX)) return .osc99;
     if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) return .htp;
-    if (prefix.len >= OSC1337_PREFIX.len and
-        std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
-        !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
-    {
-        return .osc1337;
-    }
+    if (std.mem.eql(u8, prefix, OSC1337_FILE_PREFIX)) return .osc1337;
     if (std.mem.startsWith(u8, OSC99_PREFIX, prefix) or
-        std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC1337_FILE_PREFIX, prefix) or
         std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
     {
         return .partial;
@@ -1575,6 +1571,39 @@ test "sanitizePtyOutput forwards split OSC 7 to Ghostty" {
     const out2 = sanitizeForTest(&pane, part2[0..], false);
     try std.testing.expectEqualStrings(&part2, out2);
     try std.testing.expect(!pane.cwd_dirty);
+}
+
+test "sanitizePtyOutput forwards native OSC 1337 CurrentDir and Copy but retains File and Hollow" {
+    const allocator = std.testing.allocator;
+    var runtime = try GhosttyRuntime.init(allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(allocator);
+    defer pane.deinit(&runtime);
+    const term = pane.asTerminal().?;
+    term.terminal_runtime = &runtime;
+    term.terminal = try runtime.createTerminal(20, 3, 0);
+    runtime.setTerminalUserdata(term.terminal, &pane);
+    var callbacks = @import("../app/terminal_callbacks.zig").terminalCallbacks();
+    const Capture = struct {
+        var copied: bool = false;
+        fn copy(_: ?*anyopaque, _: ?*anyopaque, request: *const ghostty.ClipboardWrite) callconv(.c) void {
+            copied = request.contents_len == 1 and std.mem.eql(u8, request.contents.?[0].data.slice(), "hello");
+            const reply: ghostty.ClipboardWriteReply = .{ .result = 0 };
+            request.reply(request, &reply);
+        }
+    };
+    Capture.copied = false;
+    callbacks.clipboard_write = Capture.copy;
+    runtime.registerCallbacks(term.terminal, callbacks);
+    var first = "\x1b]1337;Curr".*;
+    runtime.terminalWrite(term.terminal, sanitizeForTest(&pane, &first, false));
+    var second = "entDir=/tmp/native1337\x07\x1b]1337;Copy=:aGVsbG8=\x07".*;
+    runtime.terminalWrite(term.terminal, sanitizeForTest(&pane, &second, false));
+    try std.testing.expectEqualStrings("/tmp/native1337", term.pending_cwd.?);
+    try std.testing.expect(Capture.copied);
+    try std.testing.expectEqual(OscPrefixMatch.osc1337, classifyOscPrefix(OSC1337_FILE_PREFIX));
+    try std.testing.expectEqual(OscPrefixMatch.htp, classifyOscPrefix(HTP_OSC_PREFIX));
+    try std.testing.expectEqual(OscPrefixMatch.osc99, classifyOscPrefix(OSC99_PREFIX));
 }
 
 test "sanitizePtyOutput captures split OSC 99 notification packets" {

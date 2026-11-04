@@ -185,18 +185,19 @@ same chord and a new action — last set wins.
 | ----------- | ------------------- |
 | `<C-S-x>`   | `copy_mode`         |
 | `<C-S-X>`   | `copy_mode` (alias) |
-| `<leader>/` | `copy_mode_search`  |
 
 See [Copy mode](copy-mode.md) for the modal bindings.
 
 ### Leader bindings
 
-| Chord        | Action                    |
-| ------------ | ------------------------- |
-| `<leader>r`  | Rename current tab        |
-| `<leader>uu` | Reload config             |
-| `<leader>p`  | Open the command palette  |
-| `<leader>q`  | Quick select visible text |
+| Chord        | Action                      |
+| ------------ | --------------------------- |
+| `<leader>r`  | Rename current tab          |
+| `<leader>uu` | Reload config               |
+| `<leader>p`  | Open the command palette    |
+| `<leader>f`  | [Find](find.md) in terminal |
+| `<leader>/`  | [Find](find.md) (alias)     |
+| `<leader>q`  | Quick select visible text   |
 
 ### Font size
 

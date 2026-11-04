@@ -649,6 +649,14 @@ function M.setup(hollow, host_api)
     category = "copy_mode",
   })
 
+  register(hollow, "find", {
+    run = function()
+      return hollow.ui.find.open()
+    end,
+    desc = "Find text in terminal scrollback",
+    category = "scroll",
+  })
+
   register(hollow, "copy_mode_search", {
     run = function()
       if copy_mode.is_active() then
@@ -904,6 +912,29 @@ function M.setup(hollow, host_api)
     end,
     desc = "Open session notification and activity history",
     category = "general",
+  })
+
+  register(hollow, "allow_clipboard_read", {
+    run = function()
+      local pane = hollow.term.current_pane()
+      if not pane or pane.kind == "lua" then
+        return
+      end
+      return require("hollow.ui.widgets.clipboard").open(pane.id)
+    end,
+    desc = "Allow next clipboard read (one-shot, this pane)",
+    category = "pane",
+  })
+
+  register(hollow, "revoke_clipboard_read", {
+    run = function()
+      local pane = hollow.term.current_pane()
+      if pane then
+        host_api.clipboard_read_authorize(pane.id, false)
+      end
+    end,
+    desc = "Revoke clipboard read approval for this pane",
+    category = "pane",
   })
 
   register(hollow, "command_line", {

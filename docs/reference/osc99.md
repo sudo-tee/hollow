@@ -1,8 +1,17 @@
 # OSC 99 notifications
 
 Hollow handles Kitty OSC 99, iTerm2 OSC 9, and rxvt OSC 777 notifications as in-app toasts.
-The notification packets are consumed by Hollow and are not written into terminal output.
-Hollow intercepts them because the embedded VT API does not expose a desktop-notification callback.
+The notification packets do not appear as terminal text. OSC 9 and OSC 777 use
+Ghostty's native desktop-notification callback. OSC 99 still needs Hollow's
+interceptor: Ghostty recognizes and parses it internally, but does not dispatch
+it through the VT desktop-notification callback or `UNKNOWN_SEQUENCE`.
+Intercepted OSC 99 packets are stripped before Ghostty receives the remaining
+stream, not fully parsed twice.
+
+Similarly, Hollow intercepts only OSC 1337 `File=` (image conversion) and
+`Hollow;` (HTP). Other OSC 1337 commands reach Ghostty, including `CurrentDir`
+and `Copy`, which have native callbacks. Removing the remaining interceptors
+would require additional supported-command callbacks from upstream.
 
 ## Supported fields
 

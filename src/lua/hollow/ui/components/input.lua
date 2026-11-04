@@ -2,9 +2,32 @@
 -- these are ordinary layout boxes with a caret reveal target.
 ---@type HollowUiComponents
 local c = require("hollow.ui.components")
+local color = require("hollow.color")
 local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local sheet = require("hollow.ui.style.sheet")
+local util = require("hollow.util")
+
+local PLACEHOLDER_BACKGROUND_WEIGHT = 0.55
+
+local function placeholder_color(theme)
+  local resolved = shared.resolve_tokens({
+    fg = theme.input_fg or theme.fg,
+    bg = theme.input_bg,
+  }, theme)
+  local foreground = color.normalize_hex_color(resolved.fg, nil)
+  local background = color.normalize_hex_color(resolved.bg, nil)
+  if not foreground or not background then
+    return resolved.fg or theme.input_fg or theme.fg or theme.muted
+  end
+
+  local function channel(offset)
+    local from = tonumber(foreground:sub(offset, offset + 1), 16)
+    local to = tonumber(background:sub(offset, offset + 1), 16)
+    return math.floor(from + (to - from) * PLACEHOLDER_BACKGROUND_WEIGHT + 0.5)
+  end
+  return string.format("#%02x%02x%02x", channel(2), channel(4), channel(6))
+end
 
 ---@param value HollowUiInputProps
 ---@return HollowUiLayoutNode
@@ -25,13 +48,45 @@ return function(value)
   end
   options.focused = nil
   local runs = {}
-  for index, span in ipairs(input.render(theme, { focused = focused })) do
+  local function add_run(index, span)
     local style = explicit and shared.resolve_tokens(span.style, theme) or span.style
-    runs[index] = c.column({ c.text(span.text, style, { wrap = "none" }) }, {
+    runs[#runs + 1] = c.column({ c.text(span.text, style, { wrap = "none" }) }, {
       id = index == 2 and (prefix .. ":caret") or nil,
       height = cell_h,
       style = style,
     })
+  end
+  local placeholder = options.placeholder
+  assert(placeholder == nil or type(placeholder) == "string", "input placeholder must be a string")
+  local rendered = input.render(theme, { focused = focused })
+  if placeholder and placeholder ~= "" and input.value == "" then
+    local clusters = util.text_graphemes(placeholder)
+    local first = clusters[1] and clusters[1].text or placeholder
+    local remainder = placeholder:sub(#first + 1)
+    local hint_style = { fg = placeholder_color(theme), bg = theme.input_bg }
+    local spans = {}
+    for index, span in ipairs(rendered) do
+      spans[index] = span
+    end
+    if spans[2] then
+      -- Put first hint grapheme under the normal inverse/hollow caret cell.
+      spans[2] = { text = first, style = spans[2].style }
+      if remainder ~= "" then
+        spans[#spans + 1] = {
+          text = remainder,
+          style = hint_style,
+        }
+      end
+    else
+      spans[#spans + 1] = {
+        text = placeholder,
+        style = hint_style,
+      }
+    end
+    rendered = spans
+  end
+  for index, span in ipairs(rendered) do
+    add_run(index, span)
   end
   options.width = options.width or "grow"
   options.padding = options.padding or (boxed and { x = props.cell_w(ctx) * 0.5, y = 2 } or nil)

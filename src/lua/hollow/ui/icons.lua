@@ -6,5 +6,6 @@ return {
   expanded = "▼",
   pane_active = "●",
   pane_inactive = "○",
+  search = "󰍉",
   workspace_active = "•",
 }

@@ -56,6 +56,12 @@ fn appSearchHighlight(context: ?*anyopaque, row: usize) ?terminal_render.SearchH
     };
 }
 
+fn appSearchCell(context: ?*anyopaque, row: usize, col: usize) ?bool {
+    const policy: *const AppRenderPolicy = @ptrCast(@alignCast(context.?));
+    const pane = policy.pane orelse return null;
+    return @import("../app/terminal_find.zig").highlightForCell(policy.app, pane, row, col);
+}
+
 fn appCursorCol(context: ?*anyopaque, row: usize) ?usize {
     const policy: *const AppRenderPolicy = @ptrCast(@alignCast(context.?));
     const pane = policy.pane orelse return null;
@@ -144,6 +150,7 @@ pub fn buildQueueOptions(
         .selection_range = selection_range,
         .redraw_range = redraw_range,
         .search_highlight_fn = if (pane != null) appSearchHighlight else null,
+        .search_cell_fn = if (pane != null and app.find.pane_id == pane.?.id) appSearchCell else null,
         .search_highlight_context = if (pane != null) @ptrCast(policy) else null,
         .cursor_col_fn = if (pane != null) appCursorCol else null,
         .cursor_col_context = if (pane != null) @ptrCast(policy) else null,

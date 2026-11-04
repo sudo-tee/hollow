@@ -18,6 +18,7 @@ pub fn terminalCallbacks() ghostty.TerminalCallbacks {
         .render_hold = renderHoldCallback,
         .pwd_changed = pwdChangedCallback,
         .clipboard_write = clipboardWriteCallback,
+        .clipboard_read = clipboardReadCallback,
         .program_status = programStatusCallback,
         .semantic_prompt = semanticPromptCallback,
         .reset = resetCallback,
@@ -174,6 +175,7 @@ fn semanticPromptCallback(_: ?*anyopaque, userdata: ?*anyopaque, event: *const g
 
 fn resetCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
+    pane.asTerminal().?.clipboard_read.revoke(pane.allocator);
     pane.title_dirty = !pane.title_is_manual;
     pwdChangedCallback(terminal, userdata);
 }
@@ -198,7 +200,7 @@ fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c)
 
 fn clipboardWriteCallback(_: ?*anyopaque, userdata: ?*anyopaque, request: *const ghostty.ClipboardWrite) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
-    // Preserve text-only writes; never install a clipboard-read callback.
+    // Preserve text-only writes; read permissions are separate and one-shot.
     if (request.size < @sizeOf(ghostty.ClipboardWrite)) return;
     const reply: ghostty.ClipboardWriteReply = .{ .result = commitClipboardWrite(pane.allocator, request, struct {
         fn commit(text: [:0]const u8) void {
@@ -206,6 +208,17 @@ fn clipboardWriteCallback(_: ?*anyopaque, userdata: ?*anyopaque, request: *const
         }
     }.commit) };
     request.reply(request, &reply);
+}
+
+fn clipboardReadCallback(_: ?*anyopaque, userdata: ?*anyopaque, request: *const ghostty.ClipboardRead) callconv(.c) void {
+    const pane = paneFromUserdata(userdata) orelse return;
+    const term = pane.asTerminal() orelse return;
+    const app: ?*App = if (pane.host_context) |ptr| @ptrCast(@alignCast(ptr)) else null;
+    const focused = if (app) |value| value.window_focused and value.activePane() == pane else false;
+    const now = @import("../io.zig").nanoTimestamp();
+    if (!term.clipboard_read.reply(pane.allocator, request, now, focused) and focused) {
+        term.clipboard_read.requestPrompt(request, now);
+    }
 }
 
 fn commitClipboardWrite(allocator: std.mem.Allocator, request: *const ghostty.ClipboardWrite, commit: *const fn ([:0]const u8) void) c_int {
@@ -238,6 +251,99 @@ test "native callbacks ignore non-terminal pane userdata" {
     try std.testing.expect(!pane.bell_dirty and !pane.title_dirty and !pane.cwd_dirty);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     try std.testing.expect(surface.dirty);
+}
+
+test "native clipboard read replies deny by default and encode approved text once" {
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(allocator);
+    defer pane.deinit(&runtime);
+    const term = pane.asTerminal().?;
+    term.terminal_runtime = &runtime;
+    term.terminal = try runtime.createTerminal(20, 3, 0);
+    var output: ghostty.PasteOutput = .{ .allocator = allocator };
+    defer output.deinit();
+    term.paste_output = &output;
+    runtime.setTerminalUserdata(term.terminal, &pane);
+    runtime.registerCallbacks(term.terminal, terminalCallbacks());
+    runtime.terminalWrite(term.terminal, "\x1b]52;c;?\x07");
+    try std.testing.expectEqualStrings("\x1b]52;c;\x07", output.bytes.items);
+    output.bytes.clearRetainingCapacity();
+    runtime.terminalWrite(term.terminal, "\x1b]5522;type=read:id=r1;dGV4dC9wbGFpbg==\x1b\\");
+    try std.testing.expect(std.mem.indexOf(u8, output.bytes.items, "status=EPERM") != null);
+    // Supply a fake focused embedding, keeping the real protocol encoder and
+    // the same policy state without calling the OS clipboard in tests.
+    runtime.setClipboardReadCallback(term.terminal, struct {
+        fn read(_: ?*anyopaque, data: ?*anyopaque, request: *const ghostty.ClipboardRead) callconv(.c) void {
+            const node: *Pane = @ptrCast(@alignCast(data.?));
+            _ = node.asTerminal().?.clipboard_read.reply(node.allocator, request, @import("../io.zig").nanoTimestamp(), true);
+        }
+    }.read);
+    try term.clipboard_read.approve(allocator, "secret", @import("../io.zig").nanoTimestamp());
+    output.bytes.clearRetainingCapacity();
+    runtime.terminalWrite(term.terminal, "\x1b]52;c;?\x1b\\");
+    try std.testing.expectEqualStrings("\x1b]52;c;c2VjcmV0\x1b\\", output.bytes.items);
+    output.bytes.clearRetainingCapacity();
+    runtime.terminalWrite(term.terminal, "\x1b]52;c;?\x1b\\");
+    try std.testing.expectEqualStrings("\x1b]52;c;\x1b\\", output.bytes.items);
+    try term.clipboard_read.approve(allocator, "secret", @import("../io.zig").nanoTimestamp());
+    output.bytes.clearRetainingCapacity();
+    runtime.terminalWrite(term.terminal, "\x1b]5522;type=read:id=r2;dGV4dC9wbGFpbg==\x1b\\");
+    try std.testing.expect(std.mem.indexOf(u8, output.bytes.items, "status=OK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.bytes.items, ";c2VjcmV0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.bytes.items, "status=DONE") != null);
+    try std.testing.expect(term.clipboard_read.text == null);
+}
+
+test "native clipboard prompt is deferred and stale consent cannot authorize a later request" {
+    const allocator = std.testing.allocator;
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    app.ghostty = try ghostty.Runtime.init(allocator, null);
+    const runtime = &app.ghostty.?;
+    app.mux = @import("../mux.zig").Mux.init(allocator);
+    const mux = &app.mux.?;
+    const Workspace = @import("../mux/workspace.zig").Workspace;
+    const workspace = try allocator.create(Workspace);
+    workspace.* = Workspace.init(allocator, 1);
+    try mux.workspaces.append(allocator, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try allocator.create(Pane);
+    pane.* = Pane.init(allocator);
+    pane.id = 3;
+    pane.host_context = app;
+    const term = pane.asTerminal().?;
+    term.terminal_runtime = runtime;
+    term.terminal = try runtime.createTerminal(20, 3, 0);
+    try tab.appendPane(pane);
+    var output: ghostty.PasteOutput = .{ .allocator = allocator };
+    defer output.deinit();
+    term.paste_output = &output;
+    defer term.paste_output = null;
+    runtime.setTerminalUserdata(term.terminal, pane);
+    runtime.registerCallbacks(term.terminal, terminalCallbacks());
+    runtime.terminalWrite(term.terminal, "\x1b]52;c;?\x07");
+    try std.testing.expectEqualStrings("\x1b]52;c;\x07", output.bytes.items);
+    try std.testing.expect(term.clipboard_read.text == null);
+    const first = term.clipboard_read.takePrompt().?;
+    try std.testing.expect(term.clipboard_read.takePrompt() == null);
+    // Revocation invalidates a dispatched UI prompt as well as a queued one.
+    term.clipboard_read.revoke(allocator);
+    const authorize = @import("lua_callbacks.zig").luaClipboardReadAuthorizeCallback;
+    // A stale Allow must fail before any OS clipboard access (no Sokol app exists).
+    try std.testing.expect(!authorize(app, pane.id, true, first));
+    term.clipboard_read.last_notice_ns = null;
+    runtime.terminalWrite(term.terminal, "\x1b]52;c;?\x07");
+    const second = term.clipboard_read.takePrompt().?;
+    try std.testing.expect(first != second);
+    try std.testing.expect(!authorize(app, pane.id, false, first));
+    try std.testing.expect(term.clipboard_read.matchesPrompt(second));
+    try std.testing.expect(authorize(app, pane.id, false, second));
+    try std.testing.expect(!term.clipboard_read.prompt_outstanding and term.clipboard_read.text == null);
 }
 
 test "color scheme follows configured terminal background" {

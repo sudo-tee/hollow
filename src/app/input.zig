@@ -232,6 +232,13 @@ pub const PendingInputEvent = union(enum) {
     copy_mode_copy,
     copy_mode_open_search,
     copy_mode_search_set_query: []u8,
+    terminal_find: struct {
+        pane_id: usize,
+        session: usize,
+        epoch: usize,
+        operation: @import("terminal_find.zig").Operation,
+        query: []u8,
+    },
     copy_mode_search_next,
     copy_mode_search_prev,
     quick_select_start: quick_select.Action,
@@ -270,6 +277,7 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
         },
         .file_drop => |drop| allocator.free(drop.paths),
         .copy_mode_search_set_query => |value| allocator.free(value),
+        .terminal_find => |value| allocator.free(value.query),
         else => {},
     }
     event.* = .none;
@@ -670,6 +678,13 @@ pub fn processInputQueue(self: *App) void {
             },
             .copy_mode_open_search => {
                 self.emitLuaBuiltInEvent("copy_mode:search_requested", .none);
+            },
+            .terminal_find => |value| {
+                if (value.epoch != self.find_epoch) continue;
+                @import("terminal_find.zig").request(self, value.pane_id, value.session, value.operation, value.query) catch |err| {
+                    std.log.err("terminal find request failed: {s}", .{@errorName(err)});
+                    @import("terminal_find.zig").close(self);
+                };
             },
             .copy_mode_search_set_query => |query| {
                 copy_mode.copyModeSetSearchQuery(self, query) catch |err| {

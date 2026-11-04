@@ -2,6 +2,39 @@ package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
 describe("dialog component snapshot", function()
+  it("supports opt-in action padding and explicit false without changing defaults", function()
+    local ui = harness.boot().hollow.ui
+    local padding
+    local surface = ui.layout.new({
+      render = function()
+        return ui.components.dialog({
+          action_padding = padding,
+          actions = { { text = "Accept" } },
+        })
+      end,
+    })
+    local function button_padding()
+      for _, node in ipairs(surface:snapshot({ cell_w = 10, cell_h = 20 })) do
+        if node.label == "Accept" then
+          return node.padding
+        end
+      end
+      error("missing action button")
+    end
+    assert.same({ top = 0, right = 10, bottom = 0, left = 10 }, button_padding())
+    padding = { x = 10, y = 4 }
+    surface:invalidate()
+    assert.same({ top = 4, right = 10, bottom = 4, left = 10 }, button_padding())
+    padding = false
+    surface:invalidate()
+    local cleared = button_padding()
+    assert.is_true(
+      cleared == nil
+        or (cleared.top == 0 and cleared.right == 0 and cleared.bottom == 0 and cleared.left == 0)
+    )
+    surface:destroy()
+  end)
+
   it("publishes contrasting native hover text for unselected destructive actions", function()
     local ui = harness.boot().hollow.ui
     local surface = ui.layout.new({

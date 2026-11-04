@@ -211,12 +211,13 @@ Hover paint uses native `style.hover`; `selected` stays a prop for keyboard focu
 
 | Component | Props                                               | Nodes | Replaces |
 | --------- | --------------------------------------------------- | ----- | -------- |
-| `panel`   | `chrome` (theme chrome or override), `inset` = `"overlay"\|"modal"\|"none"` | 1 | root columns in overlay, modal, notify toast |
+| `panel`   | `chrome` (theme chrome or override), `inset` = `"overlay"\|"modal"\|"modal_centered"\|"none"` | 1 | root columns in overlay, modal, notify toast |
 | `header`  | `title`, `meta` (right-aligned text or nodes), `prompt` suffix `":"` | 2–4 | select header, mux search row, activity header |
 | `empty`   | `text`                                               | 1     | "No matches", "No matching panes", activity empties |
 
 `panel` owns the base insets (`0.5ch`/`1lh`/`0.5lh` for overlays, `1.5ch` for
-modals) so overlay.lua and modal.lua stop computing them.
+modals). `modal_centered` balances vertical padding while retaining modal's
+horizontal inset.
 
 ### Lists
 
