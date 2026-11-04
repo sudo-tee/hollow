@@ -4,6 +4,12 @@ pub const success = 0;
 pub const out_of_space = -3;
 pub const no_value = -4;
 
+pub const SnapshotDecoder = @import("session_snapshot.zig").Decoder;
+
+pub fn buildIdentity() []const u8 {
+    return @import("session_build").ghostty_identity;
+}
+
 pub const RowId = u128;
 const NativeRowId = extern struct { bits: [2]u64 };
 const CellsView = extern struct { ptr: ?[*]const u64, len: usize };
@@ -1329,6 +1335,17 @@ pub const Runtime = struct {
         _ = self.terminal_set(handle, @backingInt(TerminalOpt.clipboard_write_max_bytes), &max_bytes);
     }
 
+    /// Parse session output without duplicating the owner's query replies.
+    /// Restore the pane's writer afterwards: Ghostty also uses write_pty for
+    /// user paste encoding, which must still reach the process. GUI-thread only.
+    pub fn terminalWriteMirror(self: *Runtime, handle: ?*anyopaque, bytes: []const u8, write_pty: WritePtyCallback) void {
+        self.setWritePtyCallback(handle, discardMirrorReply);
+        defer self.setWritePtyCallback(handle, write_pty);
+        self.terminalWrite(handle, bytes);
+    }
+
+    fn discardMirrorReply(_: ?*anyopaque, _: ?*anyopaque, _: [*]const u8, _: usize) callconv(.c) void {}
+
     pub fn setClipboardReadCallback(self: *Runtime, handle: ?*anyopaque, callback: ?ClipboardReadCallback) void {
         _ = self.terminal_set(handle, @backingInt(TerminalOpt.clipboard_read), if (callback) |cb| @ptrCast(cb) else null);
     }
@@ -1945,6 +1962,10 @@ test "synchronized output mode round trips through Ghostty" {
     try std.testing.expect(runtime.terminalMode(terminal, .synchronized_output));
     try std.testing.expect(runtime.setTerminalMode(terminal, .synchronized_output, false));
     try std.testing.expect(!runtime.terminalMode(terminal, .synchronized_output));
+}
+
+test {
+    _ = @import("session_snapshot.zig");
 }
 
 test "native prompt navigation moves relative to viewport top" {

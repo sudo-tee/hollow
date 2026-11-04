@@ -3,7 +3,9 @@
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
 [Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 (Linux owner +
 `connect`) done; see [Phase 1 status](#phase-1-status-2026-11-04). Phase 2
-(GUI) next. Snapshot format revised the same
+(GUI) started: snapshot decoder foundation is implemented; transport and
+workspace wiring are next. See [Phase 2 status](#phase-2-status-2026-11-04).
+Snapshot format revised the same
 day to ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
 
@@ -328,6 +330,45 @@ Carried into Phase 2:
   confirm retry once with `StrictHostKeyChecking=accept-new`; a changed key is
   a hard error showing the offending `known_hosts` entry; no password prompts.
   Until then users set up SSH trust themselves (see Startup and UX).
+
+### Phase 2 status (2026-11-04)
+
+Implemented foundation (not yet wired into live GUI panes):
+- `src/term/session_snapshot.zig`: caller-owned terminal returned at READY,
+  then one history/image record decoded per `next` call. The caller reapplies
+  its scrollback limit, keeps the terminal alive until decoder cleanup, and
+  may render or parse live bytes between records. Invalid/truncated snapshots
+  poison the decoder without destroying the terminal returned by READY.
+- Buffer and reader sources are supported. Ghostty's reader is synchronous:
+  zero bytes means permanent EOF. Network-backed decoding must run off the
+  GUI thread and wait for data, not present temporary starvation as EOF.
+  Terminal ownership must be handed off between decode and GUI use, never
+  accessed concurrently by decoder and renderer.
+- `Runtime.terminalWriteMirror` suppresses PTY replies only while parsing
+  owner output. The normal callback is restored afterwards because Ghostty
+  also uses it for user paste encoding. Native/nonpersistent parsing is
+  unchanged.
+- GUI and agent build options use the same ghostty package identity helper.
+- `zig build test-session-snapshot` verifies READY rendering before history,
+  live parsing during history restore, both screens, title, continuation,
+  scrollback limit, truncated data, ownership/cleanup, identity, and query
+  suppression without losing user paste. Passed on Linux (Debug, ReleaseSafe,
+  ReleaseSmall)
+  and Windows x86_64 (via WSL interop); Windows GUI cross-build also passed.
+  Linux GUI build/full `test` link is blocked by missing X11, Xi, Xcursor,
+  GL and ALSA development libraries in this environment.
+
+Next implementation slices:
+1. Session transport over existing connectors, with bounded queues and
+   snapshot decoding off the GUI thread; no fallback or replay after create.
+2. Session-backed PTY and safe terminal replacement (render/input helpers,
+   cache invalidation), dead panes and explicit close versus detach.
+3. Host-bound workspaces and revision-checked nested layout blobs.
+4. Remember attached host/session IDs, auto-reattach local/WSL sessions and
+   lazy SSH restore; missing sessions stay placeholders.
+
+`persist = true` is not enabled by this foundation alone. Native Windows
+owner and WSL keepalive remain Phase 3. SSH trust remains user-managed.
 
 ### Tests per phase
 

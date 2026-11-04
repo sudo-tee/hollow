@@ -115,6 +115,27 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
+    const ghostty_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/term/ghostty_bindings.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ghostty_translate.addIncludePath(ghostty_dep.artifact("ghostty-vt-static").getEmittedIncludeTree());
+    // Define this before optional GUI dependencies: snapshot tests need no
+    // window, fonts, Lua or renderer, including on a cold dependency cache.
+    const snapshot_module = b.createModule(.{
+        .root_source_file = b.path("src/session_snapshot_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    snapshot_module.addImport("ghostty_c", ghostty_translate.createModule());
+    snapshot_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addSessionIdentity(b, snapshot_module, ghostty_dep.builder);
+    const snapshot_tests = b.addTest(.{ .root_module = snapshot_module, .filters = &.{"session "} });
+    const snapshot_run = b.addRunArtifact(snapshot_tests);
+    b.step("test-session-snapshot", "Run GUI session mirror snapshot contracts").dependOn(&snapshot_run.step);
     // Temporary Phase 0 spike for persistent sessions (docs/persistent-sessions.md).
     {
         const spike_mod = b.createModule(.{ .target = target, .optimize = ghostty_optimize, .link_libc = true, .strip = true });
@@ -208,13 +229,6 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     @import("src/c_build.zig").addPosix(b, root_module, target, optimize);
     @import("src/c_build.zig").addClay(b, root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
-    const ghostty_translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/term/ghostty_bindings.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    ghostty_translate.addIncludePath(ghostty_dep.artifact("ghostty-vt-static").getEmittedIncludeTree());
     root_module.addImport("ghostty_c", ghostty_translate.createModule());
 
     const translate = b.addTranslateC(.{
@@ -503,6 +517,7 @@ pub fn build(b: *std.Build) void {
     const mux_visibility_test_step = b.step("test-mux-visibility", "Run headless hidden-pane mux regressions");
     mux_visibility_test_step.dependOn(&mux_visibility_run.step);
     test_step.dependOn(&mux_visibility_run.step);
+    test_step.dependOn(&snapshot_run.step);
 
     const search_module = b.createModule(.{
         .root_source_file = b.path("src/terminal_search_test.zig"),

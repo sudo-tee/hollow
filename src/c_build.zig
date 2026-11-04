@@ -17,6 +17,15 @@ pub fn addTextWidth(b: *std.Build, module: *std.Build.Module, ghostty: *std.Buil
     module.addCSourceFile(.{ .file = b.path("src/text_width.c"), .flags = &.{ "-std=c99", "-DGHOSTTY_STATIC" } });
     module.linkLibrary(ghostty);
     module.addIncludePath(ghostty.getEmittedIncludeTree());
+    addSessionIdentity(b, module, ghostty.step.owner);
+}
+
+/// The agent and every GUI/test terminal use the same pinned package identity.
+/// Ghostty's dev version string does not distinguish snapshot formats.
+pub fn addSessionIdentity(b: *std.Build, module: *std.Build.Module, ghostty: *std.Build) void {
+    const options = b.addOptions();
+    options.addOption([]const u8, "ghostty_identity", ghostty.pkg_hash);
+    module.addOptions("session_build", options);
 }
 
 pub fn addPosix(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
