@@ -87,6 +87,16 @@ fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepar
     return .{ .cwd = cwd, .argv = argv };
 }
 
+/// Rejects NULs and malformed env keys before a spawn reaches fork.
+pub fn validateSpawn(spawn: wire.Spawn) !void {
+    for (spawn.argv) |arg| if (std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidArgv;
+    if (spawn.cwd) |cwd| if (std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidCwd;
+    if (spawn.command) |cmd| if (std.mem.indexOfScalar(u8, cmd, 0) != null) return error.InvalidCommand;
+    for (spawn.env) |env| {
+        if (env.key.len == 0 or std.mem.indexOfAny(u8, env.key, "=\x00") != null or std.mem.indexOfScalar(u8, env.value, 0) != null) return error.InvalidEnv;
+    }
+}
+
 /// Mux calls this only after fork, so environment and filesystem preparation
 /// cannot mutate or block the long-lived transport owner.
 pub fn execSpawn(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !void {
@@ -232,7 +242,7 @@ fn flushPending(master: c_int, pending: *std.ArrayList(u8)) void {
     pending.items.len = rest;
 }
 
-fn applyResize(master: c_int, cols: u16, rows: u16) void {
+pub fn applyResize(master: c_int, cols: u16, rows: u16) void {
     var winsize = std.mem.zeroes(c.struct_winsize);
     winsize.ws_col = cols;
     winsize.ws_row = rows;

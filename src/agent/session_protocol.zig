@@ -136,6 +136,22 @@ pub const SessionInfo = struct {
     panes: []const PaneInfo = &.{},
 };
 
+/// Answer to a `Request` with the same `id`. Fields other than `id`, `ok`
+/// and `error` are present only for the ops that return them.
+pub const Reply = struct {
+    id: u64,
+    ok: bool = true,
+    @"error": ?[]const u8 = null,
+    session: ?SessionInfo = null,
+    sessions: ?[]const SessionInfo = null,
+    pane: ?u32 = null,
+    revision: ?u64 = null,
+};
+
+pub fn stringify(allocator: std.mem.Allocator, value: anytype) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 pub const EventKind = enum {
     /// Another client attached; this client is detached.
     taken,

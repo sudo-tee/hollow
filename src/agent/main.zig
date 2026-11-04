@@ -6,6 +6,7 @@ const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const pty = @import("pty.zig");
 const mux = @import("mux.zig");
+const session = @import("session.zig");
 const c = @import("posix_c");
 const A = std.heap.page_allocator;
 const max_jobs = 16;
@@ -294,6 +295,7 @@ pub fn main(init: std.process.Init) !void {
     const mode = args.next() orelse "stdio";
     if (std.mem.eql(u8, mode, "pty")) return pty.run(init.gpa, init.io);
     if (std.mem.eql(u8, mode, "mux")) return mux.run(init.gpa, init.io);
+    if (std.mem.eql(u8, mode, "session")) return session.run(init.gpa, init.io, &args);
     if (!std.mem.eql(u8, mode, "stdio")) return error.InvalidArgument;
     var agent = Agent{ .agent_pid = c.getpid() };
     var random: [16]u8 = undefined;
@@ -518,4 +520,5 @@ test {
     _ = pty;
     _ = mux;
     _ = @import("session_vt.zig");
+    _ = @import("session_test.zig");
 }

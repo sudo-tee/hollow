@@ -146,12 +146,11 @@ const Sink = struct {
     }
 };
 
-/// The ghostty build identity sent in the session hello. Binary snapshots are
-/// only exchanged between identical identities.
+/// The ghostty build identity sent in the session hello: the pinned package
+/// hash from build.zig.zon. Binary snapshots are only exchanged between
+/// identical identities.
 pub fn buildIdentity() []const u8 {
-    var value: g.GhosttyString = .{ .ptr = null, .len = 0 };
-    if (g.ghostty_build_info(@intCast(g.GHOSTTY_BUILD_INFO_VERSION_STRING), &value) != g.GHOSTTY_SUCCESS or value.len == 0) return "unknown";
-    return value.ptr[0..value.len];
+    return @import("session_build").ghostty_identity;
 }
 
 fn opt(value: c_int) g.GhosttyTerminalOption {
@@ -164,6 +163,10 @@ fn dataKey(value: c_int) g.GhosttyTerminalData {
 
 fn check(result: anytype) !void {
     if (result != g.GHOSTTY_SUCCESS) return error.GhosttyFailed;
+}
+
+pub fn freeTerminal(terminal: g.GhosttyTerminal) void {
+    g.ghostty_terminal_free(terminal);
 }
 
 /// Restores a binary snapshot into a fresh terminal (client side and tests).
@@ -185,7 +188,8 @@ pub fn restore(bytes: []const u8, scrollback_bytes: usize) !g.GhosttyTerminal {
     return terminal;
 }
 
-fn plain(terminal: g.GhosttyTerminal, allocator: std.mem.Allocator) ![]u8 {
+/// Plain text of the active screen and scrollback (tests and debugging).
+pub fn plain(terminal: g.GhosttyTerminal, allocator: std.mem.Allocator) ![]u8 {
     var options = std.mem.zeroes(g.GhosttyFormatterTerminalOptions);
     options.size = @sizeOf(g.GhosttyFormatterTerminalOptions);
     options.emit = @intCast(g.GHOSTTY_FORMATTER_FORMAT_PLAIN);

@@ -1,9 +1,10 @@
 # Persistent sessions plan
 
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
-[Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 in progress: wire
-protocol (`src/agent/session_protocol.zig`) and per-pane VT
-(`src/agent/session_vt.zig`) landed; owner next. Snapshot format revised the
+[Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 in progress: owner,
+`connect`, and debug client landed and pass in-process tests plus local and
+`wsl.exe` end-to-end checks; the SSH check and the runtime-dir question
+(Q49) are open. See [Phase 1 status](#phase-1-status-2026-11-04). Snapshot format revised the
 same day to ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
 
@@ -261,11 +262,57 @@ Findings to carry into Phase 1:
   then frames of at most 16 KiB; the client decodes incrementally.
 - Spawn: reuse `pty.zig` spawn (`Spawn` JSON, shell integration, `path_style`)
   without the parent-death signal.
-- ghostty binding: C API via `@cImport`, as in `src/term/ghostty.zig`. The C
+- ghostty binding: C API via translate-c (`ghostty_c`), as in the GUI. The C
   API is Zig compiled into the same static library, so a call is a plain
   function call; the only loss is cross-call inlining, negligible because
   `vt_write` is called per PTY read. Revisit only if profiling shows hot
   per-cell calls.
+
+### Phase 1 status (2026-11-04)
+
+Code: `src/agent/session.zig` (subcommands `serve`, `connect`, `list`,
+`kill-server`, hidden `debug-attach`), `src/agent/session_posix.zig` (owner),
+`src/agent/session_test.zig` (in-process tests with a fake client on a
+socketpair).
+
+Behaviour as built:
+- `connect` starts the owner with `setsid` and a double fork. Owner stderr goes
+  to `owner.log` in the runtime dir. Racing starters are resolved by `flock`
+  on `session-v1.lock`; the loser retries for 5 s, then exits.
+- Ghostty build identity is the ghostty package hash pinned in
+  `build.zig.zon` (passed as a build option). `ghostty_build_info`'s version
+  string is `0.1.0-dev` for every dev build, so it cannot tell builds apart.
+- Snapshots are encoded lazily per pane, only while the client's queue is
+  under 1 MiB, so attaching many large panes never buffers them all at once.
+  A pane's output is held until its snapshot is sent; bytes read meanwhile
+  are already in the snapshot. Resync uses the same path once the client has
+  returned all credit.
+- Exit status is sent after PTY EOF, or 200 ms after the reap when a
+  background job keeps the slave open; later output only updates the VT.
+- Idle shutdown (no sessions, no clients) is cancelled by a new connection;
+  `kill-server` and SIGTERM stop listening immediately.
+- State files are written atomically on structural changes and removed when
+  the session ends.
+- Closed panes get SIGHUP to the process group, then SIGKILL after 1.5 s.
+
+Verified: 7 owner tests (binary snapshot attach + take-over + input after
+disconnect, VT fallback for a foreign identity, dead pane across reattach,
+exit after background-held PTY, idle-stop cancel, layout revision conflict,
+credit-starved resync) in Debug, ReleaseSafe and ReleaseSmall. End to end with
+the static musl agent: owner autostart (13 ms local, 177 ms via `wsl.exe`),
+`connect` killed, `list` shows detached, reattach snapshot, input, `kill-server`
+removes socket and state. `debug-attach` checked through a pty (zsh with shell
+integration, detach and reattach, exit status). Static agent: 2.6 MB x86_64.
+
+Not done yet:
+- SSH manual check.
+- Q49: `/run/user/$UID` is removed by systemd when the user's last login
+  session ends (no linger), which deletes the socket while the owner keeps
+  running. Pending decision.
+- Scrollback cap is a fixed 10 MiB per pane until the GUI passes its config.
+- The VT fallback does not forward unparsed trailing bytes after the snapshot.
+- Title/cwd in `list` come from the owner VT; zsh integration showed both
+  empty, to check in Phase 2.
 
 ### Tests per phase
 

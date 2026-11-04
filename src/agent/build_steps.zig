@@ -71,6 +71,11 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     translate.addIncludePath(vt.getEmittedIncludeTree());
     translate.defineCMacro("GHOSTTY_STATIC", "");
     module.addImport("ghostty_c", translate.createModule());
+    // Binary snapshots are only exchanged between identical ghostty packages;
+    // the version string alone does not change between dev builds.
+    const session_options = b.addOptions();
+    session_options.addOption([]const u8, "ghostty_identity", ghostty.builder.pkg_hash);
+    module.addOptions("session_build", session_options);
     return module;
 }
 
