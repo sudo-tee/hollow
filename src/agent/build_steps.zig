@@ -164,6 +164,18 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     setPathEnvironmentVariable(run_pty_tests, "HOLLOW_TEST_AGENT", b.graph.path(.install_prefix, "host-test/hollow-agent-test"));
     run_pty_tests.step.dependOn(&install_test_agent.step);
     b.step("test-agent-pty", "Run agent PTY client tests against a native Linux agent").dependOn(&run_pty_tests.step);
+    const session_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/session_transport_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    @import("../c_build.zig").addPosix(b, session_tests.root_module, b.graph.host, optimize);
+    const run_session_tests = b.addRunArtifact(session_tests);
+    run_session_tests.has_side_effects = true;
+    setPathEnvironmentVariable(run_session_tests, "HOLLOW_TEST_AGENT", b.graph.path(.install_prefix, "host-test/hollow-agent-test"));
+    run_session_tests.step.dependOn(&install_test_agent.step);
+    b.step("test-session-transport", "Run bounded session client and connector lifecycle tests").dependOn(&run_session_tests.step);
     const pane_bench = b.addExecutable(.{ .name = "hollow-agent-pane-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent_pane_bench.zig"),
         .target = b.graph.host,

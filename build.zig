@@ -136,6 +136,31 @@ pub fn build(b: *std.Build) void {
     const snapshot_tests = b.addTest(.{ .root_module = snapshot_module, .filters = &.{"session "} });
     const snapshot_run = b.addRunArtifact(snapshot_tests);
     b.step("test-session-snapshot", "Run GUI session mirror snapshot contracts").dependOn(&snapshot_run.step);
+    const session_client_module = b.createModule(.{
+        .root_source_file = b.path("src/session_transport_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addPosix(b, session_client_module, target, optimize);
+    const session_client_tests = b.addTest(.{ .root_module = session_client_module, .filters = &.{"session client"} });
+    const session_client_run = b.addRunArtifact(session_client_tests);
+    b.step("test-session-client", "Run portable session protocol client contracts").dependOn(&session_client_run.step);
+    const connector_test_module = b.createModule(.{
+        .root_source_file = b.path("src/session_connector_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addPosix(b, connector_test_module, target, optimize);
+    const connector_test_options = b.addOptions();
+    connector_test_options.addOption(?[]const u8, "wsl", b.option([]const u8, "session-test-wsl", "WSL distro for opt-in session connector checks"));
+    connector_test_options.addOption(?[]const u8, "agent", b.option([]const u8, "session-test-agent", "Preinstalled guest Linux agent for session connector checks"));
+    connector_test_module.addOptions("session_test_options", connector_test_options);
+    const connector_tests = b.addTest(.{ .root_module = connector_test_module, .filters = &.{"session connector"} });
+    const connector_run = b.addRunArtifact(connector_tests);
+    connector_run.has_side_effects = true;
+    b.step("test-session-connector", "Run opt-in WSL session connector lifecycle check").dependOn(&connector_run.step);
     // Temporary Phase 0 spike for persistent sessions (docs/persistent-sessions.md).
     {
         const spike_mod = b.createModule(.{ .target = target, .optimize = ghostty_optimize, .link_libc = true, .strip = true });
@@ -518,6 +543,7 @@ pub fn build(b: *std.Build) void {
     mux_visibility_test_step.dependOn(&mux_visibility_run.step);
     test_step.dependOn(&mux_visibility_run.step);
     test_step.dependOn(&snapshot_run.step);
+    test_step.dependOn(&session_client_run.step);
 
     const search_module = b.createModule(.{
         .root_source_file = b.path("src/terminal_search_test.zig"),

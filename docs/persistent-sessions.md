@@ -3,8 +3,9 @@
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
 [Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 (Linux owner +
 `connect`) done; see [Phase 1 status](#phase-1-status-2026-11-04). Phase 2
-(GUI) started: snapshot decoder foundation is implemented; transport and
-workspace wiring are next. See [Phase 2 status](#phase-2-status-2026-11-04).
+(GUI) started: snapshot decoder and asynchronous session transport are
+implemented; session-backed panes and workspace wiring are next. See
+[Phase 2 status](#phase-2-status-2026-11-04).
 Snapshot format revised the same
 day to ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
@@ -353,16 +354,53 @@ Implemented foundation (not yet wired into live GUI panes):
   live parsing during history restore, both screens, title, continuation,
   scrollback limit, truncated data, ownership/cleanup, identity, and query
   suppression without losing user paste. Passed on Linux (Debug, ReleaseSafe,
-  ReleaseSmall)
-  and Windows x86_64 (via WSL interop); Windows GUI cross-build also passed.
+  ReleaseSmall) and Windows x86_64 (via WSL interop); Windows GUI cross-build
+  also passed.
   Linux GUI build/full `test` link is blocked by missing X11, Xi, Xcursor,
   GL and ALSA development libraries in this environment.
 
+Session transport implemented (still not connected to GUI workspace lifecycle):
+- `src/session/client.zig`: GUI-independent protocol state, request correlation,
+  handshake/build-identity validation, owned messages and output-credit ledger.
+  Limits per connection: 64 retained requests, 1024 pane metadata slots, and
+  512 frames / 8 MiB payload per queue, plus in-flight frames. Requests are
+  marked submitted before writing; connection loss distinguishes `not_sent`
+  from `uncertain`. No automatic retry, replay, native fallback or new shell.
+- `src/session/transport.zig`: asynchronous deployment and `session connect`
+  over the existing connectors. One connection per attached workspace, with
+  cancellable reader/writer/watchdog tasks, no per-pane I/O threads. Full
+  receive queues pause reads without blocking the writer or GUI; returned
+  messages own their payloads. Snapshot chunks are exposed as messages;
+  decoder/terminal ownership hand-off is the next integration step.
+- Output grants are returned only after parsing, not when a frame arrives.
+  Attachment generations prevent stale input/resize/credit from reaching a
+  new session with reused pane IDs. Implicit attached-pane actions are held
+  off until attach/create replies have been dequeued by the GUI.
+- The watchdog uses deadlines and condition waits, not idle polling. Credit
+  writes reuse an armed check rather than waking the watchdog per frame.
+  Handshake and request timeouts use the configured agent timeout; blocked
+  writes time out after 3 s. Shutdown joins blocked I/O, including readers
+  paused on full queues. Destroying a bridge only detaches; pane `close` and
+  `kill-server` remain explicit protocol requests.
+- Verified with `zig build --build-file build-agent.zig test-session-transport`
+  in Debug, ReleaseSafe and ReleaseSmall: real-owner detach/reattach, snapshot,
+  input, output across credit windows, sibling-preserving close and take-over;
+  fake connectors exercise lost replies, unanswered requests, full receive
+  queues, oversized headers, blocked writes and idle-watchdog behavior. Pure
+  tests cover bounds, allocation failures, stale generations and correlation.
+  Existing agent-loop and agent-PTY tests also pass.
+- `zig build test-session-client` runs portable client contracts (also passed
+  as native Windows tests). `test-session-connector` is an opt-in WSL check:
+  `-Dtarget=x86_64-windows-gnu -Dsession-test-wsl=<distro>
+  -Dsession-test-agent=<preinstalled-guest-agent-path>`. Passed with a native
+  Windows transport through `wsl.exe`: bridge destruction, reattach snapshot,
+  and input to the original process. It creates a unique private test endpoint
+  and kills its owner afterwards; it does not test WSL idle shutdown.
+
 Next implementation slices:
-1. Session transport over existing connectors, with bounded queues and
-   snapshot decoding off the GUI thread; no fallback or replay after create.
-2. Session-backed PTY and safe terminal replacement (render/input helpers,
+1. Session-backed PTY and safe terminal replacement (render/input helpers,
    cache invalidation), dead panes and explicit close versus detach.
+2. Snapshot decoder/GUI ownership hand-off without blocking UI on network I/O.
 3. Host-bound workspaces and revision-checked nested layout blobs.
 4. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
