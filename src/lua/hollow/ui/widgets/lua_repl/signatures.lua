@@ -195,6 +195,8 @@ return {
   ["hollow.ui.dispatch_widget_event"] = "fun(name: string, payload: HollowUiNodeEventPayload)",
   ["hollow.ui.divider"] = "fun(color?: HollowColor): HollowUiRowNode",
   ["hollow.ui.each"] = "fun(list: T[]|HollowTbl|nil, fn: fun(item: T, index: integer): R|nil|false): (R|false)[]",
+  ["hollow.ui.find.close"] = "fun()",
+  ["hollow.ui.find.open"] = "fun(opts?: HollowUiFindOptions): HollowUiModalHandle? handle Nil for Lua panes, copy mode, or an active exclusive dialog.",
   ["hollow.ui.fire"] = "fun(fn: function|nil, value?: any)",
   ["hollow.ui.group"] = "fun(children: HollowUiChild[]|nil, style?: HollowUiNodeStyle|HollowHexColor): HollowUiGroupNode",
   ["hollow.ui.icon"] = "fun(name: string, style?: HollowUiNodeStyle|HollowHexColor): HollowUiIconNode",
