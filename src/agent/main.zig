@@ -517,4 +517,5 @@ fn errorCode(err: anyerror) []const u8 {
 test {
     _ = pty;
     _ = mux;
+    _ = @import("session_vt.zig");
 }

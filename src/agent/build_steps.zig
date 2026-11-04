@@ -52,6 +52,25 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     module.addImport("posix_c", shell.import_table.get("posix_c").?);
     // glibc keeps forkpty in libutil; musl has it in libc.
     if (target.result.abi != .musl) module.linkSystemLibrary("util", .{});
+    // Headless VT for persistent sessions. ghostty is a URL dependency in
+    // build.zig.zon (no submodules), shared with the GUI build.
+    const ghostty = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = if (optimize == .debug) .fast else optimize,
+        .simd = true,
+        .@"emit-lib-vt" = true,
+    });
+    const vt = ghostty.artifact("ghostty-vt-static");
+    module.linkLibrary(vt);
+    const translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/term/ghostty_bindings.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translate.addIncludePath(vt.getEmittedIncludeTree());
+    translate.defineCMacro("GHOSTTY_STATIC", "");
+    module.addImport("ghostty_c", translate.createModule());
     return module;
 }
 
@@ -97,6 +116,12 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
     }) });
     protocol_step.dependOn(&b.addRunArtifact(pty_protocol_tests).step);
+    const session_protocol_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent/session_protocol.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    }) });
+    protocol_step.dependOn(&b.addRunArtifact(session_protocol_tests).step);
     const loop_tests = b.addTest(.{ .root_module = agentModule(b, b.graph.host, optimize) });
     b.step("test-agent-loop", "Run agent RPC loop and PTY helper unit tests").dependOn(&b.addRunArtifact(loop_tests).step);
     const fs_tests = b.addTest(.{ .root_module = b.createModule(.{
