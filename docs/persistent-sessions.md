@@ -1,10 +1,9 @@
 # Persistent sessions plan
 
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
-[Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 in progress: owner,
-`connect`, and debug client landed and pass in-process tests plus local and
-`wsl.exe` end-to-end checks; the SSH check is open. See
-[Phase 1 status](#phase-1-status-2026-11-04). Snapshot format revised the same
+[Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 (Linux owner +
+`connect`) done; see [Phase 1 status](#phase-1-status-2026-11-04). Phase 2
+(GUI) next. Snapshot format revised the same
 day to ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
 
@@ -310,13 +309,15 @@ the static musl agent: owner autostart (13 ms local, 177 ms via `wsl.exe`),
 `connect` killed, `list` shows detached, reattach snapshot, input, `kill-server`
 removes socket and state. `debug-attach` checked through a pty (zsh with shell
 integration, detach and reattach, exit status). Static agent: 2.6 MB x86_64.
+SSH (manual, `debug-attach` over `ssh -t` to WSL's sshd): session survives
+both a killed `ssh` client and a killed server-side `sshd-session`; `list`
+shows it detached and reattach restores the screen.
 
-Not done yet:
-- SSH manual check.
+Carried into Phase 2:
 - Scrollback cap is a fixed 10 MiB per pane until the GUI passes its config.
 - The VT fallback does not forward unparsed trailing bytes after the snapshot.
-- Title/cwd in `list` come from the owner VT; zsh integration showed both
-  empty, to check in Phase 2.
+- Title in `list` comes from the owner VT and was empty under zsh
+  integration (cwd via OSC 7 works); check in Phase 2.
 
 ### Tests per phase
 
