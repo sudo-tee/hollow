@@ -115,6 +115,20 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
+    // Temporary Phase 0 spike for persistent sessions (docs/persistent-sessions.md).
+    {
+        const spike_mod = b.createModule(.{ .target = target, .optimize = ghostty_optimize, .link_libc = true, .strip = true });
+        spike_mod.addCSourceFiles(.{ .root = b.path("spikes/session-snapshot/src"), .files = &.{"main.c"} });
+        spike_mod.addCMacro("GHOSTTY_STATIC", "");
+        spike_mod.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+        const spike_exe = b.addExecutable(.{
+            .name = "session-snapshot-spike",
+            .root_module = spike_mod,
+            .linkage = if (target.result.abi == .musl) .static else null,
+        });
+        b.step("spike-session-snapshot", "Build the persistent-session snapshot spike")
+            .dependOn(&b.addInstallArtifact(spike_exe, .{}).step);
+    }
     // fontdeps is lazy because it bundles libpng_upstream (also lazy); on a
     // cold cache the first configure pass can't satisfy that chain, so the
     // vendored build silently returns without installing the freetype/
