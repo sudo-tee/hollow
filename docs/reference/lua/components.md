@@ -125,6 +125,9 @@ colors. Recipe-backed atoms accept component theme overrides.
 - **`dialog`** — stack with title, body, and optional quiet action buttons.
   Accepts `title`, `body`, `actions`, and `selected` (index or action ID).
   Each action accepts `id`, `text`, `kind`, `disabled`, and `on_click`.
+  Optional `action_padding` sets padding for all action buttons (for example,
+  `{ x = 8, y = 4 }` in pixels); `false` removes padding. Defaults remain one
+  cell horizontally and zero vertically.
 - **`toast`** — two nodes. Accepts `level`, `text`, and optional
   `action = { label, on_click }`; the action shares the toast click target.
   Notification paint uses `styles.notify.message` for compatibility.

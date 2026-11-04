@@ -189,6 +189,7 @@
 ---| "term:program_status_changed"
 ---| "term:bell"
 ---| "term:notification"
+---| "term:clipboard_read_requested"
 ---| "key:unhandled"
 ---| "window:resized"
 ---| "window:files_dropped"
@@ -196,6 +197,7 @@
 ---| "window:blurred"
 ---| "copy_mode:changed"
 ---| "copy_mode:search_requested"
+---| "terminal_find:changed"
 ---| "quick_select:changed"
 ---| "quick_select:no_matches"
 ---| "quick_select:action_executed"
@@ -239,6 +241,7 @@
 ---@field ["term:program_status_changed"] { pane: HollowPane }
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
+---@field ["term:clipboard_read_requested"] { pane_id: integer, generation: integer } Already-denied read; default UI asks to approve one retry.
 ---@field ["key:unhandled"] { key: string, mods: string }
 ---@field ["window:resized"] { size: HollowSize }
 ---@field ["window:files_dropped"] HollowFileDropEvent
@@ -246,6 +249,7 @@
 ---@field ["window:blurred"] {}
 ---@field ["copy_mode:changed"] { active: boolean, query: string, match_count: integer, match_index: integer|nil, selecting: boolean, block: boolean }
 ---@field ["copy_mode:search_requested"] {}
+---@field ["terminal_find:changed"] { pane_id: integer, session: integer, active: boolean, query: string, match_count: integer, match_index: integer|nil, complete: boolean }
 ---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
 ---@field ["quick_select:no_matches"] {}
 ---@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command"|"route", pattern_index: integer|nil }
@@ -2102,6 +2106,23 @@ function command_line.open(opts) end
 
 function command_line.close() end
 
+---@class HollowUiFindOptions
+---@field query? string Initial literal query (default: last query). Maximum 8192 bytes.
+---@field width? integer Width in cells (default 60).
+---@field theme? HollowUiTheme
+
+---@class HollowUiFindNamespace
+local find = {}
+
+---Open live literal scrollback search in the current terminal pane, without copy mode.
+---ASCII letters match case-insensitively. Enter visits older matches; Shift+Enter newer.
+---@param opts? HollowUiFindOptions
+---@return HollowUiModalHandle? handle Nil for Lua panes, copy mode, or an active exclusive dialog.
+function find.open(opts) end
+
+---Close Find and clear highlights; leave the viewport at its current position.
+function find.close() end
+
 ---@class HollowUiLuaReplOptions
 ---@field text? string Replace the current draft, including when already open.
 ---@field width? integer Width in cells (default 80).
@@ -2511,6 +2532,7 @@ local workspace = {}
 ---@field title? string
 ---@field body? string|HollowUiLayoutNode|table
 ---@field actions? HollowUiDialogAction[]
+---@field action_padding? HollowUiLayoutPadding Action button padding; defaults to one cell horizontally, zero vertically. False disables padding.
 ---@field selected? integer|string Selected action index or ID.
 
 ---@class HollowUiToastProps: HollowUiPanelProps
@@ -2860,6 +2882,7 @@ ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
 ui.command_line = command_line
+ui.find = find
 ui.lua_repl = lua_repl
 ui.mux_navigator = mux_navigator
 ---@type HollowUiActivityNamespace

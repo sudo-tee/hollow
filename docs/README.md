@@ -21,6 +21,7 @@ The is the main entry point for Hollow's documentation.
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment
 - [Command line](command-line.md) — run one Hollow action or Lua chunk and return to work
 - [Copy mode](copy-mode.md) — vim-like scrollback navigation and search
+- [Find](find.md) — live literal terminal search without entering copy mode
 - [Plugins](plugins.md) — installing, authoring, and updating plugins
 - [Shell integration](shell-integration.md) — what HTP does and how to enable it
 - [HTP protocol](htp-protocol.md) — wire-level protocol reference

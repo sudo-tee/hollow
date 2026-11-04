@@ -54,6 +54,7 @@ const lua_callbacks = @import("app/lua_callbacks.zig");
 const text_helpers = @import("app/text_helpers.zig");
 const selection_mod = @import("app/selection.zig");
 const copy_mode = @import("app/copy_mode.zig");
+const terminal_find = @import("app/terminal_find.zig");
 const quick_select = @import("app/quick_select.zig");
 const htp = @import("app/htp.zig");
 const HtpCodec = @import("htp/codec.zig").Codec;
@@ -357,6 +358,9 @@ pub const App = struct {
     selection_generation: u64 = 0,
     hovered_hyperlink: ?HoveredHyperlink = null,
     copy_mode_active: bool = false,
+    find: terminal_find.State = .{},
+    find_epoch: usize = 0,
+    find_cancelled_session: usize = 0,
     copy_mode_pane: ?*Pane = null,
     copy_mode_history: std.ArrayListUnmanaged(copy_mode.CopyModeLine) = .empty,
     copy_mode_cursor: copy_mode.CopyModePoint = .{},
@@ -1011,6 +1015,7 @@ pub const App = struct {
         self.shutdownRuntime();
         self.lifecycle.finishDeinit();
         copy_mode.deinitCopyModeState(self);
+        self.find.deinit(self.allocator);
         quick_select.deinit(self);
 
         for (self.htp_pending_messages.items[self.htp_pending_message_head..]) |message| {
@@ -1223,6 +1228,7 @@ pub const App = struct {
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
             .clipboard_read = lua_callbacks.luaClipboardReadCallback,
+            .clipboard_read_authorize = lua_callbacks.luaClipboardReadAuthorizeCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
             .scroll_active = lua_callbacks.luaScrollActiveCallback,
             .scroll_active_page = lua_callbacks.luaScrollActivePageCallback,
@@ -1239,6 +1245,7 @@ pub const App = struct {
             .copy_mode_search_set_query = lua_callbacks.luaCopyModeSearchSetQueryCallback,
             .copy_mode_search_next = lua_callbacks.luaCopyModeSearchNextCallback,
             .copy_mode_search_prev = lua_callbacks.luaCopyModeSearchPrevCallback,
+            .terminal_find = lua_callbacks.luaTerminalFindCallback,
             .quick_select_start = lua_callbacks.luaQuickSelectStartCallback,
         });
     }
@@ -1341,6 +1348,10 @@ pub const App = struct {
             try self.tickPanes(runtime);
             copy_mode.tickSearch(self) catch |err| {
                 std.log.err("copy mode search failed: {s}", .{@errorName(err)});
+            };
+            terminal_find.tick(self) catch |err| {
+                std.log.err("terminal find failed: {s}", .{@errorName(err)});
+                terminal_find.close(self);
             };
             quick_select.refreshAfterPanes(self);
             if (self.config.debug_overlay) tick_panes_ns = io.nanoTimestamp() - start_ns;
@@ -1570,6 +1581,7 @@ pub const App = struct {
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
         if (previous != current) {
             if (previous) |pane| {
+                if (pane.asTerminal()) |term| term.clipboard_read.revoke(self.allocator);
                 pane.program_status.setFocused(false);
                 // Pane switches are focus changes for child terminals even when
                 // Hollow's OS window remains focused.
@@ -1790,6 +1802,7 @@ pub const App = struct {
     pub fn sendFocus(self: *App, gained: bool) !void {
         self.window_focused = gained;
         const pane = self.activePane() orelse return;
+        if (!gained) if (pane.asTerminal()) |term| term.clipboard_read.revoke(self.allocator);
         self.sendFocusToPane(pane, gained);
     }
 
@@ -1981,6 +1994,16 @@ pub const App = struct {
         defer if (activity_state) |value| deinitJsonValue(self.allocator, value);
 
         quick_select.cancel(self);
+
+        terminal_find.close(self);
+        self.find_epoch +%= 1;
+        self.find_cancelled_session = 0;
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                if (pane.asTerminal()) |term| term.clipboard_read.revoke(self.allocator);
+            }
+        }
 
         const old_window_width = self.config.window_width;
         const old_window_height = self.config.window_height;
@@ -2421,6 +2444,8 @@ pub const App = struct {
                 const pane_is_active = active_pane == pane;
                 pane.program_status.setFocused(pane_is_active);
                 const term = pane.asTerminal() orelse continue;
+                if (!pane_is_active or !self.window_focused) term.clipboard_read.revoke(self.allocator);
+                term.clipboard_read.expire(self.allocator, io.nanoTimestamp());
                 const active_screen_before = term.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
@@ -2460,6 +2485,16 @@ pub const App = struct {
                     background_budget.consume(pty_bytes_read, io.nanoTimestamp() - poll_start_ns);
                 }
                 const sync_now_ns = io.nanoTimestamp();
+                if (term.clipboard_read.takePrompt()) |generation| {
+                    if (pane_is_active and self.window_focused and self.lua != null) {
+                        self.emitLuaBuiltInEvent("term:clipboard_read_requested", .{ .clipboard_read_request = .{
+                            .pane_id = pane.id,
+                            .generation = generation,
+                        } });
+                    } else {
+                        term.clipboard_read.revoke(self.allocator);
+                    }
+                }
                 if (term.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
                     pane.render_dirty = .full;
                     std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{pane.id});

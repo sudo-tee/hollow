@@ -46,6 +46,7 @@ Two CLI surfaces ship today. See the [CLI index](cli/README.md).
 ## Terminal protocols
 
 - [Terminal notifications](osc99.md) — OSC 99, OSC 9, OSC 777 and Hollow behavior
+- [Terminal clipboard access](clipboard.md) — automatic confirmation and one-shot approval
 
 ## Source of truth
 

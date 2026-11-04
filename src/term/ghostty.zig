@@ -223,6 +223,31 @@ pub const ProgramStatusCallback = *const fn (?*anyopaque, ?*anyopaque, *const Pr
 pub const SemanticPromptCallback = *const fn (?*anyopaque, ?*anyopaque, *const SemanticPrompt) callconv(.c) void;
 pub const ClipboardWriteCallback = *const fn (?*anyopaque, ?*anyopaque, *const ClipboardWrite) callconv(.c) void;
 
+pub const ClipboardReadReply = extern struct {
+    size: usize = @sizeOf(ClipboardReadReply),
+    result: c_int,
+    contents: ?[*]const ClipboardContent = null,
+    contents_len: usize = 0,
+    available: ?[*]const String = null,
+    available_len: usize = 0,
+    remember: bool = false,
+};
+
+/// Synchronous request: never retain this pointer or its reply continuation.
+pub const ClipboardRead = extern struct {
+    size: usize,
+    location: c_int,
+    mimes: ?[*]const String,
+    mimes_len: usize,
+    list: bool,
+    name: String,
+    granted: bool,
+    can_remember: bool,
+    ctx: ?*const anyopaque,
+    reply: *const fn (*const ClipboardRead, *const ClipboardReadReply) callconv(.c) void,
+};
+pub const ClipboardReadCallback = *const fn (?*anyopaque, ?*anyopaque, *const ClipboardRead) callconv(.c) void;
+
 pub const Buffer = extern struct {
     ptr: ?[*]u8 = null,
     cap: usize = 0,
@@ -326,6 +351,7 @@ pub const TerminalOpt = enum(u32) {
     selection = 21,
     pwd_changed = 25,
     clipboard_write = 26,
+    clipboard_read = 38,
     scrollback_max_bytes = 27,
     desktop_notification = 29,
     progress_report = 30,
@@ -869,6 +895,7 @@ pub const TerminalCallbacks = struct {
     title_changed: TitleChangedCallback,
     pwd_changed: ?TitleChangedCallback = null,
     clipboard_write: ?ClipboardWriteCallback = null,
+    clipboard_read: ?ClipboardReadCallback = null,
     render_hold: ?RenderHoldCallback = null,
     semantic_prompt: ?SemanticPromptCallback = null,
     reset: ?TitleChangedCallback = null,
@@ -1293,13 +1320,17 @@ pub const Runtime = struct {
         self.setColorSchemeCallback(handle, cbs.color_scheme);
         self.setDeviceAttributesCallback(handle, cbs.device_attributes);
         self.setTitleChangedCallback(handle, cbs.title_changed);
-        inline for (.{ "pwd_changed", "clipboard_write", "render_hold", "semantic_prompt", "reset", "program_status", "desktop_notification", "progress_report" }) |name| {
+        inline for (.{ "pwd_changed", "clipboard_write", "clipboard_read", "render_hold", "semantic_prompt", "reset", "program_status", "desktop_notification", "progress_report" }) |name| {
             const cb = @field(cbs, name);
             _ = self.terminal_set(handle, @backingInt(@field(TerminalOpt, name)), if (cb) |value| @ptrCast(value) else null);
         }
-        // Match Hollow's former bounded OSC 52 capture. Reads remain disabled.
+        // Match Hollow's former bounded OSC 52 capture.
         var max_bytes: usize = 48 * 1024;
         _ = self.terminal_set(handle, @backingInt(TerminalOpt.clipboard_write_max_bytes), &max_bytes);
+    }
+
+    pub fn setClipboardReadCallback(self: *Runtime, handle: ?*anyopaque, callback: ?ClipboardReadCallback) void {
+        _ = self.terminal_set(handle, @backingInt(TerminalOpt.clipboard_read), if (callback) |cb| @ptrCast(cb) else null);
     }
 
     pub fn createRenderState(self: *Runtime) !?*anyopaque {
@@ -1937,6 +1968,9 @@ test "callback bindings match upstream C layouts" {
     try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWrite), @sizeOf(ClipboardWrite));
     try std.testing.expectEqual(@offsetOf(headers.GhosttyClipboardWrite, "reply"), @offsetOf(ClipboardWrite, "reply"));
     try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWriteReply), @sizeOf(ClipboardWriteReply));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardRead), @sizeOf(ClipboardRead));
+    try std.testing.expectEqual(@offsetOf(headers.GhosttyClipboardRead, "reply"), @offsetOf(ClipboardRead, "reply"));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardReadReply), @sizeOf(ClipboardReadReply));
     try std.testing.expectEqual(@sizeOf(headers.GhosttyPaste), @sizeOf(Paste));
     try std.testing.expectEqual(@offsetOf(headers.GhosttyPaste, "reader"), @offsetOf(Paste, "reader"));
     try std.testing.expectEqual(@sizeOf(headers.GhosttyRenderStateRowId), @sizeOf(NativeRowId));

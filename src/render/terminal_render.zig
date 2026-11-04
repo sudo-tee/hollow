@@ -97,6 +97,7 @@ pub const QueueOptions = struct {
     redraw_range: ?selection.Range,
     search_highlight: ?SearchHighlight = null,
     search_highlight_fn: ?SearchHighlightFn = null,
+    search_cell_fn: ?*const fn (?*anyopaque, usize, usize) ?bool = null,
     search_highlight_context: ?*anyopaque = null,
     cursor_col_fn: ?CursorColFn = null,
     cursor_col_context: ?*anyopaque = null,
@@ -365,10 +366,13 @@ pub fn queueBackgroundAndRasterRow(
             last_style_valid = true;
             break :blk &last_style_info;
         } else null;
-        const has_search_highlight = if (row.search_highlight) |highlight|
+        const has_search_highlight = (if (queue.search_cell_fn) |callback|
+            callback(queue.search_highlight_context, row.row_y, col_x) != null
+        else
+            false) or (if (row.search_highlight) |highlight|
             col_x >= highlight.start_col and col_x < highlight.end_col
         else
-            false;
+            false);
         const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
         const has_block_cursor = has_cursor and queue.cursor_block;
         const style_needs_background = if (style_id != 0)
@@ -387,7 +391,7 @@ pub fn queueBackgroundAndRasterRow(
         else
             false;
         const background = if (needs_background)
-            resolveCellBackground(self, runtime, queue, row, content_tag, style_id, cached_style, is_selected, col_px)
+            resolveCellBackground(self, runtime, queue, row, content_tag, style_id, cached_style, is_selected, col_px, col_x)
         else
             null;
         if (background) |bg| {
@@ -891,10 +895,17 @@ pub fn resolveCellBackground(
     cached_style: ?*const CachedStyleInfo,
     is_selected: bool,
     col_px: f32,
+    col_x: usize,
 ) ?ghostty.ColorRgb {
     const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
     if (is_selected) {
         return queue.colors.selection_bg;
+    }
+
+    if (queue.search_cell_fn) |callback| {
+        if (callback(queue.search_highlight_context, row.row_y, col_x)) |active| {
+            return if (active) queue.colors.search_active_bg else queue.colors.search_bg;
+        }
     }
 
     if (row.search_highlight) |highlight| {

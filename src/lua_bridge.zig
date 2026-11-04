@@ -239,6 +239,7 @@ pub const AppCallbacks = struct {
     copy_selection: *const fn (app: *anyopaque) void,
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
     clipboard_read: ?*const fn (app: *anyopaque) []const u8 = null,
+    clipboard_read_authorize: ?*const fn (app: *anyopaque, pane_id: usize, allow: bool, generation: ?usize) bool = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
@@ -255,6 +256,7 @@ pub const AppCallbacks = struct {
     copy_mode_search_set_query: *const fn (app: *anyopaque, query: []const u8) void,
     copy_mode_search_next: *const fn (app: *anyopaque) void,
     copy_mode_search_prev: *const fn (app: *anyopaque) void,
+    terminal_find: *const fn (app: *anyopaque, pane_id: usize, session: usize, operation: []const u8, query: []const u8) bool,
     quick_select_start: *const fn (app: *anyopaque, action: []const u8) void,
 };
 
@@ -622,6 +624,16 @@ pub const BuiltInPayload = union(enum) {
         selecting: bool = false,
         block: bool = false,
     },
+    terminal_find: struct {
+        pane_id: usize,
+        session: usize,
+        active: bool,
+        query: []const u8 = "",
+        match_count: usize = 0,
+        match_index: ?usize = null,
+        complete: bool = true,
+    },
+    clipboard_read_request: struct { pane_id: usize, generation: usize },
     quick_select: struct {
         active: bool,
         action: []const u8,
@@ -2447,6 +2459,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "clipboard_read");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_clipboard_read_authorize, 1);
+        api.set_field(self.state, -2, "clipboard_read_authorize");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_paste_clipboard, 1);
         api.set_field(self.state, -2, "paste_clipboard");
 
@@ -2509,6 +2525,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_copy_mode_search_prev, 1);
         api.set_field(self.state, -2, "copy_mode_search_prev");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_terminal_find, 1);
+        api.set_field(self.state, -2, "terminal_find");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_quick_select_start, 1);
@@ -3091,6 +3111,30 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "active");
             try pushOwnedString(allocator, api, state, value.action);
             api.set_field(state, -2, "action");
+        },
+        .terminal_find => |value| {
+            api.create_table(state, 0, 7);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            api.push_number(state, @floatFromInt(value.session));
+            api.set_field(state, -2, "session");
+            api.push_boolean(state, if (value.active) 1 else 0);
+            api.set_field(state, -2, "active");
+            try pushOwnedString(allocator, api, state, value.query);
+            api.set_field(state, -2, "query");
+            api.push_number(state, @floatFromInt(value.match_count));
+            api.set_field(state, -2, "match_count");
+            if (value.match_index) |i| api.push_number(state, @floatFromInt(i)) else api.push_nil(state);
+            api.set_field(state, -2, "match_index");
+            api.push_boolean(state, if (value.complete) 1 else 0);
+            api.set_field(state, -2, "complete");
+        },
+        .clipboard_read_request => |value| {
+            api.create_table(state, 0, 2);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            api.push_number(state, @floatFromInt(value.generation));
+            api.set_field(state, -2, "generation");
         },
         .quick_select_action => |value| {
             api.create_table(state, 0, 4);
@@ -7208,6 +7252,17 @@ fn l_copy_mode_copy(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_clipboard_read_authorize(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const callback = cbs.clipboard_read_authorize orelse return 0;
+    const pane_id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    const allow = ctx.api.to_boolean(state, 2) != 0;
+    const generation = luaPaneIdArg(ctx.api, state, 3);
+    ctx.api.push_boolean(state, if (callback(cbs.app, pane_id, allow, generation)) 1 else 0);
+    return 1;
+}
+
 fn l_copy_mode_open_search(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.copy_mode_open_search(cbs.app);
@@ -7239,6 +7294,20 @@ fn l_copy_mode_search_prev(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.copy_mode_search_prev(cbs.app);
     return 0;
+}
+
+fn l_terminal_find(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(api, state, 1) orelse return 0;
+    const session = luaPaneIdArg(api, state, 2) orelse return 0;
+    var op_len: usize = 0;
+    const op = api.to_lstring(state, 3, &op_len) orelse return 0;
+    var query_len: usize = 0;
+    const query = api.to_lstring(state, 4, &query_len);
+    api.push_boolean(state, if (cbs.terminal_find(cbs.app, id, session, op[0..op_len], if (query) |q| q[0..query_len] else "")) 1 else 0);
+    return 1;
 }
 
 fn l_quick_select_start(state: *State) callconv(.c) c_int {

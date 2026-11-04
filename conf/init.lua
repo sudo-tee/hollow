@@ -241,6 +241,7 @@ hollow.keymap.default("<C-S-X>", "copy_mode")
 hollow.keymap.default("<A-S-Up>", "prompt_jump_prev")
 hollow.keymap.default("<A-S-Down>", "prompt_jump_next")
 hollow.keymap.default("<leader>/", "copy_mode_search", { desc = "search" })
+hollow.keymap.default("<leader>f", "find", { desc = "find text" })
 hollow.keymap.default("<leader>q", "quick_select", { desc = "quick select" })
 
 hollow.keymap.default("h", "copy_mode_move_left", { mode = "copy_mode" })

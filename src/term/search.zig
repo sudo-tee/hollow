@@ -30,6 +30,7 @@ pub const Search = struct {
     matches: std.ArrayList(Match) = .empty,
     scratch: std.ArrayList(c.GhosttySelection) = .empty,
     complete: bool = true,
+    revision: u64 = 0,
 
     pub fn deinit(self: *Search, allocator: std.mem.Allocator) void {
         c.ghostty_search_free(self.handle);
@@ -49,6 +50,7 @@ pub const Search = struct {
         try check(c.ghostty_search_set(self.handle, c.GHOSTTY_SEARCH_OPT_NEEDLE, &value));
         self.matches.clearRetainingCapacity();
         self.complete = needle.len == 0;
+        self.revision = 0;
     }
 
     /// One feed and one tick, never the blocking ghostty_search_run/select path.
@@ -95,6 +97,12 @@ pub const Search = struct {
         }
         // References remain allocated as scratch, but are never read again.
         self.scratch.clearRetainingCapacity();
+        var hash = std.hash.Wyhash.init(0);
+        for (self.matches.items) |match| {
+            const coordinates = [4]usize{ match.start.row, match.start.col, match.end.row, match.end.col };
+            hash.update(std.mem.asBytes(&coordinates));
+        }
+        self.revision = hash.final();
     }
 };
 
