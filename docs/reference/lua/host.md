@@ -73,7 +73,11 @@ and `timeout_ms`.
   sharing are disabled; `identity_file` adds `IdentitiesOnly=yes`. Trusted SSH
   config may still supply aliases, users, ports and jump hosts. File options are
   absolute native paths. SSH hands the command to the remote shell, so Hollow
-  passes it as one POSIX-quoted `exec '...'` word.
+  passes it as one POSIX-quoted `exec '...'` word. Before using an SSH host,
+  set it up so a plain `ssh <destination> true` succeeds without prompting:
+  accept its host key once (it lands in `known_hosts`) and use key or agent
+  authentication. Unknown hosts, changed host keys and rejected credentials
+  all fail with `connector_unavailable`.
 - **Containers** must already be running; Hollow does not create, start, stop
   or restart them, and preserves the container's configured user. `via =
   { type = "wsl", distro, user?, wsl? }` runs the container CLI inside WSL (then

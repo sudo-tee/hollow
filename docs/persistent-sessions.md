@@ -156,6 +156,10 @@ placeholders in their original layout. Scrollback is not written to disk in v1.
 - On launch, Hollow lists sessions on every local and WSL host whose domain
   has `persist = true` and reattaches the ones this client last had attached.
 - SSH hosts are listed lazily; startup never blocks on an unreachable host.
+- SSH trust is the user's job in v1: the connector is non-interactive
+  (`BatchMode=yes`, `StrictHostKeyChecking=yes`), so the host key must already
+  be in `known_hosts` and key or agent auth must work (`ssh <host> true`
+  succeeds without a prompt). See `docs/reference/lua/host.md`.
 - Other sessions appear as "detached" in the workspace switcher and attach
   when picked.
 
@@ -318,6 +322,12 @@ Carried into Phase 2:
 - The VT fallback does not forward unparsed trailing bytes after the snapshot.
 - Title in `list` comes from the owner VT and was empty under zsh
   integration (cwd via OSC 7 works); check in Phase 2.
+- Optional, if it fits Phase 2: SSH host-trust layer. Split
+  `connector_unavailable` into `unknown_host`, `host_key_changed` and
+  `auth_failed`; for an unknown host, show the SHA256 fingerprint and on
+  confirm retry once with `StrictHostKeyChecking=accept-new`; a changed key is
+  a hard error showing the offending `known_hosts` entry; no password prompts.
+  Until then users set up SSH trust themselves (see Startup and UX).
 
 ### Tests per phase
 
