@@ -8,4 +8,5 @@ test "session GUI and agent use identical ghostty package identities" {
 
 test {
     _ = @import("term/session_snapshot.zig");
+    _ = @import("term/session_snapshot_job.zig");
 }

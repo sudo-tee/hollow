@@ -142,6 +142,41 @@ pub const Connection = struct {
         self.changed.broadcast(self.io);
     }
 
+    /// Pane handles retain an attachment generation. Never let an old pane
+    /// silently target a new session that happens to reuse its numeric ID.
+    pub fn input(self: *Connection, generation: u64, pane: u32, bytes: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        try self.client.input(pane, bytes);
+        self.changed.broadcast(self.io);
+    }
+
+    pub fn resize(self: *Connection, generation: u64, pane: u32, cols: u16, rows: u16) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        try self.client.send(.resize, pane, &p.encodeResize(cols, rows));
+        self.changed.broadcast(self.io);
+    }
+
+    pub fn closePane(self: *Connection, generation: u64, pane: u32) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        const id = try self.client.request(.{ .id = 0, .op = .close, .pane = pane });
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
+    pub fn consumedBytes(self: *Connection, generation: u64, pane: u32, count: usize) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing) return;
+        try self.client.consumedBytes(pane, generation, count);
+        self.changed.broadcast(self.io);
+    }
+
     pub fn consumed(self: *Connection, message: Message) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

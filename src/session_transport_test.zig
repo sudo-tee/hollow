@@ -209,6 +209,36 @@ test "session client allocation failure never loses a completed reply" {
     try std.testing.checkAllAllocationFailures(a, allocationFailures, .{});
 }
 
+fn inputAllocationFailures(allocator: std.mem.Allocator) !void {
+    var client: core.Client = .{ .allocator = allocator, .identity = "test" };
+    defer client.deinit();
+    const hello = "{\"ghostty\":\"test\",\"snapshot\":\"binary\",\"owner_pid\":1}";
+    try client.receive(p.header(.welcome, 0, hello.len), hello);
+    client.poll().?.deinit();
+    _ = try client.request(.{ .id = 0, .op = .attach, .session = "test" });
+    client.nextWrite().?.deinit();
+    const reply = "{\"id\":1,\"session\":{\"id\":\"test\",\"attached\":true,\"revision\":0,\"panes\":[{\"id\":1,\"cols\":80,\"rows\":24}]}}";
+    try client.receive(p.header(.reply, 0, reply.len), reply);
+    client.poll().?.deinit();
+    const bytes: [2 * p.max_data + 3]u8 = @splat('x');
+    client.input(1, &bytes) catch |err| {
+        try std.testing.expect(client.nextWrite() == null);
+        try std.testing.expectEqual(@as(usize, 0), client.outgoing.bytes);
+        return err;
+    };
+    var count: usize = 0;
+    while (client.nextWrite()) |message| {
+        defer message.deinit();
+        try std.testing.expectEqual(p.Kind.input, message.kind);
+        count += message.payload.len;
+    }
+    try std.testing.expectEqual(bytes.len, count);
+}
+
+test "session client large paste admission is atomic across allocation failures" {
+    try std.testing.checkAllAllocationFailures(a, inputAllocationFailures, .{});
+}
+
 pub fn waitMessage(connection: *transport.Connection, kind: p.Kind) !transport.Message {
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     while (io.nanoTimestamp() < deadline) {

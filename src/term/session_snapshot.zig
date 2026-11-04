@@ -79,7 +79,7 @@ fn encode(terminal: ?*anyopaque) ![]u8 {
     var len: usize = 0;
     try check(g.ghostty_snapshot_encode_alloc(@ptrCast(terminal), null, &ptr, &len));
     defer g.ghostty_free(null, ptr, len);
-    return std.testing.allocator.dupe(u8, ptr[0..len]);
+    return std.testing.allocator.dupe(u8, if (len == 0) "" else ptr[0..len]);
 }
 
 fn plain(terminal: ?*anyopaque) ![]u8 {
@@ -95,7 +95,7 @@ fn plain(terminal: ?*anyopaque) ![]u8 {
     var len: usize = 0;
     try check(g.ghostty_formatter_format_alloc(formatter, null, &ptr, &len));
     defer g.ghostty_free(null, ptr, len);
-    return std.testing.allocator.dupe(u8, ptr[0..len]);
+    return std.testing.allocator.dupe(u8, if (len == 0) "" else ptr[0..len]);
 }
 
 test "session snapshot READY supports rendering and live input before history finishes" {

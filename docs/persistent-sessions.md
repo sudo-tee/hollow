@@ -3,8 +3,8 @@
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
 [Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 (Linux owner +
 `connect`) done; see [Phase 1 status](#phase-1-status-2026-11-04). Phase 2
-(GUI) started: snapshot decoder and asynchronous session transport are
-implemented; session-backed panes and workspace wiring are next. See
+(GUI) started: snapshot decoder, asynchronous transport, and session-backed
+terminal pane adapter are implemented; workspace/controller wiring is next. See
 [Phase 2 status](#phase-2-status-2026-11-04).
 Snapshot format revised the same
 day to ghostty's binary snapshot API with VT formatter fallback.
@@ -334,7 +334,7 @@ Carried into Phase 2:
 
 ### Phase 2 status (2026-11-04)
 
-Implemented foundation (not yet wired into live GUI panes):
+Implemented foundation (not yet exposed through GUI workspace creation):
 - `src/term/session_snapshot.zig`: caller-owned terminal returned at READY,
   then one history/image record decoded per `next` call. The caller reapplies
   its scrollback limit, keeps the terminal alive until decoder cleanup, and
@@ -344,7 +344,7 @@ Implemented foundation (not yet wired into live GUI panes):
   zero bytes means permanent EOF. Network-backed decoding must run off the
   GUI thread and wait for data, not present temporary starvation as EOF.
   Terminal ownership must be handed off between decode and GUI use, never
-  accessed concurrently by decoder and renderer.
+  accessed concurrently by decoder and renderer (handoff implemented below).
 - `Runtime.terminalWriteMirror` suppresses PTY replies only while parsing
   owner output. The normal callback is restored afterwards because Ghostty
   also uses it for user paste encoding. Native/nonpersistent parsing is
@@ -371,7 +371,7 @@ Session transport implemented (still not connected to GUI workspace lifecycle):
   cancellable reader/writer/watchdog tasks, no per-pane I/O threads. Full
   receive queues pause reads without blocking the writer or GUI; returned
   messages own their payloads. Snapshot chunks are exposed as messages;
-  decoder/terminal ownership hand-off is the next integration step.
+  decoder/terminal ownership hand-off is handled by the pane layer below.
 - Output grants are returned only after parsing, not when a frame arrives.
   Attachment generations prevent stale input/resize/credit from reaching a
   new session with reused pane IDs. Implicit attached-pane actions are held
@@ -397,12 +397,55 @@ Session transport implemented (still not connected to GUI workspace lifecycle):
   and input to the original process. It creates a unique private test endpoint
   and kills its owner afterwards; it does not test WSL idle shutdown.
 
+Session-backed terminal pane adapter implemented:
+- `src/pty/session.zig` is a `Pty.session` backend. A workspace controller
+  owns the connection and routes frames; the adapter owns bounded pane output,
+  not the connector. Reads do not grant credit until terminal parsing catches
+  up. Large paste admission is atomic across chunks/allocation failures;
+  input, close and resize are generation-fenced. Queue pressure preserves the
+  latest resize for retry. Exit status leaves the final terminal intact.
+- `deinit` releases only the local view. `requestClose` explicitly queues one
+  owner-side pane close and reports admission failure. The future controller
+  must retain the connection until close replies/failure and must not remove a
+  pane if close admission fails. Window teardown must not call pane close.
+- `src/term/session_snapshot_job.zig` decodes the network-backed binary prefix
+  off thread and transfers the terminal at READY. Thereafter its worker only
+  collects raw history bytes; it never mutates the rendered terminal. After
+  `snapshot_end`, GUI polling decodes one history/image record at a time from
+  the complete buffer, with no network waits. Thus the screen is usable before
+  history transfer finishes, but history decode starts after that transfer.
+  VT fallback is streamed into a fresh worker-owned terminal until EOF. Each
+  job bounds its queue to 512 frames / 8 MiB and total encoded input to 64 MiB.
+- `src/term/session_pane.zig` binds a remote pane without launching a local
+  shell, refuses conversion of live panes, and replaces terminal/render/input
+  handles transactionally. Readiness, sanitizer state, image/compression caches
+  and retained-texture damage are reset. A controller hook releases external
+  terminal borrowers (search, etc.) before old terminal destruction; wiring
+  app-owned UI state to that hook is still required.
+- Post-snapshot live bytes wait for READY installation; they cannot be parsed
+  into a blank/old terminal and then overwritten. History can be decoded between
+  live parsing/rendering calls. Invalid snapshots preserve the old screen;
+  prefix failure holds subsequent parsing pending controller recovery. A late
+  history error leaves the already-restored terminal usable.
+- Verified with `test-session-pane`, `test-session-snapshot` and
+  `test-session-client`: partial reads/credit, paste, stale handles, resize
+  pressure, transactional helper allocation, search-borrower release, hidden
+  render-helper reconstruction, snapshot/live ordering, malformed data, early
+  READY while history is withheld, and cancellation before/after READY. Real
+  owner check creates a `Pane`, tears down the view and connector, restores a
+  binary snapshot into a new `Pane`, sends input to the original process and
+  retains its final screen/exit code 7 before explicit close. Passed on Linux
+  (Debug/ReleaseSafe/ReleaseSmall) and native Windows via WSL interop. The real
+  owner test uses `HOLLOW_TEST_AGENT=<native-linux-agent>` on Linux or explicit
+  `-Dsession-test-wsl=<distro> -Dsession-test-agent=<guest-agent-path>` for WSL.
+
 Next implementation slices:
-1. Session-backed PTY and safe terminal replacement (render/input helpers,
-   cache invalidation), dead panes and explicit close versus detach.
-2. Snapshot decoder/GUI ownership hand-off without blocking UI on network I/O.
-3. Host-bound workspaces and revision-checked nested layout blobs.
-4. Remember attached host/session IDs, auto-reattach local/WSL sessions and
+1. GUI workspace controller: dispatch/backpressure, connection lifetime through
+   close acknowledgements, app-owned borrower/cache invalidation, aggregate
+   snapshot memory budget, and dead/missing-pane UX.
+2. Opt-in domain configuration, host-bound workspaces and revision-checked
+   nested layout blobs (including tab structure on the owner).
+3. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 
 `persist = true` is not enabled by this foundation alone. Native Windows

@@ -202,7 +202,15 @@ pub fn plain(terminal: g.GhosttyTerminal, allocator: std.mem.Allocator) ![]u8 {
     var len: usize = 0;
     try check(g.ghostty_formatter_format_alloc(formatter, null, &ptr, &len));
     defer g.ghostty_free(null, ptr, len);
-    return allocator.dupe(u8, ptr[0..len]);
+    return allocator.dupe(u8, if (len == 0) "" else ptr[0..len]);
+}
+
+test "plain formatter accepts an empty terminal" {
+    const vt = try Vt.create(std.testing.allocator, 40, 6, 4096);
+    defer vt.destroy();
+    const text = try plain(vt.terminal, std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("", text);
 }
 
 test "device attribute and status queries are answered by the owner VT" {

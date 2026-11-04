@@ -161,6 +161,25 @@ pub fn build(b: *std.Build) void {
     const connector_run = b.addRunArtifact(connector_tests);
     connector_run.has_side_effects = true;
     b.step("test-session-connector", "Run opt-in WSL session connector lifecycle check").dependOn(&connector_run.step);
+    const session_pane_module = b.createModule(.{
+        .root_source_file = b.path("src/session_pane_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const session_pane_options = b.addOptions();
+    session_pane_options.addOption(bool, "headless", true);
+    addShellIntegrationOptions(b, target, optimize, session_pane_options, session_pane_module);
+    session_pane_module.addOptions("build_options", session_pane_options);
+    session_pane_module.addOptions("session_test_options", connector_test_options);
+    session_pane_module.addImport("ghostty_c", ghostty_translate.createModule());
+    session_pane_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addSessionIdentity(b, session_pane_module, ghostty_dep.builder);
+    @import("src/c_build.zig").addPosix(b, session_pane_module, target, optimize);
+    const session_pane_tests = b.addTest(.{ .root_module = session_pane_module, .filters = &.{"session pane"} });
+    const session_pane_run = b.addRunArtifact(session_pane_tests);
+    session_pane_run.has_side_effects = true;
+    b.step("test-session-pane", "Run headless session-backed terminal pane contracts").dependOn(&session_pane_run.step);
     // Temporary Phase 0 spike for persistent sessions (docs/persistent-sessions.md).
     {
         const spike_mod = b.createModule(.{ .target = target, .optimize = ghostty_optimize, .link_libc = true, .strip = true });
@@ -544,6 +563,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mux_visibility_run.step);
     test_step.dependOn(&snapshot_run.step);
     test_step.dependOn(&session_client_run.step);
+    test_step.dependOn(&session_pane_run.step);
 
     const search_module = b.createModule(.{
         .root_source_file = b.path("src/terminal_search_test.zig"),

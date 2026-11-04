@@ -51,7 +51,7 @@ pub const Queue = struct {
         self.bytes += message.payload.len;
     }
 
-    fn append(self: *Queue, a: std.mem.Allocator, message: Message) !void {
+    pub fn append(self: *Queue, a: std.mem.Allocator, message: Message) !void {
         try self.prepare(a, message.payload.len);
         self.appendPrepared(message);
     }
@@ -64,7 +64,7 @@ pub const Queue = struct {
         return result;
     }
 
-    fn deinit(self: *Queue, a: std.mem.Allocator) void {
+    pub fn deinit(self: *Queue, a: std.mem.Allocator) void {
         while (self.pop()) |message| message.deinit();
         self.items.deinit(a);
     }
@@ -240,14 +240,46 @@ pub const Client = struct {
     /// Call once, only AFTER the GUI consumed output, not on receiving it.
     /// Old queued output cannot grant credit to a newly attached session.
     pub fn consumed(self: *Client, message: Message) !void {
-        if (message.kind != .output or message.generation != self.generation or self.ended) return;
-        const entry = self.pane(message.pane) orelse return;
-        if (message.payload.len == 0) return;
-        if (message.payload.len > entry.uncredited) return error.InvalidCredit;
+        if (message.kind == .output) try self.consumedBytes(message.pane, message.generation, message.payload.len);
+    }
+
+    pub fn consumedBytes(self: *Client, id: u32, generation: u64, count: usize) !void {
+        if (generation != self.generation or self.ended) return;
+        const entry = self.pane(id) orelse return;
+        if (count == 0) return;
+        if (count > entry.uncredited) return error.InvalidCredit;
         var grant: [4]u8 = undefined;
-        std.mem.writeInt(u32, &grant, @intCast(message.payload.len), .little);
-        try self.enqueue(.credit, message.pane, &grant);
-        entry.uncredited -= @intCast(message.payload.len);
+        std.mem.writeInt(u32, &grant, @intCast(count), .little);
+        try self.enqueue(.credit, id, &grant);
+        entry.uncredited -= @intCast(count);
+    }
+
+    /// Atomic admission for large user pastes. Either every chunk is queued or
+    /// none is; allocation failure cannot submit half a bracketed paste.
+    pub fn input(self: *Client, id: u32, bytes: []const u8) !void {
+        if (self.ended) return error.Disconnected;
+        if (self.attachmentPending()) return error.AttachmentPending;
+        if (self.pane(id) == null) return error.NotAttached;
+        if (bytes.len > 4 * 1024 * 1024) return error.ResourceExhausted;
+        if (bytes.len == 0) return;
+        const frames = std.math.divCeil(usize, bytes.len, p.max_data) catch unreachable;
+        if (frames > queue_frames - self.outgoing.count() or bytes.len > queue_bytes - self.outgoing.bytes) return error.ResourceExhausted;
+        try self.outgoing.prepare(self.allocator, bytes.len);
+        try self.outgoing.items.ensureUnusedCapacity(self.allocator, frames);
+        const start = self.outgoing.items.items.len;
+        const old_bytes = self.outgoing.bytes;
+        errdefer {
+            for (self.outgoing.items.items[start..]) |message| message.deinit();
+            self.outgoing.items.items.len = start;
+            self.outgoing.bytes = old_bytes;
+        }
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            const n = @min(p.max_data, bytes.len - offset);
+            const body = try self.allocator.dupe(u8, bytes[offset..][0..n]);
+            self.outgoing.appendPrepared(.{ .kind = .input, .pane = id, .generation = self.generation, .payload = body, .allocator = self.allocator });
+            offset += n;
+        }
     }
 
     fn enqueue(self: *Client, kind: p.Kind, id: u32, bytes: []const u8) !void {
