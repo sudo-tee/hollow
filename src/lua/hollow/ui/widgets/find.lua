@@ -1,4 +1,4 @@
--- Lightweight, pane-bound terminal Find; never enters copy mode.
+-- Lightweight, pane-bound terminal Find; enters copy mode only on Tab handoff.
 local hollow = _G.hollow
 local ui, c = hollow.ui, hollow.ui.components
 local host = require("hollow.state").get().host_api
@@ -30,7 +30,7 @@ function M.open(opts)
   local input
   local function send(operation, query)
     if not host.terminal_find(pane_id, session, operation, query or "") then
-      error_text = "Search request rejected; edit query to retry"
+      error_text = "Rejected"
       if handle then
         handle.invalidate()
       end
@@ -44,7 +44,7 @@ function M.open(opts)
     on_change = function(value)
       -- Bound the same UTF-8 byte count as the native bridge.
       if #value > 8192 then
-        error_text = "Search query exceeds 8192 bytes"
+        error_text = "Too long"
         return
       end
       last_query = value
@@ -52,6 +52,16 @@ function M.open(opts)
       send("query", value)
     end,
   })
+  -- Hand the query to copy mode for selection/yanking; `\V` keeps Find's
+  -- literal, ASCII-case-insensitive semantics.
+  local function to_copy_mode()
+    local query = input.value
+    M.close()
+    require("hollow.copy_mode").enter()
+    if query ~= "" then
+      host.copy_mode_search_set_query("\\V" .. query)
+    end
+  end
   local keys = ui.keys(input, {
     enter = function()
       send("next")
@@ -59,6 +69,7 @@ function M.open(opts)
     ["<S-enter>"] = function()
       send("prev")
     end,
+    tab = to_copy_mode,
     escape = M.close,
   })
   handle = ui.modal({
@@ -67,50 +78,53 @@ function M.open(opts)
     theme = shared.widget_theme("input", opts.theme),
     width = opts.width or 60,
     align = "top_right",
+    center_content = true,
     backdrop = false,
     layout_events = { "terminal_find:changed" },
     render = function(theme, _, ctx)
-      local status = input.value == "" and "Literal · ignores ASCII case"
-        or string.format(
-          "%d / %d%s",
-          progress.match_index or 0,
-          progress.match_count,
-          progress.complete and "" or " · searching…"
-        )
-      return c.column({
-        c.row({
-          c.text("Find", { bold = true }),
-          c.input({
-            id = "find:input",
-            behavior = input,
-            focused = true,
-            focusable = false,
-            theme = theme,
-            ctx = ctx,
-          }),
-          c.button({
-            id = "find:close",
-            label = "×",
-            appearance = "quiet",
-            on_click = M.close,
-            theme = theme,
-            ctx = ctx,
-          }),
-        }, { width = "grow", gap = props.cell_w(ctx) }),
-        c.text(
-          error_text or status,
-          { fg = error_text and theme.error or theme.muted },
-          { wrap = "none" }
-        ),
-        c.hints({
-          plain = true,
-          separator = " · ",
-          { "Enter", "older" },
-          { "Shift+Enter", "newer" },
-          { "Esc", "close" },
+      local input_padding_y = 2
+      local status = error_text
+        or input.value ~= ""
+          and string.format(
+            "%d/%d%s",
+            progress.match_index or 0,
+            progress.match_count,
+            progress.complete and "" or "…"
+          )
+      local row = c.row({
+        c.icon({ name = "search", style = { bold = true } }),
+        c.input({
+          id = "find:input",
+          behavior = input,
+          placeholder = "Search scrollback",
+          focused = true,
+          focusable = false,
+          padding = { x = props.cell_w(ctx) * 0.5, y = input_padding_y },
+          theme = theme,
+          ctx = ctx,
         }),
-      }, { width = "grow" }),
-        3 * props.cell_h(ctx)
+        c.when(status, function()
+          return c.text(
+            status,
+            { fg = error_text and theme.error or theme.muted },
+            { wrap = "none" }
+          )
+        end),
+        c.button({
+          id = "find:close",
+          text = "×",
+          appearance = "quiet",
+          on_click = M.close,
+          theme = theme,
+          ctx = ctx,
+        }),
+      }, {
+        id = "find:row",
+        width = "grow",
+        gap = props.cell_w(ctx),
+        align_y = "center",
+      })
+      return row, props.cell_h(ctx) + input_padding_y * 2
     end,
     keys = function(key, mods)
       keys(key, mods)

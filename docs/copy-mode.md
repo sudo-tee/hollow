@@ -78,9 +78,11 @@ and `N` toward older matches, wrapping at either end. Output, resize, and
 primary/alternate screen switches are picked up while copy mode is active.
 Submitting an empty query (or just `\V`) clears the search.
 
-The incremental backend is independent of the UI; a standalone Find bar is
-not part of copy mode. Copy mode still captures terminal rows for display
-and copying, so entering its snapshot is separate from incremental searching.
+The incremental backend is independent of the UI. The standalone
+[Find bar](find.md) (`<leader>f` or `<leader>/`) is the default way to search
+outside copy mode; press Tab there to continue in copy mode with the same query
+as `\V<query>`. Copy mode still captures terminal rows for display and copying,
+so entering its snapshot is separate from incremental searching.
 
 `hollow.events.on("copy_mode:search_requested", ...)` lets your config
 open a custom search prompt. After the user submits, call

@@ -76,8 +76,12 @@ colors. Recipe-backed atoms accept component theme overrides.
 - **`hints`** — one row plus two text nodes per `{ key, description }` pair.
   `separator` defaults to two spaces. A separately styled separator adds one
   node between pairs; `plain = true` uses one column and one text node.
-- **`input`** — two containers plus two nodes per behavior run. Pass
+- **`input`** — two containers plus two nodes per behavior run, and one extra
+  run while an optional `placeholder` is visible. Pass
   `{ behavior = ui.text_input(...), id = "filter", boxed = false }`.
+  The placeholder is display-only and appears only while the behavior's value
+  is empty. Its first grapheme occupies the caret cell; the remainder is dimmed
+  by blending input foreground toward input background.
   Focusable (Tab or click) unless `focusable = false`; the root takes `id`
   (default `"input"`). A picker's filter is focusable only with
   `filter_focusable = true`, since picker widgets route keys to it themselves.
@@ -90,7 +94,7 @@ colors. Recipe-backed atoms accept component theme overrides.
 ## Containers and lists
 
 - **`panel`** — one node. `chrome` overrides theme chrome; `inset` is
-  `overlay`, `modal`, or `none`.
+  `overlay`, `modal`, `modal_centered` (balanced vertical padding), or `none`.
 - **`header`** — one row, one title, and optional spacer/meta nodes. `title`,
   `meta`, and `prompt` compose a heading; `meta_align = "inline"` omits spacer.
 - **`rich`** — one row plus inline runs. Painted or clickable runs add a

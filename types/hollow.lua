@@ -1163,6 +1163,7 @@
 ---@field max_height? integer
 ---@field chrome? table|boolean
 ---@field align? string
+---@field center_content? boolean Balance vertical panel padding around modal content.
 ---@field backdrop? any
 ---@field on_event? function
 ---@field layout_live? boolean Rebuild on every preparation; use only for providers without explicit invalidation.
@@ -2434,6 +2435,7 @@ local workspace = {}
 
 ---@class HollowUiInputProps: HollowUiComponentProps
 ---@field behavior HollowUiTextInput
+---@field placeholder? string Display-only hint shown while behavior value is empty; dimmed against the input background.
 ---@field boxed? boolean Defaults to true.
 ---@field focusable? boolean Tab and clicks focus the field; defaults to true.
 ---@field focused? boolean Caret look: solid when true, hollow when false. Defaults to solid only while a focusable field has keyboard focus in a focused surface.
@@ -2511,7 +2513,7 @@ local workspace = {}
 ---@class HollowUiPanelProps: HollowUiComponentProps
 ---@field [integer] HollowUiLayoutNode|table|boolean
 ---@field chrome? HollowUiChrome|boolean
----@field inset? 'overlay'|'modal'|'none'
+---@field inset? 'overlay'|'modal'|'modal_centered'|'none'
 
 ---@class HollowUiHeaderProps: HollowUiComponentProps
 ---@field title? string

@@ -101,6 +101,68 @@ describe("Clay text-input overlay", function()
     assert.equals("#aaaaaa", nodes[6].fg)
   end)
 
+  it("shows a muted display-only placeholder only while the behavior is empty", function()
+    local theme = {
+      fg = "#111111",
+      input_fg = "#ffffff",
+      input_bg = "#000000",
+      muted = "#0000ff",
+      cursor_fg = "#ffffff",
+      cursor_bg = "#555555",
+    }
+    local behavior = ui.text_input()
+    local surface = ui.layout.new({
+      theme = theme,
+      render = function()
+        return ui.components.input({
+          id = "placeholder",
+          behavior = behavior,
+          placeholder = "Search scrollback",
+          focused = true,
+        })
+      end,
+    })
+    local ctx = { width = 800, height = 600, cell_w = 8, cell_h = 19 }
+    local function placeholder_nodes(nodes)
+      local caret, caret_text, remainder, visible = nil, nil, nil, {}
+      for index, node in ipairs(nodes) do
+        if node.text then
+          visible[#visible + 1] = node.text
+        end
+        if node.id and node.id:match("placeholder:caret$") then
+          caret = node
+          caret_text = nodes[index + 1].text
+        elseif node.text == "earch scrollback" then
+          remainder = node
+        end
+      end
+      return table.concat(visible), caret, caret_text, remainder
+    end
+
+    local nodes = surface:snapshot(ctx)
+    local visible, caret, caret_text, remainder = placeholder_nodes(nodes)
+    assert.equals("Search scrollback", visible)
+    assert.is_not_nil(caret)
+    assert.equals("S", caret_text)
+    assert.equals(theme.cursor_bg, caret.bg)
+    assert.is_not_nil(remainder)
+    assert.equals("#737373", remainder.fg)
+    assert.equals("", behavior.value)
+
+    behavior.set("term")
+    surface:invalidate()
+    nodes = surface:snapshot(ctx)
+    visible = placeholder_nodes(nodes)
+    assert.is_falsy(visible:find("Search scrollback", 1, true))
+    local value_visible = false
+    for _, node in ipairs(nodes) do
+      if node.text == "term" then
+        value_visible = true
+      end
+    end
+    assert.is_true(value_visible)
+  end)
+
   it("honors explicit metrics when constructing input outside a surface", function()
     local theme = { fg = "#111111", input_bg = "#222222" }
     local behavior = {

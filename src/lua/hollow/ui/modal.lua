@@ -174,7 +174,7 @@ function M.modal(spec)
           label = spec.title or "Confirmation",
           theme = theme,
           ctx = ctx,
-          inset = "modal",
+          inset = spec.center_content and "modal_centered" or "modal",
           chrome = chrome,
           content,
         })
