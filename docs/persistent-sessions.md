@@ -3,9 +3,9 @@
 Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
 [Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 in progress: owner,
 `connect`, and debug client landed and pass in-process tests plus local and
-`wsl.exe` end-to-end checks; the SSH check and the runtime-dir question
-(Q49) are open. See [Phase 1 status](#phase-1-status-2026-11-04). Snapshot format revised the
-same day to ghostty's binary snapshot API with VT formatter fallback.
+`wsl.exe` end-to-end checks; the SSH check is open. See
+[Phase 1 status](#phase-1-status-2026-11-04). Snapshot format revised the same
+day to ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
 
 ## Goal
@@ -77,7 +77,7 @@ Windows GUI connects to the named pipe directly.
 
 | | Linux | Windows |
 | --- | --- | --- |
-| Endpoint | Unix socket in a `0700` per-user runtime dir | Named pipe, ACL current user SID only, remote clients rejected |
+| Endpoint | Unix socket in a `0700` per-user dir under `/tmp` | Named pipe, ACL current user SID only, remote clients rejected |
 | Start | `session connect` starts the owner if the socket is missing (lock file, `setsid`, double fork) | GUI starts it with `DETACHED_PROCESS \| CREATE_BREAKAWAY_FROM_JOB` |
 | PTY | `forkpty`, no `PR_SET_PDEATHSIG` tied to the client | ConPTY (reuse `src/pty/pty_windows.zig`) |
 | Kill tree | Process group | One Job Object per pane, `KILL_ON_JOB_CLOSE` |
@@ -249,9 +249,16 @@ Findings to carry into Phase 1:
   checks. Automated tests stay in-process with a fake client.
 - IDs: session ID = 128-bit random hex from the owner; pane ID = per-session
   `u32` counter, never reused; host ID stays GUI-side.
-- Paths: socket `$XDG_RUNTIME_DIR/hollow/session-v1.sock`, fallback
-  `/tmp/hollow-$UID/` (create `0700`, refuse on wrong owner or mode), lock
-  `session-v1.lock` beside it, state `$XDG_STATE_HOME/hollow/sessions/<id>.json`.
+- Paths (Q49): socket `/tmp/hollow-session-$UID/session-v1.sock` (create
+  `0700`, refuse on wrong owner or mode), lock `session-v1.lock` and
+  `owner.log` beside it, state `$XDG_STATE_HOME/hollow/sessions/<id>.json`.
+  Not `$XDG_RUNTIME_DIR`: without linger, systemd deletes `/run/user/$UID` when
+  the user's last login session ends (an SSH drop), taking the socket of a
+  still-running owner with it, so the next connect would start a second owner
+  and orphan the sessions. Not `/tmp/hollow-$UID`: that is the `0755` shell
+  integration dir. The owner touches socket and lock hourly so tmpfiles aging
+  never removes them. `HOLLOW_SESSION_DIR` (absolute) overrides the dir for
+  tests.
 - Why a socket: the owner outlives every client, and stdio pipes only exist
   between a parent and its child. A filesystem-named unix socket lets any later
   client of the same user find the running owner and open its own connection.
@@ -277,7 +284,7 @@ socketpair).
 
 Behaviour as built:
 - `connect` starts the owner with `setsid` and a double fork. Owner stderr goes
-  to `owner.log` in the runtime dir. Racing starters are resolved by `flock`
+  to `owner.log` in the socket dir. Racing starters are resolved by `flock`
   on `session-v1.lock`; the loser retries for 5 s, then exits.
 - Ghostty build identity is the ghostty package hash pinned in
   `build.zig.zon` (passed as a build option). `ghostty_build_info`'s version
@@ -306,9 +313,6 @@ integration, detach and reattach, exit status). Static agent: 2.6 MB x86_64.
 
 Not done yet:
 - SSH manual check.
-- Q49: `/run/user/$UID` is removed by systemd when the user's last login
-  session ends (no linger), which deletes the socket while the owner keeps
-  running. Pending decision.
 - Scrollback cap is a fixed 10 MiB per pane until the GUI passes its config.
 - The VT fallback does not forward unparsed trailing bytes after the snapshot.
 - Title/cwd in `list` come from the owner VT; zsh integration showed both

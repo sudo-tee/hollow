@@ -19,6 +19,8 @@ const client_out_limit = 64 * 1024 * 1024;
 const termination_grace_ms = 1500;
 /// A freshly started owner nobody talks to exits after this.
 const startup_grace_ms = 10_000;
+/// Keeps tmpfiles aging (10 days on /tmp by default) off the socket and lock.
+const touch_interval_ms = 60 * 60 * 1000;
 /// After a pane's process is reaped, how long to wait for PTY EOF (a
 /// background job may hold the slave) before sending its exit status.
 const exit_linger_ms = 200;
@@ -42,14 +44,18 @@ pub const Paths = struct {
     }
 };
 
-/// `$XDG_RUNTIME_DIR/hollow`, else `/tmp/hollow-$UID`. The directory is
-/// created `0700` and refused if it has another owner or group/other bits.
+/// `/tmp/hollow-session-$UID` (or absolute `$HOLLOW_SESSION_DIR`, for
+/// tests). Not `$XDG_RUNTIME_DIR`: systemd deletes it when the user's last
+/// login session ends, taking the socket of a still-running owner with it.
+/// Separate from the shell integration dir `/tmp/hollow-$UID`, which is not
+/// `0700`. The directory is created `0700` and refused if it has another
+/// owner or group/other bits.
 pub fn resolvePaths(a: std.mem.Allocator) !Paths {
-    const runtime = env("XDG_RUNTIME_DIR");
-    const dir = if (runtime != null and runtime.?[0] == '/')
-        try std.fmt.allocPrintSentinel(a, "{s}/hollow", .{runtime.?}, 0)
+    const override = env("HOLLOW_SESSION_DIR");
+    const dir = if (override != null and override.?.len > 0 and override.?[0] == '/')
+        try a.dupeSentinel(u8, override.?, 0)
     else
-        try std.fmt.allocPrintSentinel(a, "/tmp/hollow-{d}", .{c.getuid()}, 0);
+        try std.fmt.allocPrintSentinel(a, "/tmp/hollow-session-{d}", .{c.getuid()}, 0);
     errdefer a.free(dir);
     try ensurePrivateDir(dir);
     const socket = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, p.socket_name }, 0);
@@ -192,6 +198,9 @@ pub const Owner = struct {
     listen_fd: c_int = -1,
     signal_fd: c_int = -1,
     state_dir: ?[:0]u8 = null,
+    /// Socket and lock paths to keep fresh; set by `serve`.
+    touch_paths: []const [:0]const u8 = &.{},
+    touched: i64 = 0,
     scrollback_bytes: usize = default_scrollback_bytes,
     sessions: std.ArrayList(*Session) = .empty,
     clients: std.ArrayList(*Client) = .empty,
@@ -305,6 +314,10 @@ pub const Owner = struct {
             self.flushClient(client);
         };
         self.collect();
+        if (self.touch_paths.len > 0 and nowMs() - self.touched >= touch_interval_ms) {
+            self.touched = nowMs();
+            for (self.touch_paths) |path| _ = c.utimensat(c.AT_FDCWD, path.ptr, null, 0);
+        }
         if (self.stop == .none and self.sessions.items.len == 0 and self.clients.items.len == 0 and
             (self.had_client or nowMs() - self.started >= startup_grace_ms)) self.stop = .idle;
     }
@@ -953,6 +966,9 @@ pub fn serve(a: std.mem.Allocator, io: std.Io) !void {
     owner.listen_fd = listen_fd;
     owner.signal_fd = signal_fd;
     owner.state_dir = stateDir(a) catch null;
+    const touch = [_][:0]const u8{ paths.socket, paths.lock };
+    owner.touch_paths = &touch;
+    owner.touched = nowMs();
     while (!owner.done()) try owner.step(1000);
     // Best effort: let the kill_server reply reach its client.
     for (owner.clients.items) |client| if (!client.dead) owner.flushClient(client);
