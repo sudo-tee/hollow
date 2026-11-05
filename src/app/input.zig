@@ -93,6 +93,14 @@ pub const PendingInputEvent = union(enum) {
         name: ?[]const u8,
         callback_ref: c_int,
         queued_at_ms: i64,
+        lua_generation: ?u64 = null,
+    },
+    attach_session: struct {
+        session_id: []u8,
+        domain_name: ?[]u8,
+        name: ?[]u8,
+        callback_ref: c_int,
+        lua_generation: ?u64 = null,
     },
     close_workspace: ?usize,
     next_workspace,
@@ -276,6 +284,11 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
             if (payload.command) |value| allocator.free(value);
             if (payload.name) |value| allocator.free(value);
         },
+        .attach_session => |payload| {
+            allocator.free(payload.session_id);
+            if (payload.domain_name) |value| allocator.free(value);
+            if (payload.name) |value| allocator.free(value);
+        },
         .set_workspace_name, .set_workspace_default_cwd => |value| allocator.free(value),
         .split_pane => |payload| {
             if (payload.domain_name) |value| allocator.free(value);
@@ -290,12 +303,18 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
     event.* = .none;
 }
 
+fn sessionGenerationMatches(self: *const App, generation: ?u64) bool {
+    const expected = generation orelse return true;
+    return if (self.lua) |lua| lua.generation == expected else false;
+}
+
 pub fn deinitInputQueue(self: *App) void {
     while (self.action_queue.pop()) |queued| {
         var event = queued;
         if (self.lua) |*lua| switch (event) {
             .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
-            .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .new_workspace => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
+            .attach_session => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
             .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
             .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
             .create_lua_pane => |payload| @import("lua_panes.zig").release(self, payload.ref, payload.generation),
@@ -417,8 +436,19 @@ pub fn processInputQueue(self: *App) void {
                 );
             },
             .new_workspace => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 std.log.info("app: new_workspace dispatch_lag_ms={d}", .{io.milliTimestamp() - payload.queued_at_ms});
                 mux_ops.newWorkspace(self, payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
+            },
+            .attach_session => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
+                @import("session_domain.zig").attach(self, payload.session_id, payload.domain_name, payload.name, payload.callback_ref);
             },
             .close_workspace => |idx| {
                 mux_ops.closeWorkspace(self, idx);

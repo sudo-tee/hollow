@@ -471,6 +471,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
     const borrower_tests = b.addTest(.{ .root_module = root_module, .filters = &.{"session borrowers"} });
+    root_module.addOptions("session_test_options", connector_test_options);
     b.step("test-session-borrowers", "Run app session terminal borrower invalidation tests").dependOn(&b.addRunArtifact(borrower_tests).step);
     const clay_test_module = b.createModule(.{
         .root_source_file = b.path("src/ui/clay_test.zig"),

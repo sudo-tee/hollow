@@ -362,6 +362,7 @@ state and readiness survive reloads.
 
 ```lua
 hollow.term.new_workspace(opts)         -- create
+hollow.term.attach_session(id, opts)    -- experimental persistent attachment
 hollow.term.close_workspace(id?)
 hollow.term.next_workspace()
 hollow.term.prev_workspace()
@@ -384,6 +385,21 @@ hollow.term.set_theme(name)             -- switch active theme
   on_complete = function(result) ... end,  -- result.success, result.workspace_index
 }
 ```
+
+### Persistent workspaces
+
+For a domain with `persist = true`, `new_workspace` admits asynchronous owner creation instead of spawning an ordinary pane.
+Its completion callback runs after the workspace is published, not when the request is merely queued.
+`workspace.session_id` is the host-owned ID for a persistent workspace and is absent for an ordinary workspace.
+
+`attach_session(session_id, opts)` accepts a nonempty ID and optional `{ domain, name, on_complete }` table.
+The domain must have persistence enabled and resolve to the host that owns the session.
+An omitted domain inherits the current terminal domain, then the configured default domain.
+Attachment is asynchronous and uses the same `{ success, workspace_index }` completion result as `new_workspace`.
+It takes over any existing attachment without creating another shell.
+No create or attach request is automatically replayed after connection loss.
+
+See the [persistent sessions guide](../../persistent-sessions-guide.md) for configuration, cleanup, and current limitations.
 
 ## Run a process in a domain
 

@@ -67,6 +67,7 @@ pub const Config = struct {
 
     pub const Domain = struct {
         name: []u8,
+        persist: bool = false,
         shell: ?[]u8 = null,
         default_cwd: ?[]u8 = null,
         ssh: ?DomainSsh = null,
@@ -414,6 +415,12 @@ pub const Config = struct {
         return null;
     }
 
+    pub fn persistForDomain(self: Config, domain_name: ?[]const u8) bool {
+        const name = domain_name orelse self.defaultDomainName() orelse return false;
+        const domain = self.domainByName(name) orelse return false;
+        return domain.persist;
+    }
+
     pub fn windowTitle(self: Config) []const u8 {
         return self.window_title orelse "hollow";
     }
@@ -453,6 +460,11 @@ pub const Config = struct {
             domain.ssh = null;
         }
         try replaceOwned(self.allocator, &domain.shell, shell_value);
+    }
+
+    pub fn setDomainPersist(self: *Config, name: []const u8, persist: bool) !void {
+        const domain = try self.ensureDomain(name);
+        domain.persist = persist;
     }
 
     pub fn setDomainDefaultCwd(self: *Config, name: []const u8, cwd_value: []const u8) !void {
@@ -738,6 +750,35 @@ test "domain shell and cwd resolution honor explicit and default domains" {
     try std.testing.expectEqualStrings("/tmp/local", cfg.defaultCwdForDomain(null).?);
     try std.testing.expectEqualStrings("/tmp/cwd-only", cfg.defaultCwdForDomain("cwd-only").?);
     try std.testing.expectEqual(@as(?[]const u8, null), cfg.defaultCwdForDomain("missing"));
+}
+
+test "session borrowers domain persistence is opt-in and resolves explicit or default domains" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try std.testing.expect(!cfg.persistForDomain(null));
+    try std.testing.expect(!cfg.persistForDomain("missing"));
+    try cfg.setDefaultDomain("missing");
+    try std.testing.expect(!cfg.persistForDomain(null));
+
+    try cfg.setDomainShell("ordinary", "/bin/sh");
+    try std.testing.expect(!cfg.domainByName("ordinary").?.persist);
+    try cfg.setDomainPersist("persistent", true);
+    try std.testing.expect(cfg.domainByName("persistent").?.shell == null);
+    try std.testing.expect(cfg.persistForDomain("persistent"));
+    try cfg.setDefaultDomain("persistent");
+    try std.testing.expect(cfg.persistForDomain(null));
+    try std.testing.expect(!cfg.persistForDomain("ordinary"));
+    try std.testing.expect(!cfg.persistForDomain("missing"));
+
+    try cfg.setDomainShell("persistent", "/bin/zsh");
+    try cfg.setDomainDefaultCwd("persistent", "/project");
+    try std.testing.expect(cfg.persistForDomain("persistent"));
+    try cfg.setDomainPersist("persistent", false);
+    try std.testing.expect(!cfg.persistForDomain(null));
+    try std.testing.expectEqualStrings("/bin/zsh", cfg.domainByName("persistent").?.shell.?);
+    try std.testing.expectEqualStrings("/project", cfg.defaultCwdForDomain(null).?);
+    try std.testing.expectEqual(@as(usize, 2), cfg.domains.items.len);
 }
 
 test "shellForDomain reports unknown and missing-shell domains distinctly" {

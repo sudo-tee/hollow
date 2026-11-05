@@ -237,6 +237,8 @@ function M.setup(hollow, host_api)
       name = host_api.get_workspace_name and host_api.get_workspace_name(index)
         or ("ws " .. tostring(index + 1)),
       domain = pane and pane.domain or nil,
+      session_id = host_api.get_workspace_session_id and host_api.get_workspace_session_id(index)
+        or nil,
       is_active = is_active,
     }
   end
@@ -398,6 +400,40 @@ function M.setup(hollow, host_api)
       error("hollow.term.new_workspace(opts) expects opts.on_complete to be a function")
     end
     host_api.new_workspace(opts)
+  end
+
+  function hollow.term.attach_session(session_id, opts)
+    if
+      type(session_id) ~= "string"
+      or #session_id == 0
+      or #session_id > 128
+      or session_id:find("\0", 1, true)
+    then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects a non-empty session_id of at most 128 bytes without NUL"
+      )
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.attach_session(session_id, opts) expects opts to be a table or nil")
+    end
+    opts = opts or {}
+    if opts.domain ~= nil and type(opts.domain) ~= "string" then
+      error("hollow.term.attach_session(session_id, opts) expects opts.domain to be a string")
+    end
+    if opts.name ~= nil and type(opts.name) ~= "string" then
+      error("hollow.term.attach_session(session_id, opts) expects opts.name to be a string")
+    end
+    if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects opts.on_complete to be a function"
+      )
+    end
+    host_api.attach_session({
+      session_id = session_id,
+      domain = opts.domain,
+      name = opts.name,
+      on_complete = opts.on_complete,
+    })
   end
 
   function hollow.term.close_workspace(id)

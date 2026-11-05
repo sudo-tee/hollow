@@ -955,6 +955,10 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(workspace.id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_id"), if (workspace.session_controller) |controller|
+            .{ .string = try self.allocator.dupe(u8, controller.session_id) }
+        else
+            .null);
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
@@ -1184,7 +1188,8 @@ pub const App = struct {
 
         cmd_ipc.startCommandTransport(self);
         const cbs = terminal_callbacks.terminalCallbacks();
-        try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
+        const persistent_startup = self.config.persistForDomain(null);
+        if (!persistent_startup) try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
         self.mux = mux;
         self.mux.?.pane_created = pane_lifecycle.created;
@@ -1198,6 +1203,14 @@ pub const App = struct {
         }
 
         if (self.activePane()) |pane| pane_lifecycle.created(self, pane);
+
+        if (persistent_startup) {
+            _ = @import("app/session_domain.zig").begin(self, null, self.config.defaultDomainName(), null, null, LUA_NOREF, true) catch |err| blk: {
+                std.log.warn("persistent startup admission failed: {s}", .{@errorName(err)});
+                session_open.reportAdmissionFailure(self, err, true);
+                break :blk 0;
+            };
+        }
 
         try self.tick();
         self.startConfigWatcher();
@@ -1213,6 +1226,8 @@ pub const App = struct {
 
     fn registerLuaCallbacks(self: *App, lua: *LuaRuntime) void {
         lua.registerAppCallbacks(.{
+            .attach_session = lua_callbacks.luaAttachSessionCallback,
+            .get_workspace_session_id = lua_callbacks.luaGetWorkspaceSessionIdCallback,
             .job_request = lua_callbacks.luaJobRequestCallback,
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,

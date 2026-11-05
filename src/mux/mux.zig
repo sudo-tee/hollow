@@ -631,6 +631,7 @@ pub const Mux = struct {
     }
 
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
+        if (cfg.persistForDomain(domain_name)) return error.PersistentDomainRequiresWorkspace;
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         pane.id = self.reservePaneId();

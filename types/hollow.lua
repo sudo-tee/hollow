@@ -513,6 +513,7 @@
 ---@field batch_jobs? 1|2 Compatibility setting (default 2); no effect with persistent mux readers
 
 ---@class HollowDomainConfig
+---@field persist? boolean Experimental host-owned persistent workspaces; default false, Linux owner only
 ---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
@@ -598,6 +599,7 @@
 ---@field index integer
 ---@field name string
 ---@field domain? string
+---@field session_id? string Host-owned persistent session ID; absent for ordinary workspaces
 ---@field is_active boolean
 
 ---@class HollowMuxWorkspace: HollowWorkspace
@@ -1800,6 +1802,11 @@ function term.set_workspace_default_cwd(cwd) end
 ---@param opts? { cwd?: string, domain?: string, command?: string, name?: string }
 function term.new_workspace(opts) end
 
+---Attach an existing host-owned session explicitly; completion runs asynchronously.
+---@param session_id string Non-empty, at most 128 bytes, without NUL
+---@param opts? { domain?: string, name?: string, on_complete?: fun(result: { success: boolean, workspace_index?: integer }) }
+function term.attach_session(session_id, opts) end
+
 ---@param id? integer
 function term.close_workspace(id) end
 
@@ -2268,6 +2275,9 @@ function select.close() end
 
 ---@class HollowWorkspaceLocalHost
 ---@field type "local"
+---@field agent_path? string
+---@field agent_dir? string
+---@field timeout_ms? integer
 
 ---@class HollowWorkspaceWslHost: HollowWslHostOpts
 ---@field type "wsl"
@@ -3162,6 +3172,7 @@ function plugins.sync() end
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
+---@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, on_complete?: fun(result: { success: boolean, workspace_index?: integer }) })
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field schedule fun(handler: fun())
 ---@field close_workspace fun()
@@ -3171,6 +3182,7 @@ function plugins.sync() end
 ---@field set_workspace_name fun(name: string)
 ---@field set_workspace_default_cwd fun(cwd: string)
 ---@field get_workspace_name fun(index: integer): string
+---@field get_workspace_session_id fun(index: integer): string|nil
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)

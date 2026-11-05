@@ -8,14 +8,101 @@ describe("hollow.host.pty", function()
     pty = require("hollow.host.pty")
     domains = {}
     env.hollow.config.get = function(key)
-      if key == "domains" then return domains end
+      if key == "domains" then
+        return domains
+      end
     end
     env.hollow.platform = { is_windows = true }
   end)
 
+  it("resolves native Linux session owners without changing ordinary PTYs", function()
+    env.hollow.platform = nil
+    local host = env.hollow._session_host(nil, "/bin/sh")
+    assert.are.same({
+      mode = "explicit",
+      connector = { argv = {} },
+      agent = { timeout_ms = 60000 },
+      path_style = "posix",
+    }, host)
+    domains.off = { host = false }
+    assert.are.same(host, pty.session_request("off", "/bin/sh"))
+    domains.native = { host = { type = "local", agent_path = "/opt/agent", timeout_ms = 5000 } }
+    host = pty.session_request("native", "/bin/sh")
+    assert.are.equal("/opt/agent", host.agent.path)
+    assert.are.equal(5000, host.agent.timeout_ms)
+    assert.are.same({}, host.connector.argv)
+    assert.is_nil(pty.request(nil, "/bin/sh"))
+    assert.truthy(pty.request("native", "/bin/sh").error)
+  end)
+
+  it("rejects native Windows session owners", function()
+    domains.native = { host = { type = "local" } }
+    domains.off = { host = false }
+    for _, domain in ipairs({ "native", "off", "absent" }) do
+      local host = pty.session_request(domain, "pwsh.exe")
+      assert.are.equal("explicit", host.mode)
+      assert.truthy(host.error:find("Windows", 1, true))
+    end
+  end)
+
+  it("normalizes implicit WSL sessions to explicit without ordinary fallback changes", function()
+    domains.ubuntu = { wsl_distro = "Ubuntu" }
+    local host = pty.session_request("ubuntu", "wsl.exe -u alice")
+    assert.are.equal("explicit", host.mode)
+    assert.are.equal("wsl", host.path_style)
+    assert.are.same(
+      { "wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" },
+      host.connector.argv
+    )
+    assert.are.equal("implicit", pty.request("ubuntu", "wsl.exe").mode)
+  end)
+
+  it("resolves explicit SSH sessions and fails closed on invalid descriptors", function()
+    domains.remote = { host = { type = "ssh", destination = "box", path_style = "posix" } }
+    local host = pty.session_request("remote", "sh")
+    assert.are.equal("explicit", host.mode)
+    assert.is_true(host.connector.remote_shell)
+    for _, spec in ipairs({
+      true,
+      1,
+      "ssh",
+      {},
+      { type = false },
+      { type = "unknown" },
+      { type = "ssh", destination = "-bad" },
+      { type = "local", agent_path = "relative" },
+      { type = "local", timeout_ms = false },
+      { type = "local", path_style = false },
+    }) do
+      domains.bad = { host = spec }
+      host = pty.session_request("bad", "sh")
+      assert.are.equal("explicit", host.mode)
+      assert.is_string(host.error)
+      assert.is_nil(host.connector)
+    end
+  end)
+
+  it("rejects legacy SSH instead of routing sessions to native Linux", function()
+    env.hollow.platform = { is_windows = false }
+    domains.legacy = { ssh = "box" }
+    assert.truthy(pty.session_request("legacy", "sh").error:find("legacy", 1, true))
+    domains.legacy.host = false
+    assert.truthy(pty.session_request("legacy", "sh").error)
+    env.hollow.config.get = function()
+      error("config unavailable")
+    end
+    assert.are.same(
+      { mode = "explicit", error = "config unavailable" },
+      pty.session_request(nil, "sh")
+    )
+  end)
+
   it("parses WSL launcher distros", function()
     assert.are.equal("Ubuntu", pty.wsl_distro("wsl.exe -d Ubuntu"))
-    assert.are.equal("Arch", pty.wsl_distro('"C:\\Windows\\System32\\wsl.exe" --user me --distribution Arch --exec zsh'))
+    assert.are.equal(
+      "Arch",
+      pty.wsl_distro('"C:\\Windows\\System32\\wsl.exe" --user me --distribution Arch --exec zsh')
+    )
     assert.are.equal("Arch", pty.wsl_distro("wsl.exe ~ --shell-type login -d Arch"))
     assert.is_nil(pty.wsl_distro("wsl.exe"))
     assert.is_nil(pty.wsl_distro("wsl.exe -e bash -d x"))
@@ -56,7 +143,10 @@ describe("hollow.host.pty", function()
       "wsl.exe --distribution=Ubuntu --user=alice --exec sh",
     }) do
       local host = pty.request(nil, shell)
-      assert.are.same({ "wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" }, host.connector.argv)
+      assert.are.same(
+        { "wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" },
+        host.connector.argv
+      )
     end
     local root = pty.request(nil, "wsl.exe -d Ubuntu -u root")
     local alice = pty.request(nil, "wsl.exe -d Ubuntu -u alice")
@@ -66,7 +156,16 @@ describe("hollow.host.pty", function()
   it("preserves launcher executable and user with domain distro metadata", function()
     domains.ubuntu = { wsl_distro = "Ubuntu", pty = { mode = "mux" } }
     local host = pty.request("ubuntu", '"C:\\custom\\wsl.exe" --user alice')
-    assert.are.same({ "C:\\custom\\wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" }, host.connector.argv)
+    assert.are.same({
+      "C:\\custom\\wsl.exe",
+      "--distribution",
+      "Ubuntu",
+      "--user",
+      "alice",
+      "--cd",
+      "/",
+      "--exec",
+    }, host.connector.argv)
     assert.are.equal("implicit", host.mode)
     assert.truthy(host.multiplex)
   end)
@@ -84,20 +183,51 @@ describe("hollow.host.pty", function()
   end)
 
   it("describes containers, optionally through WSL, with agent options", function()
-    domains.pod = { host = { type = "podman", container = "dev", agent_path = "/opt/hollow-agent", path_style = "wsl" } }
+    domains.pod = {
+      host = {
+        type = "podman",
+        container = "dev",
+        agent_path = "/opt/hollow-agent",
+        path_style = "wsl",
+      },
+    }
     local host = pty.request("pod", "sh")
     assert.are.same({ "podman", "exec", "-i", "dev" }, host.connector.argv)
     assert.are.equal("/opt/hollow-agent", host.agent.path)
     assert.are.equal("wsl", host.path_style)
-    domains.box = { host = { type = "docker", container = "dev", context = "remote", via = { type = "wsl", distro = "Ubuntu" }, timeout_ms = 5000 } }
+    domains.box = {
+      host = {
+        type = "docker",
+        container = "dev",
+        context = "remote",
+        via = { type = "wsl", distro = "Ubuntu" },
+        timeout_ms = 5000,
+      },
+    }
     host = pty.request("box", "sh")
-    assert.are.same({ "wsl.exe", "--distribution", "Ubuntu", "--cd", "/", "--exec", "docker", "--context", "remote", "exec", "-i", "dev" }, host.connector.argv)
+    assert.are.same({
+      "wsl.exe",
+      "--distribution",
+      "Ubuntu",
+      "--cd",
+      "/",
+      "--exec",
+      "docker",
+      "--context",
+      "remote",
+      "exec",
+      "-i",
+      "dev",
+    }, host.connector.argv)
     assert.are.equal(5000, host.agent.timeout_ms)
   end)
 
   it("reports invalid or unsupported hosts as pane errors", function()
     domains.weird = { host = { type = "local" } }
-    assert.are.same({ mode = "explicit", error = "unsupported host type: local" }, pty.request("weird", "sh"))
+    assert.are.same(
+      { mode = "explicit", error = "unsupported host type: local" },
+      pty.request("weird", "sh")
+    )
     domains.bad = { host = { type = "ssh", destination = "-oProxyCommand=x" } }
     local host = pty.request("bad", "sh")
     assert.are.equal("explicit", host.mode)
@@ -120,19 +250,29 @@ describe("hollow.host.pty", function()
     assert.is_nil(pty.request("box", "sh").multiplex)
   end)
 
-  it("supports implicit WSL mux and reports invalid tuning rather than silently falling back", function()
-    domains.ubuntu = { wsl_distro = "Ubuntu", pty = { mode = "mux" } }
-    assert.are.same({ read_workers = 4, batch_jobs = 2 }, pty.request("ubuntu", "wsl.exe").multiplex)
-    for _, opts in ipairs({
-      false, { mode = "bad" }, { mode = "mux", read_workers = -1 },
-      { mode = "mux", read_workers = 5 }, { mode = "mux", read_workers = 1.5 },
-      { mode = "mux", read_workers = "2" }, { mode = "mux", batch_jobs = 0 },
-    }) do
-      domains.ubuntu.pty = opts
-      local host = pty.request("ubuntu", "wsl.exe")
-      assert.are.equal("explicit", host.mode)
-      assert.truthy(host.error)
-      assert.is_nil(host.multiplex)
+  it(
+    "supports implicit WSL mux and reports invalid tuning rather than silently falling back",
+    function()
+      domains.ubuntu = { wsl_distro = "Ubuntu", pty = { mode = "mux" } }
+      assert.are.same(
+        { read_workers = 4, batch_jobs = 2 },
+        pty.request("ubuntu", "wsl.exe").multiplex
+      )
+      for _, opts in ipairs({
+        false,
+        { mode = "bad" },
+        { mode = "mux", read_workers = -1 },
+        { mode = "mux", read_workers = 5 },
+        { mode = "mux", read_workers = 1.5 },
+        { mode = "mux", read_workers = "2" },
+        { mode = "mux", batch_jobs = 0 },
+      }) do
+        domains.ubuntu.pty = opts
+        local host = pty.request("ubuntu", "wsl.exe")
+        assert.are.equal("explicit", host.mode)
+        assert.truthy(host.error)
+        assert.is_nil(host.multiplex)
+      end
     end
-  end)
+  )
 end)

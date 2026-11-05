@@ -662,6 +662,10 @@ pub const Owner = struct {
             // owner crash as orphans rather than die with it).
             if (launch[1] != 3 and c.dup3(launch[1], 3, c.O_CLOEXEC) < 0) c._exit(126);
             if (std.os.linux.errno(std.os.linux.close_range(4, std.math.maxInt(c_int), .{ .UNSHARE = false, .CLOEXEC = false })) != .SUCCESS) c._exit(126);
+            // Client-local IDs/endpoints become stale after reattachment. Shell
+            // integration in persistent panes must use its pane-bound OSC path.
+            inline for (.{ "HOLLOW_PANE_ID", "HOLLOW_WORKSPACE_ID", "HOLLOW_COMMAND_ADDR" }) |key| _ = c.unsetenv(key);
+            if (c.setenv("HOLLOW_TRANSPORT", "osc", 1) != 0) c._exit(126);
             pty.execSpawn(self.a, self.io, spawn) catch |err| {
                 const name = @errorName(err);
                 _ = c.write(3, name.ptr, name.len);

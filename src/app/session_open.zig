@@ -25,11 +25,16 @@ pub const Pending = struct {
     id: u64,
     domain: ?[]const u8,
     name: ?[]const u8,
+    startup_input: ?[]u8 = null,
     callback_ref: c_int,
     lua_generation: u64,
     state: enum { running, publishing, retiring } = .running,
 
     pub fn prepare(a: std.mem.Allocator, request: p.Request, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int, generation: u64, id: u64) !*Pending {
+        return prepareWithInput(a, request, domain, name, callback_ref, generation, id, null);
+    }
+
+    pub fn prepareWithInput(a: std.mem.Allocator, request: p.Request, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int, generation: u64, id: u64, input: ?[]const u8) !*Pending {
         if (domain) |value| if (value.len == 0 or value.len > 256) return error.InvalidDomain;
         if (name) |value| if (value.len > 4096) return error.InvalidWorkspaceName;
         const self = try a.create(Pending);
@@ -38,6 +43,12 @@ pub const Pending = struct {
         errdefer arena.deinit();
         const owned_domain = if (domain) |value| try arena.allocator().dupe(u8, value) else null;
         const owned_name = if (name) |value| try arena.allocator().dupe(u8, value) else null;
+        const startup_input: ?[]u8 = if (input) |value| blk: {
+            if (value.len > 64 * 1024 or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidStartupInput;
+            const suffix = if (std.mem.endsWith(u8, value, "\r") or std.mem.endsWith(u8, value, "\n")) "" else "\r";
+            break :blk try std.mem.concat(a, u8, &.{ value, suffix });
+        } else null;
+        errdefer if (startup_input) |value| a.free(value);
         const operation = try opener.Open.prepare(a, request);
         self.* = .{
             .allocator = a,
@@ -46,6 +57,7 @@ pub const Pending = struct {
             .id = id,
             .domain = owned_domain,
             .name = owned_name,
+            .startup_input = startup_input,
             .callback_ref = callback_ref,
             .lua_generation = generation,
         };
@@ -56,6 +68,7 @@ pub const Pending = struct {
     pub fn destroy(self: *Pending) void {
         if (self.connection) |connection| connection.destroy();
         self.operation.deinit();
+        if (self.startup_input) |value| self.allocator.free(value);
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -64,6 +77,10 @@ pub const Pending = struct {
 /// Admission only. Caller retains its Lua callback on failure; successful
 /// admission invokes it once (or abandons its old-runtime ref after reload).
 pub fn begin(app: *App, options: transport.Options, request: p.Request, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int) !u64 {
+    return beginWithInput(app, options, request, domain, name, callback_ref, null);
+}
+
+pub fn beginWithInput(app: *App, options: transport.Options, request: p.Request, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int, input: ?[]const u8) !u64 {
     if (app.mux == null or app.ghostty == null) return error.MuxUnavailable;
     if (app.session_open_next_id == std.math.maxInt(u64)) return error.ResourceExhausted;
     var index: ?usize = null;
@@ -73,7 +90,7 @@ pub fn begin(app: *App, options: transport.Options, request: p.Request, domain: 
     };
     const slot = index orelse return error.ResourceExhausted;
     const id = app.session_open_next_id;
-    const pending = try Pending.prepare(app.allocator, request, domain, name, callback_ref, if (app.lua) |*lua| lua.generation else 0, id);
+    const pending = try Pending.prepareWithInput(app.allocator, request, domain, name, callback_ref, if (app.lua) |*lua| lua.generation else 0, id, input);
     errdefer pending.destroy();
     // All fallible request/metadata setup precedes spawning transport work.
     const connection = try mux_ops.createSessionConnection(app, options);
@@ -92,6 +109,17 @@ pub fn beginStartup(app: *App, options: transport.Options, request: p.Request, d
     const id = try begin(app, options, request, domain, name, no_ref);
     app.startup_session_target = .{ .opening = id };
     return id;
+}
+
+/// Configuration/validation failure before transport admission still needs a
+/// visible empty-window error. Reserve its notice ID so later opens cannot
+/// accidentally dismiss the wrong warning.
+pub fn reportAdmissionFailure(app: *App, reason: anyerror, startup: bool) void {
+    const id = app.session_open_next_id;
+    if (id != std.math.maxInt(u64)) app.session_open_next_id += 1;
+    if (startup) app.startup_session_target = .failed;
+    _ = app.session_notices.failed(id, reason, .not_sent);
+    app.requestRedraw();
 }
 
 /// A pointer click is deliberate cancellation/dismissal, never a retry. Do not
@@ -158,6 +186,27 @@ pub fn pump(app: *App) void {
                 };
                 const workspace_id = workspace.id;
                 const operation_id = pending.id;
+                if (pending.startup_input) |value| {
+                    const term = workspace.activeTab().?.activePane().?.asTerminal().?;
+                    std.debug.assert(term.pending_startup_input_capacity == 0);
+                    term.pending_startup_input = value;
+                    term.pending_startup_input_capacity = value.len;
+                    term.startup_input_quiet_ticks = 0;
+                    pending.startup_input = null; // View owns prepared buffer now.
+                }
+                // Initial geometry/name belongs to this new session only.
+                // Attach must never silently overwrite a saved owner layout.
+                if (pending.operation.request.op == .create) save_initial: {
+                    const bytes = @import("../mux/session_layout.zig").capture(app.allocator, workspace) catch |err| {
+                        std.log.warn("initial session geometry capture failed: {s}", .{@errorName(err)});
+                        break :save_initial;
+                    };
+                    defer app.allocator.free(bytes);
+                    _ = workspace.session_controller.?.requestLayout(bytes) catch |err| blk: {
+                        std.log.warn("initial session geometry admission failed: {s}", .{@errorName(err)});
+                        break :blk 0;
+                    };
+                }
                 if (app.startup_session_target == .opening and app.startup_session_target.opening == operation_id) {
                     app.startup_session_target = if (workspace.activeTab()) |tab|
                         (if (tab.activePane()) |pane| .{ .pane = pane.id } else .failed)
@@ -248,7 +297,7 @@ test "session borrowers pending create publishes views before subsequent output 
     app.mux = @import("../mux.zig").Mux.init(a);
     var domain = "captured-domain".*;
     var name = "captured-name".*;
-    const pending = try Pending.prepare(a, .{ .id = 0, .op = .create, .spawn = .{} }, &domain, &name, no_ref, 0, 1);
+    const pending = try Pending.prepareWithInput(a, .{ .id = 0, .op = .create, .spawn = .{} }, &domain, &name, no_ref, 0, 1, "cd /project");
     @memset(&domain, 'x');
     @memset(&name, 'x');
     app.session_opens[0] = pending;
@@ -289,6 +338,7 @@ test "session borrowers pending create publishes views before subsequent output 
     try std.testing.expectEqualStrings("captured-domain", app.activePane().?.domainName());
     mux_ops.maybeRunStartupCommand(app);
     try std.testing.expect(app.startup_command_sent);
+    try std.testing.expectEqualStrings("cd /project\rstartup-command\r", app.activePane().?.content.terminal.pending_startup_input);
     try std.testing.expectEqual(@as(usize, 1), connection.status().queued_frames);
     mux_ops.pumpSessionControllers(app, &app.ghostty.?);
     try std.testing.expectEqual(@as(usize, 4), app.activePane().?.content.terminal.pty.?.session.pendingOutputBytes());
@@ -324,7 +374,7 @@ test "session borrowers pending open cancel retires without blocking or publishi
 }
 
 fn prepareAllocation(a: std.mem.Allocator) !void {
-    const pending = try Pending.prepare(a, .{ .id = 0, .op = .create, .spawn = .{ .cwd = "/captured", .argv = &.{"sh"} } }, "domain", "name", no_ref, 7, 1);
+    const pending = try Pending.prepareWithInput(a, .{ .id = 0, .op = .create, .spawn = .{ .cwd = "/captured", .argv = &.{"sh"} } }, "domain", "name", no_ref, 7, 1, "cd /project");
     defer pending.destroy();
 }
 

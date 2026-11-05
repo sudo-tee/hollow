@@ -646,6 +646,15 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
         if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domainName(), inherited_domain orelse "")) pane.cwd else null
     else
         null;
+    if (self.config.persistForDomain(inherited_domain)) {
+        _ = @import("session_domain.zig").begin(self, inherited_cwd, inherited_domain, effective_command, name, callback_ref, false) catch |err| {
+            std.log.warn("persistent workspace admission failed: {s}", .{@errorName(err)});
+            @import("session_open.zig").reportAdmissionFailure(self, err, false);
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+            return;
+        };
+        return;
+    }
     mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
         std.log.err("app: newWorkspace failed: {s} domain={s}", .{ @errorName(err), inherited_domain orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);

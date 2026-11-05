@@ -170,6 +170,17 @@ hollow.config.set({
 })
 ```
 
+### Persistent domains (experimental)
+
+Set `domains.<name>.persist = true` to create host-owned persistent workspaces on that domain.
+The default is `false`; existing workspaces are not converted.
+Supported owners run on Linux, including WSL and SSH hosts.
+Native Windows owners are not implemented yet.
+Failed persistent host resolution never falls back to a native ordinary shell.
+An opted-in default domain also uses asynchronous owner creation at startup, with a visible connecting or failure card.
+Automatic startup reattachment is not implemented yet.
+See the [persistent sessions guide](../../persistent-sessions-guide.md) before opting in.
+
 ### WSL domains
 
 The shipped base config calls `hollow.config.populate_wsl_domains()`

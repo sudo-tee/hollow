@@ -471,9 +471,15 @@ GUI workspace/controller wiring implemented for an already-attached session:
   Owner spawn/close invalidates the opaque blob and returns an advanced revision,
   so a reconnect cannot be blocked by references to removed/new panes. Until
   automatic post-mutation saves land, this falls back to one tab per owner pane.
-- `domains.<name>.persist` remains disabled. There is no domain-config create or
-  attach flow, host binding, or startup reattachment yet. Internal App APIs can
-  admit asynchronous create/attach and publish an already attached session.
+- Experimental `domains.<name>.persist = true` now routes workspace creation
+  through strict host resolution and asynchronous owner admission, including
+  default-domain startup without a disposable ordinary shell.
+  `hollow.term.attach_session(id, opts)` explicitly reattaches through the chosen
+  persistent domain; workspace snapshots expose `session_id`.
+  Host options, request data and callback generation are captured before I/O;
+  stale queued session operations are rejected after config reload.
+  Native Windows owners remain unsupported; Linux-local, WSL and SSH-to-Linux
+  use the existing connector/deployment machinery without native fallback.
 - Async admission foundation: `src/session/open.zig` owns a copied create/attach
   request and stops at the matching reply, before consuming pane snapshots or
   output. `src/app/session_open.zig` bounds pending operations to 16, captures
@@ -481,7 +487,7 @@ GUI workspace/controller wiring implemented for an already-attached session:
   connections to workspace controllers. Request preparation precedes connector
   startup; failed/canceled opens close nonblocking and are joined only after EOF
   (or during shutdown). Submitted requests are never replayed. This is an internal
-  App API, not yet a configured startup/domain flow.
+  App API and the configured startup/domain flow share this implementation.
 - Empty-mux preparation: startup automation waits for a terminal target (without
   keeping idle rendering spinning), domain snapshots tolerate no active pane,
   and automatic last-workspace quit is suppressed while a live open is pending.
@@ -499,16 +505,28 @@ GUI workspace/controller wiring implemented for an already-attached session:
   on Windows. The Linux root test link remains blocked by missing X11, Xi,
   Xcursor, GL, and ALSA development libraries.
 
+Creation/attachment validation now includes real-owner App integration:
+- A configured domain creates a workspace, queues an initial command into its
+  continuing interactive shell, destroys the GUI/connector, explicitly reattaches,
+  and reads the original shell variable before acknowledged close.
+- Remote shell arguments are preserved; WSL launcher arguments are unwrapped
+  rather than launched on the guest. Persistent children do not inherit transient
+  GUI pane/workspace IDs or the client's command endpoint; CLI traffic uses OSC.
+- Config and strict-host tests avoid unrelated detached WSL platform discovery.
+
 Next implementation slices:
-1. Dead/missing-session UX and controller handling for attach/create failures.
-2. Opt-in domain configuration, host-bound workspaces, automatic layout saves,
-   and stale/missing-pane layout reconciliation. The opaque owner blob already
-   carries tab structure and revision-checked geometry.
+1. Automatic geometry saves, owner-backed tab/pane creation, and stale/missing-pane
+   layout reconciliation. The opaque owner blob already carries tab structure and
+   revision-checked geometry; create saves its initial geometry without replacing
+   saved layout during attach.
+2. GUI session discovery, actionable dead/missing-session UX, and explicit host
+   identity storage for automatic reattachment.
 3. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 
-`persist = true` is not enabled by this foundation alone. Native Windows
-owner and WSL keepalive remain Phase 3. SSH trust remains user-managed.
+`persist = true` is experimental and defaults to false.
+Native Windows owner and WSL keepalive remain Phase 3.
+SSH trust remains user-managed.
 
 ### Tests per phase
 

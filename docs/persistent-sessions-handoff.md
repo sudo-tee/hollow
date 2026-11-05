@@ -2,6 +2,8 @@
 
 Updated 2026-11-05. Working branch: `feat/persistent-sessions`. Nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
+User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
+Earlier commit IDs below predate the user's rebase onto main; use `git log` for current IDs.
 
 ## Current checkpoint
 
@@ -16,9 +18,10 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
   session. App owns controller/connection, pumps bounded frames around pane
   parsing, retries backpressure, and removes panes only after close ACK. App
   borrower invalidation and aggregate snapshot budgeting are wired. `domains.<name>.persist`
-   is NOT enabled; no config-driven create/attach, host binding, or startup
-   reattach yet. Next: dead/missing-session UX, domain config, automatic layout
-   saves/reconciliation, then reattach.
+   is now exposed experimentally for configured creation and explicit attachment;
+   automatic startup reattachment is not implemented.
+   Next: owner-backed pane/tab creation, automatic layout saves/reconciliation,
+   session discovery and remembered host/session identities.
 - Leave dirty `third_party/{lua-zluajit,luajit-upstream,nightwatch,sokol}` alone.
 - Review hardening: disconnected/taken-over views close locally; new tabs/splits
   and cross-workspace moves involving session workspaces are rejected until
@@ -70,6 +73,31 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
   focus changes, unrelated panes, target disappearance, notice state, cancellation
   uncertainty, redraw wake, and bounded/clipped status geometry. Windows App
   tests and GUI cross-build pass; Linux session/headless suites pass.
+- Domain-entry checkpoint: `src/app/session_domain.zig` resolves hosts strictly
+  through `Runtime.sessionHost` / `hollow._session_host`, prepares bounded guest
+  argv/env and admits the async opener. `persist=true` supports named workspace
+  creation and default-domain startup; native defaults are unchanged.
+  Windows-native hosts fail visibly; Linux-local, WSL, SSH Linux use agent owners.
+  Public `hollow.term.attach_session(id, {domain,name,on_complete})` reattaches;
+  `workspace.session_id` exposes owner identity for manual recovery.
+  Startup currently creates a NEW session, not automatic reattach.
+- New workspace commands are prepared before connector start, transferred into
+  the published pane's startup-input queue, and run inside its continuing shell.
+  They must NOT be sent as `Spawn.command` (shell would exit after command).
+  Actual guest shell argv is preserved; WSL launcher strings are unwrapped.
+  Persistent owner children clear inherited GUI IDs/command endpoint and use OSC.
+  Domain env cannot inject transient GUI endpoint/ID bindings.
+- Rebase complete onto main; native-notice checkpoint is `65158da`.
+  New config tests no longer spawn detached platform discovery: Runtime test
+  construction disables that unrelated worker. Explicit session queue entries
+  carry Lua generation; stale requests cannot reroute after config reload.
+  Workspace argument copies are all-or-nothing under OOM, never dropped to null.
+- `test-session-borrowers` accepts the existing `-Dsession-test-wsl` and
+  `-Dsession-test-agent` options for an isolated real-owner App test: configured
+  create + initial command -> full App teardown -> explicit attach -> original
+  shell variable -> acknowledged close. It uses a unique endpoint, never kills
+  the user's ordinary owner. GUI appearance still needs manual smoke check now
+  that configuration exposes a real entry path.
 
 ## Architecture / invariants
 
@@ -115,27 +143,17 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User approved cheaper-model delegation. Read-only mapping/review were launched
 at start of current work; incorporate their results when available.
 
-Next domain-create integration map (read-only exploration): branch in
-`src/app/session_controller.zig:newWorkspace` after domain/cwd inheritance;
-snapshot all arguments into an app-owned pending operation and use
-`session_open.begin` with captured request/options; it now handles ready ->
-create/attach request -> matching reply -> named workspace publication. Pending
-operations are separate from attached controllers.
-Never replay uncertain create, never fallback to native spawn. Guard callback
-refs with originating Lua runtime generation across config reload. Domain bool
-parsing lives in `lua_bridge.zig:applyDomainTable`; it must precede the string-only
-guard and register domains even if no shell field exists. Host resolution is
-`Runtime.ptyHost` / `hollow._pty_host`; errors/null must fail closed, not imply
-local transport. Guest argv/env helpers are currently private in `pty/agent.zig`.
-Startup still unconditionally calls `mux.bootstrapSingle`. Empty-mux audit found
-ordinary render/input loops safe; domainValue and startup-command/no-pane handling
-are now guarded. Pane-independent native Connecting/failure UI and startup-command
-target binding now exist, but still need a real GUI smoke check. Use
-`session_open.beginStartup` rather than plain `begin` for startup so command target
-cannot drift to another pane.
-Publish empty mux, install callbacks/renderer, then admit async startup. Do not
-enable persistence only for later workspaces and silently leave an opted-in
-default domain's startup pane nonpersistent.
+Current entry map: `newWorkspace` branches after domain/cwd inheritance into
+`session_domain.begin`; explicit `attach_session` input calls `session_domain.attach`.
+Strict host resolution is `Runtime.sessionHost` / `hollow._session_host`, never
+the ordinary PTY resolver's nullable/fallback path.
+Configured persistent startup skips `mux.bootstrapSingle`, publishes empty mux,
+installs callbacks/renderer, then admits `session_open.beginStartup`.
+Keep pending operations separate from attached controllers.
+Never replay uncertain create or fall back to native spawn.
+Keep callback refs generation-guarded and copy request data before network work.
+Normal GUI startup now remains a regression check; persistent connecting/error
+cards can be tested by the opt-in domain recipe in the guide.
 
 No reliable account-quota / 5-hour-window telemetry is available. Wall-clock
 checkpoint began at 2026-11-04 13:44:47 -05:00; that is NOT the account window's

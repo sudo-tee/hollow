@@ -780,7 +780,7 @@ test "user shell jobs refuse agents advertising only one-shot support" {
     try std.testing.expectEqual(@as(?u32, failure_status), pty.exitStatus());
 }
 
-fn parseEnvBlock(a: std.mem.Allocator, block: []const u8) ![]const wire.EnvVar {
+pub fn parseEnvBlock(a: std.mem.Allocator, block: []const u8) ![]const wire.EnvVar {
     var list: std.ArrayList(wire.EnvVar) = .empty;
     var entries = std.mem.splitScalar(u8, block, 0);
     while (entries.next()) |entry| {
@@ -792,7 +792,7 @@ fn parseEnvBlock(a: std.mem.Allocator, block: []const u8) ![]const wire.EnvVar {
     return list.toOwnedSlice(a);
 }
 
-fn tokenize(a: std.mem.Allocator, command: []const u8) ![]const []const u8 {
+pub fn tokenize(a: std.mem.Allocator, command: []const u8) ![]const []const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     var current: std.ArrayList(u8) = .empty;
     var quote: ?u8 = null;
@@ -822,7 +822,7 @@ fn isWslProgram(arg: []const u8) bool {
 
 /// The command a `wsl.exe [options] [--exec|--] cmd...` launcher runs inside
 /// the distro. Empty for any other shell, selecting the host's login shell.
-fn wslInnerArgv(a: std.mem.Allocator, shell: []const u8) ![]const []const u8 {
+pub fn wslInnerArgv(a: std.mem.Allocator, shell: []const u8) ![]const []const u8 {
     const argv = try tokenize(a, shell);
     if (argv.len == 0 or !isWslProgram(argv[0])) return &.{};
     var i: usize = 1;

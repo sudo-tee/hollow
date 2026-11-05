@@ -609,4 +609,5 @@ test {
     _ = @import("session_controller_test.zig");
     _ = @import("session/open.zig");
     _ = @import("session/notice.zig");
+    _ = @import("app/session_domain.zig");
 }
