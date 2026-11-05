@@ -110,7 +110,7 @@ function M.resolve_value(surface, value)
   return resolved
 end
 
-function M.install(ui, _active_widget, invalidate)
+function M.install(ui, invalidate)
   local function node_id(surface, payload)
     if type(payload) ~= "table" then
       return nil

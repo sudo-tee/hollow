@@ -167,8 +167,14 @@ mouse-wheel scrolling, and a draggable scrollbar.
 local view = hollow.ui.text_view({
   text = "Long message...", width = 80, row_budget = 16, id = "message",
 })
--- In an existing modal:
--- render: compose view.render(theme), a list of row nodes, into your column
+-- In an existing modal render callback, use the visible text and
+-- scrollbar metadata to construct native Clay components:
+local viewport = view.visible()
+local c = hollow.ui.components
+local body = c.each(viewport.lines, function(line)
+  return c.text(line, { fg = theme.fg }, { wrap = "none" })
+end)
+-- Use viewport.scrollbar as the id/ratio/size source for c.scroll.
 -- keys: view.keys(key, mods)
 -- on_event: view.on_event(name, payload)
 view.set("Replacement text") -- resets scrolling

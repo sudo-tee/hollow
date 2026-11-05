@@ -435,4 +435,34 @@ describe("UI bars test suite", function()
     assert.equals(initial_renders, rendered)
   end)
 
+  it("registers nested button callbacks and stops dispatching stale ones", function()
+    local ui = hollow.ui
+    local clicked, label = {}, "old"
+    ui.topbar.mount(ui.topbar.new({
+      render = function()
+        return {
+          ui.group({
+            ui.span("nested", {
+              id = "nested-action",
+              on_click = function() clicked[#clicked + 1] = label end,
+            }),
+          }),
+        }
+      end,
+    }))
+    assert.is_truthy(ui._topbar_state())
+    hollow._emit_builtin_event("topbar:click", { id = "nested-action" })
+    assert.same({ "old" }, clicked)
+    -- The previous tree is no longer mounted, so stale callbacks must not run.
+    ui.topbar.unmount()
+    ui.topbar.mount(ui.topbar.new({
+      render = function()
+        return { ui.span("replacement") }
+      end,
+    }))
+    assert.is_truthy(ui._topbar_state())
+    hollow._emit_builtin_event("topbar:click", { id = "nested-action" })
+    assert.same({ "old" }, clicked)
+  end)
+
 end)
