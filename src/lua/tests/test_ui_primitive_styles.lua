@@ -3,52 +3,9 @@ local harness = require("tests.harness")
 
 describe("primitive style compatibility", function()
   local hollow
-  local shared
 
   setup(function()
     hollow = harness.boot().hollow
-    shared = require("hollow.ui.shared")
-  end)
-
-  it("keeps select theme defaults for tabs without an explicit theme", function()
-    local theme = hollow.theme.resolve_widget("select")
-    local ui = hollow.ui
-    for _, active in ipairs({ false, true }) do
-      for _, badged in ipairs({ false, true }) do
-        local badge = badged and { text = 2, color = "#123456" } or nil
-        local node = ui.tab({ id = "tab", label = "Tab", active = active, badge = badge })
-        local flattened = shared.flatten_span_nodes(node.children)
-        local expected = {
-          {
-            text = badged and "Tab " or "Tab",
-            style = {
-              id = "tab",
-              fg = active and theme.selection_fg or theme.muted,
-              bg = active and theme.selection_bg or nil,
-              bold = active,
-              radius = 4,
-              background_extend = active and badged and 2 or nil,
-              padding = { left = 8, right = badged and 0 or 8, top = 3, bottom = 3 },
-            },
-          },
-        }
-        if badged then
-          expected[2] = {
-            text = "2",
-            style = {
-              id = "tab:badge",
-              fg = theme.panel_bg,
-              bg = "#123456",
-              bold = true,
-              radius = 4,
-              padding = { left = 5, right = 5, top = 1, bottom = 1 },
-            },
-          }
-          expected[3] = { text = " ", style = {} }
-        end
-        assert.same(expected, flattened)
-      end
-    end
   end)
 
   it("keeps select theme defaults and whole-box action style overrides", function()

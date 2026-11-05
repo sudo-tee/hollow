@@ -746,18 +746,6 @@
 ---@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
 ---@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
 
----@class HollowUiTabOptions
----@field id string
----@field label string
----@field active? boolean
----@field badge? { text: string|number, color: HollowColor }
----@field theme? HollowUiTheme Select widget theme by default.
----@field on_click? fun(e: { id: string })
-
----@class HollowUiTabBarOptions
----@field tabs HollowUiTabOptions[]
----@field theme? HollowUiTheme Default theme for tabs.
-
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
 ---@alias HollowUiChild HollowUiInlineNode|number|boolean|nil|HollowUiChild[]
@@ -2799,15 +2787,6 @@ function ui.action_button(opts) end
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode
 function ui.button(opts) end
-
----@param opts HollowUiTabOptions
----@return HollowUiGroupNode
-function ui.tab(opts) end
-
---- Inline tab group. In overlay renders prefer `ui.components.tabs`.
----@param opts HollowUiTabBarOptions
----@return HollowUiGroupNode
-function ui.tab_bar(opts) end
 
 ---@param spec HollowUiModalSpec
 ---@return HollowUiModalHandle|nil Returns nil if an exclusive dialog is already open.

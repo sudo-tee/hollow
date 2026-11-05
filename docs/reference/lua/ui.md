@@ -51,8 +51,6 @@ hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
 hollow.ui.action_button(opts)      -- padded action with hover styling
-hollow.ui.tab(opts)                -- selectable tab with optional badge
-hollow.ui.tab_bar(opts)            -- spaced group of tabs
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
 hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
 hollow.ui.each(list, fn)            -- map dense list to child fragment
@@ -157,17 +155,21 @@ render = function(theme)
 end
 ```
 
-`ui.tab_bar` composes tabs into an inline group for use in a row. Each tab has a
-stable `id`, `label`, `active` state, and optional `on_click` and `badge`. Active
-tabs include the badge text inside their highlight; inactive tabs display a
-separate badge. Pass `theme` to match the surrounding modal.
+Use `hollow.ui.components.tabs` for tabs, including badges and keyboard-focusable
+click targets. Inline tab constructors have been removed.
 
 ```lua
-ui.tab_bar({ theme = theme, tabs = {
-  { id = "inbox", label = "Inbox", active = true,
-    badge = { text = 3, color = theme.title }, on_click = open_inbox },
-  { id = "history", label = "History", on_click = open_history },
-} })
+local c = hollow.ui.components
+c.tabs({
+  active = "inbox",
+  tabs = {
+    { id = "inbox", label = "Inbox", badge = { text = "3", color = theme.title } },
+    { id = "history", label = "History" },
+  },
+  on_select = function(id)
+    if id == "inbox" then open_inbox() else open_history() end
+  end,
+})
 ```
 
 ### Read-only text view

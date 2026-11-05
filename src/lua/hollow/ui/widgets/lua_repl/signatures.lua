@@ -244,8 +244,6 @@ return {
   ["hollow.ui.span"] = "fun(text: string, style?: HollowUiNodeStyle|HollowHexColor): HollowUiSpanNode",
   ["hollow.ui.style"] = "fun(...: HollowStyleLayer): HollowStyle",
   ["hollow.ui.styled"] = "fun(theme: HollowUiTheme|nil, ...: HollowStyleLayer): HollowStyle",
-  ["hollow.ui.tab"] = "fun(opts: HollowUiTabOptions): HollowUiGroupNode",
-  ["hollow.ui.tab_bar"] = "fun(opts: HollowUiTabBarOptions): HollowUiGroupNode",
   ["hollow.ui.text"] = "fun(value: HollowUiInlineNode|number|boolean|nil, style?: HollowUiNodeStyle|HollowHexColor): HollowUiSpanNode",
   ["hollow.ui.text_input"] = "fun(opts?: { initial?: string, on_change?: fun(value: string) }): HollowUiTextInput",
   ["hollow.ui.text_view"] = "fun(opts?: { text?: string, width?: integer, row_budget?: integer, id?: string }): HollowUiTextView",

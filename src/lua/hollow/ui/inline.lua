@@ -1,6 +1,5 @@
 local button_styles = require("hollow.ui.recipes.button")
 local shared = require("hollow.ui.shared")
-local tab_styles = require("hollow.ui.recipes.tab")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -282,51 +281,6 @@ function ui.action_button(opts)
     on_mouse_enter = opts.on_mouse_enter,
     on_mouse_leave = opts.on_mouse_leave,
   })
-end
-
---- A selectable tab with an optional count badge.
----@param opts HollowUiTabOptions
----@return HollowUiGroupNode
-function ui.tab(opts)
-  local theme = select_theme(opts)
-  local active = opts.active == true
-  local badge = opts.badge
-  return ui.group({
-    ui.button({
-      id = opts.id,
-      text = badge and (opts.label .. " ") or opts.label,
-      style = tab_styles(theme, {
-        variant = badge and "badged" or nil,
-        selected = active,
-      }).root,
-      on_click = opts.on_click,
-    }),
-    ui.when(badge, function()
-      return {
-        ui.button({
-          id = opts.id .. ":badge",
-          text = tostring(badge.text),
-          style = ui.styled(theme, ui.styles.badge, { bg = badge.color }),
-          on_click = opts.on_click,
-        }),
-        " ",
-      }
-    end),
-  })
-end
-
---- Compose tabs with consistent spacing.
----@param opts HollowUiTabBarOptions
----@return HollowUiGroupNode
-function ui.tab_bar(opts)
-  return ui.group(ui.join(
-    ui.each(opts.tabs or {}, function(tab)
-      local tab_opts = util.clone_value(tab)
-      tab_opts.theme = tab_opts.theme or opts.theme
-      return ui.tab(tab_opts)
-    end),
-    "  "
-  ))
 end
 
 ---@param opts HollowUiBarTabsOptions|nil
