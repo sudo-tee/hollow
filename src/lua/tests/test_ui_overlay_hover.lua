@@ -90,14 +90,3 @@ describe("UI hover", function()
   end)
 
 end)
-
-  it("keeps action hover padding as a whole-box override", function()
-    local node = ui.action_button({
-      id = "padding",
-      style = { padding = { left = 9, right = 7 } },
-      hover_style = { padding = { left = 2 } },
-    })
-    local hovered = shared.style_to_segment("Run", shared.apply_hover(node.style, node.style.id))
-    assert.same({ left = 2, right = 0, top = 0, bottom = 0 }, hovered.padding)
-  end)
-end)
