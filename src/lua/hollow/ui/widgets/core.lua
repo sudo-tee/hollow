@@ -34,6 +34,10 @@ local function unmount_widget(widget)
   if widget and widget._layout_surface then
     widget._layout_surface:destroy()
   end
+  if widget and widget._sidebar_surface then
+    widget._sidebar_surface:destroy()
+    widget._sidebar_surface = nil
+  end
   if widget ~= nil and type(widget.on_unmount) == "function" then
     widget.on_unmount()
   end
