@@ -134,13 +134,14 @@ fn blitLuaPaneCache(renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds, widt
 }
 const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
+var g_sidebar_clay: ClaySurface = .{};
+var g_sidebar_bounds: ?ui_semantics.Bounds = null;
 // Stable allocations: each lower overlay retains its Clay scroll/layout state
 // and owns all text until the following pre-raster pass.
 var g_clay_overlays: std.ArrayList(*ClaySurface) = .empty;
 const clay_grid_debug = @import("../ui/clay_grid_debug.zig");
 const native_surface = @import("../ui/native_surface.zig");
 var g_native_bars: [2]native_surface.Surface = .{ .{}, .{} };
-var g_native_sidebar: native_surface.Surface = .{};
 var g_native_debug: native_surface.Surface = .{};
 const clay_inspector_input = @import("../ui/clay_inspector_input.zig");
 var g_grid_debug: clay_grid_debug.GridDebug = .{};
@@ -148,6 +149,7 @@ var g_grid_debug: clay_grid_debug.GridDebug = .{};
 fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_pre_raster_ctx orelse return;
     g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+    prepareSidebarClaySurface(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     prepareLowerClayOverlays(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     g_grid_debug.sync(runtime);
     syncInspectorWidth(runtime);
@@ -156,6 +158,40 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     // Inspector labels are produced during the swapchain pass, after the atlas flush.
     if (g_grid_debug.enabled or (g_clay_surface.active and g_clay_surface.debug))
         ctx.renderer.preRasterizeLabelFace(&clay_grid_debug.inspector_glyphs, 0);
+}
+
+// The edge sidebar owns its Clay context independently of the overlay stack.
+// Snapshot and pre-rasterize it before drawing, just like the other surfaces.
+fn prepareSidebarClaySurface(runtime: *lua_mod.Runtime, renderer: *FtRenderer, width: f32, height: f32) void {
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const saved_top = api.get_top(state);
+    defer api.set_top(state, saved_top);
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    api.get_field(state, -1, "ui");
+    const ui_idx = absoluteIndex(api, state, -1);
+    api.get_field(state, ui_idx, "_sidebar_layout_prepare");
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .function) {
+        g_sidebar_clay.active = false;
+        return;
+    }
+    api.push_number(state, width);
+    api.push_number(state, height);
+    api.push_number(state, renderer.cell_w);
+    api.push_number(state, renderer.cell_h);
+    if (api.pcall(state, 4, 0, 0) != 0) {
+        g_sidebar_clay.active = false;
+        return;
+    }
+
+    api.get_field(state, ui_idx, "_sidebar_layout_revision");
+    const revision = if (api.value_type(state, -1) == @backingInt(LuaType.number)) api.to_number(state, -1) else 0;
+    pop(api, state, 1);
+    api.get_field(state, ui_idx, "_sidebar_layout_surface_id");
+    const surface_id = if (api.value_type(state, -1) == @backingInt(LuaType.number)) api.to_number(state, -1) else 0;
+    pop(api, state, 1);
+    api.get_field(state, ui_idx, "_sidebar_layout_tree");
+    g_sidebar_clay.prepareSnapshot(runtime, renderer, -1, revision, surface_id);
 }
 
 fn prepareLowerClayOverlays(runtime: *lua_mod.Runtime, renderer: anytype, width: f32, height: f32) void {
@@ -471,7 +507,7 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
     }
 }
 
-fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
+fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32, sidebar: bool) void {
     if (!surface.active) return;
     surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
     if (surface.owner_index > 0) {
@@ -483,6 +519,7 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     const nodes = &surface.nodes;
     const framed = surface.frame.enabled;
     const overlay = surface.owner_index > 0;
+    const interactive = overlay or sidebar;
     const panel_node: *const clay.HollowClayNode = &nodes[0];
     var panel = clay.hollow_clay_bounds(context, nodes, 0).boundingBox;
     panel.x += offset_x;
@@ -500,8 +537,8 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
             .height = @max(0, @min(offset_y + height, panel.y + panel.height) - y),
         });
     }
-    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (overlay and framed) panel_node else null);
-    if (overlay) {
+    paintClayCommands(renderer, commands, offset_x, offset_y, clip, if (interactive and framed) panel_node else null);
+    if (interactive) {
         for (0..surface.len) |index| {
             if (overlayScrollbar(surface, index)) |scrollbar| drawOverlayScrollbar(scrollbar);
         }
@@ -512,7 +549,7 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
                 const b = surface.visibleBounds(index) orelse continue;
                 const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
                 const role: ui_semantics.Role = if (index == 0) .dialog else if (node.list_item) .listitem else .button;
-                ctx.app.appendUiSemanticNode(.overlay, role, index != 0, surface.nodeId(index), label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
+                ctx.app.appendUiSemanticNode(if (sidebar) .sidebar else .overlay, role, index != 0, surface.nodeId(index), label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
             }
         }
     }
@@ -754,21 +791,6 @@ var g_bottom_bar_cache: BarCache = .{};
 var g_overlay_surfaces: [MAX_OVERLAY_SURFACES]*ClaySurface = undefined;
 var g_overlay_surface_count: usize = 0;
 
-const MAX_SIDEBAR_HIT_REGIONS = 64;
-
-const SidebarHitRegion = struct {
-    bounds: ui_semantics.Bounds = .{},
-    id_buf: [ui_semantics.max_id_len]u8 = undefined,
-    id_len: usize = 0,
-};
-
-// Sidebar segments with an id, from the latest sidebar paint. Ids are copied
-// because the Lua sidebar state is rebuilt every frame.
-var g_sidebar_hits: struct {
-    panel: ?ui_semantics.Bounds = null,
-    count: usize = 0,
-    regions: [MAX_SIDEBAR_HIT_REGIONS]SidebarHitRegion = undefined,
-} = .{};
 var g_sidebar_hovered = false;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
@@ -1969,45 +1991,20 @@ fn boundsContain(b: ui_semantics.Bounds, x: f32, y: f32) bool {
     return x >= b.x and x < b.x + b.width and y >= b.y and y < b.y + b.height;
 }
 
-/// Records a sidebar segment clipped to the panel, as drawn under its scissor.
-fn cacheSidebarHitRegion(id: []const u8, label: []const u8, rect: ui_semantics.Bounds) void {
-    const panel = g_sidebar_hits.panel orelse return;
-    const x = @max(rect.x, panel.x);
-    const y = @max(rect.y, panel.y);
-    const clipped: ui_semantics.Bounds = .{
-        .x = x,
-        .y = y,
-        .width = @min(rect.x + rect.width, panel.x + panel.width) - x,
-        .height = @min(rect.y + rect.height, panel.y + panel.height) - y,
-    };
-    if (clipped.width <= 0 or clipped.height <= 0) return;
-    if (g_widget_render_ctx) |ctx| ctx.app.appendUiSemanticNode(.sidebar, .button, true, id, label, clipped);
-    if (g_sidebar_hits.count >= g_sidebar_hits.regions.len or id.len > ui_semantics.max_id_len) return;
-    const region = &g_sidebar_hits.regions[g_sidebar_hits.count];
-    region.bounds = clipped;
-    region.id_len = id.len;
-    fastmem.copy(u8, region.id_buf[0..id.len], id);
-    g_sidebar_hits.count += 1;
-}
-
 fn sidebarContains(x: f32, y: f32) bool {
-    const panel = g_sidebar_hits.panel orelse return false;
+    const panel = g_sidebar_bounds orelse return false;
     return boundsContain(panel, x, y);
 }
 
+// Reuse the same clipped Clay hit-testing semantics as Lua panes.
 fn hitTestSidebar(x: f32, y: f32) ?[]const u8 {
-    if (!sidebarContains(x, y)) return null;
-    var index = g_sidebar_hits.count;
-    while (index > 0) {
-        index -= 1;
-        const region = &g_sidebar_hits.regions[index];
-        if (boundsContain(region.bounds, x, y)) return region.id_buf[0..region.id_len];
-    }
-    return null;
+    if (!g_sidebar_clay.active or !sidebarContains(x, y)) return null;
+    const index = g_sidebar_clay.hitTest(.clickable_root, x, y) orelse return null;
+    if (index == 0) return null;
+    return g_sidebar_clay.nodeId(index);
 }
 
-/// Emits sidebar hover for the segment under the pointer, or one leave when
-/// the pointer moves off (or something above covers) a hovered segment.
+/// Hover is still exposed as sidebar events, but node identity is now Clay's.
 fn updateSidebarHover(app: *App, x: f32, y: f32, modifiers: u32, covered: bool) void {
     if (!covered) {
         if (hitTestSidebar(x, y)) |id| {
@@ -2021,23 +2018,37 @@ fn updateSidebarHover(app: *App, x: f32, y: f32, modifiers: u32, covered: bool) 
     app.emitLuaBuiltInEvent("sidebar:leave", .none);
 }
 
-test "sidebar hit regions are clipped to the panel and keep their own ids" {
-    const saved = g_sidebar_hits;
-    defer g_sidebar_hits = saved;
-    g_sidebar_hits = .{ .panel = .{ .x = 0, .y = 20, .width = 100, .height = 50 } };
-    var id_buf = "row:one".*;
-    cacheSidebarHitRegion(&id_buf, "one", .{ .x = 4, .y = 22, .width = 40, .height = 18 });
-    cacheSidebarHitRegion("row:two", "two", .{ .x = 4, .y = 60, .width = 40, .height = 18 });
-    cacheSidebarHitRegion("row:gone", "gone", .{ .x = 4, .y = 80, .width = 40, .height = 18 });
-    @memset(&id_buf, 'x');
-    try std.testing.expectEqual(@as(usize, 2), g_sidebar_hits.count);
-    try std.testing.expectEqualStrings("row:one", hitTestSidebar(10, 30).?);
-    try std.testing.expectEqualStrings("row:two", hitTestSidebar(10, 65).?);
-    // Clipped at the panel's bottom edge.
-    try std.testing.expect(hitTestSidebar(10, 72) == null);
-    try std.testing.expect(hitTestSidebar(80, 30) == null);
-    try std.testing.expect(sidebarContains(80, 30));
-    try std.testing.expect(!sidebarContains(120, 30));
+test "sidebar Clay hits are clipped to the window-edge rectangle" {
+    const previous = g_sidebar_bounds;
+    const previous_surface = g_sidebar_clay;
+    defer {
+        g_sidebar_clay = previous_surface;
+        g_sidebar_bounds = previous;
+    }
+    var surface: ClaySurface = .{};
+    defer surface.deinit();
+    surface.context = clay.hollow_clay_create();
+    surface.active = true;
+    surface.nodes[0] = std.mem.zeroes(clay.HollowClayNode);
+    surface.nodes[0].width = 120;
+    surface.nodes[0].height = 40;
+    surface.nodes[0].id = .{ .chars = "layout:1:root", .length = 13 };
+    surface.nodes[1] = std.mem.zeroes(clay.HollowClayNode);
+    surface.nodes[1].id = .{ .chars = "layout:1:button", .length = 15 };
+    surface.nodes[1].kind = 0;
+    surface.nodes[1].clickable = true;
+    surface.nodes[1].height = 40;
+    surface.nodes[0].children = 1;
+    surface.len = 2;
+    surface.area = .{ .x = 0, .y = 20, .width = 100, .height = 50 };
+    _ = surface.layout(100, 50, 10, 20, 0);
+    g_sidebar_clay = surface;
+    g_sidebar_bounds = .{ .x = 0, .y = 20, .width = 100, .height = 50 };
+    try std.testing.expect(sidebarContains(10, 30));
+    try std.testing.expect(!sidebarContains(105, 30));
+    try std.testing.expect(hitTestSidebar(105, 30) == null);
+    // Ownership returns to the local surface; only the pointer copy was shared.
+    g_sidebar_clay = .{};
 }
 
 test "overlay input queries painted Clay surfaces from the top of the stack" {
@@ -2781,8 +2792,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_surface_count = 0;
-    g_sidebar_hits.panel = null;
-    g_sidebar_hits.count = 0;
+    g_sidebar_bounds = null;
     const ctx = g_widget_render_ctx orelse return;
     const scratch = &g_bar_widget_scratch;
     const api = runtime.context.api;
@@ -2868,68 +2878,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         const panel_x: f32 = if (sidebar_on_right) ctx.width - sidebar_width else 0.0;
         const panel_y: f32 = top_h;
         const panel_h: f32 = ctx.height - panel_y - bottom_h;
-        const sidebar_style = barStyleField(api, state, sidebar_idx, "style");
-        const sidebar_bg = sidebar_style.bg orelse ghostty.ColorRgb{ .r = 22, .g = 27, .b = 34 };
-        const sidebar_border = sidebar_style.border orelse ghostty.ColorRgb{ .r = 122, .g = 162, .b = 247 };
-        drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, sidebar_bg.r, sidebar_bg.g, sidebar_bg.b, sidebar_style.alpha orelse 235);
-        drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, sidebar_border.r, sidebar_border.g, sidebar_border.b, 255);
-        g_sidebar_hits.panel = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
-
-        api.get_field(state, sidebar_idx, "rows");
-        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-            const rows_idx = absoluteIndex(api, state, -1);
-            // Sidebar producers already window their rows. Clay owns the
-            // column geometry; keep segment paint and inherited colors intact.
-            var row_count: usize = 0;
-            while (row_count < 512) : (row_count += 1) {
-                api.rawgeti(state, rows_idx, @intCast(row_count + 1));
-                const done = api.value_type(state, -1) == @backingInt(LuaType.nil_type);
-                pop(api, state, 1);
-                if (done) break;
-            }
-            if (!g_native_sidebar.begin(sidebar_width, panel_h)) {
-                pop(api, state, 2);
-                return;
-            }
-            native_surface.Surface.open(0, .{
-                .sizing = .{ .width = native_surface.fixed(sidebar_width), .height = native_surface.fixed(panel_h) },
-                .padding = .{ .top = native_surface.edge(ctx.renderer.cell_h), .left = native_surface.edge(ctx.renderer.cell_w * 0.5), .right = native_surface.edge(ctx.renderer.cell_w * 0.5) },
-                .layoutDirection = clay.CLAY_TOP_TO_BOTTOM,
-            });
-            for (0..row_count) |i| {
-                native_surface.Surface.open(@intCast(i + 1), .{ .sizing = .{ .width = native_surface.grow(0), .height = native_surface.fixed(ctx.renderer.cell_h) } });
-                native_surface.Surface.close();
-            }
-            native_surface.Surface.close();
-            const sidebar_laid_out = g_native_sidebar.end();
-            c.sgl_scissor_rect(@intFromFloat(panel_x), @intFromFloat(panel_y), @intFromFloat(@max(0, sidebar_width)), @intFromFloat(@max(0, panel_h)), true);
-            var row_i: c_int = 1;
-            while (sidebar_laid_out and row_i <= @as(c_int, @intCast(row_count))) : (row_i += 1) {
-                api.rawgeti(state, rows_idx, row_i);
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
-                    pop(api, state, 1);
-                    break;
-                }
-                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                    const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], absoluteIndex(api, state, -1));
-                    const row_box = g_native_sidebar.bounds(@intCast(row_i));
-                    const text_y = panel_y + row_box.y;
-                    var row_paint = RowPaint{};
-                    api.get_field(state, sidebar_idx, "row_styles");
-                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                        api.rawgeti(state, -1, row_i);
-                        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
-                            row_paint = rowPaintField(api, state, absoluteIndex(api, state, -1));
-                        }
-                        pop(api, state, 1);
-                    }
-                    pop(api, state, 1);
-                    drawRowPaint(ctx.renderer, panel_x + row_box.x, text_y, text_y + bar.rowPadding(row_segments).top, row_box.width, row_box.height, row_paint);
-                    drawRowSegments(ctx.renderer, panel_x + row_box.x, text_y, row_box.width, row_segments, sidebar_style.fg);
-                }
-                pop(api, state, 1);
-            }
-            c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+        g_sidebar_bounds = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
+        if (g_sidebar_clay.active and panel_h > 0) {
+            // Clay owns background, segments, clipping and scrolling.
+            g_sidebar_clay.mouse_x = g_mouse_x - panel_x;
+            g_sidebar_clay.mouse_y = g_mouse_y - panel_y;
+            drawClaySurface(&g_sidebar_clay, ctx.renderer, sidebar_width, panel_h, panel_x, panel_y, true);
         }
         pop(api, state, 1);
     }
@@ -2983,7 +2937,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (backdrop_color) |bg| {
                         if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
                     }
-                    drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h);
+                    drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h, false);
                     if (g_overlay_surface_count < g_overlay_surfaces.len) {
                         g_overlay_surfaces[g_overlay_surface_count] = surface.?;
                         g_overlay_surface_count += 1;
@@ -4682,7 +4636,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
         }
-        if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0);
+        if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false);
         drawGridDebug(app, renderer, width, height);
     }
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
@@ -5074,6 +5028,7 @@ const ShutdownWatchdog = struct {
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     app_profile.deinit();
     g_clay_surface.deinit();
+    g_sidebar_clay.deinit();
     for (g_clay_overlays.items) |surface| {
         surface.deinit();
         std.heap.page_allocator.destroy(surface);
@@ -5081,7 +5036,6 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     g_clay_overlays.deinit(std.heap.page_allocator);
     g_grid_debug.deinit();
     for (&g_native_bars) |*surface| surface.deinit();
-    g_native_sidebar.deinit();
     g_native_debug.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
