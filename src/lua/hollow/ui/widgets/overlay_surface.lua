@@ -53,12 +53,14 @@ function M.create(widget, opts)
         theme = palette,
         ctx = ctx,
         inset = opts.inset or "overlay",
-        -- Modal panels use their own inset; overlays pass explicit padding.
-        padding = opts.inset and nil or chrome.padding,
         -- A toast group paints its own chrome inside this root.
         chrome = widget._notify and false or chrome,
         content,
       }
+      if not opts.inset then
+        -- Preserve the regular overlay's explicit padding override.
+        panel_props.padding = chrome.padding
+      end
       local panel = ui.components.panel(panel_props)
       if opts.after_panel then
         opts.after_panel(ctx, panel, preferred_height, surface)
