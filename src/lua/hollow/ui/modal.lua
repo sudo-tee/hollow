@@ -7,7 +7,7 @@ local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
 local ui = hollow.ui
 local overlay_stack = require("hollow.state").get().ui.overlay_stack
-local box = require("hollow.ui.style.box")
+local overlay_surface = require("hollow.ui.widgets.overlay_surface")
 local host_api = require("hollow.state").get().host_api
 
 local M = {}
@@ -112,9 +112,6 @@ function M.modal(spec)
       local surface = widget._layout_surface
       if surface and payload and payload.id then
         local local_id = surface:local_id(payload.id)
-        if name == "overlay:click" then
-          surface:dispatch(payload.id)
-        end
         payload = hollow.util.clone_value(payload)
         payload.id = local_id
       end
@@ -153,45 +150,25 @@ function M.modal(spec)
   widget._modal = true
   widget._exclusive = spec.exclusive ~= false
   widget._layout_live = spec.layout_live == true
-  do
-    local align = shared.normalize_overlay_align(widget.align)
-    widget._layout_surface = ui.layout.new({
-      theme = theme,
-      frame = {
-        width = shared.normalize_overlay_size(spec.width),
-        height = shared.normalize_overlay_size(spec.height),
-        max_height = shared.normalize_overlay_size(spec.max_height),
-        align_x = align:find("left") and 0 or (align:find("right") and 2 or 1),
-        align_y = (align == "center" or align:find("top")) and 0
-          or (align:find("bottom") and 2 or 1),
-      },
-      render = function(ctx)
-        local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
-        widget._layout_surface.frame.margin = box.normalize(chrome.margin)
-        local content, preferred_height = spec.render(theme, state, ctx)
-        local panel = ui.components.panel({
-          id = "dialog",
-          label = spec.title or "Confirmation",
-          theme = theme,
-          ctx = ctx,
-          inset = spec.center_content and "modal_centered" or "modal",
-          chrome = chrome,
-          content,
-        })
-        if spec.layout_refresh_after then
-          schedule(spec.layout_refresh_after())
-        end
-        if preferred_height and not shared.normalize_overlay_size(spec.height) then
-          widget._layout_surface.frame.height = (
-            preferred_height
-            + panel.padding.top
-            + panel.padding.bottom
-          ) / props.cell_h(ctx)
-        end
-        return panel
-      end,
-    })
-  end
+  widget._layout_surface = overlay_surface.create(widget, {
+    label = spec.title or "Confirmation",
+    inset = spec.center_content and "modal_centered" or "modal",
+    render = function(ctx)
+      return spec.render(theme, state, ctx)
+    end,
+    after_panel = function(ctx, panel, preferred_height, surface)
+      if spec.layout_refresh_after then
+        schedule(spec.layout_refresh_after())
+      end
+      if preferred_height and not shared.normalize_overlay_size(spec.height) then
+        surface.frame.height = (
+          preferred_height
+          + panel.padding.top
+          + panel.padding.bottom
+        ) / props.cell_h(ctx)
+      end
+    end,
+  })
   timer.widget = widget
   for _, name in ipairs(spec.layout_events or {}) do
     listeners[#listeners + 1] = hollow.events.on(name, invalidate)

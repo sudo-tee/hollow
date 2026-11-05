@@ -1,4 +1,4 @@
-local box = require("hollow.ui.style.box")
+local overlay_surface = require("hollow.ui.widgets.overlay_surface")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -46,8 +46,7 @@ function ui.overlay.new(opts)
   local widget
   opts.on_event = function(name, payload)
     if
-      not widget._modal
-      and name == "overlay:click"
+      name == "overlay:click"
       and payload
       and payload.id
       and widget._layout_surface
@@ -62,54 +61,10 @@ function ui.overlay.new(opts)
   return widget
 end
 
---- Compatibility chrome fields replace whole boxes, unlike style layers.
----@param style? HollowUiSurfacePaint
----@param chrome? HollowUiChrome|boolean
----@param palette HollowUiTheme
----@return HollowUiChrome|nil
-local function overlay_surface_style(style, chrome, palette)
-  if type(style) ~= "table" then
-    return shared.normalize_overlay_chrome(chrome, palette)
-  end
-  local source = util.clone_value(style)
-  for key, value in pairs(type(chrome) == "table" and chrome or {}) do
-    source[key] = util.clone_value(value)
-  end
-  return shared.normalize_overlay_chrome(source, palette)
-end
-
 ---@param widget HollowUiWidget
 function ui.overlay.push(widget)
   if not widget._layout_surface then
-    local align = shared.normalize_overlay_align(widget.align)
-    local surface
-    surface = ui.layout.new({
-      theme = widget._palette,
-      frame = {
-        width = shared.normalize_overlay_size(widget.width),
-        height = shared.normalize_overlay_size(widget.height),
-        max_height = shared.normalize_overlay_size(widget.max_height),
-        align_x = align:find("left") and 0 or (align:find("right") and 2 or 1),
-        align_y = (align == "center" or align:find("top")) and 0
-          or (align:find("bottom") and 2 or 1),
-      },
-      render = function(ctx)
-        local palette = widget._palette or shared.palette(widget._kind or "overlay")
-        local chrome = overlay_surface_style(widget.style, widget.chrome, palette) or {}
-        surface.frame.margin = box.normalize(chrome.margin)
-        return ui.components.panel({
-          id = "dialog",
-          theme = palette,
-          ctx = ctx,
-          inset = "overlay",
-          padding = chrome.padding,
-          -- Notification groups provide their own per-toast chrome.
-          chrome = not widget._notify and chrome or false,
-          widget.render(ctx),
-        })
-      end,
-    })
-    widget._layout_surface = surface
+    widget._layout_surface = overlay_surface.create(widget)
   end
   table.insert(overlay_stack, widget)
   widget_core.mount_widget(widget)
