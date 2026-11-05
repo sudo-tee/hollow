@@ -4,10 +4,6 @@ local ui = _G.hollow.ui
 local util = require("hollow.util")
 local M = {}
 
-local function body_style(theme)
-  return { fg = theme.fg }
-end
-
 local function wrap(text, width)
   local lines = {}
   for paragraph in (text .. "\n"):gmatch("(.-)\n") do
@@ -63,17 +59,22 @@ function M.text_view(opts)
     list.nav.index = 1
   end
 
-  function self.render(theme)
+  -- Read-only behavior supplies visible text and scrollbar state, never
+  -- presentation nodes. Consumers render these in their own component tree.
+  function self.visible()
     local viewport = list.visible_range()
-    return ui.each(
-      _G.hollow.tbl.range(viewport.start_idx, viewport.end_idx),
-      function(index, visible_index)
-        local _, options = list.row(index, index, visible_index, viewport)
-        options.scrollbar_track_color = theme.scrollbar_track
-        options.scrollbar_thumb_color = theme.scrollbar_thumb
-        return ui.row({ ui.text(lines[index], body_style(theme)) }, options)
-      end
-    )
+    local visible = {}
+    for index = viewport.start_idx, viewport.end_idx do
+      visible[#visible + 1] = lines[index]
+    end
+    return {
+      lines = visible,
+      scrollbar = viewport.show_scrollbar and {
+        id = viewport.scrollbar_id,
+        ratio = viewport.thumb_ratio,
+        size = viewport.thumb_size,
+      } or nil,
+    }
   end
 
   self.set(opts.text or "")

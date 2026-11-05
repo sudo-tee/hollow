@@ -2834,10 +2834,14 @@ function ui.scroll_nav(n, opts) end
 ---@return HollowUiTextInput
 function ui.text_input(opts) end
 
+---@class HollowUiTextViewport
+---@field lines string[]
+---@field scrollbar? { id: string, ratio: number, size: number }
+
 ---@class HollowUiTextView
 ---@field nav HollowUiScrollNav
 ---@field set fun(text: string)
----@field render fun(theme: HollowUiTheme): HollowUiRowNode[]
+---@field visible fun(): HollowUiTextViewport
 ---@field keys fun(key: string, mods: HollowUiKeyMods): boolean
 ---@field on_event fun(name: string, event: table): boolean
 
