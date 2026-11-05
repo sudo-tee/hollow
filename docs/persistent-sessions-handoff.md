@@ -145,7 +145,7 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   and releases its receive-ahead. User still reports a small residual lag:
   likely 64 KiB window / WSL RTT; window negotiation not started.
 - `7beae1e`: stale layout reconciliation, quit flush and receive-ahead.
-- Discovery checkpoint (slice 2, uncommitted): `session/query.zig` (single-use
+- `496f032` discovery (slice 2): `session/query.zig` (single-use
   list/kill, never replayed) and `app/session_query.zig` (8 bounded slots,
   pumped beside `session_open`, result claimed once or expired after 60 s,
   bridge destroyed only after EOF). `session_domain.resolve` /
