@@ -151,56 +151,96 @@ pub const Mux = struct {
     }
 
     /// Publish views for an attached owner session without running a local
-    /// shell. Until layout decoding lands, reject nonempty layout blobs rather
-    /// than silently replacing saved geometry. Sessions with no GUI layout get
+    /// shell. Validate saved geometry before allocating or binding views.
+    /// Sessions with no GUI layout get
     /// one tab per owner pane in owner order. No owner state is overwritten.
     pub fn addSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Workspace {
-        if (info.layout.len != 0) return error.UnsupportedSessionLayout;
+        const codec = @import("../session/layout.zig");
+        const geometry = @import("session_layout.zig");
         if (info.panes.len == 0) return error.EmptySession;
+        if (info.panes.len > codec.max_panes) return error.InvalidSessionLayout;
         if (!std.mem.eql(u8, controller.session_id, info.id)) return error.WrongSession;
+        var ids: [codec.max_panes]u32 = undefined;
+        for (info.panes, 0..) |remote, i| {
+            if (remote.id == 0) return error.InvalidSessionLayout;
+            for (ids[0..i]) |id| if (id == remote.id) return error.InvalidSessionLayout;
+            ids[i] = remote.id;
+        }
+        const saved = if (info.layout.len != 0) try codec.decode(self.allocator, info.layout, ids[0..info.panes.len]) else null;
+        defer if (saved) |value| value.deinit();
         const workspace = try self.createWorkspace();
         errdefer {
             workspace.deinit(runtime);
             self.allocator.destroy(workspace);
         }
         workspace.session_controller = controller;
-        for (info.panes) |remote| {
+        if (saved) |value| {
+            if (value.value.name) |name| try workspace.setName(name);
+        }
+        const tab_count = if (saved) |value| value.value.tabs.len else info.panes.len;
+        for (0..tab_count) |index| {
             const tab = try self.createTab();
             var tab_owned = false;
             defer if (!tab_owned) {
                 tab.deinit(runtime);
                 self.allocator.destroy(tab);
             };
-            const pane = try self.allocator.create(Pane);
-            pane.* = Pane.init(self.allocator);
-            var pane_owned = false;
-            defer if (!pane_owned) {
-                pane.deinit(runtime);
-                self.allocator.destroy(pane);
-            };
-            pane.id = self.reservePaneId();
-            pane.host_context = self.host_context;
-            const term = &pane.content.terminal;
-            term.host_wake = self.host_wake;
-            var pane_cfg = cfg;
-            pane_cfg.cols = remote.cols;
-            pane_cfg.rows = remote.rows;
-            try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
-            term.session_before_replace = before_replace;
-            if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
-            if (remote.cwd.len > 0) pane.setCwd(remote.cwd);
-            try tab.appendPane(pane);
-            pane_owned = true;
-            try controller.bind(pane);
+            if (saved) |value| {
+                const layout_tab = value.value.tabs[index];
+                for (layout_tab.nodes) |node| if (node.pane) |id| {
+                    for (info.panes) |remote| if (remote.id == id) {
+                        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                        break;
+                    };
+                };
+                for (layout_tab.floating) |floating| {
+                    for (info.panes) |remote| if (remote.id == floating.pane) {
+                        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                        break;
+                    };
+                }
+                try geometry.restoreTab(tab, layout_tab);
+            } else {
+                try self.appendSessionView(tab, runtime, callbacks, cfg, controller, info.panes[index], domain, before_replace);
+                const root = try self.allocator.create(SplitNode);
+                root.* = SplitNode.initPane(tab.panes.items[0]);
+                tab.root_split = root;
+                tab.active_pane = tab.panes.items[0];
+            }
             try workspace.appendTab(tab);
             tab_owned = true;
         }
+        if (saved) |value| workspace.active_tab = workspace.tabs.items[value.value.active_tab];
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
         var panes = workspace.paneIterator();
         self.session_workspace_count += 1;
         while (panes.next()) |pane| self.notifyCreated(pane);
         return workspace;
+    }
+
+    fn appendSessionView(self: *Mux, tab: *Tab, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !void {
+        const pane = try self.allocator.create(Pane);
+        pane.* = Pane.init(self.allocator);
+        var owned = false;
+        defer if (!owned) {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        };
+        pane.id = self.reservePaneId();
+        pane.host_context = self.host_context;
+        const term = &pane.content.terminal;
+        term.host_wake = self.host_wake;
+        var pane_cfg = cfg;
+        pane_cfg.cols = remote.cols;
+        pane_cfg.rows = remote.rows;
+        try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
+        term.session_before_replace = before_replace;
+        if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
+        if (remote.cwd.len > 0) pane.setCwd(remote.cwd);
+        try tab.panes.append(self.allocator, pane);
+        owned = true;
+        try controller.bind(pane);
     }
 
     fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !*Workspace {

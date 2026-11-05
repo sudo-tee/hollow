@@ -321,6 +321,33 @@ test "layout writes are revision checked" {
     try std.testing.expectEqualStrings("{\"split\":1}", listed.value.sessions.?[0].layout);
 }
 
+test "pane membership changes invalidate opaque layout and advance revision" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const saved = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 0, .layout = "old-membership" }));
+    defer saved.deinit();
+    const spawned = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = shell("sleep 30") }));
+    defer spawned.deinit();
+    try std.testing.expectEqual(@as(?u64, 2), spawned.value.revision);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("", listed.value.sessions.?[0].layout);
+    const saved_again = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 2, .layout = "two-panes" }));
+    defer saved_again.deinit();
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = spawned.value.pane.? }));
+    defer closed.deinit();
+    try std.testing.expectEqual(@as(?u64, 4), closed.value.revision);
+    const attached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = created.value.session.?.id }));
+    defer attached.deinit();
+    try std.testing.expectEqualStrings("", attached.value.session.?.layout);
+    try std.testing.expectEqual(@as(usize, 1), attached.value.session.?.panes.len);
+    try std.testing.expectEqual(@as(u64, 4), attached.value.session.?.revision);
+}
+
 test "a client that stops granting credit is resynced with a snapshot" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();

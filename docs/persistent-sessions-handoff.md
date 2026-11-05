@@ -9,12 +9,14 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 - `6b6548c`: GUI snapshot decoder foundation.
 - `ab6924a`: asynchronous session transport.
 - `3c6157d`: session-backed panes and READY handoff.
+- `af9ccd9`: GUI workspace controllers and acknowledged closes.
 - GUI workspace/controller wiring now supports publishing an already-attached
   session. App owns controller/connection, pumps bounded frames around pane
   parsing, retries backpressure, and removes panes only after close ACK. App
   borrower invalidation and aggregate snapshot budgeting are wired. `domains.<name>.persist`
-  is NOT enabled; no config-driven create/attach, host-bound layout, or startup
-  reattach yet. Next: dead/missing-session UX, domain config/layout, then reattach.
+   is NOT enabled; no config-driven create/attach, host binding, or startup
+   reattach yet. Next: dead/missing-session UX, domain config, automatic layout
+   saves/reconciliation, then reattach.
 - Leave dirty `third_party/{lua-zluajit,luajit-upstream,nightwatch,sokol}` alone.
 - Review hardening: disconnected/taken-over views close locally; new tabs/splits
   and cross-workspace moves involving session workspaces are rejected until
@@ -22,6 +24,22 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
   Bounded frame batches request another wake when work remains. Deferred borrower
   cleanup compares activation/pointer identity before validating pane liveness;
   no freed-pane dereferences or selection save/restore across Lua callbacks.
+- Layout codec/restore checkpoint: `src/session/layout.zig` validates a strict
+  version-1 JSON blob (flat indexed split trees, owner pane IDs, bounded to 256
+  KiB, depth 32, 64 panes/tab, 1024 panes/workspace). `src/mux/session_layout.zig`
+  captures/restores tabs, splits, floating geometry/anchors, focus, maximization,
+  and workspace name. Factory validates before allocating/publishing views.
+  Controller layout requests carry current revision, advance only after ACK,
+  and fence further writes on revision conflict. No automatic layout saves yet.
+- Owner spawn/close clears opaque geometry and increments/returns revision;
+  otherwise strict pane membership would make reattach fail after pane mutation.
+  Safe fallback is one tab per pane until the next explicit layout save.
+  Real-owner fixture now saves geometry before detach and restores it on attach.
+- Layout validation passed Linux Debug/ReleaseSafe/ReleaseSmall and native
+  Windows through WSL. Codec tests cover invalid graphs, limits, geometry,
+  identities, and allocator failures; mux tests inject allocation failure across
+  multi-pane split/floating restore and capture and assert bindings roll back.
+  Owner tests cover layout invalidation on spawn/close and revision advancement.
 
 ## Architecture / invariants
 
@@ -66,6 +84,22 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 
 User approved cheaper-model delegation. Read-only mapping/review were launched
 at start of current work; incorporate their results when available.
+
+Next domain-create integration map (read-only exploration): branch in
+`src/app/session_controller.zig:newWorkspace` after domain/cwd inheritance;
+snapshot all arguments into an app-owned pending operation and use
+`createSessionConnection` -> ready -> create request -> matching reply ->
+`addSessionWorkspace`. Separate pending operations from attached controllers.
+Never replay uncertain create, never fallback to native spawn. Guard callback
+refs with originating Lua runtime generation across config reload. Domain bool
+parsing lives in `lua_bridge.zig:applyDomainTable`; it must precede the string-only
+guard and register domains even if no shell field exists. Host resolution is
+`Runtime.ptyHost` / `hollow._pty_host`; errors/null must fail closed, not imply
+local transport. Guest argv/env helpers are currently private in `pty/agent.zig`.
+Startup currently unconditionally calls `mux.bootstrapSingle`; opt-in async
+startup requires auditing no-pane paths (`App.domainValue` currently unwraps
+activePane). Do not enable persistence only for later workspaces and silently
+leave an opted-in default domain's startup pane nonpersistent.
 
 No reliable account-quota / 5-hour-window telemetry is available. Wall-clock
 checkpoint began at 2026-11-04 13:44:47 -05:00; that is NOT the account window's

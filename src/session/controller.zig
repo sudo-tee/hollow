@@ -47,6 +47,8 @@ pub const Controller = struct {
     detached: bool = false,
     kill_request: ?u64 = null,
     close_work: bool = false,
+    layout_request: ?u64 = null,
+    layout_conflict: bool = false,
 
     pub fn init(a: std.mem.Allocator, connection: *transport.Connection) Controller {
         return .{ .allocator = a, .connection = connection };
@@ -137,6 +139,28 @@ pub const Controller = struct {
         return id;
     }
 
+    /// Explicit, revision-checked geometry update. Never replay after a lost
+    /// reply or automatically overwrite an owner revision conflict.
+    pub fn requestLayout(self: *Controller, bytes: []const u8) !u64 {
+        if (self.detached) return error.Detached;
+        if (self.kill_request != null) return error.SessionClosing;
+        if (self.layout_request != null) return error.LayoutPending;
+        if (self.layout_conflict) return error.RevisionConflict;
+        const codec = @import("layout.zig");
+        var ids: [core.max_panes]u32 = undefined;
+        var count: usize = 0;
+        for (self.bindings) |slot| if (slot) |entry| {
+            if (entry.node == null or entry.close_request != null or entry.close_desired) return error.SessionClosing;
+            ids[count] = entry.pane;
+            count += 1;
+        };
+        const parsed = try codec.decode(self.allocator, bytes, ids[0..count]);
+        defer parsed.deinit();
+        const id = try self.connection.requestAttachedLayout(self.generation, self.revision, bytes);
+        self.layout_request = id;
+        return id;
+    }
+
     pub fn closeTarget(self: *Controller, request_id: u64) ?usize {
         for (self.bindings) |slot| if (slot) |entry| {
             if (entry.close_request == request_id) return entry.local_id;
@@ -200,6 +224,17 @@ pub const Controller = struct {
             .reply => {
                 const parsed = try p.parse(p.Reply, self.allocator, message.payload);
                 defer parsed.deinit();
+                if (self.layout_request == parsed.value.id) {
+                    self.layout_request = null;
+                    if (parsed.value.ok) {
+                        self.revision = parsed.value.revision orelse return error.InvalidRevision;
+                    } else if (parsed.value.@"error") |reason| {
+                        self.layout_conflict = std.mem.eql(u8, reason, "RevisionConflict");
+                    }
+                }
+                if (parsed.value.ok) if (parsed.value.revision) |revision| {
+                    self.revision = revision;
+                };
                 if (self.kill_request == parsed.value.id and !parsed.value.ok) self.kill_request = null;
                 if (parsed.value.ok) if (parsed.value.session) |session| {
                     const id = try self.allocator.dupe(u8, session.id);

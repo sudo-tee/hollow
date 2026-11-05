@@ -458,8 +458,21 @@ GUI workspace/controller wiring implemented for an already-attached session:
   across session boundaries are rejected instead of creating mixed ownership.
 - Workspace snapshot buffering has a 64 MiB aggregate encoded-input cap, in
   addition to transport and per-job bounds.
+- `src/session/layout.zig` defines the versioned, owner-pane-ID geometry blob;
+  `src/mux/session_layout.zig` captures/restores tab order, tiled split trees,
+  floating geometry/restore anchors, focus, maximization, and workspace name.
+  Restore validates the whole blob before publishing any views. Unknown versions,
+  invalid references, cycles/shared nodes, excessive depth, nonfinite geometry,
+  and mismatched pane membership fail without overwriting owner state.
+- Layout updates are explicit and revision-checked through the controller. Only
+  an acknowledged success advances the local revision; conflicts stop further
+  writes until reconciliation. No automatic per-frame serialization or replay.
+  Automatic layout saving and stale/missing-pane reconciliation remain pending.
+  Owner spawn/close invalidates the opaque blob and returns an advanced revision,
+  so a reconnect cannot be blocked by references to removed/new panes. Until
+  automatic post-mutation saves land, this falls back to one tab per owner pane.
 - `domains.<name>.persist` remains disabled. There is no domain-config create or
-  attach flow, host-bound layout restoration, or startup reattachment yet; the
+   attach flow, host binding, or startup reattachment yet; the
   App API currently publishes an already attached session.
 - `test-session-borrowers` exercises borrower cleanup and App close/ACK behavior
   on Windows. The Linux root test link remains blocked by missing X11, Xi,
@@ -467,8 +480,9 @@ GUI workspace/controller wiring implemented for an already-attached session:
 
 Next implementation slices:
 1. Dead/missing-session UX and controller handling for attach/create failures.
-2. Opt-in domain configuration, host-bound workspaces and revision-checked
-   nested layout blobs (including tab structure on the owner).
+2. Opt-in domain configuration, host-bound workspaces, automatic layout saves,
+   and stale/missing-pane layout reconciliation. The opaque owner blob already
+   carries tab structure and revision-checked geometry.
 3. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 

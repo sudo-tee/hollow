@@ -219,7 +219,7 @@ test "session pane controller creates a mux workspace without native shell spawn
     try std.testing.expectError(error.UnsupportedSessionMutation, mux.newTab(&runtime, fixture.callbacks(), cfg, 8, 16, 640, 480, null, null, null, false));
     try std.testing.expectError(error.UnsupportedSessionMutation, mux.splitActivePane(&runtime, fixture.callbacks(), cfg, 8, 16, 640, 480, .horizontal, 0.5, null, null, false, null));
     var with_layout = info;
-    with_layout.layout = "{\"version\":1}";
+    with_layout.layout = "{\"version\":2,\"tabs\":[]}";
     try std.testing.expectError(error.UnsupportedSessionLayout, mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, with_layout, null, null));
     try std.testing.expectEqual(@as(usize, 1), mux.workspaces.items.len);
     try std.testing.expectEqual(@as(usize, 1), mux.session_workspace_count);
@@ -270,4 +270,148 @@ test "session pane controller retries scheduled close admission without duplicat
     try controller.scheduleClose(node.id);
     try controller.flushCloses();
     try std.testing.expect(connection.client.nextWrite() == null);
+}
+
+test "session pane layout restores nested tabs and floating geometry with owner identities" {
+    const codec = @import("session/layout.zig");
+    const geometry = @import("mux/session_layout.zig");
+    const Mux = @import("mux/mux.zig").Mux;
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    const panes: []const p.PaneInfo = &.{
+        .{ .id = 1, .cols = 80, .rows = 24 },
+        .{ .id = 2, .cols = 40, .rows = 24 },
+        .{ .id = 3, .cols = 60, .rows = 20 },
+        .{ .id = 4, .cols = 80, .rows = 24 },
+    };
+    var info: p.SessionInfo = .{ .id = "mock", .attached = true, .revision = 7, .panes = panes };
+    const attach = try connection.request(.{ .id = 0, .op = .attach, .session = "mock" });
+    connection.client.nextWrite().?.deinit();
+    try json(&connection, .reply, p.Reply{ .id = attach, .session = info });
+    connection.poll().?.deinit();
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    const bytes = try codec.encode(a, .{
+        .name = "nested-session",
+        .active_tab = 1,
+        .tabs = &.{
+            .{
+                .active_pane = 3,
+                .root = 0,
+                .nodes = &.{ .{ .first = 1, .second = 2, .direction = .horizontal, .ratio = 0.3 }, .{ .pane = 1 }, .{ .pane = 2 } },
+                .floating = &.{.{ .pane = 3, .anchor = 2, .x = 0.2, .width = 0.4 }},
+                .maximized_pane = 2,
+                .maximized_show_background = true,
+            },
+            .{ .active_pane = 4, .root = 0, .nodes = &.{.{ .pane = 4 }} },
+        },
+    }, &.{ 1, 2, 3, 4 });
+    defer a.free(bytes);
+    info.layout = bytes;
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const workspace = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    try std.testing.expectEqualStrings("nested-session", workspace.name.?);
+    try std.testing.expectEqual(@as(usize, 1), workspace.activeTabIndex());
+    const tab = workspace.tabs.items[0];
+    try std.testing.expectEqual(@as(f32, 0.3), tab.root_split.?.ratio);
+    try std.testing.expectEqual(@as(u32, 3), try geometry.ownerId(tab.active_pane.?));
+    try std.testing.expectEqual(@as(u32, 2), try geometry.ownerId(tab.maximized_pane.?));
+    try std.testing.expect(tab.active_pane.?.is_floating);
+    try std.testing.expectEqual(tab.maximized_pane.?.id, tab.active_pane.?.restore_anchor_id);
+    const captured = try geometry.capture(a, workspace);
+    defer a.free(captured);
+    try std.testing.expectEqualStrings(bytes, captured);
+    mux.deinit(&runtime);
+    try std.testing.expect(!controller.hasBindings());
+    mux.next_pane_id.store(100, .monotonic);
+    info.layout = captured;
+    const restored = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    try std.testing.expect(restored.tabs.items[0].active_pane.?.id >= 100);
+    const recaptured = try geometry.capture(a, restored);
+    defer a.free(recaptured);
+    try std.testing.expectEqualStrings(bytes, recaptured);
+}
+
+test "session pane layout update advances only acknowledged revision and fences conflict" {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    controller.revision = 7;
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var node = Pane.init(a);
+    defer node.deinit(&runtime);
+    try bind(&controller, &node, &runtime, cfg, 1);
+    const bytes = try @import("session/layout.zig").encode(a, .{ .tabs = &.{.{ .active_pane = 1, .root = 0, .nodes = &.{.{ .pane = 1 }} }} }, &.{1});
+    defer a.free(bytes);
+    const request = try controller.requestLayout(bytes);
+    try std.testing.expectError(error.LayoutPending, controller.requestLayout(bytes));
+    try std.testing.expectEqual(@as(u64, 7), controller.revision);
+    const outgoing = connection.client.nextWrite().?;
+    defer outgoing.deinit();
+    const parsed = try p.parse(p.Request, a, outgoing.payload);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u64, 7), parsed.value.revision.?);
+    try json(&connection, .reply, p.Reply{ .id = request, .revision = 8 });
+    (try controller.step()).control.deinit();
+    try std.testing.expectEqual(@as(u64, 8), controller.revision);
+    const conflict = try controller.requestLayout(bytes);
+    connection.client.nextWrite().?.deinit();
+    try json(&connection, .reply, p.Reply{ .id = conflict, .ok = false, .@"error" = "RevisionConflict", .revision = 10 });
+    (try controller.step()).control.deinit();
+    try std.testing.expectEqual(@as(u64, 8), controller.revision);
+    try std.testing.expectError(error.RevisionConflict, controller.requestLayout(bytes));
+}
+
+fn layoutAllocationRoundtrip(allocator: std.mem.Allocator, connection: *transport.Connection, runtime: *ghostty.Runtime, cfg: Config) !void {
+    var controller = Controller.init(allocator, connection);
+    controller.generation = connection.client.generation;
+    controller.session_id = try allocator.dupe(u8, "mock");
+    // Controller teardown closes the mock bridge; restore it for next injected
+    // allocation failure, without doing any real connector work.
+    defer {
+        controller.deinit();
+        connection.closing = false;
+    }
+    var mux = @import("mux/mux.zig").Mux.init(allocator);
+    defer mux.deinit(runtime);
+    const info: p.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 0,
+        .panes = &.{ .{ .id = 1, .cols = 80, .rows = 24 }, .{ .id = 2, .cols = 40, .rows = 24 }, .{ .id = 3, .cols = 40, .rows = 20 } },
+        .layout = "{\"name\":\"rollback\",\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"first\":1,\"second\":2},{\"pane\":1},{\"pane\":2}],\"floating\":[{\"pane\":3,\"anchor\":2}]}]}",
+    };
+    const workspace = mux.addSessionWorkspace(runtime, fixture.callbacks(), cfg, &controller, info, "session-domain", null) catch |err| {
+        try std.testing.expectEqual(@as(usize, 0), mux.workspaces.items.len);
+        try std.testing.expectEqual(@as(usize, 0), mux.session_workspace_count);
+        try std.testing.expect(!controller.hasBindings());
+        return err;
+    };
+    const captured = try @import("mux/session_layout.zig").capture(allocator, workspace);
+    defer allocator.free(captured);
+}
+
+test "session pane layout factory allocation failures roll back views and bindings" {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    try std.testing.checkAllAllocationFailures(a, layoutAllocationRoundtrip, .{ &connection, &runtime, cfg });
+}
+
+test {
+    _ = @import("session/layout.zig");
 }

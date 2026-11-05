@@ -494,13 +494,16 @@ pub const Owner = struct {
             .spawn => {
                 const s = client.session orelse return error.NotAttached;
                 const pane = try self.spawnPane(s, req.spawn orelse .{});
-                self.reply(client, .{ .id = req.id, .pane = pane.id });
+                self.invalidateLayout(s);
+                self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.revision });
+                self.saveState(s);
             },
             .close => {
                 const s = client.session orelse return error.NotAttached;
                 const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
                 self.closePane(s, pane);
-                self.reply(client, .{ .id = req.id });
+                self.invalidateLayout(s);
+                self.reply(client, .{ .id = req.id, .revision = s.revision });
                 if (livePanes(s) == 0) self.endSession(s) else self.saveState(s);
             },
             .layout => {
@@ -522,6 +525,15 @@ pub const Owner = struct {
                 self.stop = .kill;
             },
         }
+    }
+
+    /// Geometry is deliberately opaque to the owner. Membership changes cannot
+    /// leave a blob referencing deleted panes or omitting newly spawned panes.
+    /// The client may replace this safe fallback using the returned revision.
+    fn invalidateLayout(self: *Owner, s: *Session) void {
+        self.a.free(s.layout);
+        s.layout = &.{};
+        s.revision += 1;
     }
 
     fn info(self: *Owner, arena: std.mem.Allocator, s: *Session) !p.SessionInfo {

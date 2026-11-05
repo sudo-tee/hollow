@@ -534,6 +534,16 @@ test "session pane real owner restores binary snapshot into Pane after full clie
         sid = try arena.dupe(u8, reply.value.session.?.id);
         _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, reply.value.session.?, null, null);
         try waitWorkspaceText(&controller, &mux, &runtime, "persisted-marker");
+        const layout = try @import("mux/session_layout.zig").capture(a, mux.activeWorkspace().?);
+        defer a.free(layout);
+        const layout_request = try controller.requestLayout(layout);
+        const saved = try nextControl(&controller);
+        defer saved.deinit();
+        const saved_reply = try p.parse(p.Reply, a, saved.payload);
+        defer saved_reply.deinit();
+        try std.testing.expect(saved_reply.value.ok);
+        try std.testing.expectEqual(layout_request, saved_reply.value.id);
+        try std.testing.expectEqual(saved_reply.value.revision.?, controller.revision);
         // Mux -> controller -> connection teardown leaves the owner's shell.
     }
     const second = try transport.Connection.create(a, io.get(), options);
@@ -547,6 +557,7 @@ test "session pane real owner restores binary snapshot into Pane after full clie
     defer attached.deinit();
     const attached_reply = try p.parse(p.Reply, a, attached.payload);
     defer attached_reply.deinit();
+    try std.testing.expect(attached_reply.value.session.?.layout.len > 0);
     try std.testing.expect(attached_reply.value.ok);
     _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, attached_reply.value.session.?, null, null);
     const node = mux.activePane().?;

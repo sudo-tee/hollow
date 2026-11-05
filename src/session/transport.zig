@@ -186,6 +186,15 @@ pub const Connection = struct {
         return id;
     }
 
+    pub fn requestAttachedLayout(self: *Connection, generation: u64, revision: u64, bytes: []const u8) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        const id = try self.client.request(.{ .id = 0, .op = .layout, .revision = revision, .layout = bytes });
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
     pub fn consumedBytes(self: *Connection, generation: u64, pane: u32, count: usize) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
