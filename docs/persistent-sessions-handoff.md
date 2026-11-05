@@ -11,6 +11,7 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 - `3c6157d`: session-backed panes and READY handoff.
 - `af9ccd9`: GUI workspace controllers and acknowledged closes.
 - `ef13ec6`: versioned layout codec/restore and revision-checked updates.
+- `1b35661`: asynchronous workspace create/attach admission.
 - GUI workspace/controller wiring now supports publishing an already-attached
   session. App owns controller/connection, pumps bounded frames around pane
   parsing, retries backpressure, and removes panes only after close ACK. App
@@ -55,6 +56,20 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
   Linux Debug/ReleaseSafe/ReleaseSmall, Windows->WSL pane tests, Windows App tests,
   Windows GUI cross-build pass. Empty-mux startup guards landed, but startup still
   unconditionally boots the ordinary shell until config/UI wiring is ready.
+- Native notice/targeting checkpoint: `src/session/notice.zig` stores 32 bounded
+  notices without allocation; latest status renders as a top-right native card,
+  including empty mux or absent Lua. Connecting click cancels, failed click
+  dismisses, uncertain cancellation remains a warning until explicitly dismissed.
+  Input queues stable notice IDs and honors Lua overlay/modal priority. Notice
+  transitions requestRedraw; no idle animation loop. No-notice render layer/order
+  stays unchanged. GPU appearance has NOT been manually verified.
+- `beginStartup` now captures operation ID; publication binds startup command to
+  that operation's pane ID, regardless of later focus. Failure, cancellation,
+  missing/closed target, or disconnected session cannot reroute startup command
+  into another terminal. Native default remains active-pane behavior. Tests cover
+  focus changes, unrelated panes, target disappearance, notice state, cancellation
+  uncertainty, redraw wake, and bounded/clipped status geometry. Windows App
+  tests and GUI cross-build pass; Linux session/headless suites pass.
 
 ## Architecture / invariants
 
@@ -114,10 +129,10 @@ guard and register domains even if no shell field exists. Host resolution is
 local transport. Guest argv/env helpers are currently private in `pty/agent.zig`.
 Startup still unconditionally calls `mux.bootstrapSingle`. Empty-mux audit found
 ordinary render/input loops safe; domainValue and startup-command/no-pane handling
-are now guarded. Before enabling opt-in startup, add pane-independent Connecting/
-failure UI (Lua `ui.notify.show` supports stable IDs, ttl=0 and error replacement;
-native/log-only fallback also needs deliberate policy), and bind startup command
-to startup operation rather than whichever unrelated terminal appears first.
+are now guarded. Pane-independent native Connecting/failure UI and startup-command
+target binding now exist, but still need a real GUI smoke check. Use
+`session_open.beginStartup` rather than plain `begin` for startup so command target
+cannot drift to another pane.
 Publish empty mux, install callbacks/renderer, then admit async startup. Do not
 enable persistence only for later workspaces and silently leave an opted-in
 default domain's startup pane nonpersistent.

@@ -30,6 +30,7 @@ const selection_mod = @import("../app/selection.zig");
 const mux_ops = @import("../app/session_controller.zig");
 const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
+const session_notice = @import("../session/notice.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
@@ -810,6 +811,7 @@ var g_bottom_bar_cache: BarCache = .{};
 // retained layouts instead of copying hit geometry each frame.
 var g_overlay_surfaces: [MAX_OVERLAY_SURFACES]*ClaySurface = undefined;
 var g_overlay_surface_count: usize = 0;
+var g_overlay_has_modal: bool = false;
 
 var g_sidebar_hovered = false;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
@@ -1850,6 +1852,48 @@ fn hitTestOverlayWheel(mouse_x: f32, mouse_y: f32) ?OverlayHit {
     return null;
 }
 
+fn sessionNoticePanel(app: *App, line_count: usize) session_notice.Rect {
+    return session_notice.panel(app.activeLayoutBounds(), @floatFromInt(app.cell_width_px), @floatFromInt(app.cell_height_px), line_count);
+}
+
+fn hitTestSessionNotice(app: *App, x: f32, y: f32) ?u64 {
+    const value = app.session_notices.current() orelse return null;
+    // A modal owns the whole viewport, including empty space outside its panel.
+    // Nonmodal overlays own their painted panels, not just clickable children.
+    if (g_overlay_has_modal or hitTestOverlayWheel(x, y) != null) return null;
+    var text: session_notice.Text = .{};
+    text.format(value);
+    return if (sessionNoticePanel(app, text.count).contains(x, y)) value.id else null;
+}
+
+fn drawSessionNotice(app: *App, renderer: *FtRenderer, value: session_notice.Notice, text: *const session_notice.Text) void {
+    const panel = sessionNoticePanel(app, text.count);
+    if (panel.width <= 0 or panel.height <= 0) return;
+    const theme = &app.config.terminal_theme;
+    const fg = theme.foreground;
+    const bg = theme.background;
+    const muted: ghostty.ColorRgb = .{
+        .r = @intCast((@as(u16, fg.r) + bg.r) / 2),
+        .g = @intCast((@as(u16, fg.g) + bg.g) / 2),
+        .b = @intCast((@as(u16, fg.b) + bg.b) / 2),
+    };
+    const accent = if (value.state == .failed) theme.palette[1] else muted;
+    c.sgl_scissor_rect(@intFromFloat(panel.x), @intFromFloat(panel.y), @intFromFloat(panel.width), @intFromFloat(panel.height), true);
+    defer {
+        c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+        c.sgl_load_default_pipeline();
+    }
+    drawBorderRect(panel.x, panel.y, panel.width, panel.height, bg.r, bg.g, bg.b, 255);
+    drawBorderRect(panel.x, panel.y, panel.width, 2, accent.r, accent.g, accent.b, 255);
+    const x = panel.x + renderer.cell_w;
+    var y = panel.y + renderer.cell_h * 0.5;
+    for (text.lines[0..text.count], 0..) |line, index| {
+        const color = if (index == 0) accent else fg;
+        renderer.drawLabel(x, y, line, color.r, color.g, color.b);
+        y += renderer.cell_h;
+    }
+}
+
 /// Topmost scrollbar under the pointer, unless a higher overlay's clickable
 /// node covers it.
 fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
@@ -2706,6 +2750,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_surface_count = 0;
+    g_overlay_has_modal = false;
     g_sidebar_bounds = null;
     const ctx = g_widget_render_ctx orelse return;
     const scratch = &g_bar_widget_scratch;
@@ -2812,6 +2857,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             }
             if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                 const overlay_idx = absoluteIndex(api, state, -1);
+                if (ctx.app.session_notices.count != 0) {
+                    api.get_field(state, overlay_idx, "stack_context");
+                    var context_len: usize = 0;
+                    if (api.to_lstring(state, -1, &context_len)) |context| {
+                        if (std.mem.eql(u8, context[0..context_len], "modal")) g_overlay_has_modal = true;
+                    }
+                    pop(api, state, 1);
+                }
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
                 var backdrop_alpha: u8 = 0;
@@ -3611,6 +3664,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var offscreen_bar_preraster_ns: i128 = 0;
 
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
+    const notice_value = app.session_notices.current();
+    var notice_text: session_notice.Text = .{};
+    if (notice_value) |value| {
+        notice_text.format(value);
+        if (g_ft_renderer) |*renderer| {
+            for (notice_text.lines[0..notice_text.count]) |line| renderer.preRasterizeLabel(line);
+        }
+    }
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
@@ -4246,8 +4307,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
         // pass(es) — needed before the swapchain pass uses the atlas.
-        // Skip for direct render mode (already flushed above).
-        if (!use_direct_render) {
+        // Native notice glyphs also need uploading in the direct-render path.
+        if (!use_direct_render or notice_value != null) {
             renderer.flushAtlasIfDirty();
         }
     }
@@ -4540,10 +4601,21 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
 
+        // Keep native notices and the Lua UI above direct terminal glyphs.
+        // Their order within this layer leaves Lua overlays above the card.
+        if (notice_value != null) c.sgl_layer(1);
+        defer c.sgl_layer(0);
+        if (notice_value) |value| drawSessionNotice(app, renderer, value, &notice_text);
+
         if (app.lua) |*lua| {
             g_widget_render_ctx = .{ .app = app, .renderer = renderer, .width = width, .height = height };
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
+        } else {
+            // A failed Lua reload must not leave stale modal hit ownership
+            // blocking this native fallback.
+            g_overlay_surface_count = 0;
+            g_overlay_has_modal = false;
         }
         if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false);
         drawGridDebug(app, renderer, width, height);
@@ -5869,6 +5941,18 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 .id = hit.id,
                 .index = hit.stack_index,
             } });
+            return;
+        }
+    }
+
+    // Route only after suppression, bars and overlay clicks. Queue the stable
+    // notice ID; cancellation/dismissal belongs to the frame-thread lifecycle.
+    if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (hitTestSessionNotice(app, event.mouse_x, event.mouse_y)) |id| {
+            _ = app.enqueueMouse(.{ .session_notice_activate = id });
+            g_block_left_mouse_until_up = true;
+            g_mouse_button_down = null;
+            c.sapp_consume_event();
             return;
         }
     }

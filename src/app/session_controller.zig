@@ -272,17 +272,29 @@ pub fn maybeRunStartupCommand(self: *App) void {
     if (self.startup_command_sent) return;
     const command = self.startup_command orelse return;
     if (self.frame_count < self.startup_command_delay_frames) return;
-    if (!startupCommandHasTarget(self)) return;
-    sendText(self, command);
+    const pane = startupCommandPane(self) orelse return;
+    if (self.activePane() == pane) sendText(self, command) else _ = sendTextToPane(self, pane.id, command);
     if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
-        sendText(self, "\r");
+        if (self.activePane() == pane) sendText(self, "\r") else _ = sendTextToPane(self, pane.id, "\r");
     }
     self.startup_command_sent = true;
 }
 
 pub fn startupCommandHasTarget(self: *App) bool {
-    const pane = self.activePane() orelse return false;
-    return pane.isTerminal();
+    return startupCommandPane(self) != null;
+}
+
+fn startupCommandPane(self: *App) ?*Pane {
+    const pane = switch (self.startup_session_target) {
+        .unbound => self.activePane(),
+        .opening, .failed => null,
+        .pane => |id| self.findPaneById(id),
+    } orelse return null;
+    const term = pane.asTerminal() orelse return null;
+    if (self.startup_session_target == .pane) {
+        if (term.pty) |*pty| if (!pty.isAlive()) return null;
+    }
+    return pane;
 }
 
 pub fn invalidateAllPanes(self: *App) void {

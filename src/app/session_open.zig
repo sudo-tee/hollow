@@ -10,6 +10,13 @@ const p = transport.p;
 const no_ref: c_int = -1;
 pub const max_pending = 16;
 
+pub const StartupTarget = union(enum) {
+    unbound,
+    opening: u64,
+    pane: usize,
+    failed,
+};
+
 pub const Pending = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
@@ -75,15 +82,33 @@ pub fn begin(app: *App, options: transport.Options, request: p.Request, domain: 
     app.session_opens[slot] = pending;
     app.session_open_count += 1;
     app.session_open_next_id += 1;
-    app.signalWake();
+    _ = app.session_notices.start(id);
+    app.requestRedraw();
     return id;
+}
+
+pub fn beginStartup(app: *App, options: transport.Options, request: p.Request, domain: ?[]const u8, name: ?[]const u8) !u64 {
+    if (app.startup_session_target != .unbound) return error.StartupAlreadyAdmitted;
+    const id = try begin(app, options, request, domain, name, no_ref);
+    app.startup_session_target = .{ .opening = id };
+    return id;
+}
+
+/// A pointer click is deliberate cancellation/dismissal, never a retry. Do not
+/// silently duplicate a create whose reply might have been lost.
+pub fn activateNotice(app: *App, id: u64) void {
+    const current = app.session_notices.current() orelse return;
+    if (current.id != id) return;
+    if (current.state == .connecting) {
+        _ = cancel(app, id);
+    } else if (app.session_notices.clear(id)) app.requestRedraw();
 }
 
 pub fn cancel(app: *App, id: u64) bool {
     for (app.session_opens) |entry| if (entry) |pending| {
         if (pending.id != id or pending.state != .running) continue;
         const failure = pending.operation.cancel();
-        retire(app, pending, failure.reason, failure.outcome);
+        retire(app, pending, failure.reason, failure.outcome, failure.remote);
         return true;
     };
     return false;
@@ -113,12 +138,12 @@ pub fn pump(app: *App) void {
         }
         const step = pending.operation.step() catch |err| {
             const failure = pending.operation.cancel();
-            retire(app, pending, err, failure.outcome);
+            retire(app, pending, err, failure.outcome, null);
             continue;
         };
         switch (step) {
             .pending => {},
-            .failed => |failure| retire(app, pending, failure.reason, failure.outcome),
+            .failed => |failure| retire(app, pending, failure.reason, failure.outcome, failure.remote),
             .attached => |attachment| {
                 defer attachment.deinit();
                 pending.state = .publishing;
@@ -128,16 +153,24 @@ pub fn pump(app: *App) void {
                     // or replay create just because GUI allocation failed.
                     std.log.err("session {s} attached but view publication failed: {s}", .{ info.id, @errorName(err) });
                     pending.connection.?.close();
-                    retire(app, pending, err, .uncertain);
+                    retire(app, pending, err, .uncertain, null);
                     continue;
                 };
                 const workspace_id = workspace.id;
+                const operation_id = pending.id;
+                if (app.startup_session_target == .opening and app.startup_session_target.opening == operation_id) {
+                    app.startup_session_target = if (workspace.activeTab()) |tab|
+                        (if (tab.activePane()) |pane| .{ .pane = pane.id } else .failed)
+                    else
+                        .failed;
+                }
                 pending.connection = null; // Ownership now belongs to App controller.
                 const callback_ref = pending.callback_ref;
                 const generation = pending.lua_generation;
                 app.session_opens[index] = null;
                 app.session_open_count -= 1;
                 pending.destroy();
+                if (app.session_notices.clear(operation_id)) app.requestRedraw();
                 var workspace_index: ?usize = null;
                 if (app.mux) |*mux| for (mux.workspaces.items, 0..) |value, i| {
                     if (value.id == workspace_id) {
@@ -151,11 +184,18 @@ pub fn pump(app: *App) void {
     }
 }
 
-fn retire(app: *App, pending: *Pending, reason: anyerror, outcome: opener.Outcome) void {
+fn retire(app: *App, pending: *Pending, reason: anyerror, outcome: opener.Outcome, remote: ?[]const u8) void {
     pending.state = .retiring;
     pending.connection.?.close();
     const callback_ref = pending.callback_ref;
     pending.callback_ref = no_ref;
+    if (app.startup_session_target == .opening and app.startup_session_target.opening == pending.id) app.startup_session_target = .failed;
+    if (reason == error.Canceled and outcome == .not_sent) {
+        _ = app.session_notices.clear(pending.id);
+    } else {
+        _ = app.session_notices.failedRemote(pending.id, reason, outcome, remote);
+    }
+    app.requestRedraw();
     std.log.warn("session workspace open failed: {s} ({s}; not replayed)", .{ @errorName(reason), @tagName(outcome) });
     complete(app, callback_ref, pending.lua_generation, null);
 }
@@ -175,6 +215,7 @@ pub fn shutdown(app: *App) void {
         pending.destroy();
     };
     app.session_open_count = 0;
+    app.session_notices = .{};
 }
 
 fn mockConnection(a: std.mem.Allocator) !*transport.Connection {
@@ -212,6 +253,8 @@ test "session borrowers pending create publishes views before subsequent output 
     @memset(&name, 'x');
     app.session_opens[0] = pending;
     app.session_open_count = 1;
+    _ = app.session_notices.start(1);
+    app.startup_session_target = .{ .opening = 1 };
     const connection = try mockConnection(a);
     pending.connection = connection;
     pending.operation.bind(connection);
@@ -240,6 +283,8 @@ test "session borrowers pending create publishes views before subsequent output 
     try std.testing.expect(app.session_opens[0] == null);
     try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
     try std.testing.expectEqual(@as(usize, 1), app.session_controllers.items.len);
+    try std.testing.expect(app.session_notices.current() == null);
+    try std.testing.expectEqual(app.activePane().?.id, app.startup_session_target.pane);
     try std.testing.expectEqualStrings("captured-name", app.mux.?.activeWorkspace().?.name.?);
     try std.testing.expectEqualStrings("captured-domain", app.activePane().?.domainName());
     mux_ops.maybeRunStartupCommand(app);
@@ -258,6 +303,8 @@ test "session borrowers pending open cancel retires without blocking or publishi
     const pending = try Pending.prepare(a, .{ .id = 0, .op = .attach, .session = "existing" }, null, null, no_ref, 0, 9);
     app.session_opens[0] = pending;
     app.session_open_count = 1;
+    _ = app.session_notices.start(9);
+    app.startup_session_target = .{ .opening = 9 };
     const connection = try mockConnection(a);
     pending.connection = connection;
     pending.operation.bind(connection);
@@ -265,6 +312,8 @@ test "session borrowers pending open cancel retires without blocking or publishi
     try std.testing.expect(!cancel(app, 9));
     try std.testing.expectEqual(@as(c_int, no_ref), pending.callback_ref);
     try std.testing.expect(pending.state == .retiring);
+    try std.testing.expect(app.startup_session_target == .failed);
+    try std.testing.expect(app.session_notices.current() == null);
     pump(app);
     try std.testing.expect(app.session_opens[0] == pending);
     connection.finished = true;
@@ -308,4 +357,71 @@ test "session borrowers domain snapshot tolerates no active pane" {
     const value = try app.domainValue("future-domain");
     defer @import("../app.zig").deinitJsonValue(a, value);
     try std.testing.expect(!value.object.get("is_active").?.bool);
+}
+
+test "session borrowers uncertain cancellation remains visible until deliberately dismissed" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    const pending = try Pending.prepare(a, .{ .id = 0, .op = .create, .spawn = .{} }, null, null, no_ref, 0, 3);
+    app.session_opens[0] = pending;
+    app.session_open_count = 1;
+    _ = app.session_notices.start(3);
+    const connection = try mockConnection(a);
+    pending.connection = connection;
+    pending.operation.bind(connection);
+    pump(app);
+    connection.client.nextWrite().?.deinit(); // Submitted, cannot assume not sent.
+    const before = app.wake_generation.load(.monotonic);
+    activateNotice(app, 3);
+    const notice = app.session_notices.current().?;
+    try std.testing.expect(notice.state == .failed and notice.outcome == .uncertain);
+    try std.testing.expect(app.wake_generation.load(.monotonic) != before);
+    activateNotice(app, 2); // Stale click must not dismiss another operation.
+    try std.testing.expect(app.session_notices.current() != null);
+    activateNotice(app, 3);
+    try std.testing.expect(app.session_notices.current() == null);
+    try std.testing.expectEqual(@as(u64, 2), connection.client.next_id);
+}
+
+test "session borrowers startup command targets its own pane without changing focus" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    app.ghostty = try @import("../term/ghostty.zig").Runtime.init(a, null);
+    app.mux = @import("../mux.zig").Mux.init(a);
+    const Pane = @import("../pane.zig").Pane;
+    var panes: [2]*Pane = undefined;
+    for (&panes) |*slot| {
+        const pane = try a.create(Pane);
+        pane.* = Pane.init(a);
+        pane.id = app.mux.?.reservePaneId();
+        try pane.content.terminal.queuePendingRawInput(a, "seed:");
+        try app.mux.?.newWorkspaceWithPane(&app.ghostty.?, pane, null);
+        slot.* = pane;
+    }
+    app.startup_command = try a.dupe(u8, "startup-command");
+    app.frame_count = app.startup_command_delay_frames;
+    app.startup_session_target = .{ .opening = 10 };
+    mux_ops.maybeRunStartupCommand(app);
+    try std.testing.expect(!app.startup_command_sent);
+    app.startup_session_target = .failed;
+    mux_ops.maybeRunStartupCommand(app);
+    try std.testing.expect(!app.startup_command_sent);
+    const target_id = panes[0].id;
+    app.startup_session_target = .{ .pane = target_id };
+    mux_ops.maybeRunStartupCommand(app);
+    try std.testing.expect(app.startup_command_sent);
+    try std.testing.expect(app.activePane() == panes[1]);
+    try std.testing.expectEqualStrings("seed:startup-command\r", panes[0].content.terminal.pending_startup_input);
+    try std.testing.expectEqualStrings("seed:", panes[1].content.terminal.pending_startup_input);
+    _ = app.mux.?.closePaneById(&app.ghostty.?, target_id);
+    app.startup_command_sent = false;
+    mux_ops.maybeRunStartupCommand(app);
+    try std.testing.expect(!app.startup_command_sent);
+    try std.testing.expectEqualStrings("seed:", panes[1].content.terminal.pending_startup_input);
 }

@@ -485,8 +485,16 @@ GUI workspace/controller wiring implemented for an already-attached session:
 - Empty-mux preparation: startup automation waits for a terminal target (without
   keeping idle rendering spinning), domain snapshots tolerate no active pane,
   and automatic last-workspace quit is suppressed while a live open is pending.
-  Explicit window Quit still works. Pending/failure startup UI and binding startup
-  automation to its specific operation remain outstanding before config exposure.
+  Explicit window Quit still works. `beginStartup` binds startup automation to
+  its own operation/pane, never to an unrelated terminal that appears first or
+  gains focus. A failed/closed startup target does not fall back to another pane.
+- `src/session/notice.zig` holds bounded, allocation-free connecting/failure
+  status (32 records, latest first). Native rendering works without Lua or any
+  terminal panes. Click connecting status to cancel; click failed status to
+  dismiss. Uncertain cancellation retains a warning because an owner session may
+  already exist; there is no automatic retry. Lua modal/overlay input remains
+  above the card. Notice transitions request redraw, but static status adds no
+  animation polling. Native GPU appearance still needs a real GUI smoke check.
 - `test-session-borrowers` exercises borrower cleanup and App close/ACK behavior
   on Windows. The Linux root test link remains blocked by missing X11, Xi,
   Xcursor, GL, and ALSA development libraries.

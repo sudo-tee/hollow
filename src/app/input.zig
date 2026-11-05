@@ -64,6 +64,8 @@ pub const PendingInputEvent = union(enum) {
     close_tab_at: usize,
     /// A tab-close button click; unlike raw operations, consults Lua action overrides.
     user_close_tab_at: usize,
+    /// Native session notice activation, matched again on the frame thread.
+    session_notice_activate: u64,
     new_tab: struct {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
@@ -313,6 +315,7 @@ pub fn processInputQueue(self: *App) void {
         defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
+            .session_notice_activate => |id| @import("session_open.zig").activateNotice(self, id),
             .lua_pane_pointer => |payload| @import("lua_panes.zig").pointer(self, payload),
             .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
             .invalidate_lua_pane => |id| {
