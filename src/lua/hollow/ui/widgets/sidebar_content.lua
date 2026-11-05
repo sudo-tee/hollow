@@ -56,7 +56,7 @@ local function divider(color, ctx)
   }, { width = "grow", height = ctx.cell_h or 19, align_y = "center" })
 end
 
--- Builds the pane tree and returns it with the span handlers and node->span ids.
+-- Builds the canonical tree, plus inline-span event handlers and node-id mappings.
 function M.render(widget, ctx)
   local rendered = shared.render_widget(widget)
   local palette = widget._palette or shared.palette("sidebar")
@@ -70,22 +70,22 @@ function M.render(widget, ctx)
     rows[1] = rendered
   else
     for _, row in ipairs(shared.normalize_widget_rows(rendered)) do
-    events.register(row.children, handlers, next_auto_id)
-    local paint, text_style = shared.serialize_row_paint(row, palette, ctx.hovered_id)
-    if paint.divider then
-      rows[#rows + 1] = divider(paint.divider, ctx)
-    else
-      local runs = {}
-      local flat =
-        shared.flatten_span_nodes(shared.normalize_inline_nodes(row.children), text_style)
-      for _, span in ipairs(flat) do
-        runs[#runs + 1] = span.spacer and c.spacer() or run(span, handlers, seen)
+      events.register(row.children, handlers, next_auto_id)
+      local paint, text_style = shared.serialize_row_paint(row, palette, ctx.hovered_id)
+      if paint.divider then
+        rows[#rows + 1] = divider(paint.divider, ctx)
+      else
+        local runs = {}
+        local flat =
+          shared.flatten_span_nodes(shared.normalize_inline_nodes(row.children), text_style)
+        for _, span in ipairs(flat) do
+          runs[#runs + 1] = span.spacer and c.spacer() or run(span, handlers, seen)
+        end
+        rows[#rows + 1] = c.row(runs, {
+          width = "grow",
+          style = paint.fill_bg and { bg = paint.fill_bg, radius = paint.fill_radius } or nil,
+        })
       end
-      rows[#rows + 1] = c.row(runs, {
-        width = "grow",
-        style = paint.fill_bg and { bg = paint.fill_bg, radius = paint.fill_radius } or nil,
-      })
-    end
     end
   end
   local surface = shared.sidebar_surface_style(widget.style, palette) or {}
@@ -94,7 +94,7 @@ function M.render(widget, ctx)
     width = "grow",
     height = "grow",
     scroll = true,
-    padding = { x = 4, top = ctx.edge_sidebar and (ctx.cell_h or 19) or nil },
+    padding = { x = 4 },
     style = { fg = surface.fg, bg = surface.bg, border = surface.border, alpha = surface.alpha },
     border_width = surface.border and { [edge] = 1 } or nil,
   }),

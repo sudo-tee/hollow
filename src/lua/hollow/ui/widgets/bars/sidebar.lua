@@ -89,7 +89,9 @@ function M.install()
       return true
     end
     local surface = state.ui.mounted_sidebar._sidebar_surface
-    if surface then surface:invalidate() end
+    if surface then
+      surface:invalidate()
+    end
     if type(state.host_api.request_redraw) == "function" then
       state.host_api.request_redraw()
     end
@@ -151,7 +153,6 @@ function M.install()
       height = height,
       cell_w = cell_w,
       cell_h = cell_h,
-      edge_sidebar = true,
       hovered_id = type(hovered) == "string"
           and hovered:sub(1, #surface.namespace) == surface.namespace
           and hovered:sub(#surface.namespace + 1)

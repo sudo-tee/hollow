@@ -511,7 +511,14 @@ describe("unified component styling", function()
       return ui.row({ ui.text("detail", { fg = "muted" }) }, { theme = { muted = "#123456" } })
     end
     ui.sidebar.mount(ui.sidebar.new({ width = 20, render = row }))
-    assert.equals("#123456", ui._sidebar_state().rows[1][1].fg)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local nodes = ui._sidebar_layout_tree
+    local detail
+    for _, node in ipairs(nodes) do
+      if node.text == "detail" then detail = node end
+    end
+    assert.is_table(detail)
+    assert.equals("#123456", detail.fg)
   end)
 
   it("shares finite surface pixel normalization without changing span fractions", function()
