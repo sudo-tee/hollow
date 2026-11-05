@@ -394,4 +394,45 @@ describe("UI bars test suite", function()
       )
     end)
   end)
+  it("dispatches native bar handlers from the serialized snapshot without rendering again", function()
+    local ui = hollow.ui
+    local rendered, hits = 0, {}
+    ui.topbar.mount(ui.topbar.new({
+      render = function()
+        rendered = rendered + 1
+        return {
+          ui.button({
+            id = "inline-action",
+            text = "Action",
+            on_click = function() hits[#hits + 1] = "inline" end,
+          }),
+          ui.bar.custom({
+            id = "custom-action",
+            render = function()
+              return ui.span("Custom")
+            end,
+            on_click = function() hits[#hits + 1] = "custom" end,
+          }),
+          ui.bar.custom({
+            id = "custom-inner",
+            render = function()
+              return ui.span("Inner", {
+                id = "inner-action",
+                on_click = function() hits[#hits + 1] = "nested" end,
+              })
+            end,
+          }),
+        }
+      end,
+    }))
+    assert.is_truthy(ui._topbar_state())
+    local initial_renders = rendered
+    hollow._emit_builtin_event("topbar:click", { id = "inline-action" })
+    hollow._emit_builtin_event("topbar:click", { id = "custom-action" })
+    hollow._emit_builtin_event("topbar:click", { id = "inner-action" })
+    hollow._emit_builtin_event("topbar:click", { id = "no-such-node" })
+    assert.same({ "inline", "custom", "nested" }, hits)
+    assert.equals(initial_renders, rendered)
+  end)
+
 end)

@@ -110,7 +110,7 @@ function M.resolve_value(surface, value)
   return resolved
 end
 
-function M.install(ui, active_widget, invalidate)
+function M.install(ui, _active_widget, invalidate)
   local function node_id(surface, payload)
     if type(payload) ~= "table" then
       return nil
@@ -129,30 +129,7 @@ function M.install(ui, active_widget, invalidate)
       return true
     end
 
-    local function visit(node)
-      if type(node) ~= "table" then
-        return false
-      end
-      if node._type == "group" then
-        return tbl(node.children):some(visit)
-      end
-      if node._type == "bar_custom" and node.id == id and type(node[field]) == "function" then
-        node[field](payload)
-        return true
-      end
-      local style = node.style
-      if type(style) == "table" and style.id == id and type(style[field]) == "function" then
-        style[field](payload)
-        return true
-      end
-      return false
-    end
-
-    local widget = active_widget(surface)
-    if widget == nil or type(id) ~= "string" or id == "" then
-      return false
-    end
-    return tbl(shared.normalize_bar_items(shared.render_widget(widget))):some(visit)
+    return false
   end
   function ui.handle_bar_node_event(kind, payload)
     local surface = kind:match("^(%a+bar):")

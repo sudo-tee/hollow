@@ -287,10 +287,35 @@ end
 ---@param node HollowUiBarCustomNode
 ---@param ctx HollowWidgetCtx
 ---@return HollowUiSegment|nil
-local function serialize_custom(surface, node, ctx)
+local function serialize_custom(surface, node, ctx, handlers)
   local ok, rendered = pcall(node.render, ctx)
   if not ok then
     return nil
+  end
+
+  -- Register the rendered content as well as the custom shell. There is no
+  -- event-time rerender or recursive fallback: every visible handler belongs
+  -- to the snapshot that produced the native bar.
+  if type(rendered) == "table" then
+    register_bar_events(rendered, handlers, next_bar_auto_id)
+  end
+  if type(node.style) == "table" and type(node.style.id) == "string" then
+    local entry = handlers[node.style.id] or {}
+    for _, field in ipairs({ "on_click", "on_mouse_enter", "on_mouse_leave" }) do
+      if type(node.style[field]) == "function" then
+        entry[field] = node.style[field]
+      end
+    end
+    handlers[node.style.id] = entry
+  end
+  if type(node.id) == "string" and node.id ~= "" then
+    local entry = handlers[node.id] or {}
+    for _, field in ipairs({ "on_click", "on_mouse_enter", "on_mouse_leave" }) do
+      if type(node[field]) == "function" then
+        entry[field] = node[field]
+      end
+    end
+    handlers[node.id] = entry
   end
 
   local segment
@@ -337,12 +362,13 @@ local function serialize_bar_item(surface, node, ctx, handlers)
     return serialize_key_legend(surface, node)
   end
   if node._type == "bar_custom" then
-    return serialize_custom(surface, node, ctx)
+    return serialize_custom(surface, node, ctx, handlers)
   end
   if node._type == "spacer" then
     return { kind = "spacer" }, nil
   end
   if shared.is_span_node(node) then
+    register_bar_events(node, handlers, next_bar_auto_id)
     local segment = serialize_bar_value(surface, node, node.text or node.name or "", node.style)
     segment.kind = "segment"
     return segment, nil
