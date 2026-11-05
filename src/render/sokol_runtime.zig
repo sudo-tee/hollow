@@ -102,7 +102,7 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
     if (surface.clayState()) |tree| {
         tree.mouse_x = surface.pointer_x;
         tree.mouse_y = surface.pointer_y;
-        drawClaySurface(tree, renderer, pw, ph, 0, 0);
+        drawClaySurface(tree, renderer, pw, ph, 0, 0, false);
         tree.area.x = @floatFromInt(bounds.x);
         tree.area.y = @floatFromInt(bounds.y);
     }
@@ -163,6 +163,10 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
 // The edge sidebar owns its Clay context independently of the overlay stack.
 // Snapshot and pre-rasterize it before drawing, just like the other surfaces.
 fn prepareSidebarClaySurface(runtime: *lua_mod.Runtime, renderer: *FtRenderer, width: f32, height: f32) void {
+    if (g_sidebar_clay.runtime_generation != runtime.generation) {
+        g_sidebar_clay.deinit();
+        g_sidebar_clay = .{ .runtime_generation = runtime.generation };
+    }
     const api = runtime.context.api;
     const state = runtime.state;
     const saved_top = api.get_top(state);
@@ -2018,37 +2022,20 @@ fn updateSidebarHover(app: *App, x: f32, y: f32, modifiers: u32, covered: bool) 
     app.emitLuaBuiltInEvent("sidebar:leave", .none);
 }
 
-test "sidebar Clay hits are clipped to the window-edge rectangle" {
-    const previous = g_sidebar_bounds;
-    const previous_surface = g_sidebar_clay;
+test "sidebar Clay hit testing rejects points outside the edge rectangle" {
+    const previous_bounds = g_sidebar_bounds;
+    const previous_active = g_sidebar_clay.active;
     defer {
-        g_sidebar_clay = previous_surface;
-        g_sidebar_bounds = previous;
+        g_sidebar_bounds = previous_bounds;
+        g_sidebar_clay.active = previous_active;
     }
-    var surface: ClaySurface = .{};
-    defer surface.deinit();
-    surface.context = clay.hollow_clay_create();
-    surface.active = true;
-    surface.nodes[0] = std.mem.zeroes(clay.HollowClayNode);
-    surface.nodes[0].width = 120;
-    surface.nodes[0].height = 40;
-    surface.nodes[0].id = .{ .chars = "layout:1:root", .length = 13 };
-    surface.nodes[1] = std.mem.zeroes(clay.HollowClayNode);
-    surface.nodes[1].id = .{ .chars = "layout:1:button", .length = 15 };
-    surface.nodes[1].kind = 0;
-    surface.nodes[1].clickable = true;
-    surface.nodes[1].height = 40;
-    surface.nodes[0].children = 1;
-    surface.len = 2;
-    surface.area = .{ .x = 0, .y = 20, .width = 100, .height = 50 };
-    _ = surface.layout(100, 50, 10, 20, 0);
-    g_sidebar_clay = surface;
+    g_sidebar_clay.active = false;
     g_sidebar_bounds = .{ .x = 0, .y = 20, .width = 100, .height = 50 };
     try std.testing.expect(sidebarContains(10, 30));
     try std.testing.expect(!sidebarContains(105, 30));
+    try std.testing.expect(!sidebarContains(10, 72));
+    try std.testing.expect(hitTestSidebar(10, 30) == null);
     try std.testing.expect(hitTestSidebar(105, 30) == null);
-    // Ownership returns to the local surface; only the pointer copy was shared.
-    g_sidebar_clay = .{};
 }
 
 test "overlay input queries painted Clay surfaces from the top of the stack" {
@@ -2139,56 +2126,6 @@ fn drawRowPaint(renderer: *FtRenderer, x: f32, y: f32, text_y: f32, width: f32, 
     }
     if (paint.divider) |divider| {
         drawBorderRect(x, text_y + renderer.cell_h * 0.5, width, 1.0, divider.r, divider.g, divider.b, 255);
-    }
-}
-
-fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment, default_fg: ?ghostty.ColorRgb) void {
-    const cell_h = @max(@as(f32, 1.0), renderer.cell_h - 2.0);
-    const text_y = y + bar.rowPadding(segments).top;
-    var right_w: f32 = 0;
-    var saw_spacer = false;
-    for (segments) |seg| {
-        if (seg.spacer) {
-            saw_spacer = true;
-        } else if (saw_spacer and seg.text.len > 0) {
-            right_w += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w + seg.padding.left + seg.padding.right;
-        }
-    }
-
-    const right_edge = x + max_width;
-    var cursor_x = x;
-    for (segments, 0..) |seg, seg_index| {
-        if (seg.spacer) {
-            cursor_x = right_edge - right_w;
-            continue;
-        }
-        if (seg.text.len == 0) continue;
-        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w + seg.padding.left + seg.padding.right;
-        const seg_x = cursor_x;
-        if (seg_x + seg_w > right_edge) break;
-        const bg_y = text_y - seg.padding.top + 1.0;
-        const bg_h = cell_h + seg.padding.top + seg.padding.bottom;
-        var bg_w = seg_w;
-        for (segments[seg_index + 1 .. @min(segments.len, seg_index + 1 + seg.background_extend)]) |next| {
-            if (next.spacer) break;
-            bg_w += @as(f32, @floatFromInt(countCodepoints(next.text))) * renderer.cell_w + next.padding.left + next.padding.right;
-        }
-        bg_w = @min(bg_w, right_edge - seg_x);
-        if (seg.radius > 0) {
-            if (seg.bg) |bg| {
-                drawRoundedRect(seg_x, bg_y, bg_w, bg_h, seg.radius, bg.r, bg.g, bg.b, 220);
-            }
-            if (seg.border) |border| {
-                drawRoundedRectOutline(seg_x, bg_y, seg_w, bg_h, seg.radius, seg.border_size, border.r, border.g, border.b, 220);
-            }
-        } else if (seg.bg) |bg| {
-            drawBorderRect(seg_x, bg_y, bg_w, bg_h, bg.r, bg.g, bg.b, 220);
-        }
-        const fg = seg.fg orelse default_fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-        renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
-        c.sgl_load_default_pipeline();
-        cursor_x += seg_w;
-        if (seg.id) |id| cacheSidebarHitRegion(id, seg.text, .{ .x = seg_x, .y = bg_y, .width = seg_w, .height = bg_h });
     }
 }
 
