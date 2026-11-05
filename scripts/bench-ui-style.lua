@@ -28,9 +28,12 @@ end
 -- A row creates a handful of Clay nodes. Keep the benchmark comfortably below
 -- the 512-node limit so we measure construction, not budget enforcement.
 for _, count in ipairs({ 10, 25, 50 }) do
-  local surface = ui.layout.new({ theme = palette, render = function()
-    return make_tree(count)
-  end })
+  local surface = ui.layout.new({
+    theme = palette,
+    render = function()
+      return make_tree(count)
+    end,
+  })
   for _ = 1, 10 do
     surface:invalidate()
     surface:snapshot({ width = 1200, height = 900, cell_w = 8, cell_h = 19 })
@@ -54,6 +57,14 @@ for _, count in ipairs({ 10, 25, 50 }) do
   local bytes = (collectgarbage("count") - before) * 1024 / count
   collectgarbage("restart")
   assert(#nodes <= 512, "benchmark exceeded Clay node capacity")
-  print(string.format("%d component rows (%d nodes): %.3f ms/snapshot, %.0f bytes/row", count, #nodes, samples[4], bytes))
+  print(
+    string.format(
+      "%d component rows (%d nodes): %.3f ms/snapshot, %.0f bytes/row",
+      count,
+      #nodes,
+      samples[4],
+      bytes
+    )
+  )
   surface:destroy()
 end

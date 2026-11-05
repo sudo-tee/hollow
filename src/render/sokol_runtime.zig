@@ -511,10 +511,25 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
     }
 }
 
+/// Strips a Lua layout surface namespace (`layout:<n>:`) so sidebar automation
+/// sees the stable span ids authored in the sidebar render callback.
+fn layoutLocalId(id: []const u8) []const u8 {
+    const prefix = "layout:";
+    if (!std.mem.startsWith(u8, id, prefix)) return id;
+    const sep = std.mem.indexOfScalarPos(u8, id, prefix.len, ':') orelse return id;
+    return id[sep + 1 ..];
+}
+
+test "sidebar semantic ids drop the layout surface namespace" {
+    try std.testing.expectEqualStrings("row:one", layoutLocalId("layout:12:row:one"));
+    try std.testing.expectEqualStrings("plain", layoutLocalId("plain"));
+}
+
 fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32, sidebar: bool) void {
     if (!surface.active) return;
     surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
-    if (surface.owner_index > 0) {
+    const interactive = surface.owner_index > 0 or sidebar;
+    if (interactive) {
         surface.mouse_x = g_mouse_x - offset_x;
         surface.mouse_y = g_mouse_y - offset_y;
     }
@@ -522,8 +537,6 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     const context = surface.context;
     const nodes = &surface.nodes;
     const framed = surface.frame.enabled;
-    const overlay = surface.owner_index > 0;
-    const interactive = overlay or sidebar;
     const panel_node: *const clay.HollowClayNode = &nodes[0];
     var panel = clay.hollow_clay_bounds(context, nodes, 0).boundingBox;
     panel.x += offset_x;
@@ -549,11 +562,14 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
         if (g_widget_render_ctx) |ctx| {
             for (nodes[0..surface.len], 0..) |node, index| {
                 if (index != 0 and !node.clickable) continue;
+                // The sidebar panel itself is not a dialog.
+                if (sidebar and index == 0) continue;
                 if (node.id.length == 0) continue;
                 const b = surface.visibleBounds(index) orelse continue;
                 const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
                 const role: ui_semantics.Role = if (index == 0) .dialog else if (node.list_item) .listitem else .button;
-                ctx.app.appendUiSemanticNode(if (sidebar) .sidebar else .overlay, role, index != 0, surface.nodeId(index), label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
+                const id = if (sidebar) layoutLocalId(surface.nodeId(index)) else surface.nodeId(index);
+                ctx.app.appendUiSemanticNode(if (sidebar) .sidebar else .overlay, role, index != 0, id, label, .{ .x = b.x, .y = b.y, .width = b.width, .height = b.height });
             }
         }
     }
@@ -1748,15 +1764,6 @@ fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {
     return .{ .r = r, .g = g, .b = b };
 }
 
-fn overlayRowColorField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
-    api.get_field(state, row_idx, field);
-    defer pop(api, state, 1);
-    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
-    var len: usize = 0;
-    const ptr = api.to_lstring(state, -1, &len) orelse return null;
-    return parseHexColor(ptr[0..len]);
-}
-
 fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?f32 {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
@@ -2097,36 +2104,6 @@ test "overlay input queries painted Clay surfaces from the top of the stack" {
     try std.testing.expect(findOverlayScrollbar("layout:1:bar", 1) != null);
     try std.testing.expect(findOverlayScrollbar("layout:1:bar", 2) == null);
     try std.testing.expectEqual(@as(f32, 0), overlayScrollbarRatio(scrollbar, 60, 10));
-}
-
-// Shared paint interpretation for overlay and sidebar rows. Callers retain
-// their existing geometry and interaction ownership.
-const RowPaint = struct {
-    bg: ?ghostty.ColorRgb = null,
-    radius: f32 = 0,
-    accent: ?ghostty.ColorRgb = null,
-    divider: ?ghostty.ColorRgb = null,
-};
-
-fn rowPaintField(api: Api, state: *State, row_idx: c_int) RowPaint {
-    return .{
-        .bg = overlayRowColorField(api, state, row_idx, "fill_bg"),
-        .radius = overlayRowNumberField(api, state, row_idx, "fill_radius") orelse 0,
-        .accent = overlayRowColorField(api, state, row_idx, "accent_bar"),
-        .divider = overlayRowColorField(api, state, row_idx, "divider"),
-    };
-}
-
-fn drawRowPaint(renderer: *FtRenderer, x: f32, y: f32, text_y: f32, width: f32, height: f32, paint: RowPaint) void {
-    if (paint.bg) |bg| {
-        drawRoundedRect(x, y + 1.0, width, @max(@as(f32, 1.0), height - 2.0), paint.radius, bg.r, bg.g, bg.b, 255);
-    }
-    if (paint.accent) |accent| {
-        drawBorderRect(x, text_y + 2.0, 2.0, @max(@as(f32, 1.0), renderer.cell_h - 4.0), accent.r, accent.g, accent.b, 255);
-    }
-    if (paint.divider) |divider| {
-        drawBorderRect(x, text_y + renderer.cell_h * 0.5, width, 1.0, divider.r, divider.g, divider.b, 255);
-    }
 }
 
 fn roundedRectRowInset(h: f32, radius: f32, sample_y: f32) f32 {
@@ -2818,8 +2795,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         g_sidebar_bounds = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
         if (g_sidebar_clay.active and panel_h > 0) {
             // Clay owns background, segments, clipping and scrolling.
-            g_sidebar_clay.mouse_x = g_mouse_x - panel_x;
-            g_sidebar_clay.mouse_y = g_mouse_y - panel_y;
             drawClaySurface(&g_sidebar_clay, ctx.renderer, sidebar_width, panel_h, panel_x, panel_y, true);
         }
         pop(api, state, 1);

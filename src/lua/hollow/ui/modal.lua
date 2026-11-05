@@ -161,11 +161,8 @@ function M.modal(spec)
         schedule(spec.layout_refresh_after())
       end
       if preferred_height and not shared.normalize_overlay_size(spec.height) then
-        surface.frame.height = (
-          preferred_height
-          + panel.padding.top
-          + panel.padding.bottom
-        ) / props.cell_h(ctx)
+        surface.frame.height = (preferred_height + panel.padding.top + panel.padding.bottom)
+          / props.cell_h(ctx)
       end
     end,
   })

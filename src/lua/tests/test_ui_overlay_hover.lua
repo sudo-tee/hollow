@@ -88,5 +88,4 @@ describe("UI hover", function()
     clay.nodes(ui)
     assert.is_nil(seen)
   end)
-
 end)

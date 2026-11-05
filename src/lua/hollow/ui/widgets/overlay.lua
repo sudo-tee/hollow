@@ -45,12 +45,7 @@ function ui.overlay.new(opts)
   local on_event = opts.on_event
   local widget
   opts.on_event = function(name, payload)
-    if
-      name == "overlay:click"
-      and payload
-      and payload.id
-      and widget._layout_surface
-    then
+    if name == "overlay:click" and payload and payload.id and widget._layout_surface then
       widget._layout_surface:dispatch(payload.id)
     end
     if on_event then

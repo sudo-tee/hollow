@@ -62,8 +62,7 @@ scrollbar into Clay. Keyboard focus, text editing and the caret stay in Lua.
 - `shared.lua`: `serialize_row_paint` (~1152-1198), `flatten_span_nodes`,
   `nodes_plain_text`, `highlight_inline_nodes`, `normalize_overlay_chrome`,
   `normalize_overlay_align`, `normalize_surface_style`, `style_to_segment`,
-  `resolve_row_style`, `apply_hover`, `normalize_widget_rows`,
-  `render_widget_rows`.
+  `resolve_row_style`, `apply_hover`, `normalize_widget_rows`.
 - `selectable_list.row()`, `core.lua` `trim_row_for_width`.
 - `lua_bridge.zig` `parseSegmentArray` (~5333-5424) and `ui/bar.zig`.
 

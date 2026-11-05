@@ -326,8 +326,8 @@ describe("unified component styling", function()
     hollow.config.set({
       theme = { ui = { widgets = { all = { fg = "#123456", hover_bg = "#654321" } } } },
     })
-    assert.equals("#123456", ui.button({ variant = "default" }).style.fg
-    assert.is_not.equal(before, ui.button({ variant = "default" }).style.fg
+    assert.equals("#123456", ui.button({ variant = "default" }).style.fg)
+    assert.is_not.equal(before, ui.button({ variant = "default" }).style.fg)
     ui.overlay.push(ui.overlay.new({
       render = function()
         return ui.components.list_item({ id = "row", ui.components.text("row") })
@@ -515,7 +515,9 @@ describe("unified component styling", function()
     local nodes = ui._sidebar_layout_tree
     local detail
     for _, node in ipairs(nodes) do
-      if node.text == "detail" then detail = node end
+      if node.text == "detail" then
+        detail = node
+      end
     end
     assert.is_table(detail)
     assert.equals("#123456", detail.fg)

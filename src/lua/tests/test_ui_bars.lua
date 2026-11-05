@@ -394,45 +394,82 @@ describe("UI bars test suite", function()
       )
     end)
   end)
-  it("dispatches native bar handlers from the serialized snapshot without rendering again", function()
+  it(
+    "dispatches native bar handlers from the serialized snapshot without rendering again",
+    function()
+      local ui = hollow.ui
+      local rendered, hits = 0, {}
+      ui.topbar.mount(ui.topbar.new({
+        render = function()
+          rendered = rendered + 1
+          return {
+            ui.button({
+              id = "inline-action",
+              text = "Action",
+              on_click = function()
+                hits[#hits + 1] = "inline"
+              end,
+            }),
+            ui.bar.custom({
+              id = "custom-action",
+              render = function()
+                return ui.span("Custom")
+              end,
+              on_click = function()
+                hits[#hits + 1] = "custom"
+              end,
+            }),
+            ui.bar.custom({
+              id = "custom-inner",
+              render = function()
+                return ui.span("Inner", {
+                  id = "inner-action",
+                  on_click = function()
+                    hits[#hits + 1] = "nested"
+                  end,
+                })
+              end,
+            }),
+          }
+        end,
+      }))
+      assert.is_truthy(ui._topbar_state())
+      local initial_renders = rendered
+      hollow._emit_builtin_event("topbar:click", { id = "inline-action" })
+      hollow._emit_builtin_event("topbar:click", { id = "custom-action" })
+      hollow._emit_builtin_event("topbar:click", { id = "inner-action" })
+      hollow._emit_builtin_event("topbar:click", { id = "no-such-node" })
+      assert.same({ "inline", "custom", "nested" }, hits)
+      assert.equals(initial_renders, rendered)
+    end
+  )
+
+  it("keeps custom node handlers when rendered hover content owns the segment id", function()
     local ui = hollow.ui
-    local rendered, hits = 0, {}
+    local hits = 0
     ui.topbar.mount(ui.topbar.new({
       render = function()
-        rendered = rendered + 1
         return {
-          ui.button({
-            id = "inline-action",
-            text = "Action",
-            on_click = function() hits[#hits + 1] = "inline" end,
-          }),
           ui.bar.custom({
-            id = "custom-action",
+            id = "custom-hover",
             render = function()
-              return ui.span("Custom")
+              return ui.span("Hover", { hover = { fg = "#ffffff" } })
             end,
-            on_click = function() hits[#hits + 1] = "custom" end,
-          }),
-          ui.bar.custom({
-            id = "custom-inner",
-            render = function()
-              return ui.span("Inner", {
-                id = "inner-action",
-                on_click = function() hits[#hits + 1] = "nested" end,
-              })
+            on_click = function()
+              hits = hits + 1
             end,
           }),
         }
       end,
     }))
-    assert.is_truthy(ui._topbar_state())
-    local initial_renders = rendered
-    hollow._emit_builtin_event("topbar:click", { id = "inline-action" })
-    hollow._emit_builtin_event("topbar:click", { id = "custom-action" })
-    hollow._emit_builtin_event("topbar:click", { id = "inner-action" })
-    hollow._emit_builtin_event("topbar:click", { id = "no-such-node" })
-    assert.same({ "inline", "custom", "nested" }, hits)
-    assert.equals(initial_renders, rendered)
+    local state = assert(ui._topbar_state())
+    local id
+    for _, item in ipairs(state.items) do
+      id = id or item.id
+    end
+    assert.matches("^bar:auto:", id)
+    hollow._emit_builtin_event("topbar:click", { id = id })
+    assert.equals(1, hits)
   end)
 
   it("registers nested button callbacks and stops dispatching stale ones", function()
@@ -444,7 +481,9 @@ describe("UI bars test suite", function()
           ui.group({
             ui.span("nested", {
               id = "nested-action",
-              on_click = function() clicked[#clicked + 1] = label end,
+              on_click = function()
+                clicked[#clicked + 1] = label
+              end,
             }),
           }),
         }
@@ -464,5 +503,4 @@ describe("UI bars test suite", function()
     hollow._emit_builtin_event("topbar:click", { id = "nested-action" })
     assert.same({ "old" }, clicked)
   end)
-
 end)

@@ -164,7 +164,9 @@ describe("docked sidebar", function()
           c.button({
             id = "native",
             text = "Native",
-            on_click = function() hits[#hits + 1] = "native" end,
+            on_click = function()
+              hits[#hits + 1] = "native"
+            end,
           }),
         })
       end,
@@ -199,7 +201,9 @@ describe("docked sidebar", function()
           ui.button({
             id = "old",
             text = "Old",
-            on_click = function() clicks = clicks + 1 end,
+            on_click = function()
+              clicks = clicks + 1
+            end,
           }),
         })
       end,
@@ -218,6 +222,34 @@ describe("docked sidebar", function()
     assert.is_nil(ui._sidebar_layout_tree)
     env.hollow._emit_builtin_event("sidebar:click", { id = id })
     assert.equals(1, clicks)
+  end)
+
+  it("dispatches edge clicks by authored span id and keeps row accent bars", function()
+    local clicks = 0
+    ui.sidebar.mount(ui.sidebar.new({
+      render = function()
+        return ui.row({
+          ui.button({
+            id = "authored",
+            text = "Authored",
+            on_click = function()
+              clicks = clicks + 1
+            end,
+          }),
+        }, { accent_bar = "#ff0000" })
+      end,
+    }))
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    env.hollow._emit_builtin_event("sidebar:click", { id = "authored" })
+    assert.equals(1, clicks)
+    local accented
+    for _, node in ipairs(ui._sidebar_layout_tree) do
+      if node.border == "#ff0000" then
+        accented = node
+      end
+    end
+    assert.is_table(accented)
+    assert.equals(2, accented.border_width.left)
   end)
 
   it("restores the overlay when docking fails", function()

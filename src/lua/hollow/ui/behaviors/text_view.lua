@@ -63,12 +63,13 @@ function M.text_view(opts)
   -- presentation nodes. Consumers render these in their own component tree.
   function self.visible()
     local viewport = list.visible_range()
-    local visible = {}
-    for index = viewport.start_idx, viewport.end_idx do
-      visible[#visible + 1] = lines[index]
-    end
     return {
-      lines = visible,
+      lines = _G.hollow.tbl
+        .range(viewport.start_idx, viewport.end_idx)
+        :map(function(index)
+          return lines[index]
+        end)
+        :get(),
       scrollbar = viewport.show_scrollbar and {
         id = viewport.scrollbar_id,
         ratio = viewport.thumb_ratio,

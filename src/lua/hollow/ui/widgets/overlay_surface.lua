@@ -33,8 +33,7 @@ function M.create(widget, opts)
       height = shared.normalize_overlay_size(widget.height),
       max_height = shared.normalize_overlay_size(widget.max_height),
       align_x = align:find("left") and 0 or (align:find("right") and 2 or 1),
-      align_y = (align == "center" or align:find("top")) and 0
-        or (align:find("bottom") and 2 or 1),
+      align_y = (align == "center" or align:find("top")) and 0 or (align:find("bottom") and 2 or 1),
     },
     render = function(ctx)
       local palette = widget._palette or shared.palette(widget._kind or "overlay")
@@ -54,7 +53,7 @@ function M.create(widget, opts)
         ctx = ctx,
         inset = opts.inset or "overlay",
         -- A toast group paints its own chrome inside this root.
-        chrome = widget._notify and false or chrome,
+        chrome = not widget._notify and chrome or false,
         content,
       }
       if not opts.inset then

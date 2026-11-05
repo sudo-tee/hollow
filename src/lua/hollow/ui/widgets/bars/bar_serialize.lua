@@ -299,30 +299,25 @@ local function serialize_custom(surface, node, ctx, handlers)
   if type(rendered) == "table" then
     register_bar_events(rendered, handlers, next_bar_auto_id)
   end
-  if type(node.style) == "table" and type(node.style.id) == "string" then
-    local entry = handlers[node.style.id] or {}
-    for _, field in ipairs({ "on_click", "on_mouse_enter", "on_mouse_leave" }) do
-      if type(node.style[field]) == "function" then
-        entry[field] = node.style[field]
-      end
-    end
-    handlers[node.style.id] = entry
+  if type(node.style) == "table" then
+    events.add_handlers(handlers, node.style.id, node.style)
   end
-  if type(node.id) == "string" and node.id ~= "" then
-    local entry = handlers[node.id] or {}
-    for _, field in ipairs({ "on_click", "on_mouse_enter", "on_mouse_leave" }) do
-      if type(node[field]) == "function" then
-        entry[field] = node[field]
-      end
-    end
-    handlers[node.id] = entry
-  end
+  events.add_handlers(handlers, node.id, node)
 
   local segment
   if type(rendered) == "string" or type(rendered) == "table" then
     segment = serialize_bar_value(surface, rendered, "", node.style)
     segment.kind = "segment"
     segment.id = segment.id or node.id
+    -- Rendered content may own the segment id (e.g. an auto id for hover);
+    -- the custom node's handlers still apply where the content has none.
+    if segment.id ~= node.id and handlers[node.id] then
+      local entry = handlers[segment.id] or {}
+      for field, callback in pairs(handlers[node.id]) do
+        entry[field] = entry[field] or callback
+      end
+      handlers[segment.id] = entry
+    end
   end
 
   local expires_at = type(node.cache_ttl_ms) == "number"

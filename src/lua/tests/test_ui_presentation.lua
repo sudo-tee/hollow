@@ -182,7 +182,10 @@ describe("shared presentation adapters", function()
     ui._sidebar_layout_prepare(900, 600, 10, 20)
     local surface = ui._sidebar_layout_tree[1]
     assert.equals(shared.palette("sidebar").panel_bg, surface.bg)
-    assert.equals(shared.palette("sidebar").muted, shared.sidebar_surface_style({ fg = "muted" }, shared.palette("sidebar")).fg)
+    assert.equals(
+      shared.palette("sidebar").muted,
+      shared.sidebar_surface_style({ fg = "muted" }, shared.palette("sidebar")).fg
+    )
     assert.equals(0, surface.alpha)
     assert.has_error(function()
       shared.sidebar_surface_style({ padding = 4 }, shared.palette("sidebar"))

@@ -2,8 +2,8 @@ local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui
 local content = require("hollow.ui.widgets.sidebar_content")
-local util = require("hollow.util")
 local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
 local widget_core = require("hollow.ui.widgets.core")
 local M = {}
 
@@ -153,10 +153,7 @@ function M.install()
       height = height,
       cell_w = cell_w,
       cell_h = cell_h,
-      hovered_id = type(hovered) == "string"
-          and hovered:sub(1, #surface.namespace) == surface.namespace
-          and hovered:sub(#surface.namespace + 1)
-        or nil,
+      hovered_id = hovered and surface:local_id(hovered),
     })
 
     -- The native host reports Clay ids. Dispatch clicks through the surface
@@ -166,7 +163,9 @@ function M.install()
       local target = id
       registered[id] = {
         on_click = function()
-          if widget._sidebar_surface == surface then surface:dispatch(target) end
+          if widget._sidebar_surface == surface then
+            surface:dispatch(target)
+          end
         end,
       }
     end
@@ -187,11 +186,16 @@ function M.install()
         end
       end
     end
-    state.ui.sidebar_handlers = registered
+    -- Automation publishes and clicks the authored (local) ids.
+    local handlers = {}
+    for id, entry in pairs(registered) do
+      handlers[id] = entry
+      handlers[surface:local_id(id) or id] = entry
+    end
+    state.ui.sidebar_handlers = handlers
     ui._sidebar_layout_tree = nodes
     ui._sidebar_layout_revision = surface.revision
     ui._sidebar_layout_surface_id = surface.id
   end
-
 end
 return M
