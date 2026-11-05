@@ -437,6 +437,18 @@ fn nextControl(controller: *@import("session/controller.zig").Controller) !trans
     return error.Timeout;
 }
 
+fn waitOpen(operation: *@import("session/open.zig").Open) !@import("session/open.zig").Attachment {
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (io.nanoTimestamp() < deadline) {
+        switch (try operation.step()) {
+            .attached => |attachment| return attachment,
+            .failed => |failure| return failure.reason,
+            .pending => try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake),
+        }
+    }
+    return error.Timeout;
+}
+
 fn pumpWorkspace(controller: *@import("session/controller.zig").Controller, mux: *@import("mux/mux.zig").Mux, runtime: *ghostty.Runtime) !void {
     controller.reconcile();
     for (0..128) |_| switch (try controller.step()) {
@@ -519,19 +531,22 @@ test "session pane real owner restores binary snapshot into Pane after full clie
         defer controller.deinit();
         var mux = Mux.init(a);
         defer mux.deinit(&runtime);
-        _ = try first.request(.{ .id = 0, .op = .create, .spawn = .{
+        var opening = try @import("session/open.zig").Open.init(a, first, .{ .id = 0, .op = .create, .spawn = .{
             .cols = cfg.cols,
             .rows = cfg.rows,
             .argv = &.{ "/bin/sh", "-c", "printf 'persisted-marker'; read x; printf 'after-input:%s' \"$x\"; exit 7" },
             .shell_integration = false,
         } });
-        const created = try nextControl(&controller);
+        defer opening.deinit();
+        const created = try waitOpen(&opening);
         defer created.deinit();
-        const reply = try p.parse(p.Reply, a, created.payload);
-        defer reply.deinit();
+        const reply = created.reply;
         try std.testing.expect(reply.value.ok);
         try std.testing.expectEqual(p.SnapshotFormat.binary, first.status().format.?);
         sid = try arena.dupe(u8, reply.value.session.?.id);
+        controller.session_id = try a.dupe(u8, sid);
+        controller.generation = created.message.generation;
+        controller.revision = reply.value.session.?.revision;
         _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, reply.value.session.?, null, null);
         try waitWorkspaceText(&controller, &mux, &runtime, "persisted-marker");
         const layout = try @import("mux/session_layout.zig").capture(a, mux.activeWorkspace().?);
@@ -552,13 +567,16 @@ test "session pane real owner restores binary snapshot into Pane after full clie
     defer controller.deinit();
     var mux = Mux.init(a);
     defer mux.deinit(&runtime);
-    _ = try second.request(.{ .id = 0, .op = .attach, .session = sid });
-    const attached = try nextControl(&controller);
+    var opening = try @import("session/open.zig").Open.init(a, second, .{ .id = 0, .op = .attach, .session = sid });
+    defer opening.deinit();
+    const attached = try waitOpen(&opening);
     defer attached.deinit();
-    const attached_reply = try p.parse(p.Reply, a, attached.payload);
-    defer attached_reply.deinit();
+    const attached_reply = attached.reply;
     try std.testing.expect(attached_reply.value.session.?.layout.len > 0);
     try std.testing.expect(attached_reply.value.ok);
+    controller.session_id = try a.dupe(u8, sid);
+    controller.generation = attached.message.generation;
+    controller.revision = attached_reply.value.session.?.revision;
     _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, attached_reply.value.session.?, null, null);
     const node = mux.activePane().?;
     const term = &node.content.terminal;
@@ -589,4 +607,5 @@ test "session pane real owner restores binary snapshot into Pane after full clie
 
 test {
     _ = @import("session_controller_test.zig");
+    _ = @import("session/open.zig");
 }

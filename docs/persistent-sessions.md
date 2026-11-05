@@ -472,8 +472,21 @@ GUI workspace/controller wiring implemented for an already-attached session:
   so a reconnect cannot be blocked by references to removed/new panes. Until
   automatic post-mutation saves land, this falls back to one tab per owner pane.
 - `domains.<name>.persist` remains disabled. There is no domain-config create or
-   attach flow, host binding, or startup reattachment yet; the
-  App API currently publishes an already attached session.
+  attach flow, host binding, or startup reattachment yet. Internal App APIs can
+  admit asynchronous create/attach and publish an already attached session.
+- Async admission foundation: `src/session/open.zig` owns a copied create/attach
+  request and stops at the matching reply, before consuming pane snapshots or
+  output. `src/app/session_open.zig` bounds pending operations to 16, captures
+  domain/name and originating Lua callback generation, and transfers successful
+  connections to workspace controllers. Request preparation precedes connector
+  startup; failed/canceled opens close nonblocking and are joined only after EOF
+  (or during shutdown). Submitted requests are never replayed. This is an internal
+  App API, not yet a configured startup/domain flow.
+- Empty-mux preparation: startup automation waits for a terminal target (without
+  keeping idle rendering spinning), domain snapshots tolerate no active pane,
+  and automatic last-workspace quit is suppressed while a live open is pending.
+  Explicit window Quit still works. Pending/failure startup UI and binding startup
+  automation to its specific operation remain outstanding before config exposure.
 - `test-session-borrowers` exercises borrower cleanup and App close/ACK behavior
   on Windows. The Linux root test link remains blocked by missing X11, Xi,
   Xcursor, GL, and ALSA development libraries.

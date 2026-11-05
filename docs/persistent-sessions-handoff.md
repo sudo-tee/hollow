@@ -10,6 +10,7 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 - `ab6924a`: asynchronous session transport.
 - `3c6157d`: session-backed panes and READY handoff.
 - `af9ccd9`: GUI workspace controllers and acknowledged closes.
+- `ef13ec6`: versioned layout codec/restore and revision-checked updates.
 - GUI workspace/controller wiring now supports publishing an already-attached
   session. App owns controller/connection, pumps bounded frames around pane
   parsing, retries backpressure, and removes panes only after close ACK. App
@@ -40,6 +41,20 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
   identities, and allocator failures; mux tests inject allocation failure across
   multi-pane split/floating restore and capture and assert bindings roll back.
   Owner tests cover layout invalidation on spawn/close and revision advancement.
+- Async-open foundation: `src/session/open.zig` prepares a deep-copied request
+  before any transport starts, submits once on readiness, stops at reply barrier,
+  and distinguishes not-sent/uncertain/rejected failures without replay.
+  Owned attachment replies outlive the opener. `src/app/session_open.zig:begin`
+  admits at most 16 operations, owns captured domain/name and callback generation,
+  and publishes successful views with connection ownership transferred to App's
+  controller. Cancellation/failure retires bridges only after EOF; shutdown joins.
+  Zero pending opens take a fast path. No Lua/config API exposed yet.
+- Async-open tests: copied nested spawn arguments, outcome/cancel/reply barriers,
+  independent attachment lifetime, allocator rollback, App publication/cancel,
+  capacity rejection, captured name/domain, and real-owner create/attach pass.
+  Linux Debug/ReleaseSafe/ReleaseSmall, Windows->WSL pane tests, Windows App tests,
+  Windows GUI cross-build pass. Empty-mux startup guards landed, but startup still
+  unconditionally boots the ordinary shell until config/UI wiring is ready.
 
 ## Architecture / invariants
 
@@ -76,7 +91,7 @@ Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 - Current validation: Debug session/pane/snapshot/client/background/search suites
   pass; pane/snapshot/client repeat in ReleaseSafe and ReleaseSmall. Windows
   WSL-interoperated session pane/snapshot/client tests pass, as does
-   `test-session-borrowers` (12 tests) and the Windows GUI cross-build.
+   `test-session-borrowers` and the Windows GUI cross-build.
 - Real-pane fixture checks binary snapshot after full view/connector destruction,
   input to original process, retained screen/exit 7, then explicit close.
 
@@ -88,18 +103,24 @@ at start of current work; incorporate their results when available.
 Next domain-create integration map (read-only exploration): branch in
 `src/app/session_controller.zig:newWorkspace` after domain/cwd inheritance;
 snapshot all arguments into an app-owned pending operation and use
-`createSessionConnection` -> ready -> create request -> matching reply ->
-`addSessionWorkspace`. Separate pending operations from attached controllers.
+`session_open.begin` with captured request/options; it now handles ready ->
+create/attach request -> matching reply -> named workspace publication. Pending
+operations are separate from attached controllers.
 Never replay uncertain create, never fallback to native spawn. Guard callback
 refs with originating Lua runtime generation across config reload. Domain bool
 parsing lives in `lua_bridge.zig:applyDomainTable`; it must precede the string-only
 guard and register domains even if no shell field exists. Host resolution is
 `Runtime.ptyHost` / `hollow._pty_host`; errors/null must fail closed, not imply
 local transport. Guest argv/env helpers are currently private in `pty/agent.zig`.
-Startup currently unconditionally calls `mux.bootstrapSingle`; opt-in async
-startup requires auditing no-pane paths (`App.domainValue` currently unwraps
-activePane). Do not enable persistence only for later workspaces and silently
-leave an opted-in default domain's startup pane nonpersistent.
+Startup still unconditionally calls `mux.bootstrapSingle`. Empty-mux audit found
+ordinary render/input loops safe; domainValue and startup-command/no-pane handling
+are now guarded. Before enabling opt-in startup, add pane-independent Connecting/
+failure UI (Lua `ui.notify.show` supports stable IDs, ttl=0 and error replacement;
+native/log-only fallback also needs deliberate policy), and bind startup command
+to startup operation rather than whichever unrelated terminal appears first.
+Publish empty mux, install callbacks/renderer, then admit async startup. Do not
+enable persistence only for later workspaces and silently leave an opted-in
+default domain's startup pane nonpersistent.
 
 No reliable account-quota / 5-hour-window telemetry is available. Wall-clock
 checkpoint began at 2026-11-04 13:44:47 -05:00; that is NOT the account window's

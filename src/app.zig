@@ -64,6 +64,7 @@ const PtyBudget = @import("app/pty_budget.zig").Budget;
 const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
 const SessionController = @import("session/controller.zig").Controller;
+pub const session_open = @import("app/session_open.zig");
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
@@ -395,6 +396,9 @@ pub const App = struct {
     /// App-owned session controllers outlive pane views until close replies
     /// settle. Their connections are destroyed only after mux views unbind.
     session_controllers: std.ArrayList(*SessionController) = .empty,
+    session_opens: [session_open.max_pending]?*session_open.Pending = @splat(null),
+    session_open_count: usize = 0,
+    session_open_next_id: u64 = 1,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
     htp_pending_message_bytes: usize = 0,
@@ -553,7 +557,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domainName(), name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activePane()) |pane| std.mem.eql(u8, pane.domainName(), name) else false });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
@@ -1057,6 +1061,7 @@ pub const App = struct {
         }
 
         mux_ops.deinitSessionControllers(self);
+        session_open.shutdown(self);
 
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
@@ -2504,6 +2509,7 @@ pub const App = struct {
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
+        session_open.pump(self);
         mux_ops.pumpSessionControllers(self, runtime);
         var has_dead = false;
         var automation_changed = false;

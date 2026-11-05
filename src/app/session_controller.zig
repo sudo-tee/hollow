@@ -48,6 +48,10 @@ pub fn createSessionConnection(self: *App, options: SessionTransport.Options) !*
 /// Publish an already attached owner session as a workspace. On success App
 /// owns the controller and connection; on failure the caller retains connection.
 pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8) !*Workspace {
+    return addSessionWorkspaceNamed(self, connection, info, domain, null);
+}
+
+pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8, name: ?[]const u8) !*Workspace {
     const mux = if (self.mux) |*value| value else return error.MuxUnavailable;
     const runtime = if (self.ghostty) |*value| value else return error.TerminalUnavailable;
     const status = connection.status();
@@ -66,7 +70,7 @@ pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: Ses
     controller.revision = info.revision;
 
     const previous = mux.activePane();
-    const workspace = try mux.addSessionWorkspace(
+    const workspace = try mux.addSessionWorkspaceNamed(
         runtime,
         terminal_callbacks.terminalCallbacks(),
         self.config,
@@ -74,6 +78,7 @@ pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: Ses
         info,
         domain,
         @import("session_borrowers.zig").beforeReplace,
+        name,
     );
     self.session_controllers.appendAssumeCapacity(controller);
     htp.bindHtpHandlers(self);
@@ -267,11 +272,17 @@ pub fn maybeRunStartupCommand(self: *App) void {
     if (self.startup_command_sent) return;
     const command = self.startup_command orelse return;
     if (self.frame_count < self.startup_command_delay_frames) return;
+    if (!startupCommandHasTarget(self)) return;
     sendText(self, command);
     if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
         sendText(self, "\r");
     }
     self.startup_command_sent = true;
+}
+
+pub fn startupCommandHasTarget(self: *App) bool {
+    const pane = self.activePane() orelse return false;
+    return pane.isTerminal();
 }
 
 pub fn invalidateAllPanes(self: *App) void {
@@ -374,9 +385,10 @@ pub fn emitWorkspaceClosedIfRemoved(self: *App, mux: *Mux) void {
 }
 
 pub fn quitOnWorkspaceRemoved(self: *App, mux: *Mux, log_msg: ?[]const u8) void {
-    if (log_msg) |msg| std.log.info("{s}", .{msg});
     if (mux.last_removed_workspace_name) |n| self.allocator.free(n);
     mux.last_removed_workspace_name = null;
+    if (@import("session_open.zig").hasLiveOpen(self)) return;
+    if (log_msg) |msg| std.log.info("{s}", .{msg});
     self.pending_quit = true;
 }
 

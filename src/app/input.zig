@@ -818,7 +818,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames) {
+    if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames and mux_ops.startupCommandHasTarget(self)) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }

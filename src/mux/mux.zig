@@ -155,6 +155,10 @@ pub const Mux = struct {
     /// Sessions with no GUI layout get
     /// one tab per owner pane in owner order. No owner state is overwritten.
     pub fn addSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Workspace {
+        return self.addSessionWorkspaceNamed(runtime, callbacks, cfg, controller, info, domain, before_replace, null);
+    }
+
+    pub fn addSessionWorkspaceNamed(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, name: ?[]const u8) !*Workspace {
         const codec = @import("../session/layout.zig");
         const geometry = @import("session_layout.zig");
         if (info.panes.len == 0) return error.EmptySession;
@@ -174,8 +178,10 @@ pub const Mux = struct {
             self.allocator.destroy(workspace);
         }
         workspace.session_controller = controller;
-        if (saved) |value| {
-            if (value.value.name) |name| try workspace.setName(name);
+        if (name) |value| {
+            try workspace.setName(value);
+        } else if (saved) |value| {
+            if (value.value.name) |saved_name| try workspace.setName(saved_name);
         }
         const tab_count = if (saved) |value| value.value.tabs.len else info.panes.len;
         for (0..tab_count) |index| {
