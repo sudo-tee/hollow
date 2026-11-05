@@ -436,6 +436,58 @@ function M.setup(hollow, host_api)
     })
   end
 
+  local function valid_session_id(session_id)
+    return type(session_id) == "string"
+      and #session_id > 0
+      and #session_id <= 128
+      and not session_id:find("\0", 1, true)
+  end
+
+  local function session_request(name, fields, opts, callback)
+    if opts.domain ~= nil and (type(opts.domain) ~= "string" or opts.domain == "") then
+      error(name .. " expects opts.domain to be a non-empty string")
+    end
+    fields.domain = opts.domain
+    -- Results arrive as a command response; flatten it for Lua callers.
+    return host_api.term_session_request(fields, function(response)
+      local result = type(response.payload) == "table" and response.payload or {}
+      result.success = response.success
+      if not response.success then
+        result.status = response.status
+        result.error = result.error or response.error
+      end
+      callback(result)
+    end)
+  end
+
+  function hollow.term.list_sessions(opts)
+    local name = "hollow.term.list_sessions(opts)"
+    if type(opts) ~= "table" or type(opts.on_complete) ~= "function" then
+      error(name .. " expects opts.on_complete to be a function")
+    end
+    return session_request(name, { kind = "session_list" }, opts, opts.on_complete)
+  end
+
+  function hollow.term.kill_session(session_id, opts)
+    local name = "hollow.term.kill_session(session_id, opts)"
+    if not valid_session_id(session_id) then
+      error(name .. " expects a non-empty session_id of at most 128 bytes without NUL")
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error(name .. " expects opts to be a table or nil")
+    end
+    opts = opts or {}
+    if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error(name .. " expects opts.on_complete to be a function")
+    end
+    return session_request(
+      name,
+      { kind = "session_kill", session = session_id },
+      opts,
+      opts.on_complete or function() end
+    )
+  end
+
   function hollow.term.close_workspace(id)
     if id ~= nil and type(id) ~= "number" then
       error("hollow.term.close_workspace(id) expects a number or nil")

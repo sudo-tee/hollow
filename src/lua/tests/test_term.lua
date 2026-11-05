@@ -319,6 +319,90 @@ describe("term test suite", function()
     end)
   end)
 
+  describe("session discovery", function()
+    local requests
+    local old_request
+
+    before_each(function()
+      requests = {}
+      old_request = env.host_api.term_session_request
+      env.host_api.term_session_request = function(fields, callback)
+        requests[#requests + 1] = { fields = fields, callback = callback }
+        return true
+      end
+    end)
+
+    after_each(function()
+      env.host_api.term_session_request = old_request
+    end)
+
+    it("lists sessions and flattens the native response", function()
+      local result
+      local queued = hollow.term.list_sessions({
+        domain = "guest",
+        on_complete = function(value)
+          result = value
+        end,
+      })
+      harness.assert_true(queued)
+      harness.assert_equal(requests[1].fields.kind, "session_list")
+      harness.assert_equal(requests[1].fields.domain, "guest")
+      requests[1].callback({
+        success = true,
+        status = "ok",
+        payload = { domain = "guest", sessions = { { id = "s1", open = false } } },
+      })
+      harness.assert_true(result.success)
+      harness.assert_equal(result.domain, "guest")
+      harness.assert_equal(result.sessions[1].id, "s1")
+      harness.assert_equal(result.status, nil)
+    end)
+
+    it("reports failure outcomes and admission errors", function()
+      local result
+      hollow.term.kill_session("s1", {
+        on_complete = function(value)
+          result = value
+        end,
+      })
+      harness.assert_equal(requests[1].fields.kind, "session_kill")
+      harness.assert_equal(requests[1].fields.session, "s1")
+      harness.assert_equal(requests[1].fields.domain, nil)
+      requests[1].callback({
+        success = false,
+        status = "session_query_failed",
+        error = "Disconnected",
+        payload = { outcome = "uncertain", error = "Disconnected", session = "s1" },
+      })
+      harness.assert_equal(result.success, false)
+      harness.assert_equal(result.outcome, "uncertain")
+      harness.assert_equal(result.status, "session_query_failed")
+      requests[1].callback({ success = false, status = "invalid_domain", error = "UnknownDomain" })
+      harness.assert_equal(result.error, "UnknownDomain")
+      harness.assert_equal(result.outcome, nil)
+      hollow.term.kill_session(string.rep("s", 128))
+      requests[2].callback({ success = true, payload = {} })
+    end)
+
+    it("rejects invalid arguments before native dispatch", function()
+      harness.assert_equal(pcall(hollow.term.list_sessions), false)
+      for _, opts in ipairs({
+        {},
+        { on_complete = true },
+        { on_complete = function() end, domain = "" },
+      }) do
+        harness.assert_equal(pcall(hollow.term.list_sessions, opts), false)
+      end
+      for _, id in ipairs({ false, "", "bad\0id", string.rep("s", 129) }) do
+        harness.assert_equal(pcall(hollow.term.kill_session, id), false)
+      end
+      for _, opts in ipairs({ 1, { domain = 1 }, { on_complete = 1 } }) do
+        harness.assert_equal(pcall(hollow.term.kill_session, "s1", opts), false)
+      end
+      harness.assert_equal(#requests, 0)
+    end)
+  end)
+
   describe("split_pane", function()
     local split_result = nil
 

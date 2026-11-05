@@ -202,6 +202,20 @@ const Pruner = struct {
     }
 };
 
+/// Discovery-only: the saved workspace name, without validating geometry.
+/// Null for empty, oversized, foreign-version or malformed blobs.
+pub fn peekName(a: std.mem.Allocator, bytes: []const u8) !?[]u8 {
+    if (bytes.len == 0 or bytes.len > max_bytes) return null;
+    const Header = struct { version: u32 = 1, name: ?[]const u8 = null };
+    const parsed = std.json.parseFromSlice(Header, a, bytes, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+    if (parsed.value.version != 1) return null;
+    return if (parsed.value.name) |name| try a.dupe(u8, name) else null;
+}
+
 /// Caller owns the encoded bytes. A fixed writer bounds serialization memory.
 pub fn encode(a: std.mem.Allocator, value: Layout, panes: []const u32) ![]u8 {
     try validate(value, panes);
@@ -559,6 +573,15 @@ test "session pane layout reconcile keeps exact layouts and rejects malformed on
     defer dup.deinit();
     try std.testing.expect(dup.changed);
     try std.testing.expectEqual(@as(usize, 1), dup.parsed.value.tabs.len);
+}
+
+test "session pane layout name peek tolerates unusable blobs" {
+    const a = std.testing.allocator;
+    const named = (try peekName(a, "{\"name\":\"work\",\"tabs\":[{\"active_pane\":9}]}")).?;
+    defer a.free(named);
+    try std.testing.expectEqualStrings("work", named);
+    for ([_][]const u8{ "", "{", "{\"tabs\":[]}", "{\"version\":2,\"name\":\"new\"}", "[1]" }) |bytes|
+        try std.testing.expect(try peekName(a, bytes) == null);
 }
 
 fn reconcileAllocations(a: std.mem.Allocator) !void {

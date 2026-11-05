@@ -1807,6 +1807,45 @@ function term.new_workspace(opts) end
 ---@param opts? { domain?: string, name?: string, on_complete?: fun(result: { success: boolean, workspace_index?: integer }) }
 function term.attach_session(session_id, opts) end
 
+---@class HollowSessionPaneInfo
+---@field id integer Owner pane id
+---@field title string
+---@field cwd string
+---@field cols integer
+---@field rows integer
+---@field exited boolean
+---@field exit_status? integer Encoded exit status once the process exited
+
+---@class HollowSessionInfo
+---@field id string
+---@field attached boolean Some client (this GUI or another) is attached
+---@field open boolean A workspace in this GUI views the session
+---@field revision integer
+---@field name? string Saved workspace name, when the layout records one
+---@field panes HollowSessionPaneInfo[]
+
+---@class HollowSessionQueryResult
+---@field success boolean
+---@field domain? string Resolved domain
+---@field sessions? HollowSessionInfo[] `list_sessions` success
+---@field session? string `kill_session` target
+---@field status? string Failure code, e.g. "session_query_failed", "invalid_domain", "resource_exhausted"
+---@field error? string Failure reason
+---@field outcome? "not_sent"|"uncertain"|"rejected" Whether the owner may have acted; never retried
+---@field remote? string Owner's rejection text
+
+---List persistent sessions on a domain's host (default: active pane's domain).
+---Returns true when queued, else nil and an error; on_complete then never runs.
+---@param opts { domain?: string, on_complete: fun(result: HollowSessionQueryResult) }
+---@return boolean?, string?
+function term.list_sessions(opts) end
+
+---Kill one persistent session. A lost reply is reported as outcome "uncertain".
+---@param session_id string Non-empty, at most 128 bytes, without NUL
+---@param opts? { domain?: string, on_complete?: fun(result: HollowSessionQueryResult) }
+---@return boolean?, string?
+function term.kill_session(session_id, opts) end
+
 ---@param id? integer
 function term.close_workspace(id) end
 
@@ -3166,6 +3205,7 @@ function plugins.sync() end
 
 ---@class HollowHostBridge
 ---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
+---@field term_session_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
 ---@field list_fonts fun(): HollowFontInfo[]
 ---@field new_tab fun(opts?: table)

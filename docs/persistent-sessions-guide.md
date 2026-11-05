@@ -67,6 +67,23 @@ It takes over the session if another client is attached; the previous client ret
 Closing a disconnected view only removes that local view.
 To clean up the test session, explicitly close its workspace after reattaching.
 
+## Find and clean up sessions
+
+Instead of saving IDs by hand, list what a host owns:
+
+```sh
+hollow-cli session list --domain persistent_test
+hollow-cli session attach <id> --domain persistent_test
+hollow-cli session kill <id> --domain persistent_test
+```
+
+From Lua, use `hollow.term.list_sessions` and `hollow.term.kill_session`; see the [term reference](reference/lua/term.md#persistent-workspaces).
+Each listed session reports whether any client is attached, whether this GUI already shows it, its saved workspace name, and its panes.
+Listing never attaches, so it does not disturb another GUI.
+An owner started only to answer a list exits again once it is idle.
+A kill whose reply is lost is reported as uncertain and never retried; list again to check.
+See the [CLI reference](reference/cli/sessions.md) for output and failure details.
+
 ## Tabs, splits, and saved layout
 
 Normal tab and split actions now create additional owner-backed terminal panes inside the same session.

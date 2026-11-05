@@ -615,6 +615,7 @@ test "session pane real owner restores binary snapshot into Pane after full clie
 test {
     _ = @import("session_controller_test.zig");
     _ = @import("session/open.zig");
+    _ = @import("session/query.zig");
     _ = @import("session/notice.zig");
     _ = @import("app/session_domain.zig");
     _ = @import("session_spawn_mux_test.zig");

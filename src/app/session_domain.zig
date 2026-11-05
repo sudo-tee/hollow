@@ -16,11 +16,7 @@ pub fn begin(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]
 }
 
 pub fn attach(app: *App, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
-    const inherited = domain_name orelse if (app.activePane()) |pane|
-        (if (pane.domainName().len > 0) pane.domainName() else app.config.defaultDomainName())
-    else
-        app.config.defaultDomainName();
-    _ = open(app, null, inherited, null, name, callback_ref, false, session_id) catch |err| {
+    _ = open(app, null, inheritedDomain(app, domain_name), null, name, callback_ref, false, session_id) catch |err| {
         std.log.warn("persistent attachment admission failed: {s}", .{@errorName(err)});
         opens.reportAdmissionFailure(app, err, false);
         if (app.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
@@ -28,34 +24,72 @@ pub fn attach(app: *App, session_id: []const u8, domain_name: ?[]const u8, name:
     };
 }
 
-fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int, startup: bool, session_id: ?[]const u8) !u64 {
-    if (session_id) |id| if (id.len == 0 or id.len > 128 or std.mem.indexOfScalar(u8, id, 0) != null) return error.InvalidSessionId;
+/// Explicit attach/list/kill target: the named domain, else the active pane's,
+/// else the configured default. Borrowed from config or the pane.
+pub fn inheritedDomain(app: *App, domain_name: ?[]const u8) ?[]const u8 {
+    return domain_name orelse if (app.activePane()) |pane|
+        (if (pane.domainName().len > 0) pane.domainName() else app.config.defaultDomainName())
+    else
+        app.config.defaultDomainName();
+}
+
+pub fn validSessionId(id: []const u8) bool {
+    return id.len > 0 and id.len <= 128 and std.mem.indexOfScalar(u8, id, 0) == null;
+}
+
+pub const Resolved = struct {
+    domain: []const u8,
+    shell: []const u8,
+    configured_shell: ?[]const u8,
+    host: agent.Host,
+    options: transport.Options,
+};
+
+/// Strict persistent host resolution. Everything is copied into `a`: host
+/// resolution invokes Lua, which can synchronously update config, so no
+/// domain/default-shell pointer is retained across that call.
+pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resolved {
     const selected_domain = domain_name orelse app.config.defaultDomainName() orelse return error.UnknownDomain;
     if (!app.config.persistForDomain(selected_domain)) return error.PersistenceNotEnabled;
     const definition = app.config.domainByName(selected_domain) orelse return error.UnknownDomain;
-    var arena = std.heap.ArenaAllocator.init(app.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    // Host resolution invokes Lua, which can synchronously update config.
-    // Retain no domain/default-shell pointers across that call.
     const domain = try a.dupe(u8, selected_domain);
     const configured_shell = if (definition.shell) |value| try a.dupe(u8, value) else null;
     const shell = configured_shell orelse try a.dupe(u8, app.config.shellOrDefault());
-    const configured_cwd = cwd orelse app.config.defaultCwdForDomain(domain);
-    var launch_cwd: ?[]const u8 = if (configured_cwd) |value| try a.dupe(u8, value) else null;
     const lua = if (app.lua) |*value| value else return error.LuaUnavailable;
     const host = try lua.sessionHost(a, domain, shell);
     if (host.connector.argv.len == 0 and builtin.os.tag != .linux) return error.NativeSessionOwnerUnsupported;
+    return .{
+        .domain = domain,
+        .shell = shell,
+        .configured_shell = configured_shell,
+        .host = host,
+        .options = .{
+            .connector = host.connector,
+            .agent = host.agent,
+            .ghostty_identity = @import("../term/ghostty.zig").buildIdentity(),
+            .path_style = host.path_style,
+        },
+    };
+}
+
+fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int, startup: bool, session_id: ?[]const u8) !u64 {
+    if (session_id) |id| if (!validSessionId(id)) return error.InvalidSessionId;
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Copy the caller's cwd before resolution can reload config under it.
+    const selected_domain = domain_name orelse app.config.defaultDomainName() orelse return error.UnknownDomain;
+    var launch_cwd: ?[]const u8 = if (cwd orelse app.config.defaultCwdForDomain(selected_domain)) |value| try a.dupe(u8, value) else null;
+    const resolved = try resolve(app, a, selected_domain);
+    const domain = resolved.domain;
+    const host = resolved.host;
+    const shell = resolved.shell;
+    const configured_shell = resolved.configured_shell;
     const mux = if (app.mux) |*value| value else return error.MuxUnavailable;
     if (launch_cwd == null and host.connector.argv.len == 0 and builtin.os.tag == .linux) {
         launch_cwd = @import("../io.zig").getEnvVarOwned(a, "HOME") catch null;
     }
-    const options: transport.Options = .{
-        .connector = host.connector,
-        .agent = host.agent,
-        .ghostty_identity = @import("../term/ghostty.zig").buildIdentity(),
-        .path_style = host.path_style,
-    };
+    const options = resolved.options;
     const request: transport.p.Request = if (session_id) |id|
         .{ .id = 0, .op = .attach, .session = id }
     else
@@ -286,6 +320,34 @@ test "session borrowers domain create and explicit attach preserve interactive s
     restored.tabs.items[1].active_pane = restored.tabs.items[1].panes.items[0];
     app.activePane().?.content.terminal.sendText("printf 'tab-resumed:%s' \"$TAB_VALUE\"\r");
     try testWaitText(app, "tab-resumed:second");
+    const queries = @import("session_query.zig");
+    const listed = try queries.begin(app, .list, null, null, -1);
+    const missing = try queries.begin(app, .kill, "no-such-session", "persistent-test", -1);
+    const query_deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (app.session_queries[0].?.state == .running or app.session_queries[1].?.state == .running) {
+        if (io.nanoTimestamp() >= query_deadline) return error.Timeout;
+        try testPump(app);
+        queries.pump(app);
+        try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+    }
+    var list_response = try queries.fetch(app, listed);
+    defer list_response.deinit(a);
+    const list_result = list_response.payload.?.object.get("result").?.object;
+    try std.testing.expectEqualStrings("persistent-test", list_result.get("domain").?.string);
+    var found = false;
+    for (list_result.get("sessions").?.array.items) |entry| {
+        if (!std.mem.eql(u8, entry.object.get("id").?.string, session_id)) continue;
+        found = true;
+        try std.testing.expect(entry.object.get("open").?.bool);
+        try std.testing.expect(entry.object.get("attached").?.bool);
+        try std.testing.expectEqualStrings("persistent-check", entry.object.get("name").?.string);
+        try std.testing.expectEqual(@as(usize, 3), entry.object.get("panes").?.array.items.len);
+    }
+    try std.testing.expect(found);
+    var kill_response = try queries.fetch(app, missing);
+    defer kill_response.deinit(a);
+    try std.testing.expectEqualStrings("failed", kill_response.payload.?.object.get("state").?.string);
+    try std.testing.expectEqualStrings("rejected", kill_response.payload.?.object.get("result").?.object.get("outcome").?.string);
     @import("session_controller.zig").closeWorkspace(app, null);
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     while (app.mux.?.workspaces.items.len > 0) {

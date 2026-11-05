@@ -2315,6 +2315,9 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_term_job_request, 1);
         api.set_field(self.state, -2, "term_job_request");
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_term_session_request, 1);
+        api.set_field(self.state, -2, "term_session_request");
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_process_poll, 1);
         api.set_field(self.state, -2, "process_poll");
         api.push_light_userdata(self.state, self.context);
@@ -8067,9 +8070,17 @@ fn l_process_start(state: *State) callconv(.c) c_int {
 }
 
 fn l_term_job_request(state: *State) callconv(.c) c_int {
+    return termRequest(state, &.{ "job_spawn", "job_get", "job_output", "job_cleanup" });
+}
+
+fn l_term_session_request(state: *State) callconv(.c) c_int {
+    return termRequest(state, &.{ "session_list", "session_kill" });
+}
+
+fn termRequest(state: *State, kinds: []const []const u8) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    queueTermJobRequest(ctx, state) catch |err| {
+    queueTermJobRequest(ctx, state, kinds) catch |err| {
         api.push_nil(state);
         const name = @errorName(err);
         api.push_lstring(state, name.ptr, name.len);
@@ -8079,13 +8090,15 @@ fn l_term_job_request(state: *State) callconv(.c) c_int {
     return 1;
 }
 
-fn queueTermJobRequest(ctx: *BridgeContext, state: *State) !void {
+fn queueTermJobRequest(ctx: *BridgeContext, state: *State, kinds: []const []const u8) !void {
     const command = @import("command.zig");
     const api = ctx.api;
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table or @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .function) return error.InvalidArgumentType;
-    // Scope this bridge to job operations, not arbitrary command dispatch.
+    // Scope each bridge to its operations, not arbitrary command dispatch.
     const kind = luaStringField(api, state, 1, "kind") orelse return error.InvalidArgumentType;
-    if (!(std.mem.eql(u8, kind, "job_spawn") or std.mem.eql(u8, kind, "job_get") or std.mem.eql(u8, kind, "job_output") or std.mem.eql(u8, kind, "job_cleanup"))) return error.UnsupportedJobOperation;
+    for (kinds) |allowed| {
+        if (std.mem.eql(u8, kind, allowed)) break;
+    } else return error.UnsupportedJobOperation;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();

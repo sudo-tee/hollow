@@ -553,9 +553,19 @@ Owner-backed tabs and splits implemented:
   save a split layout, destroy the full App/connector, reattach and verify both
   structure and every shell's variables, then close the workspace through ACKs.
 
+- Session discovery: `src/session/query.zig` runs one list or kill over a fresh
+  per-host connector, never attaches and never replays; a lost kill reply is
+  `uncertain`. `src/app/session_query.zig` bounds queries to eight slots, frees
+  a slot only after its bridge ends and its result is claimed (Lua callback, or
+  the CLI's terminal `session_result` read) or 60 s pass. Results mark sessions
+  shown in this GUI as `open` and peek saved workspace names from layouts.
+  Lua: `hollow.term.list_sessions` / `kill_session` over `term_session_request`.
+  Command API/CLI: `session_list`, `session_kill`, `session_result`,
+  `session_attach`; `hollow-cli session list|kill|attach`.
+
 Next implementation slices:
-1. GUI session discovery, actionable dead/missing-session UX, and explicit host
-   identity storage for automatic reattachment.
+1. Actionable dead/missing-session UX and explicit host identity storage for
+   automatic reattachment.
 2. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 

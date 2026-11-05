@@ -144,6 +144,21 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   frames left on primary screen). Controller resync now drops queued output
   and releases its receive-ahead. User still reports a small residual lag:
   likely 64 KiB window / WSL RTT; window negotiation not started.
+- `7beae1e`: stale layout reconciliation, quit flush and receive-ahead.
+- Discovery checkpoint (slice 2, uncommitted): `session/query.zig` (single-use
+  list/kill, never replayed) and `app/session_query.zig` (8 bounded slots,
+  pumped beside `session_open`, result claimed once or expired after 60 s,
+  bridge destroyed only after EOF). `session_domain.resolve` /
+  `inheritedDomain` / `validSessionId` are shared by open, attach and queries.
+  Lua `list_sessions`/`kill_session` reuse the job-request bridge
+  (`term_session_request`, `invokeJobCallback`, Lua flattens `payload`).
+  Command kinds `session_list`/`session_kill` return `{query, revision}`;
+  `session_result` polls; `session_attach` is queued. Native CLI waits with
+  `wait_revision` over socket, else 50 ms polls, for max(--timeout, 10 s).
+  Real-owner Windows->WSL App test lists the reattached session (open,
+  attached, saved name, three panes) and gets `rejected` for an unknown kill.
+  Not yet done: actionable dead/missing-session UX, host identity storage,
+  a GUI picker; manual GUI smoke of the CLI against a running instance.
 
 ## Architecture / invariants
 

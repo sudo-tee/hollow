@@ -363,6 +363,8 @@ state and readiness survive reloads.
 ```lua
 hollow.term.new_workspace(opts)         -- create
 hollow.term.attach_session(id, opts)    -- experimental persistent attachment
+hollow.term.list_sessions(opts)         -- discover persistent sessions on a host
+hollow.term.kill_session(id, opts?)     -- end one persistent session
 hollow.term.close_workspace(id?)
 hollow.term.next_workspace()
 hollow.term.prev_workspace()
@@ -398,6 +400,36 @@ An omitted domain inherits the current terminal domain, then the configured defa
 Attachment is asynchronous and uses the same `{ success, workspace_index }` completion result as `new_workspace`.
 It takes over any existing attachment without creating another shell.
 No create or attach request is automatically replayed after connection loss.
+
+`list_sessions({ domain?, on_complete })` asks the domain's host owner for its sessions without attaching to any of them.
+`kill_session(session_id, { domain?, on_complete? })` ends one session and all of its panes.
+Both resolve the domain like `attach_session` and open a short-lived connection of their own.
+They return `true` once queued; otherwise they return `nil, err` and the callback never runs.
+At most eight discovery queries run at once.
+
+```lua
+hollow.term.list_sessions({
+  domain = "persistent_test",
+  on_complete = function(result)
+    if not result.success then
+      print("list failed: " .. result.error)
+      return
+    end
+    for _, session in ipairs(result.sessions) do
+      -- session.id, .name?, .attached, .open, .revision
+      -- session.panes[i]: { id, title, cwd, cols, rows, exited, exit_status? }
+      print(session.id, session.name or "", session.open and "open here" or "")
+    end
+  end,
+})
+```
+
+`attached` means some client is attached, possibly another GUI.
+`open` means a workspace in this GUI shows the session.
+`name` is the saved workspace name, when the saved layout records one.
+A successful kill result is `{ success = true, domain, session }`.
+A failure carries `status` and `error`, and when the owner was contacted, `outcome` and an optional owner message in `remote`.
+An `outcome` of `"uncertain"` means the kill may have happened: list again rather than retrying it.
 
 See the [persistent sessions guide](../../persistent-sessions-guide.md) for configuration, cleanup, and current limitations.
 

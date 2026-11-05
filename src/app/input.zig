@@ -404,6 +404,23 @@ pub fn processInputQueue(self: *App) void {
             .lua_job_request => |payload| {
                 const jobs = @import("background_jobs.zig");
                 const command = @import("../command.zig");
+                const query: ?struct { op: @import("session_query.zig").Op, session: ?[]const u8, domain: ?[]const u8 } = switch (payload.request.data) {
+                    .session_list => |args| .{ .op = .list, .session = null, .domain = args.domain },
+                    .session_kill => |args| .{ .op = .kill, .session = args.session, .domain = args.domain },
+                    else => null,
+                };
+                if (query) |q| {
+                    // Admission transfers the callback; the result arrives on a later frame.
+                    _ = @import("session_query.zig").begin(self, q.op, q.session, q.domain, payload.callback_ref) catch |err| {
+                        if (self.lua) |*lua| lua.invokeJobCallback(payload.callback_ref, command.Response.fail(switch (err) {
+                            error.InvalidSessionId => "invalid_args",
+                            error.ResourceExhausted => "resource_exhausted",
+                            error.UnknownDomain, error.PersistenceNotEnabled => "invalid_domain",
+                            else => "session_unavailable",
+                        }, @errorName(err)));
+                    };
+                    continue;
+                }
                 var response = switch (payload.request.data) {
                     .job_spawn => |args| jobs.spawn(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
                     .job_get => |args| jobs.get(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),

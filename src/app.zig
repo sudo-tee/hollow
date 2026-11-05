@@ -65,6 +65,7 @@ const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
 const SessionController = @import("session/controller.zig").Controller;
 pub const session_open = @import("app/session_open.zig");
+pub const session_query = @import("app/session_query.zig");
 pub const session_spawn = @import("app/session_spawn.zig");
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
@@ -403,6 +404,9 @@ pub const App = struct {
     session_spawn_count: usize = 0,
     session_layout_suppressed: bool = false,
     session_open_next_id: u64 = 1,
+    session_queries: [session_query.max_pending]?*session_query.Pending = @splat(null),
+    session_query_count: usize = 0,
+    session_query_next_id: u64 = 1,
     session_notices: @import("session/notice.zig").Notices = .{},
     startup_session_target: session_open.StartupTarget = .unbound,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
@@ -1074,6 +1078,7 @@ pub const App = struct {
         session_spawn.shutdown(self);
         mux_ops.deinitSessionControllers(self);
         session_open.shutdown(self);
+        session_query.shutdown(self);
 
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
@@ -2551,6 +2556,7 @@ pub const App = struct {
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
         session_open.pump(self);
+        session_query.pump(self);
         mux_ops.pumpSessionControllers(self, runtime);
         var has_dead = false;
         var automation_changed = false;

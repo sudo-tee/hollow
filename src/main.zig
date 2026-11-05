@@ -628,6 +628,7 @@ fn windowsStdHandle(stream_id: win32.DWORD) ?std.Io.File {
 test {
     _ = @import("app/session_controller.zig");
     _ = @import("app/session_open.zig");
+    _ = @import("app/session_query.zig");
     _ = @import("app/session_domain.zig");
     _ = @import("app/session_spawn.zig");
     _ = @import("app/session_borrowers.zig");

@@ -83,6 +83,10 @@ pub fn validate(data: command.Command) !void {
         for (token) |c| if (!std.ascii.isHex(c)) return error.InvalidArgumentValue;
     }
     switch (data) {
+        inline .session_kill, .session_attach => |args| if (args.session.len > 128 or std.mem.indexOfScalar(u8, args.session, 0) != null) return error.InvalidArgumentValue,
+        else => {},
+    }
+    switch (data) {
         inline else => |args, kind| {
             inline for (@typeInfo(@TypeOf(args)).@"struct".field_names) |name| {
                 const value = @field(args, name);
@@ -188,6 +192,10 @@ pub fn description(kind: Kind) []const u8 {
         .job_get => "Read an owned job's retained running/exited state and process status.",
         .job_output => "Read an owned job's bounded raw PTY output tail as base64; truncation/allocation loss is explicit.",
         .job_cleanup => "Close only the matching automation-owned pane after exit; reject running jobs or wrong ownership tokens.",
+        .session_list => "Start listing persistent owner sessions on a domain's host (default: active pane's domain); poll session_result with the returned query.",
+        .session_kill => "Start killing one persistent owner session; a lost reply is reported as uncertain and is never retried.",
+        .session_result => "Read a session_list/session_kill query: running, or its done/failed result exactly once. Wait on revision between polls.",
+        .session_attach => "Queue attaching a persistent owner session as a new workspace; takes it over from any other client.",
         .focus => "Queue focusing a neighboring pane.",
         .scroll => "Queue scrolling the active pane.",
         .config_reload => "Queue reloading configuration.",
@@ -203,6 +211,7 @@ pub fn description(kind: Kind) []const u8 {
 pub fn isDeferred(kind: Kind) bool {
     return switch (kind) {
         .events_subscribe, .events_read, .job_spawn, .job_get, .job_output, .job_cleanup, .get_activities => false,
+        .session_list, .session_kill, .session_result => false,
         .get_pane, .get_pane_text, .get_screen, .pane_screenshot, .tab_screenshot, .get_ui_nodes, .get_revision, .get_current_pane, .get_tab, .get_current_tab, .get_tabs, .get_panes, .get_workspace, .get_current_workspace, .get_workspaces, .get_mux_tree, .get_domain, .get_htp, .ui_click, .wait_revision, .api_list, .api_describe, .capabilities => false,
         else => true,
     };
@@ -343,6 +352,8 @@ pub fn Result(comptime kind: Kind) type {
         .job_spawn => struct { pane_id: usize, tab_id: usize, workspace_id: usize, token: []const u8, cursor: u64 },
         .job_get => struct { pane_id: usize, state: []const u8, status: ?u32, cursor: u64, output_bytes: usize, output_truncated: bool, output_incomplete: bool },
         .job_output => struct { encoding: []const u8, data: []const u8, truncated: bool, incomplete: bool, capacity_bytes: usize },
+        .session_list, .session_kill => results.SessionQuery,
+        .session_result => results.SessionResult,
         .pane_screenshot, .tab_screenshot => results.Screenshot,
         .get_ui_nodes => results.UiNodes,
         .api_describe => results.Method,
@@ -404,7 +415,7 @@ pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
         .api_version = version,
         .platform = @tagName(@import("builtin").os.tag),
         .methods = names,
-        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge", "external_events", "completion_waits", "background_jobs" },
+        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge", "external_events", "completion_waits", "background_jobs", "persistent_sessions" },
         .context = .{ .pane_id = "Caller pane id; 0 means unknown. Not a target or credential.", .origin = "cli | api | internal; advisory, supplied by caller." },
         .context_schema = context.value,
         .transport = "command socket and HTP command_api bridge; file requires an external consumer; no new listener or arbitrary code execution",
