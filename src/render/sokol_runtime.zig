@@ -6239,6 +6239,14 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         return;
     }
 
+    // Clay edge sidebar has its own scroll context. Never leak wheel input
+    // through the opaque sidebar into a terminal pane.
+    if (sidebarContains(event.mouse_x, event.mouse_y)) {
+        if (g_sidebar_clay.active) g_sidebar_clay.scroll_y += event.scroll_y;
+        c.sapp_consume_event();
+        return;
+    }
+
     if (g_scrollbar_drag_pane != null) return;
     if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |target| {
         if (event.scroll_y == 0 or target.surface.ref < 0) return;
