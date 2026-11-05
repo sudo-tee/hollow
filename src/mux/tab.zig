@@ -154,6 +154,58 @@ pub const Tab = struct {
         self.maximized_pane = null;
     }
 
+    /// Session-only variant for a floating source absent from the tiled tree.
+    /// Allocate both reinsertion and split nodes before changing any layout.
+    pub fn splitFloatingSessionPane(self: *Tab, source: *Pane, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
+        var anchor: ?*Pane = null;
+        for (self.panes.items) |candidate| {
+            if (candidate == source or candidate.is_floating) continue;
+            if (anchor == null or candidate.id == source.restore_anchor_id) anchor = candidate;
+            if (candidate.id == source.restore_anchor_id) break;
+        }
+        const target = if (self.root_split != null)
+            self.findPaneLeaf(anchor orelse return error.ActivePaneMissingFromLayout) orelse return error.ActivePaneMissingFromLayout
+        else
+            null;
+        try self.panes.ensureUnusedCapacity(self.allocator, 1);
+        var nodes: [4]*SplitNode = undefined;
+        var allocated: usize = 0;
+        errdefer for (nodes[0..allocated]) |node| self.allocator.destroy(node);
+        for (nodes[0..if (target != null) @as(usize, 4) else 3]) |*node| {
+            node.* = try self.allocator.create(SplitNode);
+            allocated += 1;
+        }
+        if (target) |existing| {
+            nodes[0].* = SplitNode.initPane(anchor.?);
+            nodes[1].* = SplitNode.initSplit(nodes[2], nodes[3], direction, 1.0 - ratio);
+            nodes[2].* = SplitNode.initPane(source);
+            nodes[3].* = SplitNode.initPane(new_pane);
+            const restore_direction: SplitDirection = if (source.restore_split_horizontal) .horizontal else .vertical;
+            const restore_ratio = std.math.clamp(source.restore_ratio, 0.05, 0.95);
+            existing.* = if (source.restore_place_first)
+                SplitNode.initSplit(nodes[1], nodes[0], restore_direction, restore_ratio)
+            else
+                SplitNode.initSplit(nodes[0], nodes[1], restore_direction, 1.0 - restore_ratio);
+        } else {
+            // Floating-only saved tabs have no tiled tree to reinsert into.
+            nodes[0].* = SplitNode.initSplit(nodes[1], nodes[2], direction, 1.0 - ratio);
+            nodes[1].* = SplitNode.initPane(source);
+            nodes[2].* = SplitNode.initPane(new_pane);
+            self.root_split = nodes[0];
+        }
+        source.is_floating = false;
+        source.floating_x = 0.15;
+        source.floating_y = 0.1;
+        source.floating_width = 0.7;
+        source.floating_height = 0.75;
+        new_pane.restore_anchor_id = source.id;
+        new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
+        new_pane.restore_split_horizontal = direction == .horizontal;
+        self.panes.appendAssumeCapacity(new_pane);
+        self.active_pane = new_pane;
+        self.maximized_pane = null;
+    }
+
     /// Split the whole tiled layout so `new_pane` spans one window edge:
     /// first (left/top) or second (right/bottom). `ratio` is the new pane's size.
     pub fn splitEdge(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {

@@ -49,6 +49,11 @@ pub const Controller = struct {
     close_work: bool = false,
     layout_request: ?u64 = null,
     layout_conflict: bool = false,
+    layout_failure: ?anyerror = null,
+    layout_dirty: bool = false,
+    layout_due_ns: i128 = 0,
+    spawn_active: bool = false,
+    spawn_request: ?u64 = null,
 
     pub fn init(a: std.mem.Allocator, connection: *transport.Connection) Controller {
         return .{ .allocator = a, .connection = connection };
@@ -96,6 +101,7 @@ pub const Controller = struct {
 
     pub fn requestClose(self: *Controller, id: usize) !u64 {
         if (self.detached) return error.Detached;
+        if (self.spawn_active) return error.SessionBusy;
         if (self.kill_request != null) return error.SessionClosing;
         const entry = self.byNode(id) orelse return error.PaneNotFound;
         const node = entry.node orelse return error.PaneNotFound;
@@ -116,7 +122,7 @@ pub const Controller = struct {
     /// Frame-thread batch admission; full request queues are retried next
     /// frame, without removing views or replaying an admitted request.
     pub fn flushCloses(self: *Controller) !void {
-        if (!self.close_work or self.detached or self.kill_request != null) return;
+        if (!self.close_work or self.detached or self.kill_request != null or self.spawn_active) return;
         var submitted: usize = 0;
         for (&self.bindings) |*slot| if (slot.*) |*entry| {
             if (!entry.close_desired or entry.node == null) continue;
@@ -133,6 +139,7 @@ pub const Controller = struct {
 
     pub fn requestKill(self: *Controller) !u64 {
         if (self.detached) return error.Detached;
+        if (self.spawn_active) return error.SessionBusy;
         if (self.kill_request) |id| return id;
         const id = try self.connection.killAttached(self.generation);
         self.kill_request = id;
@@ -143,6 +150,7 @@ pub const Controller = struct {
     /// reply or automatically overwrite an owner revision conflict.
     pub fn requestLayout(self: *Controller, bytes: []const u8) !u64 {
         if (self.detached) return error.Detached;
+        if (self.spawn_active) return error.SessionBusy;
         if (self.kill_request != null) return error.SessionClosing;
         if (self.layout_request != null) return error.LayoutPending;
         if (self.layout_conflict) return error.RevisionConflict;
@@ -150,7 +158,7 @@ pub const Controller = struct {
         var ids: [core.max_panes]u32 = undefined;
         var count: usize = 0;
         for (self.bindings) |slot| if (slot) |entry| {
-            if (entry.node == null or entry.close_request != null or entry.close_desired) return error.SessionClosing;
+            if (entry.node == null or (entry.close_request != null and !entry.close_completed) or entry.close_desired) return error.SessionClosing;
             ids[count] = entry.pane;
             count += 1;
         };
@@ -159,6 +167,27 @@ pub const Controller = struct {
         const id = try self.connection.requestAttachedLayout(self.generation, self.revision, bytes);
         self.layout_request = id;
         return id;
+    }
+
+    pub fn requestSpawn(self: *Controller, spawn: p.Spawn) !u64 {
+        if (self.detached) return error.Detached;
+        if (self.kill_request != null) return error.SessionClosing;
+        if (self.spawn_request != null or self.layout_request != null or self.pendingCloses() != 0) return error.SessionBusy;
+        const id = try self.connection.spawnAttached(self.generation, spawn);
+        self.spawn_active = true;
+        self.spawn_request = id;
+        return id;
+    }
+
+    pub fn finishSpawn(self: *Controller) void {
+        self.spawn_active = false;
+        self.spawn_request = null;
+    }
+
+    pub fn abort(self: *Controller, reason: anyerror) void {
+        self.failure = reason;
+        self.detachViews();
+        self.connection.close();
     }
 
     pub fn closeTarget(self: *Controller, request_id: u64) ?usize {
@@ -195,6 +224,7 @@ pub const Controller = struct {
     }
 
     pub fn step(self: *Controller) !Step {
+        if (self.failure != null) return .idle;
         const message = self.pending orelse self.connection.poll() orelse return .idle;
         self.pending = null;
         const result = self.route(message) catch |err| {
@@ -228,8 +258,9 @@ pub const Controller = struct {
                     self.layout_request = null;
                     if (parsed.value.ok) {
                         self.revision = parsed.value.revision orelse return error.InvalidRevision;
-                    } else if (parsed.value.@"error") |reason| {
-                        self.layout_conflict = std.mem.eql(u8, reason, "RevisionConflict");
+                    } else {
+                        self.layout_conflict = if (parsed.value.@"error") |reason| std.mem.eql(u8, reason, "RevisionConflict") else false;
+                        self.layout_failure = if (self.layout_conflict) error.RevisionConflict else error.LayoutRejected;
                     }
                 }
                 if (parsed.value.ok) if (parsed.value.revision) |revision| {

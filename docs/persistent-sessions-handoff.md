@@ -20,12 +20,13 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   borrower invalidation and aggregate snapshot budgeting are wired. `domains.<name>.persist`
    is now exposed experimentally for configured creation and explicit attachment;
    automatic startup reattachment is not implemented.
-   Next: owner-backed pane/tab creation, automatic layout saves/reconciliation,
+   Owner-backed tabs/splits and automatic layout saves now exist.
+   Next: stale/missing-pane reconciliation, graceful final-layout flush,
    session discovery and remembered host/session identities.
 - Leave dirty `third_party/{lua-zluajit,luajit-upstream,nightwatch,sokol}` alone.
-- Review hardening: disconnected/taken-over views close locally; new tabs/splits
-  and cross-workspace moves involving session workspaces are rejected until
-  owner-backed spawn/layout exists. Workspace count decrements on removal.
+- Review hardening: disconnected/taken-over views close locally; generic native
+  creation and cross-workspace moves involving session workspaces remain guarded.
+  Dedicated owner-backed creation is supported. Workspace count decrements on removal.
   Bounded frame batches request another wake when work remains. Deferred borrower
   cleanup compares activation/pointer identity before validating pane liveness;
   no freed-pane dereferences or selection save/restore across Lua callbacks.
@@ -35,10 +36,10 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   captures/restores tabs, splits, floating geometry/anchors, focus, maximization,
   and workspace name. Factory validates before allocating/publishing views.
   Controller layout requests carry current revision, advance only after ACK,
-  and fence further writes on revision conflict. No automatic layout saves yet.
+  and fence further writes on revision conflict. Automatic saves are now wired.
 - Owner spawn/close clears opaque geometry and increments/returns revision;
   otherwise strict pane membership would make reattach fail after pane mutation.
-  Safe fallback is one tab per pane until the next explicit layout save.
+  Safe fallback is one tab per pane until the next acknowledged layout save.
   Real-owner fixture now saves geometry before detach and restores it on attach.
 - Layout validation passed Linux Debug/ReleaseSafe/ReleaseSmall and native
   Windows through WSL. Codec tests cover invalid graphs, limits, geometry,
@@ -52,13 +53,13 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   admits at most 16 operations, owns captured domain/name and callback generation,
   and publishes successful views with connection ownership transferred to App's
   controller. Cancellation/failure retires bridges only after EOF; shutdown joins.
-  Zero pending opens take a fast path. No Lua/config API exposed yet.
+  Zero pending opens take a fast path. Lua/config entry points now exist.
 - Async-open tests: copied nested spawn arguments, outcome/cancel/reply barriers,
   independent attachment lifetime, allocator rollback, App publication/cancel,
   capacity rejection, captured name/domain, and real-owner create/attach pass.
   Linux Debug/ReleaseSafe/ReleaseSmall, Windows->WSL pane tests, Windows App tests,
-  Windows GUI cross-build pass. Empty-mux startup guards landed, but startup still
-  unconditionally boots the ordinary shell until config/UI wiring is ready.
+  Windows GUI cross-build pass. Empty-mux startup guards landed; opted-in startup
+  now skips ordinary-shell bootstrap and uses asynchronous owner creation.
 - Native notice/targeting checkpoint: `src/session/notice.zig` stores 32 bounded
   notices without allocation; latest status renders as a top-right native card,
   including empty mux or absent Lua. Connecting click cancels, failed click
@@ -98,6 +99,32 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   shell variable -> acknowledged close. It uses a unique endpoint, never kills
   the user's ordinary owner. GUI appearance still needs manual smoke check now
   that configuration exposes a real entry path.
+- `cef7219`: opt-in domain creation, persistent startup and public explicit attach.
+  User verified actual reattachment; reported tab/split no-ops, which drove the
+  current owner-backed mutation slice.
+- `src/app/session_spawn.zig` now owns bounded pending tab/split operations.
+  It copies process/placement/input/callback data, compares current domain target
+  to captured connection options, and submits over the existing owner connection.
+  One queued/inflight spawn per workspace; no replay after admission.
+  Controller.spawn_active fences close admission and controller retirement until
+  reply handling binds the child or explicitly detaches for recovery.
+- Dedicated `Mux.addSessionPane` handles captured destination/focus, floating and
+  floating-only splits, same-workspace fallback, bounds and allocation rollback.
+  Generic native creation remains guarded; cross-session moves stay rejected.
+  Newly spawned panes need no snapshot and are output-ready at the reply barrier.
+- Layout dirty flags save after spawn/close ACKs and debounce ordinary edits for
+  100 ms. App idle wake includes the save deadline, but skips waits blocked on
+  network ACKs/mutations. Attach publication suppresses automatic writes so it
+  never overwrites owner layout merely by opening it. Rename and focus/layout
+  changes persist. Conflicts/rejections surface once as native warnings.
+- Close workspace/tab while spawn is pending retains original views until child
+  binds, then closes it too. Known successful spawn + GUI OOM detaches rather
+  than routing unbound data or killing/replaying an uncertain owner operation.
+  Background spawn ACKs do not change focus or scroll another active pane.
+- Real App Windows->WSL fixture now verifies two tabs/three original shells and
+  nested split structure survive full GUI teardown/explicit attach. Mock tests
+  cover reply/output barriers, serialized saves, debounce wake, close races,
+  host drift, lost reply, UI allocation failure, rename and background scroll.
 
 ## Architecture / invariants
 
@@ -137,11 +164,17 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
    `test-session-borrowers` and the Windows GUI cross-build.
 - Real-pane fixture checks binary snapshot after full view/connector destruction,
   input to original process, retained screen/exit 7, then explicit close.
+- Latest mutation validation: Windows App/GUI plus real Windows-to-WSL three-shell
+  detach/restore test passed; Linux pane/snapshot/client suites passed in Debug,
+  ReleaseSafe and ReleaseSmall; agent loop/transport/PTY regressions passed.
+  All 940 Lua tests passed; Zig formatting and `git diff --check` passed.
+  Markdown lint could not run: local `npx --no-install markdownlint` has no executable.
 
 ## Runtime / delegation
 
-User approved cheaper-model delegation. Read-only mapping/review were launched
-at start of current work; incorporate their results when available.
+User approved cheaper-model delegation. All delegated work and reviews completed.
+Review findings for background-pane scrolling and unsaved workspace rename were
+fixed and covered by regression tests.
 
 Current entry map: `newWorkspace` branches after domain/cwd inheritance into
 `session_domain.begin`; explicit `attach_session` input calls `session_domain.attach`.

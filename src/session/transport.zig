@@ -15,6 +15,7 @@ pub const Options = struct {
     agent: deploy.Agent = .{},
     ghostty_identity: []const u8,
     wake: Wake = .{},
+    path_style: p.pty.PathStyle = .posix,
 };
 
 pub const Status = struct {
@@ -171,6 +172,15 @@ pub const Connection = struct {
         defer self.mutex.unlock(self.io);
         if (self.closing or generation != self.client.generation) return error.Detached;
         const id = try self.client.request(.{ .id = 0, .op = .close, .pane = pane });
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
+    pub fn spawnAttached(self: *Connection, generation: u64, spawn: p.Spawn) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        const id = try self.client.request(.{ .id = 0, .op = .spawn, .spawn = spawn });
         self.changed.broadcast(self.io);
         return id;
     }

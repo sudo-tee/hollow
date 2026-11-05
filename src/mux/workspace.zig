@@ -19,6 +19,7 @@ pub const Workspace = struct {
     docks: Docks = .{},
     /// Borrowed from the app's persistent-session owner, never destroyed here.
     session_controller: ?*@import("../session/controller.zig").Controller = null,
+    session_close_desired: bool = false,
 
     pub const PaneIterator = struct {
         workspace: *Workspace,

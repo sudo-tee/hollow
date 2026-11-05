@@ -54,6 +54,7 @@ fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const
         .connector = host.connector,
         .agent = host.agent,
         .ghostty_identity = @import("../term/ghostty.zig").buildIdentity(),
+        .path_style = host.path_style,
     };
     const request: transport.p.Request = if (session_id) |id|
         .{ .id = 0, .op = .attach, .session = id }
@@ -242,12 +243,27 @@ test "session borrowers domain create and explicit attach preserve interactive s
         }
     }
     var session_id: []const u8 = undefined;
+    var split_ratio: f32 = undefined;
     {
         const app = try testApp(a, connector.items, path);
         defer a.destroy(app);
         defer app.deinit();
         @import("session_controller.zig").newWorkspace(app, null, "persistent-test", "MY_SESSION_VALUE=kept; printf 'persisted-marker'", "persistent-check", -1);
         try testWaitText(app, "persisted-marker");
+        @import("session_controller.zig").newTab(app, null, null, "TAB_VALUE=second; printf 'tab-marker'", -1, false);
+        try testWaitText(app, "tab-marker");
+        @import("session_controller.zig").splitPane(app, .vertical, 0.4, null, null, "SPLIT_VALUE=third; printf 'split-marker'", .send, false, false, false, null, null, null, null, -1);
+        try testWaitText(app, "split-marker");
+        const workspace = app.activeWorkspace().?;
+        try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);
+        try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items[1].panes.items.len);
+        split_ratio = workspace.tabs.items[1].root_split.?.ratio;
+        const saved_deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+        while (workspace.session_controller.?.layout_request != null or workspace.session_controller.?.layout_dirty or app.session_spawn_count != 0) {
+            if (io.nanoTimestamp() >= saved_deadline) return error.Timeout;
+            try testPump(app);
+            try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+        }
         session_id = try temp.dupe(u8, app.activeWorkspace().?.session_controller.?.session_id);
         try std.testing.expect(app.activePane().?.content.terminal.pty.?.isAlive());
     }
@@ -255,10 +271,22 @@ test "session borrowers domain create and explicit attach preserve interactive s
     defer a.destroy(app);
     defer app.deinit();
     attach(app, session_id, "persistent-test", null, -1);
+    try testWaitText(app, "split-marker");
+    const restored = app.activeWorkspace().?;
+    try std.testing.expectEqual(@as(usize, 2), restored.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), restored.tabs.items[1].panes.items.len);
+    try std.testing.expectEqual(split_ratio, restored.tabs.items[1].root_split.?.ratio);
+    app.activePane().?.content.terminal.sendText("printf 'split-resumed:%s' \"$SPLIT_VALUE\"\r");
+    try testWaitText(app, "split-resumed:third");
+    app.mux.?.switchTab(0);
     try testWaitText(app, "persisted-marker");
     app.activePane().?.content.terminal.sendText("printf 'resumed:%s' \"$MY_SESSION_VALUE\"\r");
     try testWaitText(app, "resumed:kept");
-    @import("session_controller.zig").closePaneById(app, app.activePane().?.id);
+    app.mux.?.switchTab(1);
+    restored.tabs.items[1].active_pane = restored.tabs.items[1].panes.items[0];
+    app.activePane().?.content.terminal.sendText("printf 'tab-resumed:%s' \"$TAB_VALUE\"\r");
+    try testWaitText(app, "tab-resumed:second");
+    @import("session_controller.zig").closeWorkspace(app, null);
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     while (app.mux.?.workspaces.items.len > 0) {
         if (io.nanoTimestamp() >= deadline) return error.Timeout;

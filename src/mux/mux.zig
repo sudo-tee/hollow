@@ -25,6 +25,21 @@ const PaneEdge = types.PaneEdge;
 
 pub const Mux = struct {
     pub const PaneSplitInfo = Tab.PaneSplitInfo;
+    pub const SessionPlacement = union(enum) {
+        tab: struct { after_tab_id: ?usize = null, insert_at_end: bool = false },
+        split: struct {
+            tab_id: usize,
+            source_id: usize,
+            direction: SplitDirection,
+            ratio: f32,
+            floating: bool = false,
+            x: ?f32 = null,
+            y: ?f32 = null,
+            width: ?f32 = null,
+            height: ?f32 = null,
+            fullscreen: bool = false,
+        },
+    };
 
     allocator: std.mem.Allocator,
     workspaces: std.ArrayList(*Workspace),
@@ -226,13 +241,23 @@ pub const Mux = struct {
     }
 
     fn appendSessionView(self: *Mux, tab: *Tab, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !void {
-        const pane = try self.allocator.create(Pane);
-        pane.* = Pane.init(self.allocator);
-        var owned = false;
-        defer if (!owned) {
+        try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        errdefer {
             pane.deinit(runtime);
             self.allocator.destroy(pane);
-        };
+        }
+        try controller.bind(pane);
+        tab.panes.appendAssumeCapacity(pane);
+    }
+
+    fn allocateSessionView(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Pane {
+        const pane = try self.allocator.create(Pane);
+        pane.* = Pane.init(self.allocator);
+        errdefer {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        }
         pane.id = self.reservePaneId();
         pane.host_context = self.host_context;
         const term = &pane.content.terminal;
@@ -243,10 +268,129 @@ pub const Mux = struct {
         try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
         term.session_before_replace = before_replace;
         if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
-        if (remote.cwd.len > 0) pane.setCwd(remote.cwd);
-        try tab.panes.append(self.allocator, pane);
-        owned = true;
+        if (remote.cwd.len > 0) pane.cwd = try self.allocator.dupe(u8, remote.cwd);
+        pane.cols = remote.cols;
+        pane.rows = remote.rows;
+        return pane;
+    }
+
+    /// Publish an acknowledged owner spawn at its captured destination, never
+    /// launching a local process or borrowing global focus during allocation.
+    pub fn addSessionPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, workspace_id: usize, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, placement: SessionPlacement) !*Pane {
+        const ws = self.workspaceById(workspace_id) orelse return error.WorkspaceNotFound;
+        if (ws.session_controller != controller) return error.WrongSession;
+        if (remote.id == 0 or remote.cols == 0 or remote.rows == 0) return error.InvalidSessionLayout;
+        var count: usize = 0;
+        var iter = ws.paneIterator();
+        while (iter.next() != null) count += 1;
+        if (count >= @import("../session/layout.zig").max_panes) return error.ResourceExhausted;
+
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        var published = false;
+        defer if (!published) {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        };
+        // Spawn replies have no snapshot; live output may be parsed immediately.
+        pane.content.terminal.terminal_output_ready = true;
+
+        if (placement == .split) {
+            const spec = placement.split;
+            if (ws.tabById(spec.tab_id)) |tab| {
+                var source: ?*Pane = null;
+                for (tab.panes.items) |candidate| if (candidate.id == spec.source_id) {
+                    source = candidate;
+                    break;
+                };
+                if (source) |anchor| {
+                    if (tab.panes.items.len >= 64) return error.ResourceExhausted;
+                    const old_active = tab.active_pane;
+                    const old_maximized = tab.maximized_pane;
+                    const old_background = tab.maximized_show_background;
+                    const activate = self.active_workspace == ws and ws.active_tab == tab and old_active == anchor;
+                    try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+                    try controller.bind(pane);
+                    tab.active_pane = anchor;
+                    defer if (!published or !activate) {
+                        tab.active_pane = old_active;
+                        tab.maximized_pane = old_maximized;
+                        tab.maximized_show_background = old_background;
+                    };
+                    if (spec.floating) {
+                        tab.panes.appendAssumeCapacity(pane);
+                        _ = tab.setPaneFloating(pane, true);
+                        var restore_anchor: ?*Pane = if (!anchor.is_floating) anchor else null;
+                        if (restore_anchor == null) for (tab.panes.items) |candidate| {
+                            if (candidate != pane and !candidate.is_floating) {
+                                restore_anchor = candidate;
+                                break;
+                            }
+                        };
+                        if (restore_anchor) |value| pane.restore_anchor_id = value.id;
+                        pane.restore_ratio = std.math.clamp(spec.ratio, 0.05, 0.95);
+                        pane.restore_split_horizontal = spec.direction == .horizontal;
+                        _ = tab.setFloatingPaneBounds(pane, spec.x orelse pane.floating_x, spec.y orelse pane.floating_y, spec.width orelse pane.floating_width, spec.height orelse pane.floating_height);
+                    } else {
+                        const was_floating = anchor.is_floating;
+                        if (anchor.is_floating and (if (tab.root_split) |root| layout.findPaneLeafNode(root, anchor) == null else true)) {
+                            try tab.splitFloatingSessionPane(anchor, pane, spec.direction, spec.ratio);
+                        } else {
+                            try tab.splitActivePane(pane, spec.direction, spec.ratio);
+                        }
+                        if (was_floating) {
+                            anchor.floating_x = 0.15;
+                            anchor.floating_y = 0.1;
+                            anchor.floating_width = 0.7;
+                            anchor.floating_height = 0.75;
+                        }
+                    }
+                    if (spec.fullscreen and activate) _ = tab.setPaneMaximized(pane, true, false);
+                    published = true;
+                    // Restore non-activating focus before observers run.
+                    if (!activate) {
+                        tab.active_pane = old_active;
+                        tab.maximized_pane = old_maximized;
+                        tab.maximized_show_background = old_background;
+                    }
+                    self.notifyCreated(pane);
+                    return pane;
+                }
+            }
+        }
+
+        const tab = try self.createTab();
+        defer if (!published) {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        };
+        // Keep pane ownership here until binding and all layout/list allocations
+        // succeed, so failure never needs an allocating layout rollback.
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+        const root = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(root);
+        root.* = SplitNode.initPane(pane);
+        var insert_at = ws.tabs.items.len;
+        var activate = false;
+        if (placement == .tab) {
+            const spec = placement.tab;
+            if (spec.after_tab_id) |id| for (ws.tabs.items, 0..) |existing, index| {
+                if (existing.id == id) {
+                    if (!spec.insert_at_end) insert_at = index + 1;
+                    activate = self.active_workspace == ws and ws.active_tab == existing;
+                    break;
+                }
+            };
+        }
         try controller.bind(pane);
+        tab.root_split = root;
+        tab.panes.appendAssumeCapacity(pane);
+        tab.active_pane = pane;
+        ws.tabs.insertAssumeCapacity(insert_at, tab);
+        if (activate) ws.active_tab = tab;
+        published = true;
+        self.notifyCreated(pane);
+        return pane;
     }
 
     fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !*Workspace {

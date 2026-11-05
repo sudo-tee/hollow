@@ -72,6 +72,7 @@ pub const PendingInputEvent = union(enum) {
         command: ?[]const u8,
         callback_ref: c_int,
         insert_at_end: bool = false,
+        lua_generation: ?u64 = null,
     },
     lua_job_request: struct { request: @import("../command.zig").Request, callback_ref: c_int },
     close_tab,
@@ -133,6 +134,7 @@ pub const PendingInputEvent = union(enum) {
         width: ?f32,
         height: ?f32,
         callback_ref: c_int,
+        lua_generation: ?u64 = null,
     },
     toggle_pane_maximized: struct {
         pane_id: usize,
@@ -308,14 +310,54 @@ fn sessionGenerationMatches(self: *const App, generation: ?u64) bool {
     return if (self.lua) |lua| lua.generation == expected else false;
 }
 
+test "session borrowers tab and split generation fences preserve replacement runtime refs" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    try std.testing.expect(sessionGenerationMatches(app, null));
+    try std.testing.expect(!sessionGenerationMatches(app, 1));
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(a, &app.config);
+    const lua = &app.lua.?;
+    const api = lua.context.api;
+    const registry_index = -10000;
+    api.push_string(lua.state, "replacement-runtime-ref");
+    const callback_ref = api.ref(lua.state, registry_index);
+    defer lua.discardOperationCallback(callback_ref);
+    try std.testing.expect(sessionGenerationMatches(app, lua.generation));
+    try std.testing.expect(sessionGenerationMatches(app, null));
+
+    const callbacks = @import("lua_callbacks.zig");
+    for ([_]bool{ false, true }) |dispatch| {
+        try std.testing.expect(callbacks.luaNewTabCallback(app, null, null, null, callback_ref, false));
+        var tab_event = app.action_queue.pop().?;
+        tab_event.new_tab.lua_generation = lua.generation - 1;
+        try std.testing.expect(callbacks.luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, callback_ref));
+        var split_event = app.action_queue.pop().?;
+        split_event.split_pane.lua_generation = lua.generation - 1;
+        try std.testing.expect(app.action_queue.push(tab_event));
+        try std.testing.expect(app.action_queue.push(split_event));
+        const next_id = app.session_open_next_id;
+        if (dispatch) processInputQueue(app) else deinitInputQueue(app);
+        try std.testing.expect(app.action_queue.isEmpty());
+        try std.testing.expectEqual(next_id + @as(u64, if (dispatch) 2 else 0), app.session_open_next_id);
+        api.rawgeti(lua.state, registry_index, callback_ref);
+        var len: usize = 0;
+        const value = api.to_lstring(lua.state, -1, &len) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqualStrings("replacement-runtime-ref", value[0..len]);
+        api.set_top(lua.state, -2);
+    }
+}
+
 pub fn deinitInputQueue(self: *App) void {
     while (self.action_queue.pop()) |queued| {
         var event = queued;
         if (self.lua) |*lua| switch (event) {
-            .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .new_tab => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
             .new_workspace => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
             .attach_session => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
-            .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .split_pane => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
             .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
             .create_lua_pane => |payload| @import("lua_panes.zig").release(self, payload.ref, payload.generation),
             else => {},
@@ -399,6 +441,10 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 mux_ops.newTab(self, payload.cwd, payload.domain_name, payload.command, payload.callback_ref, payload.insert_at_end);
             },
             .close_tab => {
@@ -479,6 +525,10 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.setWorkspaceDefaultCwd(self, cwd);
             },
             .split_pane => |split| {
+                if (!sessionGenerationMatches(self, split.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref, split.edge, split.dock);
             },
             .toggle_pane_maximized => |maximize| {

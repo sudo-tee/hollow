@@ -629,6 +629,7 @@ test {
     _ = @import("app/session_controller.zig");
     _ = @import("app/session_open.zig");
     _ = @import("app/session_domain.zig");
+    _ = @import("app/session_spawn.zig");
     _ = @import("app/session_borrowers.zig");
     _ = @import("ipc.zig");
     _ = @import("process_jobs.zig");

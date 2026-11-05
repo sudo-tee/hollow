@@ -610,4 +610,5 @@ test {
     _ = @import("session/open.zig");
     _ = @import("session/notice.zig");
     _ = @import("app/session_domain.zig");
+    _ = @import("session_spawn_mux_test.zig");
 }

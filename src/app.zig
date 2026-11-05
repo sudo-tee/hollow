@@ -65,6 +65,7 @@ const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
 const SessionController = @import("session/controller.zig").Controller;
 pub const session_open = @import("app/session_open.zig");
+pub const session_spawn = @import("app/session_spawn.zig");
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
@@ -398,6 +399,9 @@ pub const App = struct {
     session_controllers: std.ArrayList(*SessionController) = .empty,
     session_opens: [session_open.max_pending]?*session_open.Pending = @splat(null),
     session_open_count: usize = 0,
+    session_spawns: [session_spawn.max_pending]?*session_spawn.Operation = @splat(null),
+    session_spawn_count: usize = 0,
+    session_layout_suppressed: bool = false,
     session_open_next_id: u64 = 1,
     session_notices: @import("session/notice.zig").Notices = .{},
     startup_session_target: session_open.StartupTarget = .unbound,
@@ -1066,6 +1070,7 @@ pub const App = struct {
             self.ghostty = null;
         }
 
+        session_spawn.shutdown(self);
         mux_ops.deinitSessionControllers(self);
         session_open.shutdown(self);
 
@@ -1527,6 +1532,7 @@ pub const App = struct {
 
     pub fn nextIdleWakeNs(self: *const App) i128 {
         var next_wake_ns = self.next_idle_render_poll_ns;
+        next_wake_ns = input.minWakeNs(next_wake_ns, session_spawn.nextLayoutWakeNs(self));
         if (self.leader_visual_active and self.leader_visual_expires_at_ns != 0) {
             next_wake_ns = input.minWakeNs(next_wake_ns, self.leader_visual_expires_at_ns);
         }
@@ -1633,6 +1639,7 @@ pub const App = struct {
     }
 
     pub fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
+        self.markActiveSessionLayoutDirty();
         self.pending_layout_resize = true;
         self.pending_layout_recreate_render_helpers = self.pending_layout_recreate_render_helpers or recreate_render_helpers;
         self.last_resize_activity_ns = io.nanoTimestamp();
@@ -1644,6 +1651,7 @@ pub const App = struct {
     }
 
     pub fn requestLayoutRefresh(self: *App) void {
+        self.markActiveSessionLayoutDirty();
         self.pending_layout_resize = true;
         self.pending_layout_skip_unchanged_pty = true;
         self.last_resize_activity_ns = io.nanoTimestamp();
@@ -1661,6 +1669,19 @@ pub const App = struct {
         self.signalWake();
     }
 
+    fn markActiveSessionLayoutDirty(self: *App) void {
+        if (self.session_layout_suppressed) return;
+        const mux = if (self.mux) |*value| value else return;
+        if (mux.session_workspace_count == 0) return;
+        const workspace = mux.activeWorkspace() orelse return;
+        if (workspace.session_controller) |controller| {
+            // Membership ACKs set an immediate dirty flag; ordinary geometry
+            // edits settle for 100 ms so dragging never serializes each frame.
+            if (!controller.layout_dirty or controller.layout_due_ns != 0) controller.layout_due_ns = io.nanoTimestamp() + 100 * std.time.ns_per_ms;
+            controller.layout_dirty = true;
+        }
+    }
+
     fn invalidateCachedBarLayouts(self: *App) void {
         self.cached_bar_layouts_dirty = true;
         self.cached_sidebar_layout = null;
@@ -1676,6 +1697,7 @@ pub const App = struct {
     }
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
+        if (previous != current) self.markActiveSessionLayoutDirty();
         if (previous != current) {
             if (previous) |pane| {
                 if (pane.asTerminal()) |term| term.clipboard_read.revoke(self.allocator);
@@ -2042,6 +2064,7 @@ pub const App = struct {
     }
 
     pub fn previewSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
+        self.markActiveSessionLayoutDirty();
         node.ratio = std.math.clamp(ratio, 0.05, 0.95);
         self.pending_drag_layout_resize = true;
         self.signalWake();

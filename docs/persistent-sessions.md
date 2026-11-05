@@ -454,8 +454,8 @@ GUI workspace/controller wiring implemented for an already-attached session:
   are invalidated around terminal replacement without Lua reentrancy.
 - After takeover or transport loss, close removes only the disconnected local
   view; it never sends owner mutations against the new viewer. Until owner-side
-  spawn/layout operations land, new tabs/splits in session workspaces and moves
-  across session boundaries are rejected instead of creating mixed ownership.
+  moving panes/tabs across session boundaries remains rejected instead of
+  creating mixed ownership.
 - Workspace snapshot buffering has a 64 MiB aggregate encoded-input cap, in
   addition to transport and per-job bounds.
 - `src/session/layout.zig` defines the versioned, owner-pane-ID geometry blob;
@@ -467,7 +467,8 @@ GUI workspace/controller wiring implemented for an already-attached session:
 - Layout updates are explicit and revision-checked through the controller. Only
   an acknowledged success advances the local revision; conflicts stop further
   writes until reconciliation. No automatic per-frame serialization or replay.
-  Automatic layout saving and stale/missing-pane reconciliation remain pending.
+  Automatic layout saving now follows geometry changes and acknowledged pane
+  mutations; stale/missing-pane reconciliation remains pending.
   Owner spawn/close invalidates the opaque blob and returns an advanced revision,
   so a reconnect cannot be blocked by references to removed/new panes. Until
   automatic post-mutation saves land, this falls back to one tab per owner pane.
@@ -514,11 +515,28 @@ Creation/attachment validation now includes real-owner App integration:
   GUI pane/workspace IDs or the client's command endpoint; CLI traffic uses OSC.
 - Config and strict-host tests avoid unrelated detached WSL platform discovery.
 
+Owner-backed tabs and splits implemented:
+- A bounded GUI operation pool captures workspace/tab/source IDs, callback
+  generation, guest spawn data and startup input. One pending spawn per workspace
+  is admitted only over that workspace's existing generation-fenced connection.
+- New views bind at the spawn reply barrier before subsequent output; new panes
+  start from a blank VT, without a redundant snapshot. Failure to publish after
+  owner acknowledgement detaches safely for later recovery, never replays spawn.
+- Captured destinations/focus survive asynchronous replies, including floating
+  splits; missing split targets fall back to another tab in the same workspace.
+  Close intents wait until pending spawn is resolved and include the new child.
+- Geometry/name/focus saves coalesce behind outstanding revisions and mutations.
+  Ordinary edits debounce for 100 ms with a deadline-driven wake, not idle
+  polling or per-frame serialization. Rejected/conflicting saves are visible and
+  do not automatically overwrite owner geometry.
+- Real Windows-to-WSL App tests create two tabs and three independent shells,
+  save a split layout, destroy the full App/connector, reattach and verify both
+  structure and every shell's variables, then close the workspace through ACKs.
+
 Next implementation slices:
-1. Automatic geometry saves, owner-backed tab/pane creation, and stale/missing-pane
-   layout reconciliation. The opaque owner blob already carries tab structure and
-   revision-checked geometry; create saves its initial geometry without replacing
-   saved layout during attach.
+1. Stale/missing-pane layout reconciliation and graceful final-layout flush on
+   detach. An interrupted membership/layout update currently falls back safely
+   to one tab per owner pane.
 2. GUI session discovery, actionable dead/missing-session UX, and explicit host
    identity storage for automatic reattachment.
 3. Remember attached host/session IDs, auto-reattach local/WSL sessions and

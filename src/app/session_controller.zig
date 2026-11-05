@@ -52,6 +52,9 @@ pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: Ses
 }
 
 pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8, name: ?[]const u8) !*Workspace {
+    const was_suppressed = self.session_layout_suppressed;
+    self.session_layout_suppressed = true;
+    defer self.session_layout_suppressed = was_suppressed;
     const mux = if (self.mux) |*value| value else return error.MuxUnavailable;
     const runtime = if (self.ghostty) |*value| value else return error.TerminalUnavailable;
     const status = connection.status();
@@ -106,6 +109,7 @@ pub fn deinitSessionControllers(self: *App) void {
 /// Dispatch bounded frame batches on the GUI thread. Pane polling runs between
 /// passes so full pane queues and snapshot budgets can make progress.
 pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
+    @import("session_spawn.zig").pump(self);
     // Control handlers emit Lua, which can append controllers and reallocate
     // this list. Do not retain its backing slice across a handler invocation.
     const count = self.session_controllers.items.len;
@@ -136,14 +140,20 @@ pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
         }
         // A bounded batch may leave frames without another network arrival.
         // Close admission also needs a retry after the writer frees capacity.
-        if (dispatched == 64 or (controller.close_work and sessionCanCloseRemotely(controller))) self.signalWake();
+        if (dispatched == 64 or (controller.close_work and !controller.spawn_active and sessionCanCloseRemotely(controller))) self.signalWake();
+        if (controller.layout_failure) |reason| {
+            controller.layout_failure = null;
+            @import("session_spawn.zig").layoutRejected(self, reason);
+        }
     }
 
+    @import("session_spawn.zig").saveLayouts(self);
     retireSessionControllers(self);
 }
 
 fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *SessionController, message: SessionTransport.Message) bool {
     if (message.kind == .reply) {
+        if (@import("session_spawn.zig").handle(self, controller, message)) return true;
         const request_id = message.request_id orelse return false;
         const pane_id = controller.closeTarget(request_id) orelse return false;
         const reply = SessionProtocol.parse(SessionProtocol.Reply, self.allocator, message.payload) catch |err| {
@@ -153,9 +163,19 @@ fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *Sessi
         defer reply.deinit();
         if (!reply.value.ok) {
             std.log.warn("session pane close rejected: {s}", .{reply.value.@"error" orelse "unknown error"});
+            if (self.mux) |*mux| for (mux.workspaces.items) |workspace| {
+                if (workspace.session_controller != controller) continue;
+                workspace.session_close_desired = false;
+                for (workspace.tabs.items) |tab| for (tab.panes.items) |pane| {
+                    if (pane.id == pane_id) tab.close_after_session_ack = false;
+                };
+                break;
+            };
             return true;
         }
         closePaneByIdNow(self, runtime, pane_id);
+        controller.layout_dirty = true;
+        controller.layout_due_ns = 0;
         self.markAutomationChanged();
         return true;
     }
@@ -176,7 +196,7 @@ fn retireSessionControllers(self: *App) void {
             break :blk false;
         } else false;
 
-        if (in_mux or (controller.hasBindings() and status.phase != .ended)) {
+        if (in_mux or controller.spawn_active or (controller.hasBindings() and status.phase != .ended)) {
             index += 1;
             continue;
         }
@@ -367,6 +387,12 @@ pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
     const effective_command = nonEmptyCommand(command);
+    if (mux.activeWorkspace()) |workspace| if (workspace.session_controller != null) {
+        @import("session_spawn.zig").newTab(self, cwd, domain_name, effective_command, callback_ref, insert_at_end) catch |err| {
+            @import("session_spawn.zig").reject(self, callback_ref, err);
+        };
+        return;
+    };
     const launch_command: ?LaunchCommand = if (effective_command) |value|
         .{ .command = value }
     else
@@ -578,6 +604,7 @@ fn pendingSessionTabCloseForPane(mux: *Mux, pane_id: usize) ?usize {
 
 fn scheduleSessionWorkspaceClose(self: *App, workspace: *Workspace) void {
     const controller = workspace.session_controller orelse return;
+    workspace.session_close_desired = true;
     var panes = workspace.paneIterator();
     while (panes.next()) |pane| {
         controller.scheduleClose(pane.id) catch |err| {
@@ -787,6 +814,29 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         break :blk self.activeLayoutBounds();
     };
     const snapped_ratio = if (edge != null) std.math.clamp(ratio, 0.05, 0.95) else snapSplitRatio(self, ratio, direction, split_bounds);
+    if (mux.activeWorkspace()) |workspace| if (workspace.session_controller != null) {
+        if (edge != null or dock != null) {
+            std.log.warn("app: session-backed workspaces do not support edge or dock splits", .{});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+            return;
+        }
+        const source = previous orelse return;
+        @import("session_spawn.zig").split(self, .{ .split = .{
+            .tab_id = mux.activeTab().?.id,
+            .source_id = source.id,
+            .direction = direction,
+            .ratio = snapped_ratio,
+            .floating = floating,
+            .fullscreen = fullscreen,
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        } }, cwd, domain_name, effective_command, command_mode, close_on_exit, callback_ref) catch |err| {
+            @import("session_spawn.zig").reject(self, callback_ref, err);
+        };
+        return;
+    };
     std.log.info("split-trace create dir={s} requested={d:.4} snapped={d:.4} bounds={d}x{d} cell={d}x{d}", .{
         @tagName(direction),
         ratio,
@@ -990,6 +1040,11 @@ pub fn setWorkspaceName(self: *App, name: []const u8) void {
         std.log.err("app: setWorkspaceName failed: {s}", .{@errorName(err)});
         return;
     };
+    if (ws.session_controller) |controller| {
+        controller.layout_dirty = true;
+        controller.layout_due_ns = io.nanoTimestamp() + 100 * std.time.ns_per_ms;
+        self.signalWake();
+    }
     if (self.mux) |*mux| self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
 }
 
