@@ -310,6 +310,47 @@ pub fn saveLayouts(app: *App) void {
     }
 }
 
+/// Quit flushes geometry the debounce has not written yet, then waits for
+/// the owner's acknowledgement: tearing the connector down right after the
+/// write could drop the frame before it reaches the owner.
+pub const shutdown_flush_ns: i128 = 500 * std.time.ns_per_ms;
+
+/// Quit path, before the mux is torn down. Bounded by `budget_ns` in total,
+/// across every session workspace; never sends anything but layout saves.
+pub fn flushLayouts(app: *App, budget_ns: i128) void {
+    const mux = if (app.mux) |*value| value else return;
+    if (mux.session_workspace_count == 0) return;
+    var deadline: ?i128 = null;
+    // An in-flight save must land first: its reply carries the revision the
+    // final save is checked against.
+    for (mux.workspaces.items) |ws| {
+        const controller = ws.session_controller orelse continue;
+        const id = controller.layout_request orelse continue;
+        if (!controller.layout_dirty) continue;
+        const end = deadline orelse controller.connection.clock() + budget_ns;
+        deadline = end;
+        controller.awaitReply(id, end) catch |err| std.log.warn("session layout flush: {s}", .{@errorName(err)});
+    }
+    for (mux.workspaces.items) |ws| {
+        const controller = ws.session_controller orelse continue;
+        if (!canSave(controller)) continue;
+        controller.layout_dirty = false;
+        const bytes = @import("../mux/session_layout.zig").capture(app.allocator, ws) catch |err| {
+            std.log.warn("session layout flush: {s}", .{@errorName(err)});
+            continue;
+        };
+        defer app.allocator.free(bytes);
+        _ = controller.requestLayout(bytes) catch |err| std.log.warn("session layout flush: {s}", .{@errorName(err)});
+    }
+    for (mux.workspaces.items) |ws| {
+        const controller = ws.session_controller orelse continue;
+        const id = controller.layout_request orelse continue;
+        const end = deadline orelse controller.connection.clock() + budget_ns;
+        deadline = end;
+        controller.awaitReply(id, end) catch |err| std.log.warn("session layout flush: {s}", .{@errorName(err)});
+    }
+}
+
 pub fn shutdown(app: *App) void {
     for (0..max_pending) |index| {
         const op = app.session_spawns[index] orelse continue;
@@ -398,6 +439,10 @@ test "session borrowers owner tab spawn waits for acknowledgement and saves geom
     try std.testing.expectEqualStrings("cd /work\r", pane.content.terminal.pending_startup_input);
     try std.testing.expectEqual(@as(usize, 5), pane.content.terminal.pty.?.session.pendingOutputBytes());
     try std.testing.expectEqual(@as(usize, 0), app.session_spawn_count);
+    const receipt_credit = connection.client.nextWrite().?;
+    defer receipt_credit.deinit();
+    try std.testing.expectEqual(p.Kind.credit, receipt_credit.kind);
+    try std.testing.expectEqual(@as(u32, 2), receipt_credit.pane);
     const save = connection.client.nextWrite().?;
     defer save.deinit();
     const layout_request = try p.parse(p.Request, a, save.payload);
@@ -572,6 +617,39 @@ test "session borrowers workspace rename persists without another layout action"
     const layout = try @import("../session/layout.zig").decode(a, request.value.layout.?, &.{1});
     defer layout.deinit();
     try std.testing.expectEqualStrings("renamed-session", layout.value.name.?);
+}
+
+test "session borrowers quit flushes a debounced layout behind the in-flight save" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const controller = app.activeWorkspace().?.session_controller.?;
+    const connection = controller.connection;
+    @import("session_controller.zig").setWorkspaceName(app, "first-name");
+    controller.layout_due_ns = 0;
+    mockPump(app);
+    const first = connection.client.nextWrite().?;
+    const first_id = first.request_id.?;
+    first.deinit();
+    // Renamed again within the debounce window, with the first save unanswered.
+    @import("session_controller.zig").setWorkspaceName(app, "final-name");
+    try std.testing.expect(controller.layout_due_ns > io.nanoTimestamp());
+    try mockReply(connection, .{ .id = first_id, .revision = 5 });
+    flushLayouts(app, 0);
+    try std.testing.expectEqual(@as(u64, 5), controller.revision);
+    try std.testing.expect(!controller.layout_dirty);
+    const final = connection.client.nextWrite().?;
+    defer final.deinit();
+    const request = try p.parse(p.Request, a, final.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.layout, request.value.op);
+    try std.testing.expectEqual(@as(?u64, 5), request.value.revision);
+    const layout = try @import("../session/layout.zig").decode(a, request.value.layout.?, &.{1});
+    defer layout.deinit();
+    try std.testing.expectEqualStrings("final-name", layout.value.name.?);
+    // Nothing else is sent at quit; a clean session flushes nothing.
+    try std.testing.expect(connection.client.nextWrite() == null);
 }
 
 test "session borrowers acknowledged pane close saves only surviving owner structure" {

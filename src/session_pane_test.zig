@@ -91,11 +91,11 @@ pub fn poll(pane: *Pane, runtime: *ghostty.Runtime) !void {
     _ = try pane.content.terminal.pollPty(pane, runtime, 16, 64 * 1024, 10 * std.time.ns_per_ms, 16 * 1024, false);
 }
 
-fn text(pane: *Pane) ![]u8 {
+pub fn text(pane: *Pane) ![]u8 {
     return vt.plain(@ptrCast(pane.content.terminal.terminal), a);
 }
 
-test "session pane reads grant credit after parsing and preserve user paste" {
+test "session pane output is credited once on receipt and preserves user paste" {
     var connection = try mockConnection();
     defer freeMock(&connection);
     var runtime = try ghostty.Runtime.init(a, null);
@@ -111,13 +111,14 @@ test "session pane reads grant credit after parsing and preserve user paste" {
     try std.testing.expectEqual(@as(usize, 0), pane.content.terminal.childPid());
     const bytes = "live text\x1b[5n\x1b[6n\x1b[?2004h";
     try deliver(&connection, &pane, bytes);
-    try std.testing.expect(connection.client.nextWrite() == null);
-    try poll(&pane, &runtime);
+    // Below the receive-ahead bound, receipt grants credit before any parse.
     const grant = connection.client.nextWrite().?;
     defer grant.deinit();
     try std.testing.expectEqual(p.Kind.credit, grant.kind);
     try std.testing.expectEqual(@as(u32, bytes.len), try p.decodeCredit(grant.payload));
-    try std.testing.expect(connection.client.nextWrite() == null); // No duplicate query replies.
+    try poll(&pane, &runtime);
+    try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
+    try std.testing.expect(connection.client.nextWrite() == null); // No duplicate credit or query replies.
     try runtime.pasteText(pane.content.terminal.terminal, "user paste");
     const input = connection.client.nextWrite().?;
     defer input.deinit();
@@ -135,14 +136,15 @@ test "session pane adapter partial reads do not return premature or duplicate cr
     defer pty.deinit();
     try connection.client.receive(p.header(.output, 1, 6), "abcdef");
     try pty.offerOutput(connection.poll().?);
+    const grant = connection.client.nextWrite().?;
+    defer grant.deinit();
+    try std.testing.expectEqual(@as(u32, 6), try p.decodeCredit(grant.payload));
     var buffer: [2]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 2), try pty.read(&buffer));
     try std.testing.expectEqualStrings("ab", &buffer);
-    try std.testing.expect(connection.client.nextWrite() == null);
     try pty.parsed(2);
-    const grant = connection.client.nextWrite().?;
-    defer grant.deinit();
-    try std.testing.expectEqual(@as(u32, 2), try p.decodeCredit(grant.payload));
+    try std.testing.expectEqual(@as(usize, 4), connection.client.buffered);
+    try std.testing.expect(connection.client.nextWrite() == null);
     try std.testing.expectError(error.InvalidCredit, pty.parsed(1));
     pty.setExit(-9);
     try std.testing.expect(!pty.isAlive());
@@ -306,6 +308,10 @@ test "session pane snapshot replaces hidden render helpers and retains final scr
     try poll(&pane, &runtime);
     try std.testing.expect(term.session_snapshot_waiting);
     try std.testing.expectEqual(@as(usize, 0), term.pty.?.session.unparsed);
+    // Receipt credit is bounded receive-ahead; the bytes stay unparsed.
+    const grant = connection.client.nextWrite().?;
+    grant.deinit();
+    try std.testing.expectEqual(@as(usize, " live-after".len), connection.client.buffered);
     try std.testing.expect(connection.client.nextWrite() == null);
     var offset: usize = 1;
     while (offset < bytes.items.len) {
@@ -327,6 +333,7 @@ test "session pane snapshot replaces hidden render helpers and retains final scr
     const output = try text(&pane);
     defer a.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "restored screen live-after") != null);
+    try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
     var title: ghostty.String = .{ .ptr = null, .len = 0 };
     try std.testing.expectEqual(ghostty.success, runtime.terminal_get(term.terminal, @backingInt(ghostty.TerminalData.title), &title));
     try std.testing.expectEqualStrings("owner title", title.slice());

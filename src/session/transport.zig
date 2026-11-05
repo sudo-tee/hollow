@@ -141,6 +141,28 @@ pub const Connection = struct {
         return message;
     }
 
+    /// Teardown only: like `poll`, but waits until `deadline_ns` (awake clock)
+    /// for a frame. Null at the deadline, at end of stream, or when no
+    /// transport task exists that could deliver one.
+    pub fn pollUntil(self: *Connection, deadline_ns: i128) ?Message {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        while (true) {
+            if (self.client.poll()) |message| {
+                self.changed.broadcast(self.io);
+                return message;
+            }
+            if (self.finished or self.future == null or now(self.io) >= deadline_ns) return null;
+            const timeout: std.Io.Timeout = .{ .deadline = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(deadline_ns)) } };
+            self.changed.waitTimeout(self.io, &self.mutex, timeout) catch return null;
+        }
+    }
+
+    /// Awake-clock timestamp matching `pollUntil` deadlines.
+    pub fn clock(self: *Connection) i128 {
+        return now(self.io);
+    }
+
     pub fn send(self: *Connection, kind: p.Kind, pane: u32, bytes: []const u8) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

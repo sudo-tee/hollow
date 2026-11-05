@@ -185,8 +185,15 @@ pub const Mux = struct {
             for (ids[0..i]) |id| if (id == remote.id) return error.InvalidSessionLayout;
             ids[i] = remote.id;
         }
-        const saved = if (info.layout.len != 0) try codec.decode(self.allocator, info.layout, ids[0..info.panes.len]) else null;
-        defer if (saved) |value| value.deinit();
+        const reconciled: ?codec.Reconciled = if (info.layout.len == 0) null else codec.decodeReconciled(self.allocator, info.layout, ids[0..info.panes.len]) catch |err| switch (err) {
+            error.InvalidSessionLayout, error.SessionLayoutTooLarge => blk: {
+                std.log.warn("session layout unusable ({s}); restoring one tab per pane", .{@errorName(err)});
+                break :blk null;
+            },
+            else => return err,
+        };
+        defer if (reconciled) |value| value.deinit();
+        const saved = if (reconciled) |value| value.parsed else null;
         const workspace = try self.createWorkspace();
         errdefer {
             workspace.deinit(runtime);

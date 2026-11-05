@@ -179,6 +179,34 @@ pub const Controller = struct {
         return id;
     }
 
+    /// Teardown only, after the GUI stopped consuming output: waits until
+    /// `deadline_ns` for the reply to `id`. Replies are applied (revision,
+    /// layout and close state); output and snapshots are discarded because
+    /// the views are about to detach. A take-over or end event stops the wait.
+    pub fn awaitReply(self: *Controller, id: u64, deadline_ns: i128) !void {
+        if (self.pending) |message| message.deinit();
+        self.pending = null;
+        while (true) {
+            const message = self.connection.pollUntil(deadline_ns) orelse return error.Timeout;
+            defer message.deinit();
+            switch (message.kind) {
+                .reply => {
+                    _ = try self.route(message);
+                    if (message.request_id == id) return;
+                },
+                .event => {
+                    const parsed = try p.parse(p.Event, self.allocator, message.payload);
+                    defer parsed.deinit();
+                    if (parsed.value.event != .resync) {
+                        self.detachViews();
+                        return error.Detached;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     pub fn finishSpawn(self: *Controller) void {
         self.spawn_active = false;
         self.spawn_request = null;
@@ -298,7 +326,12 @@ pub const Controller = struct {
                 defer parsed.deinit();
                 if (parsed.value.event == .resync) {
                     const entry = self.byPane(parsed.value.pane orelse return error.InvalidPane) orelse return error.PaneNotFound;
-                    if (entry.node != null) try self.beginSnapshot(entry);
+                    if (entry.node) |node| {
+                        const pty = &node.content.terminal.pty.?.session;
+                        const dropped = pty.discardOutput();
+                        if (dropped > 0) try self.connection.consumedBytes(pty.generation, pty.pane, dropped);
+                        try self.beginSnapshot(entry);
+                    }
                 } else self.detachViews();
                 return .control;
             },

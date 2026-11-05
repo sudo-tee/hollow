@@ -58,6 +58,150 @@ pub fn decode(a: std.mem.Allocator, bytes: []const u8, panes: []const u32) !std.
     return parsed;
 }
 
+pub const Reconciled = struct {
+    parsed: std.json.Parsed(Layout),
+    /// The blob referenced closed panes or omitted live ones.
+    changed: bool,
+
+    pub fn deinit(self: Reconciled) void {
+        self.parsed.deinit();
+    }
+};
+
+/// Attach-time decode. The owner keeps the last saved blob across spawn and
+/// close, so it may reference closed panes or omit new ones: missing panes are
+/// pruned (splits collapse into the surviving child) and unreferenced panes
+/// become trailing tabs, in owner order. A malformed blob is
+/// `InvalidSessionLayout`; callers fall back to one tab per pane. An unknown
+/// version stays an error so an older client never overwrites a newer layout.
+pub fn decodeReconciled(a: std.mem.Allocator, bytes: []const u8, panes: []const u32) !Reconciled {
+    if (bytes.len > max_bytes) return error.SessionLayoutTooLarge;
+    if (panes.len == 0 or panes.len > max_panes) return error.InvalidSessionLayout;
+    var parsed = std.json.parseFromSlice(Layout, a, bytes, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidSessionLayout,
+    };
+    errdefer parsed.deinit();
+    if (parsed.value.version != 1) return error.UnsupportedSessionLayout;
+    const arena = parsed.arena.allocator();
+    var claimed: [max_panes]bool = @splat(false);
+    var changed = false;
+    var tabs: std.ArrayList(Tab) = .empty;
+    try tabs.ensureTotalCapacity(arena, @min(parsed.value.tabs.len, max_panes) + panes.len);
+    var active_tab: usize = 0;
+    if (parsed.value.tabs.len > max_panes or parsed.value.active_tab >= @max(parsed.value.tabs.len, 1))
+        return error.InvalidSessionLayout;
+    for (parsed.value.tabs, 0..) |tab, old_index| {
+        if (tab.nodes.len > max_nodes or tab.floating.len > max_tab_panes or (tab.root == null) != (tab.nodes.len == 0))
+            return error.InvalidSessionLayout;
+        var pruner: Pruner = .{ .source = tab.nodes, .panes = panes, .claimed = &claimed };
+        pruner.nodes = try arena.alloc(Node, tab.nodes.len);
+        const root = if (tab.root) |index| try pruner.visit(index, 1) else null;
+        for (pruner.visited[0..tab.nodes.len]) |reached| if (!reached) return error.InvalidSessionLayout;
+        var floating: std.ArrayList(Floating) = .empty;
+        try floating.ensureTotalCapacity(arena, tab.floating.len);
+        for (tab.floating) |item| {
+            if (pruner.claim(item.pane)) floating.appendAssumeCapacity(item);
+        }
+        const members = pruner.members[0..pruner.count];
+        changed = changed or pruner.pruned or floating.items.len != tab.floating.len;
+        if (members.len == 0) {
+            if (old_index == parsed.value.active_tab) active_tab = tabs.items.len -| 1;
+            continue;
+        }
+        for (floating.items) |*item| if (item.anchor) |id| {
+            if (id == item.pane or std.mem.indexOfScalar(u32, members, id) == null) {
+                item.anchor = null;
+                changed = true;
+            }
+        };
+        var result = tab;
+        // Pruning renumbers nodes in post-order; an intact tree keeps its own.
+        if (pruner.pruned) {
+            result.root = root;
+            result.nodes = pruner.nodes[0..pruner.used];
+        }
+        result.floating = floating.items;
+        if (std.mem.indexOfScalar(u32, members, tab.active_pane) == null) {
+            result.active_pane = members[0];
+            changed = true;
+        }
+        if (tab.maximized_pane) |id| if (std.mem.indexOfScalar(u32, members, id) == null) {
+            result.maximized_pane = null;
+            changed = true;
+        };
+        if (old_index == parsed.value.active_tab) active_tab = tabs.items.len;
+        tabs.appendAssumeCapacity(result);
+    }
+    for (panes, 0..) |id, i| {
+        if (claimed[i]) continue;
+        const node = try arena.alloc(Node, 1);
+        node[0] = .{ .pane = id };
+        tabs.appendAssumeCapacity(.{ .active_pane = id, .root = 0, .nodes = node });
+        changed = true;
+    }
+    if (tabs.items.len != parsed.value.tabs.len) changed = true;
+    parsed.value.tabs = tabs.items;
+    parsed.value.active_tab = @min(active_tab, tabs.items.len - 1);
+    try validate(parsed.value, panes);
+    return .{ .parsed = parsed, .changed = changed };
+}
+
+/// Rebuilds one tab's split tree keeping only live, not yet claimed panes.
+/// Structural errors (cycles, bad indices, depth, ratios) still reject.
+const Pruner = struct {
+    source: []const Node,
+    panes: []const u32,
+    claimed: *[max_panes]bool,
+    nodes: []Node = &.{},
+    used: usize = 0,
+    visited: [max_nodes]bool = @splat(false),
+    members: [max_tab_panes]u32 = undefined,
+    count: usize = 0,
+    pruned: bool = false,
+
+    fn claim(self: *Pruner, id: u32) bool {
+        const index = std.mem.indexOfScalar(u32, self.panes, id) orelse return false;
+        if (self.claimed[index] or self.count == max_tab_panes) return false;
+        self.claimed[index] = true;
+        self.members[self.count] = id;
+        self.count += 1;
+        return true;
+    }
+
+    fn visit(self: *Pruner, index: usize, depth: usize) Invalid!?usize {
+        if (index >= self.source.len or depth > max_depth or self.visited[index]) return error.InvalidSessionLayout;
+        self.visited[index] = true;
+        const node = self.source[index];
+        if (!inRange(node.ratio, 0.05, 0.95)) return error.InvalidSessionLayout;
+        if (node.pane) |id| {
+            if (node.first != null or node.second != null) return error.InvalidSessionLayout;
+            if (!self.claim(id)) {
+                self.pruned = true;
+                return null;
+            }
+            return self.append(node);
+        }
+        const first = try self.visit(node.first orelse return error.InvalidSessionLayout, depth + 1);
+        const second = try self.visit(node.second orelse return error.InvalidSessionLayout, depth + 1);
+        if (first == null) return second;
+        if (second == null) return first;
+        var split = node;
+        split.first = first;
+        split.second = second;
+        return self.append(split);
+    }
+
+    fn append(self: *Pruner, node: Node) usize {
+        self.nodes[self.used] = node;
+        self.used += 1;
+        return self.used - 1;
+    }
+};
+
 /// Caller owns the encoded bytes. A fixed writer bounds serialization memory.
 pub fn encode(a: std.mem.Allocator, value: Layout, panes: []const u32) ![]u8 {
     try validate(value, panes);
@@ -343,6 +487,87 @@ test "session pane layout exact byte boundary and owned decoding" {
     @memset(bytes, ' ');
     try std.testing.expectEqualStrings(name, parsed.value.name.?);
     try validate(parsed.value, &.{1});
+}
+
+test "session pane layout reconcile prunes closed panes and appends new ones" {
+    const a = std.testing.allocator;
+    // Saved with 1|(2/3) split, floating 4 anchored to 2, maximized 2, then
+    // pane 2 closed and pane 5 spawned before the next save landed.
+    const saved: Layout = .{ .name = "work", .active_tab = 1, .tabs = &.{
+        .{ .active_pane = 6, .root = 0, .nodes = &.{.{ .pane = 6 }} },
+        .{
+            .active_pane = 2,
+            .root = 0,
+            .nodes = &.{
+                .{ .first = 1, .second = 2, .direction = .horizontal, .ratio = 0.3 },
+                .{ .pane = 1 },
+                .{ .first = 3, .second = 4, .ratio = 0.6 },
+                .{ .pane = 2 },
+                .{ .pane = 3 },
+            },
+            .floating = &.{.{ .pane = 4, .anchor = 2 }},
+            .maximized_pane = 2,
+        },
+    } };
+    const bytes = try encode(a, saved, &.{ 1, 2, 3, 4, 6 });
+    defer a.free(bytes);
+    const result = try decodeReconciled(a, bytes, &.{ 1, 3, 4, 5 });
+    defer result.deinit();
+    try std.testing.expect(result.changed);
+    const value = result.parsed.value;
+    try std.testing.expectEqualStrings("work", value.name.?);
+    try std.testing.expectEqual(@as(usize, 2), value.tabs.len);
+    // Tab of the closed pane 6 is gone; the formerly active tab stays active.
+    try std.testing.expectEqual(@as(usize, 0), value.active_tab);
+    const tab = value.tabs[0];
+    const root = tab.nodes[tab.root.?];
+    try std.testing.expectEqual(@as(f32, 0.3), root.ratio);
+    try std.testing.expectEqual(@as(?u32, 1), tab.nodes[root.first.?].pane);
+    try std.testing.expectEqual(@as(?u32, 3), tab.nodes[root.second.?].pane);
+    try std.testing.expectEqual(@as(usize, 3), tab.nodes.len);
+    try std.testing.expectEqual(@as(?u32, null), tab.floating[0].anchor);
+    try std.testing.expectEqual(@as(u32, 1), tab.active_pane);
+    try std.testing.expectEqual(@as(?u32, null), tab.maximized_pane);
+    try std.testing.expectEqual(@as(u32, 5), value.tabs[1].active_pane);
+    try std.testing.expectEqual(@as(?u32, 5), value.tabs[1].nodes[0].pane);
+    // The reconciled value is a valid, savable layout.
+    const again = try encode(a, value, &.{ 1, 3, 4, 5 });
+    defer a.free(again);
+}
+
+test "session pane layout reconcile keeps exact layouts and rejects malformed ones" {
+    const a = std.testing.allocator;
+    const value: Layout = .{ .tabs = &.{singleTab(&.{ .{ .first = 1, .second = 2 }, .{ .pane = 1 }, .{ .pane = 2 } })} };
+    const bytes = try encode(a, value, &.{ 1, 2 });
+    defer a.free(bytes);
+    const same = try decodeReconciled(a, bytes, &.{ 2, 1 });
+    defer same.deinit();
+    try std.testing.expect(!same.changed);
+    try std.testing.expectEqualDeep(value.tabs[0].nodes, same.parsed.value.tabs[0].nodes);
+    const bad = [_][]const u8{
+        "",
+        "{\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"first\":0,\"second\":0}]}]}",
+        "{\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"pane\":1},{\"pane\":2}]}]}",
+        "{\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"pane\":1,\"ratio\":2}]}]}",
+        "{\"tabs\":[{\"active_pane\":1,\"floating\":[{\"pane\":1,\"width\":0}]}]}",
+        "{\"active_tab\":3,\"tabs\":[{\"active_pane\":1}]}",
+    };
+    for (bad) |item| try std.testing.expectError(error.InvalidSessionLayout, decodeReconciled(a, item, &.{1}));
+    try std.testing.expectError(error.UnsupportedSessionLayout, decodeReconciled(a, "{\"version\":2,\"tabs\":[]}", &.{1}));
+    // Duplicate references keep the first and still cover every pane.
+    const dup = try decodeReconciled(a, "{\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"pane\":1}]},{\"active_pane\":1,\"floating\":[{\"pane\":1}]}]}", &.{1});
+    defer dup.deinit();
+    try std.testing.expect(dup.changed);
+    try std.testing.expectEqual(@as(usize, 1), dup.parsed.value.tabs.len);
+}
+
+fn reconcileAllocations(a: std.mem.Allocator) !void {
+    const result = try decodeReconciled(a, "{\"tabs\":[{\"active_pane\":9,\"root\":0,\"nodes\":[{\"first\":1,\"second\":2},{\"pane\":9},{\"pane\":1}]}]}", &.{ 1, 2 });
+    result.deinit();
+}
+
+test "session pane layout reconcile allocation rollback" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, reconcileAllocations, .{});
 }
 
 fn allocationRoundtrip(a: std.mem.Allocator) !void {

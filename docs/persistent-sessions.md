@@ -248,6 +248,17 @@ Findings to carry into Phase 1:
 - Slow client: the owner always drains PTYs into its VT. Per-pane credit as in
   `mux` (64 KiB window). If a pane's unsent output to the client exceeds 4 MiB,
   the owner drops it and sends a fresh snapshot (tmux-style resync).
+- Client receive-ahead: the GUI grants credit on receipt while it holds at most
+  4 MiB of unparsed output per pane and 16 MiB per connection; beyond that,
+  parsing returns credit.
+  Returning credit only after parsing capped a pane at one 64 KiB window per
+  GUI frame (about 4 MiB/s at 60 Hz).
+  Because the owner answers DSR from its own VT, a `repaint` benchmark then
+  reported normal numbers while the GUI showed the backlog much later.
+  Credit grants coalesce per pane outside the bounded outgoing queue.
+  A resync event therefore discards that pane's queued pre-resync output:
+  the owner's snapshot already contains it, and replaying it after READY drew
+  stale alt-screen frames over the restored primary screen.
 - Threading: one poll loop that also feeds ghostty. No reader threads in v1;
   add them only if measurements need it.
 - Debug client: hidden `hollow-agent session debug-attach` (raw tty, snapshot
@@ -400,8 +411,8 @@ Session transport implemented (workspace integration described below):
 Session-backed terminal pane adapter implemented:
 - `src/pty/session.zig` is a `Pty.session` backend. A workspace controller
   owns the connection and routes frames; the adapter owns bounded pane output,
-  not the connector. Reads do not grant credit until terminal parsing catches
-  up. Large paste admission is atomic across chunks/allocation failures;
+  not the connector. Received output is credited within the receive-ahead
+  bound; parsing releases that bound. Large paste admission is atomic across chunks/allocation failures;
   input, close and resize are generation-fenced. Queue pressure preserves the
   latest resize for retry. Exit status leaves the final terminal intact.
 - `deinit` releases only the local view. `requestClose` explicitly queues one
@@ -446,8 +457,8 @@ GUI workspace/controller wiring implemented for an already-attached session:
   closes.
 - The GUI frame pumps bounded controller batches before and after pane polling.
   Full pane queues and aggregate snapshot pressure retain one pending frame and
-  retry after parsing/history progress. Output credit still returns only after
-  parsing.
+  retry after parsing/history progress. Output credit follows the bounded
+  receive-ahead rule above.
 - Explicit pane, tab, and workspace closes queue owner-side close requests.
   Views remain until close acknowledgement; rejected requests keep the pane
   usable and allow retry. App-owned find/copy/selection/quick-select borrowers
@@ -468,10 +479,19 @@ GUI workspace/controller wiring implemented for an already-attached session:
   an acknowledged success advances the local revision; conflicts stop further
   writes until reconciliation. No automatic per-frame serialization or replay.
   Automatic layout saving now follows geometry changes and acknowledged pane
-  mutations; stale/missing-pane reconciliation remains pending.
-  Owner spawn/close invalidates the opaque blob and returns an advanced revision,
-  so a reconnect cannot be blocked by references to removed/new panes. Until
-  automatic post-mutation saves land, this falls back to one tab per owner pane.
+  mutations.
+  Owner spawn/close keeps the opaque blob and returns an advanced revision, so
+  an in-flight save is fenced but geometry survives a missed follow-up save.
+- Attach reconciles the saved blob against live owner panes
+  (`codec.decodeReconciled`): closed or duplicate panes are pruned, splits
+  collapse into the surviving child, dangling anchors/focus/maximization are
+  reset, empty tabs drop, and unreferenced panes become trailing tabs.
+  A malformed or oversized blob logs a warning and falls back to one tab per
+  pane; an unknown version still fails so an older client never overwrites it.
+  The reconciled layout is not written back until the next ordinary save.
+- Quit flushes pending geometry (`session_spawn.flushLayouts`, 500 ms total
+  budget): it waits for an in-flight save, sends any debounced dirty layout,
+  and waits for its acknowledgement while discarding pane output.
 - Experimental `domains.<name>.persist = true` now routes workspace creation
   through strict host resolution and asynchronous owner admission, including
   default-domain startup without a disposable ordinary shell.
@@ -534,12 +554,9 @@ Owner-backed tabs and splits implemented:
   structure and every shell's variables, then close the workspace through ACKs.
 
 Next implementation slices:
-1. Stale/missing-pane layout reconciliation and graceful final-layout flush on
-   detach. An interrupted membership/layout update currently falls back safely
-   to one tab per owner pane.
-2. GUI session discovery, actionable dead/missing-session UX, and explicit host
+1. GUI session discovery, actionable dead/missing-session UX, and explicit host
    identity storage for automatic reattachment.
-3. Remember attached host/session IDs, auto-reattach local/WSL sessions and
+2. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 
 `persist = true` is experimental and defaults to false.

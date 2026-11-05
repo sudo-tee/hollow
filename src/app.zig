@@ -1060,6 +1060,7 @@ pub const App = struct {
             self.renderer = null;
         }
 
+        session_spawn.flushLayouts(self, session_spawn.shutdown_flush_ns);
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
                 std.log.info("App.shutdownRuntime mux.deinit", .{});

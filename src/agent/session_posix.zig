@@ -494,7 +494,7 @@ pub const Owner = struct {
             .spawn => {
                 const s = client.session orelse return error.NotAttached;
                 const pane = try self.spawnPane(s, req.spawn orelse .{});
-                self.invalidateLayout(s);
+                self.membershipChanged(s);
                 self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.revision });
                 self.saveState(s);
             },
@@ -502,7 +502,7 @@ pub const Owner = struct {
                 const s = client.session orelse return error.NotAttached;
                 const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
                 self.closePane(s, pane);
-                self.invalidateLayout(s);
+                self.membershipChanged(s);
                 self.reply(client, .{ .id = req.id, .revision = s.revision });
                 if (livePanes(s) == 0) self.endSession(s) else self.saveState(s);
             },
@@ -527,12 +527,12 @@ pub const Owner = struct {
         }
     }
 
-    /// Geometry is deliberately opaque to the owner. Membership changes cannot
-    /// leave a blob referencing deleted panes or omitting newly spawned panes.
-    /// The client may replace this safe fallback using the returned revision.
-    fn invalidateLayout(self: *Owner, s: *Session) void {
-        self.a.free(s.layout);
-        s.layout = &.{};
+    /// Geometry is opaque to the owner, so membership changes keep the last
+    /// saved blob: clients reconcile it against the live panes on attach
+    /// (closed panes pruned, new panes appended). Clearing it lost all geometry
+    /// whenever a client went away between a spawn and its next layout save.
+    /// The revision still advances so an in-flight save cannot land on it.
+    fn membershipChanged(_: *Owner, s: *Session) void {
         s.revision += 1;
     }
 

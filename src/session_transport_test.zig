@@ -68,25 +68,99 @@ test "session client validates welcome format direction and reply correlation" {
     try std.testing.expectEqual(core.RequestState.unknown, client.requestState(id));
 }
 
-test "session client grants credit only after consumption and ignores old attachment output" {
+/// Receives one full output frame and discards it; parsing is reported
+/// separately through consumedBytes.
+fn receiveFrame(client: *core.Client, pane: u32) !void {
+    const bytes: [p.max_data]u8 = @splat('x');
+    try client.receive(p.header(.output, pane, bytes.len), &bytes);
+    client.poll().?.deinit();
+}
+
+fn expectGrant(client: *core.Client, pane: u32, amount: u32) !void {
+    const grant = client.nextWrite() orelse return error.TestExpectedGrant;
+    defer grant.deinit();
+    try std.testing.expectEqual(p.Kind.credit, grant.kind);
+    try std.testing.expectEqual(pane, grant.pane);
+    try std.testing.expectEqual(amount, try p.decodeCredit(grant.payload));
+}
+
+test "session client grants credit on receipt up to the receive-ahead bound" {
     var client: core.Client = .{ .allocator = a, .identity = "test" };
     defer client.deinit();
     try welcome(&client);
     try attach(&client);
-    const bytes: [p.max_data]u8 = @splat('x');
-    for (0..4) |_| try client.receive(p.header(.output, 1, bytes.len), &bytes);
-    try std.testing.expectError(error.InvalidCredit, client.receive(p.header(.output, 1, 1), "x"));
+    // Credit no longer waits for a GUI frame to parse: throughput is bound by
+    // the transport round trip, not by 64 KiB per rendered frame.
+    const ahead_frames = (core.pane_receive_ahead - p.window) / p.max_data;
+    for (0..ahead_frames) |_| {
+        try receiveFrame(&client, 1);
+        try expectGrant(&client, 1, p.max_data);
+    }
+    // At the bound, the owner may still fill one window, then must wait.
+    for (0..p.window / p.max_data) |_| try receiveFrame(&client, 1);
     try std.testing.expect(client.nextWrite() == null);
-    const first = client.poll().?;
-    defer first.deinit();
-    try client.consumed(first);
-    const grant = client.nextWrite().?;
-    defer grant.deinit();
-    try std.testing.expectEqual(p.Kind.credit, grant.kind);
-    try std.testing.expectEqual(@as(u32, p.max_data), try p.decodeCredit(grant.payload));
-    while (client.poll()) |message| message.deinit();
+    try std.testing.expectError(error.InvalidCredit, client.receive(p.header(.output, 1, 1), "x"));
+    try std.testing.expectEqual(core.pane_receive_ahead, client.buffered);
+    try std.testing.expectError(error.InvalidCredit, client.consumedBytes(1, client.generation, core.pane_receive_ahead + 1));
+    try client.consumedBytes(1, client.generation, p.max_data);
+    try std.testing.expect(client.nextWrite() == null); // Still above the bound.
+    try client.consumedBytes(1, client.generation, p.window - p.max_data);
+    try expectGrant(&client, 1, p.window);
+    const generation = client.generation;
     try attach(&client);
-    try client.consumed(first); // Same pane ID, different attachment generation.
+    try std.testing.expectEqual(@as(usize, 0), client.buffered);
+    try client.consumedBytes(1, generation, p.max_data); // Same pane ID, old attachment.
+    try std.testing.expect(client.nextWrite() == null);
+}
+
+test "session client aggregate receive-ahead retries a drained pane's withheld grant" {
+    var client: core.Client = .{ .allocator = a, .identity = "test" };
+    defer client.deinit();
+    try welcome(&client);
+    const id = try client.request(.{ .id = 0, .op = .attach, .session = "s" });
+    client.nextWrite().?.deinit();
+    const pane_count = core.receive_ahead / core.pane_receive_ahead + 1;
+    var panes: [pane_count]p.PaneInfo = undefined;
+    for (&panes, 1..) |*info, pane| info.* = .{ .id = @intCast(pane), .cols = 80, .rows = 24 };
+    try receive(&client, .reply, p.Reply{ .id = id, .session = .{ .id = "s", .attached = true, .revision = 0, .panes = &panes } });
+    client.poll().?.deinit();
+    // Fill every other pane to its own bound, so together they fill the
+    // aggregate one; the last window of each stays uncredited.
+    const per_pane = core.pane_receive_ahead - p.window;
+    for (1..pane_count) |pane| {
+        for (0..per_pane / p.max_data) |_| {
+            try receiveFrame(&client, @intCast(pane));
+            try expectGrant(&client, @intCast(pane), p.max_data);
+        }
+        for (0..p.window / p.max_data) |_| try receiveFrame(&client, @intCast(pane));
+    }
+    try std.testing.expect(client.nextWrite() == null);
+    try std.testing.expectEqual(core.receive_ahead, client.buffered);
+    try receiveFrame(&client, pane_count);
+    try std.testing.expect(client.nextWrite() == null);
+    // The withheld pane parses everything it has, yet stays withheld.
+    try client.consumedBytes(pane_count, client.generation, p.max_data);
+    try std.testing.expect(client.nextWrite() == null);
+    // Another pane's parse must release it; nothing else would.
+    try client.consumedBytes(1, client.generation, p.window);
+    try expectGrant(&client, 1, p.window);
+    try expectGrant(&client, pane_count, p.max_data);
+    try std.testing.expect(client.nextWrite() == null);
+}
+
+test "session client close releases the closed pane's receive-ahead" {
+    var client: core.Client = .{ .allocator = a, .identity = "test" };
+    defer client.deinit();
+    try welcome(&client);
+    try attach(&client);
+    try client.receive(p.header(.output, 1, 3), "abc");
+    try expectGrant(&client, 1, 3);
+    const id = try client.request(.{ .id = 0, .op = .close, .pane = 1 });
+    client.nextWrite().?.deinit();
+    try receive(&client, .reply, p.Reply{ .id = id });
+    try std.testing.expectEqual(@as(usize, 0), client.buffered);
+    while (client.poll()) |message| message.deinit();
+    try client.consumedBytes(1, client.generation, 3); // Late parse of a closed pane.
     try std.testing.expect(client.nextWrite() == null);
 }
 
@@ -130,6 +204,7 @@ test "session client never sends old pane actions or credits to a new attachment
     try welcome(&client);
     try attach(&client);
     try client.receive(p.header(.output, 1, 1), "x");
+    try expectGrant(&client, 1, 1);
     const output = client.poll().?;
     defer output.deinit();
     const id = try client.request(.{ .id = 0, .op = .attach, .session = "other" });

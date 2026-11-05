@@ -97,8 +97,8 @@ Each startup currently creates a new session, so save IDs and reconnect explicit
 
 - New ordinary panes cannot be spawned directly on a persistent domain; create a workspace instead.
 - Moving tabs or panes across a persistent-workspace boundary is rejected.
-- Layout saving is asynchronous; closing the GUI before the final save is acknowledged can lose the latest geometry, but does not kill owner processes.
-- If connection loss interrupts a pane-membership update before its replacement layout is saved, reattachment safely falls back to one tab per pane.
+- Quitting waits briefly (up to 500 ms) for the final layout save; a lost connection can still drop the latest geometry, but never kills owner processes.
+- Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
 - GUI session discovery and recovery of a lost create reply are not implemented yet.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
 - WSL keepalive remains future work.

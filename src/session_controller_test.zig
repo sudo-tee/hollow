@@ -338,6 +338,80 @@ test "session pane layout restores nested tabs and floating geometry with owner 
     try std.testing.expectEqualStrings(bytes, recaptured);
 }
 
+test "session pane layout restore reconciles stale membership and survives a corrupt blob" {
+    const codec = @import("session/layout.zig");
+    const geometry = @import("mux/session_layout.zig");
+    const Mux = @import("mux/mux.zig").Mux;
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    // Saved for panes 1|2 split; pane 2 closed and pane 3 spawned before the
+    // GUI went away, so the owner still holds the old blob.
+    const bytes = try codec.encode(a, .{ .name = "stale", .tabs = &.{.{
+        .active_pane = 2,
+        .root = 0,
+        .nodes = &.{ .{ .first = 1, .second = 2 }, .{ .pane = 1 }, .{ .pane = 2 } },
+    }} }, &.{ 1, 2 });
+    defer a.free(bytes);
+    var info: p.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 3,
+        .layout = bytes,
+        .panes = &.{ .{ .id = 1, .cols = 80, .rows = 24 }, .{ .id = 3, .cols = 80, .rows = 24 } },
+    };
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const workspace = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    try std.testing.expectEqualStrings("stale", workspace.name.?);
+    try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);
+    const first = workspace.tabs.items[0];
+    try std.testing.expectEqual(@as(usize, 1), first.panes.items.len);
+    try std.testing.expect(first.root_split.?.kind == .pane);
+    try std.testing.expectEqual(@as(u32, 1), try geometry.ownerId(first.active_pane.?));
+    try std.testing.expectEqual(@as(u32, 3), try geometry.ownerId(workspace.tabs.items[1].active_pane.?));
+    mux.deinit(&runtime);
+    // A corrupt blob must not make the session unreachable.
+    info.layout = "{\"tabs\":[{\"active_pane\":1,\"root\":0,\"nodes\":[{\"first\":0,\"second\":0}]}]}";
+    const fallback = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    try std.testing.expectEqual(@as(usize, 2), fallback.tabs.items.len);
+    try std.testing.expect(fallback.name == null);
+}
+
+test "session pane controller teardown wait applies the layout reply past discarded output" {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    controller.revision = 2;
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var node = Pane.init(a);
+    defer node.deinit(&runtime);
+    try bind(&controller, &node, &runtime, cfg, 1);
+    const bytes = try @import("session/layout.zig").encode(a, .{ .tabs = &.{.{ .active_pane = 1, .root = 0, .nodes = &.{.{ .pane = 1 }} }} }, &.{1});
+    defer a.free(bytes);
+    const id = try controller.requestLayout(bytes);
+    connection.client.nextWrite().?.deinit();
+    // No transport task can deliver anything: the wait ends at once.
+    try std.testing.expectError(error.Timeout, controller.awaitReply(id, io.nanoTimestamp() + std.time.ns_per_s));
+    try frame(&connection, .output, 1, "late output nobody will parse");
+    try json(&connection, .reply, p.Reply{ .id = id, .revision = 3 });
+    try controller.awaitReply(id, 0);
+    try std.testing.expectEqual(@as(u64, 3), controller.revision);
+    try std.testing.expect(controller.layout_request == null);
+    try std.testing.expectEqual(@as(usize, 0), node.content.terminal.pty.?.session.pendingOutputBytes());
+}
+
 test "session pane layout update advances only acknowledged revision and fences conflict" {
     var connection = try fixture.mockConnection();
     defer fixture.freeMock(&connection);
@@ -414,4 +488,43 @@ test "session pane layout factory allocation failures roll back views and bindin
 
 test {
     _ = @import("session/layout.zig");
+}
+
+test "session pane controller resync discards output received ahead of the snapshot" {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    connection.client.format = .vt;
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var node = Pane.init(a);
+    defer node.deinit(&runtime);
+    try bind(&controller, &node, &runtime, cfg, 1);
+    // Receive-ahead returns credit before parsing, so the owner may resync
+    // while older frames are still queued here. The snapshot already holds
+    // them; replaying them after READY drew stale alt-screen frames over the
+    // restored primary screen.
+    try frame(&connection, .output, 1, "stale-frame");
+    try std.testing.expect(try controller.step() == .dispatched);
+    try json(&connection, .event, p.Event{ .event = .resync, .session = "mock", .pane = 1 });
+    const step = try controller.step();
+    try std.testing.expect(step == .control);
+    step.control.deinit();
+    const pty = &node.content.terminal.pty.?.session;
+    try std.testing.expectEqual(@as(usize, 0), pty.pendingOutputBytes());
+    try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
+    try frame(&connection, .snapshot, 1, "fresh-screen");
+    _ = try controller.step();
+    try frame(&connection, .snapshot_end, 1, "");
+    _ = try controller.step();
+    try history(&node, &runtime);
+    try fixture.poll(&node, &runtime);
+    const output = try fixture.text(&node);
+    defer a.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "fresh-screen") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "stale-frame") == null);
 }

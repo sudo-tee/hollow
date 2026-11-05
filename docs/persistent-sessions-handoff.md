@@ -37,15 +37,18 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   and workspace name. Factory validates before allocating/publishing views.
   Controller layout requests carry current revision, advance only after ACK,
   and fence further writes on revision conflict. Automatic saves are now wired.
-- Owner spawn/close clears opaque geometry and increments/returns revision;
-  otherwise strict pane membership would make reattach fail after pane mutation.
-  Safe fallback is one tab per pane until the next acknowledged layout save.
+- Owner spawn/close keeps opaque geometry and increments/returns revision.
+  Attach reconciles stale membership (prune closed, append new panes); a
+  corrupt blob falls back to one tab per pane. Quit flushes the last debounced
+  layout and waits up to 500 ms total for acknowledgement.
   Real-owner fixture now saves geometry before detach and restores it on attach.
 - Layout validation passed Linux Debug/ReleaseSafe/ReleaseSmall and native
   Windows through WSL. Codec tests cover invalid graphs, limits, geometry,
   identities, and allocator failures; mux tests inject allocation failure across
   multi-pane split/floating restore and capture and assert bindings roll back.
-  Owner tests cover layout invalidation on spawn/close and revision advancement.
+  Owner tests cover layout retention on spawn/close and revision advancement.
+  Reconciliation passed Linux Debug/ReleaseSafe/ReleaseSmall, agent loop/PTY/
+  transport suites, and Windows-through-WSL pane/snapshot/client/borrowers.
 - Async-open foundation: `src/session/open.zig` prepares a deep-copied request
   before any transport starts, submits once on readiness, stops at reply barrier,
   and distinguishes not-sent/uncertain/rejected failures without replay.
@@ -126,6 +129,22 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   cover reply/output barriers, serialized saves, debounce wake, close races,
   host drift, lost reply, UI allocation failure, rename and background scroll.
 
+- Receive-ahead checkpoint (2026-11-05): user saw `bench_workloads.py repaint`
+  report normal numbers in a persistent pane while the GUI displayed results
+  late. Cause: credit returned only after parse, i.e. one 64 KiB window per GUI
+  frame, and owner VT answers the bench's drain DSR itself.
+  `src/session/client.zig` now grants on receipt under per-pane/aggregate
+  bounds, coalesces grants per pane outside `outgoing`, and retries grants
+  withheld by the aggregate bound when another pane parses.
+  Owner protocol and 64 KiB in-flight window are unchanged.
+  Tests pass (Linux Debug/ReleaseSafe/ReleaseSmall, Windows->WSL incl.
+  borrowers, Windows GUI cross-build).
+  Follow-up regression: owner resyncs once all credit is back, which no longer
+  means "all parsed"; stale queued frames replayed over the snapshot (bench
+  frames left on primary screen). Controller resync now drops queued output
+  and releases its receive-ahead. User still reports a small residual lag:
+  likely 64 KiB window / WSL RTT; window negotiation not started.
+
 ## Architecture / invariants
 
 - One persistent workspace = one host session; per-workspace connector.
@@ -138,7 +157,8 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
 - Snapshot job decodes network-backed READY on worker, then only buffers raw
   history. GUI owns terminal after READY and decodes history records after EOF.
   No concurrent worker/render mutation; no network waits on GUI thread.
-- Live bytes wait until READY installation; credit returned after parsing.
+- Live bytes wait until READY installation. Credit is granted on receipt within
+  bounded receive-ahead (4 MiB/pane, 16 MiB/connection), else after parsing.
 - SessionPty borrows connection. Workspace controller must keep connection alive
   through explicit close replies/failure. `deinit` must not issue remote close.
 - Terminal replacement allocates helpers first. Controller-owned search/etc.

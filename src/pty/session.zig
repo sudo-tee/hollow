@@ -32,8 +32,20 @@ pub const SessionPty = struct {
         if (message.kind != .output) return error.InvalidKind;
         if (message.payload.len > p.max_data) return error.PayloadTooLarge;
         if (message.pane != self.pane or message.generation != self.generation or self.detached) return error.Detached;
-        if (self.pendingOutputBytes() + self.unparsed + message.payload.len > p.window) return error.ResourceExhausted;
+        if (self.pendingOutputBytes() + self.unparsed + message.payload.len > frames.pane_receive_ahead) return error.ResourceExhausted;
         try self.output.append(self.allocator, message);
+    }
+
+    /// Drops output queued before a resync: the owner's snapshot already
+    /// contains it, and parsing it after READY would replay stale screens.
+    /// Returns the dropped byte count so receive-ahead can be released.
+    pub fn discardOutput(self: *SessionPty) usize {
+        const dropped = self.pendingOutputBytes();
+        if (self.current) |message| message.deinit();
+        self.current = null;
+        self.offset = 0;
+        while (self.output.pop()) |message| message.deinit();
+        return dropped;
     }
 
     pub fn setExit(self: *SessionPty, status: i32) void {

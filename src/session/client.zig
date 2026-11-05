@@ -72,7 +72,24 @@ pub const Queue = struct {
 
 pub const RequestState = enum { unknown, queued, submitted, reply_pending, not_sent, uncertain };
 const Pending = struct { id: u64, op: p.Op, pane: ?u32, state: RequestState = .queued, submitted_at: ?i128 = null };
-const Pane = struct { id: u32, uncredited: u32 = 0 };
+/// Received output one pane may hold before its parse returns credit. Credit
+/// is granted on receipt below this, so throughput follows the transport round
+/// trip instead of the GUI frame rate. The owner never has more than
+/// `p.window` in flight either way.
+pub const pane_receive_ahead = 4 * 1024 * 1024;
+/// Received-ahead output across all panes of one connection.
+pub const receive_ahead = 16 * 1024 * 1024;
+const Pane = struct {
+    id: u32,
+    /// Received and not yet granted back to the owner.
+    uncredited: u32 = 0,
+    /// Granted, waiting for the writer. Kept here rather than in `outgoing`
+    /// so credit coalesces and never competes with input for queue space.
+    /// `uncredited + granted` never exceeds `p.window`.
+    granted: u32 = 0,
+    /// Received and not yet reported parsed by the GUI.
+    buffered: usize = 0,
+};
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
@@ -86,6 +103,12 @@ pub const Client = struct {
     panes: [max_panes]?Pane = @splat(null),
     outgoing: Queue = .{},
     incoming: Queue = .{},
+    /// Sum of `Pane.buffered` for the current attachment.
+    buffered: usize = 0,
+    /// A grant was withheld only because of the aggregate bound.
+    ahead_blocked: bool = false,
+    /// Panes with a nonzero `granted`.
+    grants_pending: usize = 0,
 
     pub fn deinit(self: *Client) void {
         self.outgoing.deinit(self.allocator);
@@ -180,6 +203,12 @@ pub const Client = struct {
     /// even when the pipe reports a failure before confirming any bytes.
     pub fn nextWrite(self: *Client) ?Message {
         if (!self.ready or self.ended) return null;
+        // Credit generated for the old attachment after an attach request
+        // must not refill the new session. Hold it until the reply, which
+        // either keeps the panes (attach failed) or drops them with it.
+        if (self.grants_pending > 0 and !self.attachmentSubmitted()) {
+            if (self.takeGrant()) |message| return message;
+        }
         while (self.outgoing.count() > 0) {
             const head = self.outgoing.items.items[self.outgoing.start];
             // Credit generated for the old attachment after an attach request
@@ -237,7 +266,8 @@ pub const Client = struct {
         try self.enqueue(kind, id, bytes);
     }
 
-    /// Call once, only AFTER the GUI consumed output, not on receiving it.
+    /// Call once, only AFTER the GUI parsed output. Received-ahead bounds are
+    /// released here; credit itself may already have been granted on receipt.
     /// Old queued output cannot grant credit to a newly attached session.
     pub fn consumed(self: *Client, message: Message) !void {
         if (message.kind == .output) try self.consumedBytes(message.pane, message.generation, message.payload.len);
@@ -247,11 +277,52 @@ pub const Client = struct {
         if (generation != self.generation or self.ended) return;
         const entry = self.pane(id) orelse return;
         if (count == 0) return;
-        if (count > entry.uncredited) return error.InvalidCredit;
-        var grant: [4]u8 = undefined;
-        std.mem.writeInt(u32, &grant, @intCast(count), .little);
-        try self.enqueue(.credit, id, &grant);
-        entry.uncredited -= @intCast(count);
+        if (count > entry.buffered) return error.InvalidCredit;
+        entry.buffered -= count;
+        self.buffered -= count;
+        self.grant(entry);
+        if (self.ahead_blocked) self.retryBlockedGrants();
+    }
+
+    /// Returns received bytes to the owner while the GUI's buffered output
+    /// stays within both receive-ahead bounds; otherwise parsing grants later.
+    fn grant(self: *Client, entry: *Pane) void {
+        if (entry.uncredited == 0) return;
+        if (entry.buffered > pane_receive_ahead - p.window) return;
+        if (self.buffered > receive_ahead - p.window) {
+            self.ahead_blocked = true;
+            return;
+        }
+        if (entry.granted == 0) self.grants_pending += 1;
+        entry.granted += entry.uncredited;
+        entry.uncredited = 0;
+    }
+
+    /// A pane withheld by the aggregate bound may have nothing left to parse,
+    /// so another pane's consumption must retry it.
+    fn retryBlockedGrants(self: *Client) void {
+        if (self.buffered > receive_ahead - p.window) return;
+        self.ahead_blocked = false;
+        for (&self.panes) |*slot| if (slot.*) |*entry| self.grant(entry);
+    }
+
+    /// Allocation failure leaves the grant for the next write.
+    fn takeGrant(self: *Client) ?Message {
+        for (&self.panes) |*slot| if (slot.*) |*entry| if (entry.granted > 0) {
+            const body = self.allocator.alloc(u8, 4) catch return null;
+            std.mem.writeInt(u32, body[0..4], entry.granted, .little);
+            entry.granted = 0;
+            self.grants_pending -= 1;
+            return .{ .kind = .credit, .pane = entry.id, .generation = self.generation, .payload = body, .allocator = self.allocator };
+        };
+        return null;
+    }
+
+    fn clearPanes(self: *Client) void {
+        self.panes = @splat(null);
+        self.buffered = 0;
+        self.ahead_blocked = false;
+        self.grants_pending = 0;
     }
 
     /// Atomic admission for large user pastes. Either every chunk is queued or
@@ -324,16 +395,20 @@ pub const Client = struct {
                     .create, .attach => {
                         const session = reply.value.session orelse return error.InvalidReply;
                         if (session.panes.len > max_panes) return error.ResourceExhausted;
-                        self.panes = @splat(null);
+                        self.clearPanes();
                         self.generation += 1;
                         for (session.panes) |info| try self.addPane(info.id);
                     },
                     .spawn => try self.addPane(reply.value.pane orelse return error.InvalidReply),
                     .close => for (&self.panes) |*slot| {
-                        if (slot.* != null and slot.*.?.id == entry.pane) slot.* = null;
+                        if (slot.* != null and slot.*.?.id == entry.pane) {
+                            self.buffered -= slot.*.?.buffered;
+                            if (slot.*.?.granted > 0) self.grants_pending -= 1;
+                            slot.* = null;
+                        }
                     },
                     .detach => {
-                        self.panes = @splat(null);
+                        self.clearPanes();
                         self.generation += 1;
                     },
                     else => {},
@@ -346,7 +421,7 @@ pub const Client = struct {
                 defer event.deinit();
                 switch (event.value.event) {
                     .taken, .session_end => {
-                        self.panes = @splat(null);
+                        self.clearPanes();
                         self.generation += 1;
                     },
                     .resync => if (self.pane(event.value.pane orelse return error.InvalidPane) == null) return error.InvalidPane,
@@ -356,8 +431,10 @@ pub const Client = struct {
                 const entry = self.pane(h.stream) orelse return error.InvalidPane;
                 if (kind == .exit) _ = try p.decodeExit(bytes);
                 if (kind == .output) {
-                    if (bytes.len > p.window - entry.uncredited) return error.InvalidCredit;
+                    if (bytes.len > p.window - entry.uncredited - entry.granted) return error.InvalidCredit;
                     entry.uncredited += @intCast(bytes.len);
+                    entry.buffered += bytes.len;
+                    self.buffered += bytes.len;
                 }
             },
             else => unreachable,
@@ -370,5 +447,6 @@ pub const Client = struct {
             .payload = body,
             .allocator = self.allocator,
         });
+        if (kind == .output) if (self.pane(h.stream)) |entry| self.grant(entry);
     }
 };
