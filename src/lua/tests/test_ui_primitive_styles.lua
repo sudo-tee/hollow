@@ -8,26 +8,6 @@ describe("primitive style compatibility", function()
     hollow = harness.boot().hollow
   end)
 
-  it("keeps select theme defaults and whole-box action style overrides", function()
-    local ui = hollow.ui
-    local theme = hollow.theme.resolve_widget("select")
-    local normal = ui.action_button({ id = "action" })
-    assert.equals(theme.fg, normal.style.fg)
-    assert.equals(4, normal.style.radius)
-    assert.same({ left = 4, right = 4 }, normal.style.padding)
-    local override = ui.action_button({ id = "action", style = { padding = { left = 9 } } })
-    assert.same({ left = 9 }, override.style.padding)
-  end)
-
-  it("resolves action override tokens against explicit themes", function()
-    local node = hollow.ui.action_button({
-      id = "custom",
-      theme = { fg = "#111111", muted = "#222222", hover_fg = "#333333", hover_bg = "#444444" },
-      style = { fg = "muted" },
-    })
-    assert.equals("#222222", node.style.fg)
-  end)
-
   it("clones button styles and assigns event fields through one path", function()
     local ui = hollow.ui
     local old = function() end

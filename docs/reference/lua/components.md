@@ -166,7 +166,7 @@ inside `c.rich`, but the components are focusable and themed consistently:
 | Inline helper                      | Component                         |
 | ---------------------------------- | --------------------------------- |
 | `ui.row` / `ui.column` as a root   | `c.row` / `c.column` / `c.panel`  |
-| `ui.button`, `ui.action_button`    | `c.button`                        |
+| Inline `ui.button`                | `c.button`                        |
 | Removed inline tab constructors    | `c.tabs`                          |
 | `ui.text_input(...).render(theme)` | `c.input({ behavior = input })`   |
 | hand-rolled scrolled rows          | `c.list` / `c.picker`             |

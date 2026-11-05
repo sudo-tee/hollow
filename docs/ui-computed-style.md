@@ -72,8 +72,8 @@ the color.
 
 | Sheet | Used by |
 | --- | --- |
-| `button` | `ui.button` variants/sizes, `ui.action_button` (`root`), dialog buttons (`dialog`) |
-| `tab` | `ui.tab` (`badged` variant) |
+| `button` | `ui.button` variants/sizes, `c.button` (`root`), dialog buttons (`dialog`) |
+| `tab` | `c.tabs` (including badge variants) |
 | `list_row` | built-in list rows (`paint` options, `indicator`, `section_indicator`), raw row `variant`s (`root`), shared `row_gap`/`section_gap` |
 | `panel` | overlay chrome from `shared.theme_overlay_chrome` |
 | `select`, `palette`, `mux_navigator`, `activity` | the matching widgets |
@@ -106,9 +106,10 @@ Disabled public buttons suppress callbacks and hover paint, including callbacks
 registered by a previous enabled overlay render.
 
 New `ui.button` variant/size options opt into the themed recipe; ordinary raw
-buttons retain their original style behavior. `ui.action_button` always uses
-the recipe and preserves legacy whole-padding-box replacement and
-`hover_style` precedence. Tabs retain badge padding and background extension.
+buttons retain their original style behavior. `c.button` and `c.tabs` are the
+canonical interactive controls. Inline action and tab constructors were
+removed; their legacy whole-padding-box and hover override rules are no longer
+part of the public API.
 
 A selectable overlay row accepts explicit `selected` and a small `style`
 contract: foreground, background, bold, radius and hover. Only foreground/bold

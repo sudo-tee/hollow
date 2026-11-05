@@ -741,11 +741,6 @@
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
 
----@class HollowUiActionButtonOptions: HollowUiButtonOptions
----@field theme? HollowUiTheme Select widget theme by default.
----@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
----@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
-
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
 ---@alias HollowUiChild HollowUiInlineNode|number|boolean|nil|HollowUiChild[]
@@ -2780,10 +2775,6 @@ function ui.style(...) end
 function ui.styled(theme, ...) end
 
 --- Inline padded button. In overlay renders prefer `ui.components.button`.
----@param opts HollowUiActionButtonOptions
----@return HollowUiSpanNode
-function ui.action_button(opts) end
-
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode
 function ui.button(opts) end

@@ -172,7 +172,6 @@ return {
   ["hollow.theme.current"] = "fun(): HollowResolvedTheme",
   ["hollow.theme.get"] = "fun(name: string): HollowResolvedTheme",
   ["hollow.theme.resolve_widget"] = "fun(kind: string, resolved?: HollowResolvedTheme): HollowUiResolvedTheme",
-  ["hollow.ui.action_button"] = "fun(opts: HollowUiActionButtonOptions): HollowUiSpanNode",
   ["hollow.ui.bar.custom"] = "fun(opts: HollowUiBarCustomOptions): HollowUiBarCustomNode",
   ["hollow.ui.bar.key_legend"] = "fun(opts?: HollowUiBarKeyLegendOptions): HollowUiBarKeyLegendNode",
   ["hollow.ui.bar.tabs"] = "fun(opts?: HollowUiBarTabsOptions): HollowUiBarTabsNode",

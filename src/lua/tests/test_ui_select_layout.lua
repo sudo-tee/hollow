@@ -325,7 +325,7 @@ describe("Clay selectable list", function()
       label = function(value)
         return {
           ui.text(value),
-          ui.action_button({
+          ui.button({
             id = "inspect",
             text = "Inspect",
             on_click = function(event)
