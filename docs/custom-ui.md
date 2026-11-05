@@ -69,7 +69,7 @@ event as `on_event("click", { id = "my-id", ... })`.
 Use semantic button variants instead of deriving paint in each render:
 
 ```lua
-ui.action_button({
+hollow.ui.components.button({
   id = "save", text = "Save", variant = "primary", size = "sm",
   disabled = saving, on_click = save,
 })

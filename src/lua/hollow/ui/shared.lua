@@ -1255,15 +1255,4 @@ function M.render_widget(widget)
   return rendered
 end
 
----@param widget HollowUiWidget|nil
----@return HollowUiRows
-function M.render_widget_rows(widget)
-  local rendered = M.render_widget(widget)
-  if rendered == nil then
-    return {}
-  end
-
-  return M.normalize_widget_rows(rendered)
-end
-
 return M

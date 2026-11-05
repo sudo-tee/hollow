@@ -53,7 +53,7 @@ describe("shared presentation adapters", function()
     assert.is_nil(shared.normalize_surface_style({ fg = false, radius = 0, padding = 0 }))
   end)
 
-  it("retains the old native sidebar paint as explicit Lua defaults", function()
+  it("publishes edge placement and paints the sidebar through Clay", function()
     ui.sidebar.mount(ui.sidebar.new({
       width = 21,
       side = "right",
@@ -63,46 +63,42 @@ describe("shared presentation adapters", function()
       end,
     }))
     local sidebar = ui._sidebar_state()
-    assert.same({ fg = "#dcdcdc", bg = "#161b22", border = "#7aa2f7", alpha = 235 }, sidebar.style)
     assert.equals(21, sidebar.width)
     assert.equals("right", sidebar.side)
     assert.is_true(sidebar.reserve)
-    assert.equals("plain", sidebar.rows[1][1].text)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local nodes = ui._sidebar_layout_tree
+    assert.is_table(nodes)
+    assert.equals("plain", nodes[#nodes].text)
+    assert.equals("#161b22", nodes[1].bg)
+    assert.equals("#7aa2f7", nodes[1].border)
+    assert.equals(235, nodes[1].alpha)
   end)
 
-  it("shares row paint between sidebar and overlay without changing segment arrays", function()
-    local function row()
-      return ui.row({ ui.text("choice") }, {
-        id = "choice",
-        variant = "selectable",
-        selected = true,
-        style = { fg = "muted", radius = 6 },
-        divider = "divider",
-        accent_bar = false,
-      })
-    end
-    local palette = shared.palette("overlay")
-    ui.overlay.push(ui.overlay.new({
+  it("uses shared row recipes when converting inline sidebar rows into Clay", function()
+    ui.sidebar.mount(ui.sidebar.new({
+      width = 30,
       render = function()
-        local c = ui.components
-        return c.list_item({
+        return ui.row({ ui.text("choice") }, {
           id = "choice",
+          variant = "selectable",
           selected = true,
-          accent = false,
-          style = { radius = 6 },
-          c.rich({ style = { fg = "muted" }, ui.text("choice") }),
+          style = { fg = "muted", radius = 6 },
+          accent_bar = false,
         })
       end,
     }))
-    ui.sidebar.mount(ui.sidebar.new({ width = 30, render = row }))
-    local overlay = assert(clay.find(ui, ":choice"))
-    local sidebar = ui._sidebar_state()
-    assert.equals(overlay.bg, sidebar.row_styles[1].fill_bg)
-    assert.equals(overlay.radius, sidebar.row_styles[1].fill_radius)
-    assert.equals(palette.muted, sidebar.rows[1][1].fg)
-    assert.equals("choice", sidebar.rows[1][1].text)
-    assert.is_nil(sidebar.rows[1].segments)
-    assert.is_nil(sidebar.rows[1][1].bg)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local nodes = ui._sidebar_layout_tree
+    local theme = shared.palette("sidebar")
+    local text
+    for _, node in ipairs(nodes) do
+      if node.text == "choice" then
+        text = node
+      end
+    end
+    assert.is_table(text)
+    assert.equals(theme.muted, text.fg)
   end)
 
   it("routes sidebar segment clicks and hover to span handlers", function()
@@ -136,21 +132,19 @@ describe("shared presentation adapters", function()
         })
       end,
     }))
-    local sidebar = ui._sidebar_state()
-    assert.equals("go", sidebar.rows[1][1].id)
-    assert.equals("#00ff00", sidebar.rows[1][1].fg)
-    local auto_id = sidebar.rows[2][1].id
-    assert.equals("sidebar:auto:1", auto_id)
-
-    hollow._emit_builtin_event("sidebar:hover", { id = "go" })
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local surface = assert(require("hollow.state").get().ui.mounted_sidebar._sidebar_surface)
+    local go = surface.namespace .. "go"
+    local auto = surface.namespace .. "sidebar:auto:1"
+    local nodes = ui._sidebar_layout_tree
+    assert.is_table(nodes)
+    hollow._emit_builtin_event("sidebar:hover", { id = go })
     assert.equals(1, entered)
-    assert.equals("#ff0000", ui._sidebar_state().rows[1][1].fg)
-    hollow._emit_builtin_event("sidebar:click", { id = "go" })
-    hollow._emit_builtin_event("sidebar:click", { id = auto_id })
-    assert.same({ "go", auto_id }, clicks)
+    hollow._emit_builtin_event("sidebar:click", { id = go })
+    hollow._emit_builtin_event("sidebar:click", { id = auto })
+    assert.same({ "go", "sidebar:auto:1" }, clicks)
     hollow._emit_builtin_event("sidebar:leave", {})
     assert.equals(1, left)
-    assert.equals("#00ff00", ui._sidebar_state().rows[1][1].fg)
 
     ui.sidebar.unmount()
     assert.is_nil(ui._sidebar_state())
@@ -169,11 +163,11 @@ describe("shared presentation adapters", function()
       calls = calls + 1
       return original(...)
     end
-    local ok, result = pcall(ui._sidebar_state)
+    local ok = pcall(ui._sidebar_layout_prepare, 900, 600, 10, 20)
     shared.resolve_row_style = original
     assert.is_true(ok)
     assert.equals(1, calls)
-    assert.equals("choice", result.rows[1][1].text)
+    assert.equals("choice", ui._sidebar_layout_tree[#ui._sidebar_layout_tree].text)
   end)
 
   it("keeps sidebar paint overrides separate from geometry", function()
@@ -184,11 +178,15 @@ describe("shared presentation adapters", function()
         return ui.row({ ui.text("text") })
       end,
     }))
-    local sidebar = ui._sidebar_state()
-    assert.equals(shared.palette("sidebar").panel_bg, sidebar.style.bg)
-    assert.equals(shared.palette("sidebar").muted, sidebar.style.fg)
-    assert.equals(0, sidebar.style.alpha)
-    assert.equals(12, sidebar.width)
+    assert.equals(12, ui._sidebar_state().width)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local surface = ui._sidebar_layout_tree[1]
+    assert.equals(shared.palette("sidebar").panel_bg, surface.bg)
+    assert.equals(
+      shared.palette("sidebar").muted,
+      shared.sidebar_surface_style({ fg = "muted" }, shared.palette("sidebar")).fg
+    )
+    assert.equals(0, surface.alpha)
     assert.has_error(function()
       shared.sidebar_surface_style({ padding = 4 }, shared.palette("sidebar"))
     end, "hollow.ui: unsupported sidebar surface field padding")
@@ -259,7 +257,8 @@ describe("shared presentation adapters", function()
     })
     assert.equals("#112233", ui._topbar_state().items[1].tabs[1].fallback_style.bg)
     assert.equals("#223344", ui._topbar_state().items[1].tabs[1].fallback_style.selection_accent)
-    assert.equals("#334455", ui._sidebar_state().style.bg)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    assert.equals("#334455", ui._sidebar_layout_tree[1].bg)
     local row = assert(clay.find(ui, ":scroll"))
     assert.equals("#445566", row.scrollbar_track_color)
     assert.equals("#556677", row.scrollbar_thumb_color)

@@ -88,31 +88,4 @@ describe("UI hover", function()
     clay.nodes(ui)
     assert.is_nil(seen)
   end)
-
-  it("resolves explicit action themes and hover overrides", function()
-    local node = ui.action_button({
-      id = "action",
-      text = "Run",
-      theme = { fg = "#111111", hover_fg = "#222222", hover_bg = "#333333", muted = "#444444" },
-      style = { hover = { fg = "muted" } },
-      hover_style = { bg = "#555555" },
-    })
-    assert.equals("#111111", node.style.fg)
-    assert.equals("#444444", node.style.hover.fg)
-    assert.equals("#555555", node.style.hover.bg)
-    assert.is_table(ui.action_button({}).style.hover)
-    assert.equals("#abcdef", ui.action_button({ hover_style = { fg = "#abcdef" } }).style.hover.fg)
-    local ignored = ui.action_button({ id = "ignored", state = { hovered_id = "ignored" } })
-    assert.equals(hollow.theme.resolve_widget("select").fg, ignored.style.fg)
-  end)
-
-  it("keeps action hover padding as a whole-box override", function()
-    local node = ui.action_button({
-      id = "padding",
-      style = { padding = { left = 9, right = 7 } },
-      hover_style = { padding = { left = 2 } },
-    })
-    local hovered = shared.style_to_segment("Run", shared.apply_hover(node.style, node.style.id))
-    assert.same({ left = 2, right = 0, top = 0, bottom = 0 }, hovered.padding)
-  end)
 end)

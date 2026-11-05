@@ -11,59 +11,6 @@ describe("UI composition test suite", function()
   end)
 
   describe("unified composition API", function()
-    -- stylua: ignore start
-    it("composes selectable tabs with count badges", function()
-      local theme = { selection_fg = "#ffffff", selection_bg = "#111111", muted = "#888888", panel_bg = "#000000" }
-      local click = function() end
-      local tabs = hollow.ui.tab_bar({ theme = theme, tabs = {
-        { id = "one", label = "One", active = true, badge = { text = 3, color = "#ff0000" }, on_click = click },
-        { id = "two", label = "Two", badge = { text = 2, color = "#ff0000" }, on_click = click },
-      } })
-      local nodes = require("hollow.ui.shared").flatten_span_nodes(tabs.children)
-      assert.equals("One ", nodes[1].text)
-      assert.equals(theme.selection_bg, nodes[1].style.bg)
-      assert.equals("3", nodes[2].text)
-      assert.equals("#ff0000", nodes[2].style.bg)
-      assert.equals(2, nodes[1].style.background_extend)
-      assert.equals("Two ", nodes[5].text)
-      assert.equals(nodes[1].style.padding.right, nodes[5].style.padding.right)
-      assert.equals("two:badge", nodes[6].style.id)
-      assert.equals("2", nodes[6].text)
-      assert.equals(click, nodes[6].style.on_click)
-    end)
-    -- stylua: ignore end
-
-    it("provides opt-in action button defaults and hover overrides", function()
-      local theme = { fg = "#111111", hover_fg = "#eeeeee", hover_bg = "#222222" }
-      local style = { fg = "#333333", padding = { left = 9 } }
-      local click = function() end
-      local opts = {
-        id = "action",
-        text = "Run",
-        theme = theme,
-        state = { hovered_id = "other" },
-        style = style,
-        hover_style = { fg = "#ffffff" },
-        on_click = click,
-      }
-      local normal = hollow.ui.action_button(opts)
-      assert.equals("#333333", normal.style.fg)
-      assert.equals(4, normal.style.radius)
-      assert.same({ left = 9 }, normal.style.padding)
-      assert.equals(click, normal.style.on_click)
-      opts.state.hovered_id = "action"
-      local hover = hollow.ui.action_button(opts)
-      local hovered_style = require("hollow.ui.shared").apply_hover(hover.style, opts.id)
-      assert.equals("#ffffff", hovered_style.fg)
-      assert.equals("#222222", hovered_style.bg)
-      assert.same({ fg = "#333333", padding = { left = 9 } }, style)
-      local defaults = hollow.ui.action_button({ id = "default", theme = theme })
-      assert.same({ left = 4, right = 4 }, defaults.style.padding)
-      assert.has_error(function()
-        hollow.ui.action_button({ on_click = click })
-      end)
-    end)
-
     it("creates explicit row and column nodes", function()
       local sample_row = hollow.ui.row({ "hello", hollow.ui.text(" world", { bold = true }) }, {
         id = "sample-row",

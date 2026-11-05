@@ -287,17 +287,37 @@ end
 ---@param node HollowUiBarCustomNode
 ---@param ctx HollowWidgetCtx
 ---@return HollowUiSegment|nil
-local function serialize_custom(surface, node, ctx)
+local function serialize_custom(surface, node, ctx, handlers)
   local ok, rendered = pcall(node.render, ctx)
   if not ok then
     return nil
   end
+
+  -- Register the rendered content as well as the custom shell. There is no
+  -- event-time rerender or recursive fallback: every visible handler belongs
+  -- to the snapshot that produced the native bar.
+  if type(rendered) == "table" then
+    register_bar_events(rendered, handlers, next_bar_auto_id)
+  end
+  if type(node.style) == "table" then
+    events.add_handlers(handlers, node.style.id, node.style)
+  end
+  events.add_handlers(handlers, node.id, node)
 
   local segment
   if type(rendered) == "string" or type(rendered) == "table" then
     segment = serialize_bar_value(surface, rendered, "", node.style)
     segment.kind = "segment"
     segment.id = segment.id or node.id
+    -- Rendered content may own the segment id (e.g. an auto id for hover);
+    -- the custom node's handlers still apply where the content has none.
+    if segment.id ~= node.id and handlers[node.id] then
+      local entry = handlers[segment.id] or {}
+      for field, callback in pairs(handlers[node.id]) do
+        entry[field] = entry[field] or callback
+      end
+      handlers[segment.id] = entry
+    end
   end
 
   local expires_at = type(node.cache_ttl_ms) == "number"
@@ -337,12 +357,13 @@ local function serialize_bar_item(surface, node, ctx, handlers)
     return serialize_key_legend(surface, node)
   end
   if node._type == "bar_custom" then
-    return serialize_custom(surface, node, ctx)
+    return serialize_custom(surface, node, ctx, handlers)
   end
   if node._type == "spacer" then
     return { kind = "spacer" }, nil
   end
   if shared.is_span_node(node) then
+    register_bar_events(node, handlers, next_bar_auto_id)
     local segment = serialize_bar_value(surface, node, node.text or node.name or "", node.style)
     segment.kind = "segment"
     return segment, nil

@@ -153,6 +153,105 @@ describe("docked sidebar", function()
     end)
   end)
 
+  it("accepts component-native content on the edge and in the docked pane", function()
+    local hits = {}
+    local c = ui.components
+    ui.sidebar.mount(ui.sidebar.new({
+      width = 27,
+      style = { bg = "#112233" },
+      render = function()
+        return c.column({
+          c.button({
+            id = "native",
+            text = "Native",
+            on_click = function()
+              hits[#hits + 1] = "native"
+            end,
+          }),
+        })
+      end,
+    }))
+    assert.equals(27, ui._sidebar_state().width)
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    assert.is_table(ui._sidebar_layout_tree)
+    local sidebar = require("hollow.state").get().ui.mounted_sidebar
+    local surface = assert(sidebar._sidebar_surface)
+    local button = assert(find(ui._sidebar_layout_tree, "native"))
+    assert.is_true(button.clickable)
+    env.hollow._emit_builtin_event("sidebar:click", { id = button.id })
+    assert.same({ "native" }, hits)
+
+    local pane = assert(ui.sidebar.dock())
+    assert.is_nil(ui._sidebar_state())
+    local owner = assert(owners[pane.id])
+    local nodes = owner:snapshot(context(pane.id))
+    assert.is_truthy(find(nodes, "native"))
+    assert.matches("Native", texts(nodes), 1, true)
+    owner:destroy()
+    assert.is_table(ui._sidebar_state())
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    assert.equals(surface, sidebar._sidebar_surface)
+  end)
+
+  it("destroys the edge surface and removes callbacks on unmount", function()
+    local clicks = 0
+    ui.sidebar.mount(ui.sidebar.new({
+      render = function()
+        return ui.row({
+          ui.button({
+            id = "old",
+            text = "Old",
+            on_click = function()
+              clicks = clicks + 1
+            end,
+          }),
+        })
+      end,
+    }))
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    local widget = require("hollow.state").get().ui.mounted_sidebar
+    local surface = assert(widget._sidebar_surface)
+    local id = surface.namespace .. "old"
+    env.hollow._emit_builtin_event("sidebar:click", { id = id })
+    assert.equals(1, clicks)
+    ui.sidebar.unmount()
+    assert.is_true(surface.destroyed)
+    assert.is_nil(widget._sidebar_surface)
+    assert.is_nil(ui._sidebar_state())
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    assert.is_nil(ui._sidebar_layout_tree)
+    env.hollow._emit_builtin_event("sidebar:click", { id = id })
+    assert.equals(1, clicks)
+  end)
+
+  it("dispatches edge clicks by authored span id and keeps row accent bars", function()
+    local clicks = 0
+    ui.sidebar.mount(ui.sidebar.new({
+      render = function()
+        return ui.row({
+          ui.button({
+            id = "authored",
+            text = "Authored",
+            on_click = function()
+              clicks = clicks + 1
+            end,
+          }),
+        }, { accent_bar = "#ff0000" })
+      end,
+    }))
+    ui._sidebar_layout_prepare(800, 600, 10, 20)
+    env.hollow._emit_builtin_event("sidebar:click", { id = "authored" })
+    assert.equals(1, clicks)
+    local accented
+    for _, node in ipairs(ui._sidebar_layout_tree) do
+      if node.border == "#ff0000" then
+        accented = node
+      end
+    end
+    assert.is_table(accented)
+    assert.equals(2, accented.border_width.left)
+  end)
+
   it("restores the overlay when docking fails", function()
     mount({})
     local pane = assert(ui.sidebar.dock())

@@ -22,11 +22,11 @@ the modal. Runtime theme changes refresh the open panel and controls. No bars
 are replaced. The path above must point to your checkout.
 
 The authoring pattern: select a widget palette with `ui.modal({ theme = "select",
-... })`, pass its render callback's palette to button/tab primitives, and leave
-row selection paint to `variant = "selectable"`. Use `ui.style` for local
-overrides; do not import private recipe helpers. For disabled actions, set
-`disabled = true` on `ui.button` or `ui.action_button` rather than only dimming
-their colors.
+... })`, use `hollow.ui.components.button` and `hollow.ui.components.tabs`
+inside its render function, and let the components resolve theme colors.
+Use `ui.style` for local overrides; do not import private recipe helpers.
+For disabled actions, set `disabled = true` on the button rather than only
+dimming its colors.
 
 ## Replace the top bar entirely
 

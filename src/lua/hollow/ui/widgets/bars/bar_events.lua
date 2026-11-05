@@ -10,6 +10,23 @@ local BAR_EVENT_FIELDS = {
   "on_mouse_leave",
 }
 
+--- Merge `source`'s event callbacks into the handler entry for `id`.
+---@param handlers table<string, table<string, function>>
+---@param id string|nil
+---@param source table
+function M.add_handlers(handlers, id, source)
+  if type(id) ~= "string" or id == "" then
+    return
+  end
+  local entry = handlers[id] or {}
+  for _, field in ipairs(BAR_EVENT_FIELDS) do
+    if type(source[field]) == "function" then
+      entry[field] = source[field]
+    end
+  end
+  handlers[id] = entry
+end
+
 --- Assign auto-ids to handler/hover spans and register events in one walk.
 --- Mutates original span style so `serialize_bar_value` sees the id.
 ---@param next_auto_id fun():string
@@ -31,15 +48,7 @@ function M.register(value, handlers, next_auto_id)
           style.id = next_auto_id()
         end
       end
-      if type(style.id) == "string" and style.id ~= "" then
-        local entry = handlers[style.id] or {}
-        tbl(BAR_EVENT_FIELDS):each(function(field)
-          if type(style[field]) == "function" then
-            entry[field] = style[field]
-          end
-        end)
-        handlers[style.id] = entry
-      end
+      M.add_handlers(handlers, style.id, style)
     end
   end)
 end
@@ -110,7 +119,7 @@ function M.resolve_value(surface, value)
   return resolved
 end
 
-function M.install(ui, active_widget, invalidate)
+function M.install(ui, invalidate)
   local function node_id(surface, payload)
     if type(payload) ~= "table" then
       return nil
@@ -126,33 +135,7 @@ function M.install(ui, active_widget, invalidate)
     local handler = type(handlers) == "table" and handlers[id]
     if type(handler) == "table" and type(handler[field]) == "function" then
       handler[field](payload)
-      return true
     end
-
-    local function visit(node)
-      if type(node) ~= "table" then
-        return false
-      end
-      if node._type == "group" then
-        return tbl(node.children):some(visit)
-      end
-      if node._type == "bar_custom" and node.id == id and type(node[field]) == "function" then
-        node[field](payload)
-        return true
-      end
-      local style = node.style
-      if type(style) == "table" and style.id == id and type(style[field]) == "function" then
-        style[field](payload)
-        return true
-      end
-      return false
-    end
-
-    local widget = active_widget(surface)
-    if widget == nil or type(id) ~= "string" or id == "" then
-      return false
-    end
-    return tbl(shared.normalize_bar_items(shared.render_widget(widget))):some(visit)
   end
   function ui.handle_bar_node_event(kind, payload)
     local surface = kind:match("^(%a+bar):")

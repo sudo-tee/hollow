@@ -43,7 +43,7 @@ describe("unified component styling", function()
       ui.components.button({ variant = "typo" })
     end, "hollow.ui: unknown button variant typo")
     assert.has_error(function()
-      ui.action_button({ size = "large" })
+      ui.button({ size = "large" })
     end, "hollow.ui: unknown button size large")
     assert.has_error(function()
       local _ = require("hollow.ui.recipes.list_row")(palette, { variant = "typo" }).paint
@@ -221,7 +221,7 @@ describe("unified component styling", function()
     ui.topbar.mount(ui.topbar.new({
       render = function()
         return {
-          ui.action_button({
+          ui.button({
             id = "off",
             variant = "primary",
             disabled = disabled,
@@ -322,12 +322,12 @@ describe("unified component styling", function()
   end)
 
   it("refreshes recipe and native hover colors after a theme change", function()
-    local before = ui.action_button({}).style.fg
+    local before = ui.button({ variant = "default" }).style.fg
     hollow.config.set({
       theme = { ui = { widgets = { all = { fg = "#123456", hover_bg = "#654321" } } } },
     })
-    assert.equals("#123456", ui.action_button({}).style.fg)
-    assert.is_not.equal(before, ui.action_button({}).style.fg)
+    assert.equals("#123456", ui.button({ variant = "default" }).style.fg)
+    assert.is_not.equal(before, ui.button({ variant = "default" }).style.fg)
     ui.overlay.push(ui.overlay.new({
       render = function()
         return ui.components.list_item({ id = "row", ui.components.text("row") })
@@ -511,7 +511,16 @@ describe("unified component styling", function()
       return ui.row({ ui.text("detail", { fg = "muted" }) }, { theme = { muted = "#123456" } })
     end
     ui.sidebar.mount(ui.sidebar.new({ width = 20, render = row }))
-    assert.equals("#123456", ui._sidebar_state().rows[1][1].fg)
+    ui._sidebar_layout_prepare(900, 600, 10, 20)
+    local nodes = ui._sidebar_layout_tree
+    local detail
+    for _, node in ipairs(nodes) do
+      if node.text == "detail" then
+        detail = node
+      end
+    end
+    assert.is_table(detail)
+    assert.equals("#123456", detail.fg)
   end)
 
   it("shares finite surface pixel normalization without changing span fractions", function()

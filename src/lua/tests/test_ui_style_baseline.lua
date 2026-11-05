@@ -44,9 +44,14 @@ describe("styling unification baseline", function()
 
   it("preserves action paint and geometry across bar and overlay hover transitions", function()
     local ui = hollow.ui
-    local theme = { fg = "#112233", hover_fg = "#223344", hover_bg = "#334455" }
+    local style = {
+      fg = "#112233",
+      radius = 4,
+      padding = { left = 4, right = 4 },
+      hover = { fg = "#223344", bg = "#334455" },
+    }
     local function action()
-      return ui.action_button({ id = "run", text = "Run", theme = theme })
+      return ui.button({ id = "run", text = "Run", style = style })
     end
     local widget = ui.overlay.new({
       render = function()

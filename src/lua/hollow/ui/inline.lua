@@ -1,6 +1,5 @@
 local button_styles = require("hollow.ui.recipes.button")
 local shared = require("hollow.ui.shared")
-local tab_styles = require("hollow.ui.recipes.tab")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -225,10 +224,6 @@ function ui.button(opts)
   return ui.span(opts.text or "", style)
 end
 
-local function select_theme(opts)
-  return opts.theme or shared.palette("select")
-end
-
 --- Merge style layers like `ui.style`, then resolve tokens against `theme`.
 --- Without a theme, tokens stay unresolved for serialization.
 ---@param theme HollowUiTheme|nil
@@ -237,96 +232,6 @@ end
 function ui.styled(theme, ...)
   local style = ui.style(...)
   return theme and shared.resolve_tokens(style, theme) or style
-end
-
---- A padded overlay action with theme-aware hover styling.
----@param opts HollowUiActionButtonOptions
----@return HollowUiSpanNode
-function ui.action_button(opts)
-  opts = opts or {}
-  local theme = select_theme(opts)
-  local style = button_styles(theme, {
-    variant = opts.variant,
-    size = opts.size,
-    disabled = opts.disabled == true,
-  }).root
-  local hover = style.hover
-  for key, value in pairs(opts.style or {}) do
-    if key ~= "hover" then
-      style[key] = util.clone_value(value)
-    elseif type(value) == "table" then
-      hover = shared.merge_styles(hover, value)
-    else
-      hover = value
-    end
-  end
-  if type(opts.hover_style) == "table" then
-    hover = shared.merge_styles(hover, opts.hover_style)
-    if opts.hover_style.padding ~= nil then
-      -- Legacy hover overrides replace the whole box, rather than inherit its sides.
-      hover.padding = shared.normalize_segment_padding(opts.hover_style.padding)
-    end
-  end
-  style.hover = hover
-  -- The recipe owns and resolves its defaults. Resolve again only when local
-  -- overrides may have introduced tokens, avoiding a redundant clone per render.
-  if type(opts.style) == "table" or type(opts.hover_style) == "table" then
-    style = shared.resolve_tokens(style, theme)
-  end
-  return ui.button({
-    id = opts.id,
-    disabled = opts.disabled,
-    text = opts.text,
-    style = style,
-    on_click = opts.on_click,
-    on_mouse_enter = opts.on_mouse_enter,
-    on_mouse_leave = opts.on_mouse_leave,
-  })
-end
-
---- A selectable tab with an optional count badge.
----@param opts HollowUiTabOptions
----@return HollowUiGroupNode
-function ui.tab(opts)
-  local theme = select_theme(opts)
-  local active = opts.active == true
-  local badge = opts.badge
-  return ui.group({
-    ui.button({
-      id = opts.id,
-      text = badge and (opts.label .. " ") or opts.label,
-      style = tab_styles(theme, {
-        variant = badge and "badged" or nil,
-        selected = active,
-      }).root,
-      on_click = opts.on_click,
-    }),
-    ui.when(badge, function()
-      return {
-        ui.button({
-          id = opts.id .. ":badge",
-          text = tostring(badge.text),
-          style = ui.styled(theme, ui.styles.badge, { bg = badge.color }),
-          on_click = opts.on_click,
-        }),
-        " ",
-      }
-    end),
-  })
-end
-
---- Compose tabs with consistent spacing.
----@param opts HollowUiTabBarOptions
----@return HollowUiGroupNode
-function ui.tab_bar(opts)
-  return ui.group(ui.join(
-    ui.each(opts.tabs or {}, function(tab)
-      local tab_opts = util.clone_value(tab)
-      tab_opts.theme = tab_opts.theme or opts.theme
-      return ui.tab(tab_opts)
-    end),
-    "  "
-  ))
 end
 
 ---@param opts HollowUiBarTabsOptions|nil

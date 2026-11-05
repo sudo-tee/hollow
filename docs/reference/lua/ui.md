@@ -50,9 +50,6 @@ hollow.ui.row(children, opts?)     -- explicit row node
 hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
-hollow.ui.action_button(opts)      -- padded action with hover styling
-hollow.ui.tab(opts)                -- selectable tab with optional badge
-hollow.ui.tab_bar(opts)            -- spaced group of tabs
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
 hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
 hollow.ui.each(list, fn)            -- map dense list to child fragment
@@ -134,40 +131,30 @@ ui.join({ "one", false, "three" }, function(i)
 end)
 ```
 
-> In overlay renders prefer `hollow.ui.components.button` and
-> `hollow.ui.components.tabs`: they are focusable and share the component
-> recipes. The inline helpers below remain for inline rows and rich labels.
-
-`ui.action_button` is an inline button with horizontal padding, rounded
-corners, and select-theme colors. Pass the modal render `theme` to match the
-surrounding widget; hover needs no render state. `style` overrides normal defaults;
-`hover_style` overrides hover defaults. Like `ui.button`, a clickable action needs
-a stable `id`.
-
-`state` remains accepted for compatibility; native overlay hover now applies
-the style's `hover` layer. Legacy `style.padding` and `hover_style.padding`
-replace the whole padding box rather than merging sparse edges.
+For layout and interactive overlays, use `hollow.ui.components.button` and
+`hollow.ui.components.tabs`; they are keyboard-focusable and share stylesheets.
+The inline `ui.button` remains useful for compact native bar content.
 
 ```lua
-render = function(theme)
-  return hollow.ui.row({ hollow.ui.action_button({
-    id = "example:copy", text = "Copy", theme = theme,
-    on_click = copy,
-  }) })
-end
+local c = hollow.ui.components
+c.button({ id = "example:copy", text = "Copy", on_click = copy })
 ```
 
-`ui.tab_bar` composes tabs into an inline group for use in a row. Each tab has a
-stable `id`, `label`, `active` state, and optional `on_click` and `badge`. Active
-tabs include the badge text inside their highlight; inactive tabs display a
-separate badge. Pass `theme` to match the surrounding modal.
+Use `hollow.ui.components.tabs` for tabs, including badges and keyboard-focusable
+click targets. Inline tab constructors have been removed.
 
 ```lua
-ui.tab_bar({ theme = theme, tabs = {
-  { id = "inbox", label = "Inbox", active = true,
-    badge = { text = 3, color = theme.title }, on_click = open_inbox },
-  { id = "history", label = "History", on_click = open_history },
-} })
+local c = hollow.ui.components
+c.tabs({
+  active = "inbox",
+  tabs = {
+    { id = "inbox", label = "Inbox", badge = { text = "3", color = theme.title } },
+    { id = "history", label = "History" },
+  },
+  on_select = function(id)
+    if id == "inbox" then open_inbox() else open_history() end
+  end,
+})
 ```
 
 ### Read-only text view
@@ -180,8 +167,14 @@ mouse-wheel scrolling, and a draggable scrollbar.
 local view = hollow.ui.text_view({
   text = "Long message...", width = 80, row_budget = 16, id = "message",
 })
--- In an existing modal:
--- render: compose view.render(theme), a list of row nodes, into your column
+-- In an existing modal render callback, use the visible text and
+-- scrollbar metadata to construct native Clay components:
+local viewport = view.visible()
+local c = hollow.ui.components
+local body = c.each(viewport.lines, function(line)
+  return c.text(line, { fg = theme.fg }, { wrap = "none" })
+end)
+-- Use viewport.scrollbar as the id/ratio/size source for c.scroll.
 -- keys: view.keys(key, mods)
 -- on_event: view.on_event(name, payload)
 view.set("Replacement text") -- resets scrolling
@@ -310,10 +303,8 @@ Button variants are `default`, `primary`, `destructive`, and `ghost`. Sizes
 are `sm` (6×2 pixel padding) and `md` (8×3). Specifying a variant or size opts a
 raw `ui.button` into the select-palette recipe; otherwise its original raw style
 behavior is preserved. `opts.theme` can supply a partial palette.
-`ui.action_button` accepts the same variant, size and disabled options while
-retaining its original padding defaults and override rules. Disabled buttons
-suppress click/hover callbacks and hover paint. They do not introduce a new
-keyboard-navigation model.
+Disabled inline buttons suppress click/hover callbacks and hover paint.
+For keyboard focus and spatial layout, use `c.button`.
 
 Selectable overlay row recipes resolve model selection above pointer hover;
 explicit instance styles remain final overrides. Row
@@ -372,11 +363,6 @@ These are the existing rules preserved during styling unification:
   edges and nested `hover`, skips `nil`/`false` layers, and preserves explicit
   `false` field values. A `nil` field is absent, not a request to clear an
   earlier layer.
-- `ui.action_button` starts with the select palette (or the supplied
-  `opts.theme`). `opts.style` replaces ordinary fields and whole padding boxes;
-  its `hover` table merges over the default hover. Legacy `opts.hover_style`
-  wins over that hover table, and its padding replaces the whole hover box.
-  Tokens in these overrides resolve against the same palette.
 - Hover on an identified span overrides its base style only while that span
   is hovered in bar/sidebar adapters. Clay overlays publish native `hover_bg`
   paint instead of reserializing spans on hover. List rows use a separate state policy: selected paint

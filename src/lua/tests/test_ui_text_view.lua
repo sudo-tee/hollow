@@ -9,11 +9,7 @@ describe("read-only text view", function()
   end)
 
   local function lines(view)
-    local result = {}
-    for _, row in ipairs(view.render(theme)) do
-      result[#result + 1] = row.children[1].text
-    end
-    return result
+    return view.visible().lines
   end
 
   it("wraps words and preserves paragraph breaks", function()
@@ -63,5 +59,34 @@ describe("read-only text view", function()
     assert.same({ "3", "4" }, lines(view))
     view.set("new")
     assert.same({ "new" }, lines(view))
+  end)
+
+  it("returns viewport metadata instead of legacy row nodes", function()
+    local view = hollow.ui.text_view({
+      text = "first\nsecond\nthird\nfourth",
+      width = 20,
+      row_budget = 2,
+      id = "details",
+    })
+    local first = view.visible()
+    assert.same({ "first", "second" }, first.lines)
+    assert.is_table(first.scrollbar)
+    assert.matches("^details:scrollbar:", first.scrollbar.id)
+    assert.equals(0, first.scrollbar.ratio)
+    assert.is_true(first.scrollbar.size > 0 and first.scrollbar.size < 1)
+    view.nav.index = 4
+    local last = view.visible()
+    assert.same({ "third", "fourth" }, last.lines)
+    assert.equals(1, last.scrollbar.ratio)
+  end)
+
+  it("keeps the scrollbar controller and viewport synchronized", function()
+    local view = hollow.ui.text_view({ text = "one\ntwo\nthree", width = 20, row_budget = 2 })
+    local bar = assert(view.visible().scrollbar)
+    assert.is_true(view.on_event("overlay:scrollbar", { id = bar.id, ratio = 1 }))
+    assert.same({ "two", "three" }, lines(view))
+    view.set("replacement")
+    assert.same({ "replacement" }, lines(view))
+    assert.is_nil(view.visible().scrollbar)
   end)
 end)

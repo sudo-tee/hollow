@@ -741,23 +741,6 @@
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
 
----@class HollowUiActionButtonOptions: HollowUiButtonOptions
----@field theme? HollowUiTheme Select widget theme by default.
----@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
----@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
-
----@class HollowUiTabOptions
----@field id string
----@field label string
----@field active? boolean
----@field badge? { text: string|number, color: HollowColor }
----@field theme? HollowUiTheme Select widget theme by default.
----@field on_click? fun(e: { id: string })
-
----@class HollowUiTabBarOptions
----@field tabs HollowUiTabOptions[]
----@field theme? HollowUiTheme Default theme for tabs.
-
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
 ---@alias HollowUiChild HollowUiInlineNode|number|boolean|nil|HollowUiChild[]
@@ -2792,22 +2775,9 @@ function ui.style(...) end
 function ui.styled(theme, ...) end
 
 --- Inline padded button. In overlay renders prefer `ui.components.button`.
----@param opts HollowUiActionButtonOptions
----@return HollowUiSpanNode
-function ui.action_button(opts) end
-
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode
 function ui.button(opts) end
-
----@param opts HollowUiTabOptions
----@return HollowUiGroupNode
-function ui.tab(opts) end
-
---- Inline tab group. In overlay renders prefer `ui.components.tabs`.
----@param opts HollowUiTabBarOptions
----@return HollowUiGroupNode
-function ui.tab_bar(opts) end
 
 ---@param spec HollowUiModalSpec
 ---@return HollowUiModalHandle|nil Returns nil if an exclusive dialog is already open.
@@ -2834,10 +2804,14 @@ function ui.scroll_nav(n, opts) end
 ---@return HollowUiTextInput
 function ui.text_input(opts) end
 
+---@class HollowUiTextViewport
+---@field lines string[]
+---@field scrollbar? { id: string, ratio: number, size: number }
+
 ---@class HollowUiTextView
 ---@field nav HollowUiScrollNav
 ---@field set fun(text: string)
----@field render fun(theme: HollowUiTheme): HollowUiRowNode[]
+---@field visible fun(): HollowUiTextViewport
 ---@field keys fun(key: string, mods: HollowUiKeyMods): boolean
 ---@field on_event fun(name: string, event: table): boolean
 

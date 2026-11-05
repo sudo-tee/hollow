@@ -650,12 +650,12 @@ function ui.activity.open(opts)
       if measured then
         detail_options.row_budget = math.max(1, math.min(20, math.floor(measured.height / cell_h)))
       end
-      local detail_rows = detail_view.render(theme)
-      local body = c.each(detail_rows, function(row)
-        return c.text(shared.nodes_plain_text(row.children), { fg = theme.fg }, { wrap = "none" })
+      local detail_viewport = detail_view.visible()
+      local body = c.each(detail_viewport.lines, function(text)
+        return c.text(text, { fg = theme.fg }, { wrap = "none" })
       end)
       local header = render_details_header()
-      local scrollbar = detail_rows[1] or {}
+      local scrollbar = detail_viewport.scrollbar
       return c.stack({
         theme = theme,
         divided = true,
@@ -670,12 +670,12 @@ function ui.activity.open(opts)
           width = "grow",
           height = "grow",
           measure = true,
-          scrollbar = scrollbar.scrollbar_track and {
-            id = scrollbar.scrollbar_id,
-            ratio = scrollbar.scrollbar_thumb_ratio,
-            size = scrollbar.scrollbar_thumb_size,
-            track_color = scrollbar.scrollbar_track_color,
-            thumb_color = scrollbar.scrollbar_thumb_color,
+          scrollbar = scrollbar and {
+            id = scrollbar.id,
+            ratio = scrollbar.ratio,
+            size = scrollbar.size,
+            track_color = theme.scrollbar_track,
+            thumb_color = theme.scrollbar_thumb,
           } or nil,
           body,
         }),
