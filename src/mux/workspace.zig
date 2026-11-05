@@ -17,6 +17,8 @@ pub const Workspace = struct {
     active_tab: ?*Tab = null,
     /// Workspace-scoped docks, shown only while this workspace is active.
     docks: Docks = .{},
+    /// Borrowed from the app's persistent-session owner, never destroyed here.
+    session_controller: ?*@import("../session/controller.zig").Controller = null,
 
     pub const PaneIterator = struct {
         workspace: *Workspace,

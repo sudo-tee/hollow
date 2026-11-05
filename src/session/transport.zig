@@ -103,6 +103,12 @@ pub const Connection = struct {
         };
     }
 
+    pub fn attachmentGeneration(self: *Connection) u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.client.generation;
+    }
+
     pub fn request(self: *Connection, value: p.Request) !u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -165,6 +171,17 @@ pub const Connection = struct {
         defer self.mutex.unlock(self.io);
         if (self.closing or generation != self.client.generation) return error.Detached;
         const id = try self.client.request(.{ .id = 0, .op = .close, .pane = pane });
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
+    pub fn killAttached(self: *Connection, generation: u64) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        // No explicit session ID: owner must still consider this client
+        // attached. A take-over racing this request cannot kill the new viewer.
+        const id = try self.client.request(.{ .id = 0, .op = .kill });
         self.changed.broadcast(self.io);
         return id;
     }

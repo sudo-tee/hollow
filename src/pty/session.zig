@@ -45,6 +45,7 @@ pub const SessionPty = struct {
     }
 
     pub fn requestClose(self: *SessionPty) !u64 {
+        if (self.detached) return error.Detached;
         if (self.close_request) |id| return id;
         const id = try self.connection.closePane(self.generation, self.pane);
         self.close_request = id;
@@ -94,12 +95,16 @@ pub const SessionPty = struct {
     /// Admission failure is retryable: unparsed remains unchanged.
     pub fn parsed(self: *SessionPty, count: usize) !void {
         if (count > self.unparsed) return error.InvalidCredit;
+        if (self.detached) {
+            self.unparsed -= count;
+            return;
+        }
         try self.connection.consumedBytes(self.generation, self.pane, count);
         self.unparsed -= count;
     }
 
     pub fn isAlive(self: *SessionPty) bool {
-        return !self.detached and self.status == null and self.close_request == null and self.connection.status().phase != .ended;
+        return !self.detached and self.status == null and self.connection.status().phase != .ended;
     }
 
     pub fn exitStatus(self: *const SessionPty) ?u32 {
@@ -124,7 +129,7 @@ pub const SessionPty = struct {
     }
 
     pub fn writeAll(self: *SessionPty, bytes: []const u8) !void {
-        if (!self.isAlive()) return error.EndOfStream;
+        if (!self.isAlive() or self.close_request != null) return error.EndOfStream;
         self.flushResize();
         try self.connection.input(self.generation, self.pane, bytes);
     }
@@ -142,6 +147,10 @@ pub const SessionPty = struct {
     }
 
     fn flushResize(self: *SessionPty) void {
+        if (self.detached) {
+            self.pending_resize = null;
+            return;
+        }
         const size = self.pending_resize orelse return;
         self.connection.resize(self.generation, self.pane, size.cols, size.rows) catch |err| {
             if (err != error.ResourceExhausted and err != error.OutOfMemory) self.pending_resize = null;

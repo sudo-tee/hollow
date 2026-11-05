@@ -16,6 +16,8 @@ pub const Tab = struct {
     id: usize,
     panes: std.ArrayList(*Pane),
     active_pane: ?*Pane = null,
+    /// App close-tab action waiting for remote session pane acknowledgements.
+    close_after_session_ack: bool = false,
     root_split: ?*SplitNode = null,
     maximized_pane: ?*Pane = null,
     maximized_show_background: bool = false,

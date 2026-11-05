@@ -26,6 +26,170 @@ const SplitCommandMode = app_mod.SplitCommandMode;
 const Pane = @import("../pane.zig").Pane;
 const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
 const pane_lifecycle = @import("pane_lifecycle.zig");
+const SessionController = @import("../session/controller.zig").Controller;
+const SessionTransport = @import("../session/transport.zig");
+const SessionConnection = SessionTransport.Connection;
+const SessionProtocol = @import("../agent/session_protocol.zig");
+const p = SessionTransport.p;
+
+fn wakeApp(context: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context));
+    app.signalWake();
+}
+
+/// Create a session bridge whose worker wakes the GUI when frames arrive.
+/// Connection ownership transfers to App only after addSessionWorkspace succeeds.
+pub fn createSessionConnection(self: *App, options: SessionTransport.Options) !*SessionConnection {
+    var session_options = options;
+    session_options.wake = .{ .context = self, .callback = wakeApp };
+    return SessionConnection.create(self.allocator, io.get(), session_options);
+}
+
+/// Publish an already attached owner session as a workspace. On success App
+/// owns the controller and connection; on failure the caller retains connection.
+pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8) !*Workspace {
+    const mux = if (self.mux) |*value| value else return error.MuxUnavailable;
+    const runtime = if (self.ghostty) |*value| value else return error.TerminalUnavailable;
+    const status = connection.status();
+    if (status.phase != .ready or status.format == null) return error.SessionNotReady;
+    if (info.id.len == 0) return error.InvalidSession;
+
+    try self.session_controllers.ensureUnusedCapacity(self.allocator, 1);
+    const controller = try self.allocator.create(SessionController);
+    controller.* = SessionController.init(self.allocator, connection);
+    errdefer {
+        self.allocator.free(controller.session_id);
+        self.allocator.destroy(controller);
+    }
+    controller.session_id = try self.allocator.dupe(u8, info.id);
+    controller.generation = connection.attachmentGeneration();
+    controller.revision = info.revision;
+
+    const previous = mux.activePane();
+    const workspace = try mux.addSessionWorkspace(
+        runtime,
+        terminal_callbacks.terminalCallbacks(),
+        self.config,
+        controller,
+        info,
+        domain,
+        @import("session_borrowers.zig").beforeReplace,
+    );
+    self.session_controllers.appendAssumeCapacity(controller);
+    htp.bindHtpHandlers(self);
+    self.syncActivePaneChange(previous, mux.activePane());
+    self.refreshActivePaneDisplay();
+    self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
+    self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+    self.requestLayoutResize(false);
+    self.requestLayoutRefresh();
+    return workspace;
+}
+
+/// Detach views first (mux teardown does this), then stop/join transports.
+pub fn deinitSessionControllers(self: *App) void {
+    for (self.session_controllers.items) |controller| {
+        const connection = controller.connection;
+        controller.deinit();
+        connection.destroy();
+        self.allocator.destroy(controller);
+    }
+    self.session_controllers.deinit(self.allocator);
+    self.session_controllers = .empty;
+}
+
+/// Dispatch bounded frame batches on the GUI thread. Pane polling runs between
+/// passes so full pane queues and snapshot budgets can make progress.
+pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
+    // Control handlers emit Lua, which can append controllers and reallocate
+    // this list. Do not retain its backing slice across a handler invocation.
+    const count = self.session_controllers.items.len;
+    var index: usize = 0;
+    while (index < count and index < self.session_controllers.items.len) : (index += 1) {
+        const controller = self.session_controllers.items[index];
+        controller.reconcile();
+        controller.flushCloses() catch |err| {
+            std.log.warn("session close admission failed: {s}", .{@errorName(err)});
+        };
+
+        var dispatched: usize = 0;
+        while (dispatched < 64) : (dispatched += 1) {
+            const step = controller.step() catch |err| {
+                std.log.err("session controller failed: {s}", .{@errorName(err)});
+                self.markAutomationChanged();
+                break;
+            };
+            switch (step) {
+                .idle, .blocked => break,
+                .dispatched => {},
+                .control => |message| {
+                    const handled = handleSessionControl(self, runtime, controller, message);
+                    message.deinit();
+                    if (!handled) break;
+                },
+            }
+        }
+        // A bounded batch may leave frames without another network arrival.
+        // Close admission also needs a retry after the writer frees capacity.
+        if (dispatched == 64 or (controller.close_work and sessionCanCloseRemotely(controller))) self.signalWake();
+    }
+
+    retireSessionControllers(self);
+}
+
+fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *SessionController, message: SessionTransport.Message) bool {
+    if (message.kind == .reply) {
+        const request_id = message.request_id orelse return false;
+        const pane_id = controller.closeTarget(request_id) orelse return false;
+        const reply = SessionProtocol.parse(SessionProtocol.Reply, self.allocator, message.payload) catch |err| {
+            std.log.err("invalid session close reply: {s}", .{@errorName(err)});
+            return true;
+        };
+        defer reply.deinit();
+        if (!reply.value.ok) {
+            std.log.warn("session pane close rejected: {s}", .{reply.value.@"error" orelse "unknown error"});
+            return true;
+        }
+        closePaneByIdNow(self, runtime, pane_id);
+        self.markAutomationChanged();
+        return true;
+    }
+
+    if (message.kind == .event) return true;
+    return false;
+}
+
+fn retireSessionControllers(self: *App) void {
+    var index: usize = 0;
+    while (index < self.session_controllers.items.len) {
+        const controller = self.session_controllers.items[index];
+        const status = controller.connection.status();
+        const in_mux = if (self.mux) |*mux| blk: {
+            for (mux.workspaces.items) |workspace| {
+                if (workspace.session_controller == controller) break :blk true;
+            }
+            break :blk false;
+        } else false;
+
+        if (in_mux or (controller.hasBindings() and status.phase != .ended)) {
+            index += 1;
+            continue;
+        }
+        if (status.phase != .ended) {
+            // Closing bridge is nonblocking. Join/free only after its worker
+            // reports EOF, never while a GUI frame can wait on network I/O.
+            controller.connection.close();
+            index += 1;
+            continue;
+        }
+
+        _ = self.session_controllers.orderedRemove(index);
+        const connection = controller.connection;
+        controller.deinit();
+        connection.destroy();
+        self.allocator.destroy(controller);
+    }
+}
 
 // ============================================================
 // Send/text operations
@@ -219,6 +383,10 @@ pub fn quitOnWorkspaceRemoved(self: *App, mux: *Mux, log_msg: ?[]const u8) void 
 pub fn closeTab(self: *App) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
+    if (mux.activeWorkspace()) |workspace| if (sessionCanCloseRemotely(workspace.session_controller)) {
+        if (workspace.activeTab()) |tab| scheduleSessionTabClose(self, workspace, tab);
+        return;
+    };
     const closed_tab_id = if (mux.activeTab()) |tab| tab.id else null;
     const should_quit = mux.closeTab(runtime);
     if (closed_tab_id) |tab_id| {
@@ -239,6 +407,17 @@ pub fn closeTab(self: *App) void {
 pub fn closeTabAt(self: *App, index: usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
+    if (mux.activeWorkspace()) |workspace| if (sessionCanCloseRemotely(workspace.session_controller)) {
+        const tab = mux.tabAt(index) orelse return;
+        const previous = mux.activePane();
+        workspace.active_tab = tab;
+        scheduleSessionTabClose(self, workspace, tab);
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.refreshActivePaneDisplay();
+        if (mux.activeTab()) |active| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = active.id });
+        self.requestLayoutRefresh();
+        return;
+    };
     const closed_tab_id = if (mux.tabAt(index)) |tab| tab.id else null;
     const should_quit = mux.closeTabAt(runtime, index);
     if (closed_tab_id) |tab_id| {
@@ -259,6 +438,9 @@ pub fn closeTabAt(self: *App, index: usize) void {
 pub fn closeActivePane(self: *App) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
+    if (mux.activePane()) |pane| {
+        if (scheduleSessionPaneClose(self, pane.id)) return;
+    }
     const should_quit = mux.closeActivePane(runtime);
     if (should_quit) {
         quitOnWorkspaceRemoved(self, mux, "app: last pane closed via close_pane, quitting");
@@ -302,8 +484,14 @@ pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) v
 // ============================================================
 
 pub fn closePaneById(self: *App, pane_id: usize) void {
-    var mux = if (self.mux) |*value| value else return;
+    if (scheduleSessionPaneClose(self, pane_id)) return;
     const runtime = if (self.ghostty) |*value| value else return;
+    closePaneByIdNow(self, runtime, pane_id);
+}
+
+fn closePaneByIdNow(self: *App, runtime: *GhosttyRuntime, pane_id: usize) void {
+    var mux = if (self.mux) |*value| value else return;
+    const pending_tab_close = pendingSessionTabCloseForPane(mux, pane_id);
     // Closing the focused pane destroys it before focus synchronization. Only
     // retain the previous pane when it will survive the close operation.
     const previous = if (mux.activePane()) |pane|
@@ -311,6 +499,9 @@ pub fn closePaneById(self: *App, pane_id: usize) void {
     else
         null;
     const should_quit = mux.closePaneById(runtime, pane_id);
+    if (pending_tab_close) |tab_id| if (mux.tabById(tab_id) == null) {
+        self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab_id });
+    };
     if (should_quit) {
         quitOnWorkspaceRemoved(self, mux, "app: last pane closed via close_pane_by_id, quitting");
         return;
@@ -320,6 +511,56 @@ pub fn closePaneById(self: *App, pane_id: usize) void {
     self.refreshActivePaneBinding();
     self.requestLayoutResize(false);
     self.requestLayoutRefresh();
+}
+
+fn scheduleSessionPaneClose(self: *App, pane_id: usize) bool {
+    const mux = if (self.mux) |*value| value else return false;
+    const controller = mux.controllerForPane(pane_id) orelse return false;
+    if (!sessionCanCloseRemotely(controller)) return false;
+    controller.scheduleClose(pane_id) catch |err| {
+        std.log.warn("could not schedule persistent pane close: {s}", .{@errorName(err)});
+    };
+    self.signalWake();
+    return true;
+}
+
+/// A lost attachment cannot acknowledge owner mutations. Closing its local
+/// views is still allowed, and never sends a kill to the new attachment.
+fn sessionCanCloseRemotely(controller: ?*SessionController) bool {
+    const value = controller orelse return false;
+    return !value.detached and value.connection.status().phase != .ended;
+}
+
+fn scheduleSessionTabClose(self: *App, workspace: *Workspace, tab: *Tab) void {
+    const controller = workspace.session_controller orelse return;
+    const mux = if (self.mux) |*value| value else return;
+    tab.close_after_session_ack = true;
+    for (tab.panes.items) |pane| {
+        if (mux.controllerForPane(pane.id) != controller) continue;
+        controller.scheduleClose(pane.id) catch |err| {
+            std.log.warn("could not schedule persistent pane close: {s}", .{@errorName(err)});
+        };
+    }
+    self.signalWake();
+}
+
+fn pendingSessionTabCloseForPane(mux: *Mux, pane_id: usize) ?usize {
+    for (mux.workspaces.items) |workspace| for (workspace.tabs.items) |tab| {
+        if (!tab.close_after_session_ack) continue;
+        for (tab.panes.items) |pane| if (pane.id == pane_id) return tab.id;
+    };
+    return null;
+}
+
+fn scheduleSessionWorkspaceClose(self: *App, workspace: *Workspace) void {
+    const controller = workspace.session_controller orelse return;
+    var panes = workspace.paneIterator();
+    while (panes.next()) |pane| {
+        controller.scheduleClose(pane.id) catch |err| {
+            if (err != error.PaneNotFound) std.log.warn("could not schedule persistent pane close: {s}", .{@errorName(err)});
+        };
+    }
+    self.signalWake();
 }
 
 pub fn focusPaneById(self: *App, pane_id: usize) void {
@@ -404,6 +645,14 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
 pub fn closeWorkspace(self: *App, workspace_id: ?usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
+    const target_workspace = if (workspace_id) |target_id|
+        mux.workspaceById(target_id)
+    else
+        mux.activeWorkspace();
+    if (target_workspace) |workspace| if (sessionCanCloseRemotely(workspace.session_controller)) {
+        scheduleSessionWorkspaceClose(self, workspace);
+        return;
+    };
     const closing_active_workspace = if (workspace_id) |target_id|
         if (mux.activeWorkspace()) |workspace| workspace.id == target_id else false
     else
@@ -886,4 +1135,139 @@ test "paste capture clears borrowed output on success and unsafe rejection" {
     try sendPaste(app, "first\nsecond");
     try std.testing.expect(term.paste_output == null);
     try std.testing.expectEqualStrings("startup\rsafe\x1b[200~first\nsecond\x1b[201~", term.pending_startup_input);
+}
+
+fn mockAttachedSessionConnection(allocator: std.mem.Allocator) !*SessionConnection {
+    const connection = try allocator.create(SessionConnection);
+    errdefer allocator.destroy(connection);
+    connection.* = .{
+        .allocator = allocator,
+        .io = io.get(),
+        .arena = .init(allocator),
+        .options = .{ .ghostty_identity = "test" },
+        .client = .{ .allocator = allocator, .identity = "test" },
+    };
+    errdefer {
+        connection.client.deinit();
+        connection.arena.deinit();
+    }
+
+    const welcome = "{\"protocol\":\"hollow-session\",\"version\":1,\"ghostty\":\"test\",\"snapshot\":\"binary\",\"owner_pid\":1}";
+    try connection.client.receive(p.header(.welcome, 0, welcome.len), welcome);
+    connection.poll().?.deinit();
+
+    const request_id = try connection.request(.{ .id = 0, .op = .attach, .session = "mock" });
+    connection.client.nextWrite().?.deinit();
+    const body = try p.stringify(allocator, p.Reply{ .id = request_id, .session = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 0,
+        .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }},
+    } });
+    defer allocator.free(body);
+    try connection.client.receive(p.header(.reply, 0, body.len), body);
+    connection.poll().?.deinit();
+    return connection;
+}
+
+test "session borrowers keep App pane close gated on owner acknowledgement" {
+    const allocator = std.testing.allocator;
+    const connection = try mockAttachedSessionConnection(allocator);
+    var app_owns_connection = false;
+    defer if (!app_owns_connection) connection.destroy();
+
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    app.ghostty = try GhosttyRuntime.init(allocator, null);
+    app.mux = Mux.init(allocator);
+    app.mux.?.host_context = app;
+    app.mux.?.pane_created = pane_lifecycle.created;
+    app.mux.?.pane_closing = pane_lifecycle.closing;
+
+    const info: SessionProtocol.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 0,
+        .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }},
+    };
+    _ = try addSessionWorkspace(app, connection, info, "session-domain");
+    app_owns_connection = true;
+    const controller = app.session_controllers.items[0];
+    const pane_id = app.activePane().?.id;
+
+    closePaneById(app, pane_id);
+    try std.testing.expect(app.findPaneById(pane_id) != null);
+    try std.testing.expectEqual(@as(usize, 0), controller.pendingCloses());
+
+    pumpSessionControllers(app, &app.ghostty.?);
+    try std.testing.expectEqual(@as(usize, 1), controller.pendingCloses());
+    const first_close = connection.client.nextWrite().?;
+    const first_request = try p.parse(p.Request, allocator, first_close.payload);
+    defer first_request.deinit();
+    defer first_close.deinit();
+    try std.testing.expectEqual(p.Op.close, first_request.value.op);
+
+    const rejected = try p.stringify(allocator, p.Reply{ .id = first_request.value.id, .ok = false, .@"error" = "temporary failure" });
+    defer allocator.free(rejected);
+    try connection.client.receive(p.header(.reply, 0, rejected.len), rejected);
+    pumpSessionControllers(app, &app.ghostty.?);
+    try std.testing.expect(app.findPaneById(pane_id) != null);
+    try std.testing.expectEqual(@as(usize, 0), controller.pendingCloses());
+
+    closeTab(app);
+    pumpSessionControllers(app, &app.ghostty.?);
+    const second_close = connection.client.nextWrite().?;
+    const second_request = try p.parse(p.Request, allocator, second_close.payload);
+    defer second_request.deinit();
+    defer second_close.deinit();
+    try std.testing.expect(second_request.value.id != first_request.value.id);
+
+    const accepted = try p.stringify(allocator, p.Reply{ .id = second_request.value.id });
+    defer allocator.free(accepted);
+    try connection.client.receive(p.header(.reply, 0, accepted.len), accepted);
+    pumpSessionControllers(app, &app.ghostty.?);
+    try std.testing.expect(app.findPaneById(pane_id) == null);
+    try std.testing.expectEqual(@as(usize, 0), app.mux.?.workspaces.items.len);
+    try std.testing.expect(app.pending_quit);
+    try std.testing.expect(!controller.hasBindings());
+}
+
+test "session borrowers allow local close after takeover or connection loss" {
+    const allocator = std.testing.allocator;
+    for (0..3) |mode| {
+        const connection = try mockAttachedSessionConnection(allocator);
+        var owned = false;
+        defer if (!owned) connection.destroy();
+        const app = try allocator.create(App);
+        defer allocator.destroy(app);
+        app.* = App.init(allocator);
+        defer app.deinit();
+        app.ghostty = try GhosttyRuntime.init(allocator, null);
+        app.mux = Mux.init(allocator);
+        const info: SessionProtocol.SessionInfo = .{
+            .id = "mock",
+            .attached = true,
+            .revision = 0,
+            .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }},
+        };
+        _ = try addSessionWorkspace(app, connection, info, null);
+        owned = true;
+        const pane_id = app.activePane().?.id;
+        if (mode == 0) {
+            const body = try p.stringify(allocator, p.Event{ .event = .taken, .session = "mock" });
+            defer allocator.free(body);
+            try connection.client.receive(p.header(.event, 0, body.len), body);
+            pumpSessionControllers(app, &app.ghostty.?);
+            closePaneById(app, pane_id);
+        } else {
+            connection.client.ended = true;
+            connection.finished = true;
+            if (mode == 1) closeTab(app) else closeWorkspace(app, null);
+        }
+        try std.testing.expect(app.findPaneById(pane_id) == null);
+        try std.testing.expectEqual(@as(usize, 0), app.mux.?.session_workspace_count);
+        try std.testing.expect(connection.client.nextWrite() == null);
+    }
 }

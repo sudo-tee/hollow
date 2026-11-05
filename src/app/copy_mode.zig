@@ -185,6 +185,7 @@ fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
 pub fn enterCopyMode(self: *App) void {
     const pane = self.activePane() orelse return;
     if (!pane.isTerminal()) return;
+    self.copy_mode_epoch +%= 1;
     self.copy_mode_search.deinit(self.allocator);
     self.copy_mode_search_pending_jump = null;
     const runtime = if (self.ghostty) |*rt| rt else null;
@@ -211,7 +212,12 @@ pub fn enterCopyMode(self: *App) void {
 }
 
 pub fn exitCopyMode(self: *App) void {
+    exitCopyModeWithOptions(self, true);
+}
+
+pub fn exitCopyModeWithOptions(self: *App, clear_selection: bool) void {
     const pane = self.copy_mode_pane;
+    const pane_id = if (pane) |value| value.id else null;
     self.copy_mode_search.deinit(self.allocator);
     self.copy_mode_search_pending_jump = null;
     self.copy_mode_matches.clearRetainingCapacity();
@@ -222,16 +228,19 @@ pub fn exitCopyMode(self: *App) void {
     const restore_top = self.copy_mode_restore_top_row;
     self.copy_mode_restore_top_row = 0;
     self.copy_mode_match_index = null;
-    selection_mod.clearSelection(self);
+    if (clear_selection) selection_mod.clearSelection(self);
     if (pane) |value| {
-        if (self.renderer) |*renderer| renderer.invalidatePaneCache(value);
-        scroll.scrollPaneViewportToRow(self, value, restore_top);
-        if (value.asTerminal()) |term| {
-            term.render_state_fresh = false;
-            term.last_render_state_update_ns = 0;
-            term.pty_received_data = true;
+        // selection:cleared can synchronously close the pane through Lua.
+        if (self.findPaneById(pane_id.?) == value) {
+            if (self.renderer) |*renderer| renderer.invalidatePaneCache(value);
+            scroll.scrollPaneViewportToRow(self, value, restore_top);
+            if (value.asTerminal()) |term| {
+                term.render_state_fresh = false;
+                term.last_render_state_update_ns = 0;
+                term.pty_received_data = true;
+            }
+            value.render_dirty = .full;
         }
-        value.render_dirty = .full;
     }
     emitCopyModeChanged(self);
 }

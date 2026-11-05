@@ -13,7 +13,7 @@ const support = @import("session_transport_test.zig");
 const p = transport.p;
 const a = std.testing.allocator;
 
-fn callbacks() ghostty.TerminalCallbacks {
+pub fn callbacks() ghostty.TerminalCallbacks {
     const C = struct {
         fn write(_: ?*anyopaque, ctx: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
             const node: *Pane = @ptrCast(@alignCast(ctx.?));
@@ -49,7 +49,7 @@ fn callbacks() ghostty.TerminalCallbacks {
     };
 }
 
-fn mockConnection() !transport.Connection {
+pub fn mockConnection() !transport.Connection {
     var connection: transport.Connection = .{
         .allocator = a,
         .io = io.get(),
@@ -75,7 +75,7 @@ fn mockConnection() !transport.Connection {
     return connection;
 }
 
-fn freeMock(connection: *transport.Connection) void {
+pub fn freeMock(connection: *transport.Connection) void {
     connection.client.deinit();
     connection.arena.deinit();
 }
@@ -87,7 +87,7 @@ fn deliver(connection: *transport.Connection, pane: *Pane, bytes: []const u8) !v
     try pane.content.terminal.pty.?.session.offerOutput(message);
 }
 
-fn poll(pane: *Pane, runtime: *ghostty.Runtime) !void {
+pub fn poll(pane: *Pane, runtime: *ghostty.Runtime) !void {
     _ = try pane.content.terminal.pollPty(pane, runtime, 16, 64 * 1024, 10 * std.time.ns_per_ms, 16 * 1024, false);
 }
 
@@ -171,6 +171,24 @@ test "session pane input is generation fenced and view teardown never queues clo
     defer request.deinit();
     try std.testing.expectEqual(p.Op.close, request.value.op);
     try std.testing.expect(connection.client.nextWrite() == null);
+}
+
+test "pending explicit close blocks input without reporting process exit early" {
+    var connection = try mockConnection();
+    defer freeMock(&connection);
+    var pty = SessionPty.init(a, &connection, 1, connection.client.generation, null);
+    defer pty.deinit();
+
+    const close_id = try pty.requestClose();
+    try std.testing.expect(close_id != 0);
+    try std.testing.expect(pty.isAlive());
+    try std.testing.expectError(error.EndOfStream, pty.writeAll("must not follow close"));
+
+    const close = connection.client.nextWrite().?;
+    defer close.deinit();
+    const request = try p.parse(p.Request, a, close.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.close, request.value.op);
 }
 
 test "session pane retries latest resize after queue pressure without replaying input" {
@@ -403,6 +421,46 @@ fn waitText(connection: *transport.Connection, pane: *Pane, runtime: *ghostty.Ru
     return error.Timeout;
 }
 
+fn nextControl(controller: *@import("session/controller.zig").Controller) !transport.Message {
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (io.nanoTimestamp() < deadline) {
+        switch (try controller.step()) {
+            .control => |message| return message,
+            .blocked => return error.UnexpectedBackpressure,
+            .dispatched => {},
+            .idle => {
+                if (controller.connection.status().phase == .ended) return error.ConnectionEnded;
+                try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+            },
+        }
+    }
+    return error.Timeout;
+}
+
+fn pumpWorkspace(controller: *@import("session/controller.zig").Controller, mux: *@import("mux/mux.zig").Mux, runtime: *ghostty.Runtime) !void {
+    controller.reconcile();
+    for (0..128) |_| switch (try controller.step()) {
+        .control => |message| message.deinit(),
+        .idle, .blocked => break,
+        .dispatched => {},
+    };
+    var panes = mux.paneIterator();
+    while (panes.next()) |node| try poll(node, runtime);
+}
+
+fn waitWorkspaceText(controller: *@import("session/controller.zig").Controller, mux: *@import("mux/mux.zig").Mux, runtime: *ghostty.Runtime, needle: []const u8) !void {
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (io.nanoTimestamp() < deadline) {
+        try pumpWorkspace(controller, mux, runtime);
+        const contents = try text(mux.activePane().?);
+        defer a.free(contents);
+        if (std.mem.indexOf(u8, contents, needle) != null) return;
+        if (controller.connection.status().phase == .ended) return error.ConnectionEnded;
+        try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+    }
+    return error.Timeout;
+}
+
 test "session pane real owner restores binary snapshot into Pane after full client teardown" {
     const settings = @import("session_test_options");
     var arena_state = std.heap.ArenaAllocator.init(a);
@@ -451,57 +509,73 @@ test "session pane real owner restores binary snapshot into Pane after full clie
     defer runtime.deinit();
     var cfg = Config.init(a);
     defer cfg.deinit();
-    const first = try transport.Connection.create(a, io.get(), options);
-    var first_live = true;
-    defer if (first_live) first.destroy();
-    _ = try first.request(.{ .id = 0, .op = .create, .spawn = .{
-        .cols = cfg.cols,
-        .rows = cfg.rows,
-        .argv = &.{ "/bin/sh", "-c", "printf 'persisted-marker'; read x; printf 'after-input:%s' \"$x\"; exit 7" },
-        .shell_integration = false,
-    } });
-    const created = try support.waitMessage(first, .reply);
-    defer created.deinit();
-    const reply = try p.parse(p.Reply, a, created.payload);
-    defer reply.deinit();
-    try std.testing.expect(reply.value.ok);
-    try std.testing.expectEqual(p.SnapshotFormat.binary, first.status().format.?);
-    const sid = reply.value.session.?.id;
-    const id = reply.value.session.?.panes[0].id;
-    var first_pane = Pane.init(a);
-    defer first_pane.deinit(&runtime);
-    try first_pane.content.terminal.bootstrapSession(&first_pane, &runtime, callbacks(), cfg, SessionPty.init(a, first, id, created.generation, null));
-    try waitText(first, &first_pane, &runtime, "persisted-marker");
-    first_pane.deinit(&runtime); // Local view only, no close request.
-    first.destroy(); // Connector EOF detaches; owner still has the shell.
-    first_live = false;
+    const Controller = @import("session/controller.zig").Controller;
+    const Mux = @import("mux/mux.zig").Mux;
+    var sid: []const u8 = undefined;
+    {
+        const first = try transport.Connection.create(a, io.get(), options);
+        defer first.destroy();
+        var controller = Controller.init(a, first);
+        defer controller.deinit();
+        var mux = Mux.init(a);
+        defer mux.deinit(&runtime);
+        _ = try first.request(.{ .id = 0, .op = .create, .spawn = .{
+            .cols = cfg.cols,
+            .rows = cfg.rows,
+            .argv = &.{ "/bin/sh", "-c", "printf 'persisted-marker'; read x; printf 'after-input:%s' \"$x\"; exit 7" },
+            .shell_integration = false,
+        } });
+        const created = try nextControl(&controller);
+        defer created.deinit();
+        const reply = try p.parse(p.Reply, a, created.payload);
+        defer reply.deinit();
+        try std.testing.expect(reply.value.ok);
+        try std.testing.expectEqual(p.SnapshotFormat.binary, first.status().format.?);
+        sid = try arena.dupe(u8, reply.value.session.?.id);
+        _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, reply.value.session.?, null, null);
+        try waitWorkspaceText(&controller, &mux, &runtime, "persisted-marker");
+        // Mux -> controller -> connection teardown leaves the owner's shell.
+    }
     const second = try transport.Connection.create(a, io.get(), options);
     defer second.destroy();
+    var controller = Controller.init(a, second);
+    defer controller.deinit();
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
     _ = try second.request(.{ .id = 0, .op = .attach, .session = sid });
-    const attached = try support.waitMessage(second, .reply);
+    const attached = try nextControl(&controller);
     defer attached.deinit();
     const attached_reply = try p.parse(p.Reply, a, attached.payload);
     defer attached_reply.deinit();
     try std.testing.expect(attached_reply.value.ok);
-    var second_pane = Pane.init(a);
-    defer second_pane.deinit(&runtime);
-    const term = &second_pane.content.terminal;
-    try term.bootstrapSession(&second_pane, &runtime, callbacks(), cfg, SessionPty.init(a, second, id, attached.generation, null));
-    try waitText(second, &second_pane, &runtime, "persisted-marker");
+    _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, attached_reply.value.session.?, null, null);
+    const node = mux.activePane().?;
+    const term = &node.content.terminal;
+    try waitWorkspaceText(&controller, &mux, &runtime, "persisted-marker");
     term.sendText("hello\n");
-    try waitText(second, &second_pane, &runtime, "after-input:hello");
+    try waitWorkspaceText(&controller, &mux, &runtime, "after-input:hello");
     const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
     while (term.pty.?.session.status == null) {
         if (io.nanoTimestamp() >= deadline) return error.Timeout;
-        try pump(second, &second_pane, &runtime);
+        try pumpWorkspace(&controller, &mux, &runtime);
         try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
     }
     try std.testing.expectEqual(@as(?u32, 7), term.pty.?.exitStatus());
     try std.testing.expect(term.retain_on_exit and term.terminal != null);
-    _ = try term.pty.?.session.requestClose();
-    const closed = try support.waitMessage(second, .reply);
+    const local_id = node.id;
+    const close_id = try controller.requestClose(local_id);
+    const closed = try nextControl(&controller);
     defer closed.deinit();
     const closed_reply = try p.parse(p.Reply, a, closed.payload);
     defer closed_reply.deinit();
     try std.testing.expect(closed_reply.value.ok);
+    try std.testing.expectEqual(close_id, closed_reply.value.id);
+    try std.testing.expectEqual(local_id, controller.closeTarget(close_id).?);
+    _ = mux.closePaneById(&runtime, local_id);
+    try std.testing.expectEqual(@as(usize, 0), mux.workspaces.items.len);
+    try std.testing.expect(controller.closesSettled());
+}
+
+test {
+    _ = @import("session_controller_test.zig");
 }

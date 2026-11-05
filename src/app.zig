@@ -56,12 +56,14 @@ const selection_mod = @import("app/selection.zig");
 const copy_mode = @import("app/copy_mode.zig");
 const terminal_find = @import("app/terminal_find.zig");
 const quick_select = @import("app/quick_select.zig");
+pub const session_borrowers = @import("app/session_borrowers.zig");
 const htp = @import("app/htp.zig");
 const HtpCodec = @import("htp/codec.zig").Codec;
 const input = @import("app/input.zig");
 const PtyBudget = @import("app/pty_budget.zig").Budget;
 const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
+const SessionController = @import("session/controller.zig").Controller;
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
@@ -358,6 +360,7 @@ pub const App = struct {
     selection_generation: u64 = 0,
     hovered_hyperlink: ?HoveredHyperlink = null,
     copy_mode_active: bool = false,
+    copy_mode_epoch: usize = 0,
     find: terminal_find.State = .{},
     find_epoch: usize = 0,
     find_cancelled_session: usize = 0,
@@ -377,6 +380,7 @@ pub const App = struct {
     copy_mode_block_selection: bool = false,
     copy_mode_restore_top_row: usize = 0,
     quick_select_active: bool = false,
+    quick_select_epoch: usize = 0,
     quick_select_pending_capture: bool = false,
     quick_select_input_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     quick_select_pane: ?*Pane = null,
@@ -387,6 +391,10 @@ pub const App = struct {
     quick_select_pending_inputs: [64]quick_select.Input = undefined,
     quick_select_pending_input_len: usize = 0,
     quick_select_layout_generation: u32 = 0,
+    pending_session_borrowers: session_borrowers.PendingBorrowers = .{},
+    /// App-owned session controllers outlive pane views until close replies
+    /// settle. Their connections are destroyed only after mux views unbind.
+    session_controllers: std.ArrayList(*SessionController) = .empty,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
     htp_pending_message_bytes: usize = 0,
@@ -1048,6 +1056,8 @@ pub const App = struct {
             self.ghostty = null;
         }
 
+        mux_ops.deinitSessionControllers(self);
+
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
 
@@ -1410,6 +1420,7 @@ pub const App = struct {
         if (self.ghostty) |*runtime| {
             const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
+            self.flushPendingSessionBorrowers();
             copy_mode.tickSearch(self) catch |err| {
                 std.log.err("copy mode search failed: {s}", .{@errorName(err)});
             };
@@ -2439,6 +2450,10 @@ pub const App = struct {
         return result;
     }
 
+    pub fn flushPendingSessionBorrowers(self: *App) void {
+        session_borrowers.flush(self);
+    }
+
     fn flushPendingResize(self: *App) void {
         if (!self.pending_resize) return;
         self.pending_resize = false;
@@ -2489,6 +2504,7 @@ pub const App = struct {
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
+        mux_ops.pumpSessionControllers(self, runtime);
         var has_dead = false;
         var automation_changed = false;
         var next_idle_render_poll_ns: i128 = 0;
@@ -2857,6 +2873,10 @@ pub const App = struct {
                 @as(f32, @floatFromInt(total_encoder_sync_ns)) / 1_000_000.0,
             );
         }
+
+        // Pane parsing above may have freed queue space or completed snapshot
+        // history. Retry transport dispatch once before the next GUI frame.
+        mux_ops.pumpSessionControllers(self, runtime);
 
         if (has_dead) {
             if (self.mux) |*mux| {

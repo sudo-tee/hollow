@@ -30,6 +30,11 @@ pub const TerminalPane = struct {
     /// Controller-owned borrowers (e.g. search handles) must be released here,
     /// while the old terminal is still alive. Must not reenter pane mutation.
     session_before_replace: ?*const fn (*Pane) void = null,
+    session_view: ?struct {
+        context: *anyopaque,
+        id: usize,
+        unbind: *const fn (*anyopaque, usize) void,
+    } = null,
     session_snapshot: ?*@import("session_snapshot_job.zig").Job = null,
     session_snapshot_waiting: bool = false,
     session_scrollback: usize = 0,
@@ -231,6 +236,8 @@ pub const TerminalPane = struct {
     }
 
     pub fn deinit(self: *TerminalPane, runtime: *ghostty.Runtime, allocator: std.mem.Allocator) void {
+        if (self.session_view) |view| view.unbind(view.context, view.id);
+        self.session_view = null;
         // Decoder borrows this terminal after READY. Join and free it first.
         if (self.session_snapshot) |job| job.destroy();
         self.session_snapshot = null;

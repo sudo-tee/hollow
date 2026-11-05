@@ -359,7 +359,7 @@ Implemented foundation (not yet exposed through GUI workspace creation):
   Linux GUI build/full `test` link is blocked by missing X11, Xi, Xcursor,
   GL and ALSA development libraries in this environment.
 
-Session transport implemented (still not connected to GUI workspace lifecycle):
+Session transport implemented (workspace integration described below):
 - `src/session/client.zig`: GUI-independent protocol state, request correlation,
   handshake/build-identity validation, owned messages and output-credit ledger.
   Limits per connection: 64 retained requests, 1024 pane metadata slots, and
@@ -439,10 +439,34 @@ Session-backed terminal pane adapter implemented:
   owner test uses `HOLLOW_TEST_AGENT=<native-linux-agent>` on Linux or explicit
   `-Dsession-test-wsl=<distro> -Dsession-test-agent=<guest-agent-path>` for WSL.
 
+GUI workspace/controller wiring implemented for an already-attached session:
+- The App creates wake-wired session connections and owns the controller and
+  connection after publishing a workspace. Pane views borrow the connection;
+  App teardown destroys views first, then closes the bridge without remote pane
+  closes.
+- The GUI frame pumps bounded controller batches before and after pane polling.
+  Full pane queues and aggregate snapshot pressure retain one pending frame and
+  retry after parsing/history progress. Output credit still returns only after
+  parsing.
+- Explicit pane, tab, and workspace closes queue owner-side close requests.
+  Views remain until close acknowledgement; rejected requests keep the pane
+  usable and allow retry. App-owned find/copy/selection/quick-select borrowers
+  are invalidated around terminal replacement without Lua reentrancy.
+- After takeover or transport loss, close removes only the disconnected local
+  view; it never sends owner mutations against the new viewer. Until owner-side
+  spawn/layout operations land, new tabs/splits in session workspaces and moves
+  across session boundaries are rejected instead of creating mixed ownership.
+- Workspace snapshot buffering has a 64 MiB aggregate encoded-input cap, in
+  addition to transport and per-job bounds.
+- `domains.<name>.persist` remains disabled. There is no domain-config create or
+  attach flow, host-bound layout restoration, or startup reattachment yet; the
+  App API currently publishes an already attached session.
+- `test-session-borrowers` exercises borrower cleanup and App close/ACK behavior
+  on Windows. The Linux root test link remains blocked by missing X11, Xi,
+  Xcursor, GL, and ALSA development libraries.
+
 Next implementation slices:
-1. GUI workspace controller: dispatch/backpressure, connection lifetime through
-   close acknowledgements, app-owned borrower/cache invalidation, aggregate
-   snapshot memory budget, and dead/missing-pane UX.
+1. Dead/missing-session UX and controller handling for attach/create failures.
 2. Opt-in domain configuration, host-bound workspaces and revision-checked
    nested layout blobs (including tab structure on the owner).
 3. Remember attached host/session IDs, auto-reattach local/WSL sessions and

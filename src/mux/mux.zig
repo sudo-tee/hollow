@@ -29,6 +29,7 @@ pub const Mux = struct {
     allocator: std.mem.Allocator,
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
+    session_workspace_count: usize = 0,
     next_id: usize = 1,
     next_pane_id: std.atomic.Value(usize) = .init(1),
     host_context: ?*anyopaque = null,
@@ -149,6 +150,59 @@ pub const Mux = struct {
         self.notifyCreated(self.activePane().?);
     }
 
+    /// Publish views for an attached owner session without running a local
+    /// shell. Until layout decoding lands, reject nonempty layout blobs rather
+    /// than silently replacing saved geometry. Sessions with no GUI layout get
+    /// one tab per owner pane in owner order. No owner state is overwritten.
+    pub fn addSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Workspace {
+        if (info.layout.len != 0) return error.UnsupportedSessionLayout;
+        if (info.panes.len == 0) return error.EmptySession;
+        if (!std.mem.eql(u8, controller.session_id, info.id)) return error.WrongSession;
+        const workspace = try self.createWorkspace();
+        errdefer {
+            workspace.deinit(runtime);
+            self.allocator.destroy(workspace);
+        }
+        workspace.session_controller = controller;
+        for (info.panes) |remote| {
+            const tab = try self.createTab();
+            var tab_owned = false;
+            defer if (!tab_owned) {
+                tab.deinit(runtime);
+                self.allocator.destroy(tab);
+            };
+            const pane = try self.allocator.create(Pane);
+            pane.* = Pane.init(self.allocator);
+            var pane_owned = false;
+            defer if (!pane_owned) {
+                pane.deinit(runtime);
+                self.allocator.destroy(pane);
+            };
+            pane.id = self.reservePaneId();
+            pane.host_context = self.host_context;
+            const term = &pane.content.terminal;
+            term.host_wake = self.host_wake;
+            var pane_cfg = cfg;
+            pane_cfg.cols = remote.cols;
+            pane_cfg.rows = remote.rows;
+            try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
+            term.session_before_replace = before_replace;
+            if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
+            if (remote.cwd.len > 0) pane.setCwd(remote.cwd);
+            try tab.appendPane(pane);
+            pane_owned = true;
+            try controller.bind(pane);
+            try workspace.appendTab(tab);
+            tab_owned = true;
+        }
+        try self.workspaces.append(self.allocator, workspace);
+        self.active_workspace = workspace;
+        var panes = workspace.paneIterator();
+        self.session_workspace_count += 1;
+        while (panes.next()) |pane| self.notifyCreated(pane);
+        return workspace;
+    }
+
     fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !*Workspace {
         const workspace = try self.createWorkspace();
         var workspace_owned_by_mux = false;
@@ -190,6 +244,16 @@ pub const Mux = struct {
 
     pub fn activeWorkspace(self: *Mux) ?*Workspace {
         return self.active_workspace;
+    }
+
+    pub fn controllerForPane(self: *Mux, id: usize) ?*@import("../session/controller.zig").Controller {
+        if (self.session_workspace_count == 0) return null;
+        for (self.workspaces.items) |workspace| {
+            const controller = workspace.session_controller orelse continue;
+            var panes = workspace.paneIterator();
+            while (panes.next()) |pane| if (pane.id == id) return controller;
+        }
+        return null;
     }
 
     pub fn activeTab(self: *Mux) ?*Tab {
@@ -567,6 +631,7 @@ pub const Mux = struct {
     /// Nonactivating creation retains the pane and drains output without focus.
     pub fn newTabWithFocus(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool, activate: bool) !*Tab {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse if (current_pane) |pane|
             if (pane.domainName().len > 0) pane.domainName() else cfg.defaultDomainName()
@@ -622,6 +687,7 @@ pub const Mux = struct {
     /// transfers only after all fallible allocations have succeeded.
     pub fn newTabWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = try self.createTab();
         errdefer {
             tab.deinit(runtime);
@@ -809,6 +875,7 @@ pub const Mux = struct {
     }
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand) !*Pane {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         return self.splitActivePanePlaced(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, direction, ratio, domain_name, cwd, floating, launch_command, null);
     }
 
@@ -857,6 +924,7 @@ pub const Mux = struct {
     /// Insert any content kind using the same split/floating layout path.
     /// Ownership transfers to the tab only on success.
     pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         self.focused_dock = null;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
@@ -888,6 +956,7 @@ pub const Mux = struct {
 
     /// Insert `new_pane` along a window edge of the active tab's tiled layout.
     pub fn splitEdgeWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         try tab.splitEdge(new_pane, direction, ratio, place_first);
         self.focused_dock = null;
@@ -1013,6 +1082,7 @@ pub const Mux = struct {
         const t = tab orelse return false;
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target = self.workspaces.items[target_workspace_index];
+        if (src.session_controller != null or target.session_controller != null) return false;
         if (target == src) return false;
         const insert_at = if (target.active_tab) |_| target.activeTabIndex() + 1 else target.tabs.items.len;
         target.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
@@ -1049,6 +1119,7 @@ pub const Mux = struct {
         const src_ws = source_ws orelse return false;
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target_ws = self.workspaces.items[target_workspace_index];
+        if (src_ws.session_controller != null or target_ws.session_controller != null) return false;
         if (target_ws == src_ws) return false;
         const insert_at = if (target_ws.active_tab) |_| target_ws.activeTabIndex() + 1 else target_ws.tabs.items.len;
         target_ws.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
@@ -1174,6 +1245,7 @@ pub const Mux = struct {
             if (self.focused_dock == pane) self.focused_dock = null;
         }
         _ = self.workspaces.orderedRemove(remove_idx);
+        if (workspace.session_controller != null) self.session_workspace_count -= 1;
         workspace.deinit(runtime);
         self.allocator.destroy(workspace);
 
