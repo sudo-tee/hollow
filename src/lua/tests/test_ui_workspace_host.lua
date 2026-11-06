@@ -235,6 +235,22 @@ describe("workspace host source", function()
     assert.are.equal(1, list_calls)
   end)
 
+  it("hides discovered rows for a directory that is already open", function()
+    env.host_api.get_pane_cwd = function()
+      return "/p/same/"
+    end
+    configure({ { host = host, roots = { "/p" } } })
+    hollow.ui.workspace.known_workspaces(true)
+    pending[1].resolve(list_result({ { name = "same" } }, nil, true)); env.flush_deferred()
+    call_for("stat").resolve()
+    local rows = {}
+    for _, item in ipairs(hollow.ui.workspace.items()) do
+      if item.cwd and item.cwd:match("^/p/same") then rows[#rows + 1] = item end
+    end
+    assert.are.equal(1, #rows)
+    assert.is_true(rows[1].is_open)
+  end)
+
   it("does not merge same named paths from different hosts", function()
     local other = { id = "different", generation = "g1", fs = host.fs }
     configure({ { host = host, roots = { "/p" } }, { host = other, roots = { "/p" } } })

@@ -465,8 +465,23 @@ local function source_workspace_item(raw, source, resolved_domain)
   return normalize_possible_workspace(raw)
 end
 
+--- Same domain and directory means same workspace, whatever source found it.
+local function cwd_key(item)
+  local cwd = trim_string(item.cwd):gsub("[/\\]+$", "")
+  if cwd == "" then
+    return nil
+  end
+  return "cwd:" .. (normalize_domain(item.domain) or current_domain_name() or "default") .. ":" .. cwd
+end
+
 local function append_unique(items, seen, item)
   if item == nil or item.id == "" or seen[item.id] or not include_workspace_item(item) then
+    return
+  end
+  -- Only open workspaces register cwd keys: discovered rows from distinct
+  -- hosts stay separate, but never duplicate something already open.
+  local key = cwd_key(item)
+  if key and seen[key] then
     return
   end
 
@@ -688,6 +703,10 @@ local function merged_workspace_items(force_refresh)
     merged[#merged + 1] = workspace
     seen[workspace.id] = workspace
     seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
+    local key = cwd_key(workspace)
+    if key then
+      seen[key] = workspace
+    end
   end
 
   for _, item in ipairs(require("hollow.ui.workspace.sessions").items()) do
@@ -696,6 +715,10 @@ local function merged_workspace_items(force_refresh)
 
   for _, workspace in ipairs(cached_known_workspaces(force_refresh)) do
     local existing = seen[workspace.id]
+    local key = cwd_key(workspace)
+    if existing == nil and key then
+      existing = seen[key]
+    end
     if existing == nil and workspace.host_id == nil then
       existing = seen[workspace_identity(workspace.name, nil, workspace.domain)]
     end
@@ -727,7 +750,18 @@ local function merged_workspace_items(force_refresh)
     if not combined then merged[#merged + 1] = item end
   end
 
-  return merged
+  -- Loading and ready states move to the domain header once the group has
+  -- real rows; idle (load) and failed (retry) rows stay actionable.
+  local populated = {}
+  for _, item in ipairs(merged) do
+    if not item.is_open and item.load_state == nil then
+      populated[normalize_domain(item.domain) or ""] = true
+    end
+  end
+  return hollow.tbl(merged):filter(function(item)
+    return not (populated[normalize_domain(item.domain) or ""]
+      and (item.load_state == "ready" or item.load_state == "loading"))
+  end):get()
 end
 
 ---@param value any

@@ -60,6 +60,9 @@ The default 15-second picker deadline can be increased for slow first-time deplo
 Loading rows show elapsed time and always leave loading after completion or timeout.
 An unavailable host keeps an error row with an explicit retry action; late replies from expired attempts are ignored.
 Successful empty results keep **No sessions**, **All sessions already open**, or **No projects** visible instead of removing the domain.
+Once a domain section has projects or sessions, its loading and ready status rows fold into the heading; load and retry rows stay.
+A discovered project already open in the same domain and directory is listed only under **OPENED**.
+Paths under a home directory display as `~/…`.
 An SSH timeout does not block local project discovery.
 
 Name and path columns truncate to leave space for status badges and domain pills.

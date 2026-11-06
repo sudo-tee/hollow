@@ -77,6 +77,18 @@ local function session_badge(workspace)
   return badge ~= "" and (badge .. " ") or ""
 end
 
+-- Display only: launch and search keep the real path.
+local function display_cwd(cwd)
+  local path = source.trim_string(cwd):gsub("(.)[/\\]+$", "%1")
+  for _, pattern in ipairs({ "^/home/[^/]+", "^/Users/[^/]+", "^/root", "^%a:\\Users\\[^\\]+" }) do
+    local home = path:match(pattern)
+    if home then
+      return "~" .. path:sub(#home + 1)
+    end
+  end
+  return path
+end
+
 local function workspace_marker(workspace)
   if workspace.has_bell or workspace.program_status_attention then
     return icons.bell
@@ -114,7 +126,7 @@ local function default_item_columns(workspace, domain_width, leading_width)
     total_width - status_width - name_width - badge_width - domain_width - (gap_width * 2) - 10
   )
 
-  local cwd_text = source.trim_string(workspace.cwd)
+  local cwd_text = display_cwd(workspace.cwd)
   if cwd_text == "" then
     cwd_text = CWD_FALLBACK[variant]
   end
@@ -198,7 +210,7 @@ local function layout_format_item(workspace, domain_width, leading_width, ctx, v
   local attention = workspace.has_bell or workspace.program_status_attention
   local bell = workspace.program_status_attention_level == "error" and palette.bell_error
     or palette.bell
-  local cwd = source.trim_string(workspace.cwd)
+  local cwd = display_cwd(workspace.cwd)
   if cwd == "" then
     cwd = CWD_FALLBACK[variant]
   end
@@ -279,8 +291,9 @@ local function domain_column_width(items)
   local width = 0
   local domains = {}
   local count = 0
+  -- Other rows sit under their domain header; only OPENED can mix domains.
   for _, workspace in ipairs(items) do
-    local domain = source.normalize_domain(workspace.domain)
+    local domain = workspace.is_open and source.normalize_domain(workspace.domain)
     if domain then
       if not domains[domain] then
         domains[domain] = true
