@@ -1,7 +1,7 @@
 # Persistent sessions handoff
 
 Updated 2026-11-06 after slice 4.
-Working branch: `feat/persistent-sessions`, 20 commits ahead of `main`, nothing pushed.
+Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
 
@@ -55,6 +55,18 @@ Open work, in suggested order:
 4. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
 5. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
 6. Phase 3: native Windows owner, WSL keepalive.
+
+Latest follow-up: interactive-shell exits (Ctrl+D or `exit`) now schedule
+owner-acknowledged pane removal rather than leaving the respawn footer.
+Direct applications, scripts, and one-shot commands retain their screen unless
+explicitly marked `close_on_exit`.
+Owner pane metadata carries the policy across reattachment; old owners default
+to retaining panes, so existing owners need restarting after their sessions end.
+Detached shell exits are cleaned up when next attached, not while detached.
+Regression coverage includes a real `/bin/sh -i` PTY receiving Ctrl+D,
+reattachment metadata, shell/app close admission, and take-over safety.
+Linux pane/client, agent transport/PTY/loop, Windows pane/client tests and
+`./launch.sh --build-only` pass; GUI behavior still needs manual verification.
 
 Gotchas that cost time before:
 

@@ -296,6 +296,7 @@ pub const Mux = struct {
         pane_cfg.cols = remote.cols;
         pane_cfg.rows = remote.rows;
         try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
+        term.pty.?.session.close_on_exit = remote.close_on_exit;
         term.session_before_replace = before_replace;
         if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
         if (remote.cwd.len > 0) pane.cwd = try self.allocator.dupe(u8, remote.cwd);

@@ -143,6 +143,7 @@ const Pane = struct {
     rows: u16,
     /// Spawn request as JSON, kept for state files and later respawn.
     spawn: []u8,
+    close_on_exit: bool = false,
     /// Encoded exit status once reaped (see `p.encodeExit`).
     status: ?i32 = null,
     /// Exit is sent at PTY EOF or at this deadline, whichever comes first.
@@ -555,6 +556,7 @@ pub const Owner = struct {
             .title = try pane.vt.title(arena),
             .cwd = try pane.vt.pwd(arena),
             .exit = pane.status,
+            .close_on_exit = pane.close_on_exit,
         });
         return .{ .id = &s.id, .attached = s.client != null, .revision = s.revision, .layout = s.layout, .panes = panes.items };
     }
@@ -654,7 +656,7 @@ pub const Owner = struct {
         errdefer self.a.destroy(pane);
         try s.panes.ensureUnusedCapacity(self.a, 1);
         const child = try self.forkChild(spawn, spawn.cols, spawn.rows);
-        pane.* = .{ .id = s.next_pane, .pid = child.pid, .master = child.master, .launch = child.launch, .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json };
+        pane.* = .{ .id = s.next_pane, .pid = child.pid, .master = child.master, .launch = child.launch, .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json, .close_on_exit = @import("pty_protocol.zig").sessionCloseOnExit(spawn) };
         s.next_pane += 1;
         s.panes.appendAssumeCapacity(pane);
         self.saveState(s);

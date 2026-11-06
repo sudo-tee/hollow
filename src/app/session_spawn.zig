@@ -233,7 +233,7 @@ pub fn handle(app: *App, controller: *Controller, message: transport.Message) bo
         }
         const mux = if (app.mux) |*value| value else unreachable;
         const previous = mux.activePane();
-        const pane = mux.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, op.workspace_id, .{ .id = parsed.value.pane.?, .cols = op.spawn.cols, .rows = op.spawn.rows }, op.domain, @import("session_borrowers.zig").beforeReplace, op.placement) catch |err| {
+        const pane = mux.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, op.workspace_id, .{ .id = parsed.value.pane.?, .cols = op.spawn.cols, .rows = op.spawn.rows, .close_on_exit = @import("../agent/pty_protocol.zig").sessionCloseOnExit(op.spawn) }, op.domain, @import("session_borrowers.zig").beforeReplace, op.placement) catch |err| {
             // Spawn succeeded, but no view can receive its stream. Detach safely;
             // reattachment recovers it. Never replay spawn or keep routing blind.
             controller.abort(err);

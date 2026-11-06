@@ -581,10 +581,17 @@ Owner-backed tabs and splits implemented:
 - Dead/missing-session UX: owners advertise `Welcome.features = ["respawn"]`
   and accept `respawn` for exited panes, re-forking the saved spawn under the
   same screen. Clients send it only when advertised and never replay it.
-  An exited, attached pane shows a native footer (exit code, Enter respawn,
+  An exited application/command pane shows a native footer (exit code, Enter respawn,
   Ctrl+D close); Lua `hollow.term.respawn_pane`, action `respawn_pane`, event
   `term:pane_respawned`. `SessionNotFound` gets an actionable notice, and
   open/attach callbacks report `status`, `error`, `outcome`, `remote`.
+
+- Shell-exit policy: owner `PaneInfo.close_on_exit` distinguishes interactive
+  shell launches from applications, scripts, and one-shot commands.
+  Shell exits (including Ctrl+D) schedule ordinary owner-acknowledged removal;
+  applications retain their screen unless explicitly marked `close_on_exit`.
+  Reattached exited shells receive the same cleanup, while transport loss never
+  triggers it and older owners retain their previous behavior.
 
 - Remembered sessions: `workspace:closed` now also fires for unnamed session
   workspaces with `session_id`, `session_host?` and `session_ended` (true only

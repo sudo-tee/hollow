@@ -271,6 +271,7 @@ test "dead pane keeps output and exit status across reattach" {
     const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'last-words\\n'; exit 3") }));
     defer created.deinit();
     const pane = created.value.session.?.panes[0].id;
+    try std.testing.expect(!created.value.session.?.panes[0].close_on_exit);
     var id_buf: [32]u8 = undefined;
     const sid = sessionId(&id_buf, created.value);
     const exit = try client.wait(&owner, .exit, pane);
@@ -298,6 +299,31 @@ test "dead pane keeps output and exit status across reattach" {
     const event = try p.parse(p.Event, a, ended.payload);
     defer event.deinit();
     try std.testing.expectEqual(p.EventKind.session_end, event.value.event);
+}
+
+test "interactive shell Ctrl+D exit carries auto-close policy through reattach" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = .{ .argv = &.{ "/bin/sh", "-i" }, .shell_integration = false } }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    try std.testing.expect(created.value.session.?.panes[0].close_on_exit);
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    _ = try client.wait(&owner, .snapshot_end, pane);
+    try client.sendBytes(.input, pane, "\x04");
+    const exit = try client.wait(&owner, .exit, pane);
+    try std.testing.expectEqual(@as(i32, 0), try p.decodeExit(exit.payload));
+    const again = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer again.deinit();
+    try std.testing.expect(again.value.session.?.panes[0].close_on_exit);
+    try std.testing.expectEqual(@as(?i32, 0), again.value.session.?.panes[0].exit);
+    // GUI uses the ordinary acknowledged close; owner does not race its view.
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = pane }));
+    defer closed.deinit();
+    try std.testing.expect(closed.value.ok);
 }
 
 test "respawn restarts an exited pane from its spawn and keeps its screen" {

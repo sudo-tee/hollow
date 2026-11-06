@@ -155,6 +155,9 @@ pub const PaneInfo = struct {
     cwd: []const u8 = "",
     /// Encoded exit status (see `encodeExit`) once the process has exited.
     exit: ?i32 = null,
+    /// Interactive shells close on exit; commands/apps normally retain output.
+    /// Absent on older owners, which retain every exited pane.
+    close_on_exit: bool = false,
 };
 
 pub const SessionInfo = struct {

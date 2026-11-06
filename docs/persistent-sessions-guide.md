@@ -123,11 +123,15 @@ Changing a domain's host profile does not retarget an already attached session.
 
 ## Exited panes and missing sessions
 
-When a process in a persistent pane exits, the pane keeps its final screen and shows a footer with the exit code.
+Exiting an interactive shell with Ctrl+D or `exit` automatically closes its pane after the owner acknowledges removal.
+Ctrl+D inside a running application is still delivered to that application.
+Directly launched applications and commands keep their final screen and show a footer with the exit code, unless launched with `close_on_exit = true`.
+Shell launches with explicit command or script arguments also retain their output.
 Press Enter to respawn the original command in the same cwd, or Ctrl+D to close the pane.
 The new process writes below the old output.
 Bind the `respawn_pane` action, or call `hollow.term.respawn_pane()`, to respawn from elsewhere.
 Owners started by an older Hollow cannot respawn, so the footer offers only Ctrl+D.
+Owners predating shell-exit policy retain exited shells too; restart the owner after ending its sessions to enable the new policy.
 
 If an attach names a session the owner no longer has, Hollow shows "Session not found on host".
 Run `hollow-cli session list` to see live sessions, or open a new workspace.

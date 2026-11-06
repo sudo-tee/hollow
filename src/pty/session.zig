@@ -18,6 +18,7 @@ pub const SessionPty = struct {
     offset: usize = 0,
     unparsed: usize = 0,
     status: ?i32 = null,
+    close_on_exit: bool = false,
     detached: bool = false,
     close_request: ?u64 = null,
     pending_resize: ?struct { cols: u16, rows: u16 } = null,

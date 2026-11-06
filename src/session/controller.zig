@@ -85,6 +85,7 @@ pub const Controller = struct {
         for (&self.bindings) |*entry| if (entry.* == null) {
             entry.* = .{ .pane = pty.session.pane, .generation = self.generation, .node = node, .local_id = node.id };
             term.session_view = .{ .context = self, .id = node.id, .unbind = unbindView };
+            if (pty.session.close_on_exit and pty.session.status != null) try self.scheduleClose(node.id);
             return;
         };
         return error.ResourceExhausted;
@@ -404,6 +405,7 @@ pub const Controller = struct {
                     },
                     .exit => {
                         term.pty.?.session.setExit(try p.decodeExit(message.payload));
+                        if (term.pty.?.session.close_on_exit and entry.close_request == null and self.kill_request == null) try self.scheduleClose(node.id);
                         node.invalidate(); // Shows the dead-pane footer.
                     },
                     else => unreachable,

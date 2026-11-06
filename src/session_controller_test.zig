@@ -138,6 +138,69 @@ test "session pane controller keeps close tombstone and connection until acknowl
     try std.testing.expect(connection.status().phase == .ready);
 }
 
+test "session shell exit schedules acknowledged removal while apps retain their screen" {
+    for (.{ false, true }) |auto_close| {
+        var connection = try fixture.mockConnection();
+        defer fixture.freeMock(&connection);
+        var controller = Controller.init(a, &connection);
+        try setup(&controller);
+        defer controller.deinit();
+        var runtime = try ghostty.Runtime.init(a, null);
+        defer runtime.deinit();
+        var cfg = Config.init(a);
+        defer cfg.deinit();
+        var node = Pane.init(a);
+        defer node.deinit(&runtime);
+        try bind(&controller, &node, &runtime, cfg, 1);
+        node.content.terminal.pty.?.session.close_on_exit = auto_close;
+        try frame(&connection, .exit, 1, &p.encodeExit(0));
+        try std.testing.expect(try controller.step() == .dispatched);
+        try std.testing.expectEqual(auto_close, controller.close_work);
+        // Even shells retain their view until the owner acknowledges close.
+        try std.testing.expect(node.content.terminal.retain_on_exit);
+        try std.testing.expect(controller.hasBindings());
+        try controller.flushCloses();
+        try std.testing.expectEqual(@as(usize, if (auto_close) 1 else 0), controller.pendingCloses());
+        if (auto_close) {
+            const close = connection.client.nextWrite().?;
+            defer close.deinit();
+            const request = try p.parse(p.Request, a, close.payload);
+            defer request.deinit();
+            try std.testing.expectEqual(p.Op.close, request.value.op);
+            try std.testing.expectEqual(@as(?u32, 1), request.value.pane);
+        }
+    }
+}
+
+test "reattached exited shell schedules removal but detached live shell does not" {
+    for (.{ false, true }) |exited| {
+        var connection = try fixture.mockConnection();
+        defer fixture.freeMock(&connection);
+        var controller = Controller.init(a, &connection);
+        try setup(&controller);
+        defer controller.deinit();
+        var runtime = try ghostty.Runtime.init(a, null);
+        defer runtime.deinit();
+        var cfg = Config.init(a);
+        defer cfg.deinit();
+        var node = Pane.init(a);
+        defer node.deinit(&runtime);
+        node.id = 11;
+        var pty = @import("pty/session.zig").SessionPty.init(a, &connection, 1, controller.generation, if (exited) 0 else null);
+        pty.close_on_exit = true;
+        try node.content.terminal.bootstrapSession(&node, &runtime, fixture.callbacks(), cfg, pty);
+        try controller.bind(&node);
+        try std.testing.expectEqual(exited, controller.close_work);
+        if (!exited) {
+            try json(&connection, .event, p.Event{ .event = .taken, .session = "mock" });
+            const step = try controller.step();
+            if (step == .control) step.control.deinit();
+            try std.testing.expect(!controller.close_work);
+            try std.testing.expect(controller.detached);
+        }
+    }
+}
+
 test "session pane controller respawns only advertised dead panes and revives on acceptance" {
     var connection = try fixture.mockConnection();
     defer fixture.freeMock(&connection);
