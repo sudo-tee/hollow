@@ -3,7 +3,7 @@
 # Hollow Shell Integration for Bash
 
 # Only activate if running inside Hollow
-if [ -z "$HOLLOW_PANE_ID" ]; then
+if [ -z "$HOLLOW_PANE_ID" ] && [ "$HOLLOW_TRANSPORT" != osc ]; then
   return 0 2>/dev/null || exit 0
 fi
 

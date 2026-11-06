@@ -1,6 +1,6 @@
 # Hollow Shell Integration for Fish
 # Only activate if running inside Hollow
-if test -z "$HOLLOW_PANE_ID"
+if test -z "$HOLLOW_PANE_ID"; and test "$HOLLOW_TRANSPORT" != osc
     exit 0
 end
 
