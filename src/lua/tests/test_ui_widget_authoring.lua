@@ -69,6 +69,7 @@ describe("built-in declarative authoring parity", function()
       return {
         { name = "one", domain = "local", cwd = "/local", workspace_id = 1, is_open = true },
         { name = "two", domain = "remote", cwd = "/remote", workspace_id = 2, is_open = true },
+        { name = "project", domain = "remote", cwd = "/remote/project", is_open = false },
       }
     end
     local colors =
@@ -90,6 +91,14 @@ describe("built-in declarative authoring parity", function()
       end
     end
     assert.is_true(found)
+    local category = assert(clay.find(ui, ":select:item:group:1:remote"))
+    assert.equals("#234567", category.bg)
+    assert.equals(4, category.radius)
+    assert.is_truthy(
+      clay.text_node(ui, require("hollow.ui.icons").expanded .. " remote", function(node)
+        return node.fg == "#123456"
+      end)
+    )
     assert.equals(99, colors.radius)
     assert.equals(42, colors.padding)
   end)

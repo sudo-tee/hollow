@@ -9,6 +9,7 @@ local M = {}
 -- Composites require this module, so they load on first access.
 local lazy = {
   badge = "hollow.ui.components.badge",
+  category = "hollow.ui.components.category",
   dialog = "hollow.ui.components.dialog",
   empty = "hollow.ui.components.empty",
   header = "hollow.ui.components.header",

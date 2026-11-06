@@ -53,6 +53,30 @@ describe("Clay command palette behavior", function()
     assert.equals(1, clay.find(ui, ":select:viewport").scrollbar_thumb_ratio)
   end)
 
+  it("uses shared disclosure behavior and reveals collapsed matches during search", function()
+    ui.command_palette.open({
+      entries = {
+        {
+          name = "alpha",
+          display_name = "alpha",
+          desc = "alpha",
+          category = "general",
+          category_label = "General",
+          chords = {},
+        },
+      },
+    })
+    local header = assert(clay.find(ui, ":palette:item:section:1"))
+    ui.dispatch_widget_event("overlay:click", { id = header.id, index = 1 })
+    assert.is_nil(clay.text_node(ui, "alpha"))
+    ui.dispatch_overlay_key("a", 0)
+    assert.is_truthy(clay.text(ui):find("alpha", 1, true))
+    ui.dispatch_overlay_key("backspace", 0)
+    assert.is_nil(clay.text_node(ui, "alpha"))
+    ui.dispatch_widget_event("overlay:click", { id = header.id, index = 1 })
+    assert.is_truthy(clay.text_node(ui, "alpha"))
+  end)
+
   it("preserves active-domain colors, command text and match emphasis", function()
     hollow.config.set({ domains = { main = { shell = "sh" } } })
     ui.command_palette.open({ entries = ui.command_palette.build_domain_entries(), query = "sh" })

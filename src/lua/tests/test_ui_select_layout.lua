@@ -83,6 +83,8 @@ describe("Clay selectable list", function()
       })
       local header = assert(row("group:remote"))
       assert.equals("remote", header.label)
+      ui.dispatch_widget_event("overlay:click", { id = header.id, index = 1 })
+      assert.is_nil(row(1)) -- The remote category is collapsed, not activated.
       local button
       for _, node in ipairs(prepare()) do
         if node.id and node.id:match("group:remote:create$") then
@@ -93,6 +95,7 @@ describe("Clay selectable list", function()
       ui.dispatch_widget_event("overlay:click", { id = button.id, index = 1 })
       assert.equals("remote", created)
       assert.is_nil(selected)
+      assert.is_nil(row(1)) -- Its + button does not toggle the category.
       -- Search still defaults to the matching child, not its category header.
       ui.dispatch_overlay_key("a", 0)
       ui.dispatch_overlay_key("l", 0)
@@ -100,6 +103,11 @@ describe("Clay selectable list", function()
       assert.is_nil(row("group:local"))
       ui.dispatch_overlay_key("enter", 0)
       assert.equals("alpha", selected.name)
+      ui.dispatch_overlay_key("backspace", 0)
+      ui.dispatch_overlay_key("backspace", 0)
+      assert.is_nil(row(1)) -- Clearing search restores the saved collapsed state.
+      ui.dispatch_widget_event("overlay:click", { id = assert(row("group:remote")).id, index = 1 })
+      assert.is_truthy(row(1))
     end
   )
 

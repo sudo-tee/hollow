@@ -1,9 +1,9 @@
 local c = require("hollow.ui.components")
-local icons = require("hollow.ui.icons")
+local categories = require("hollow.ui.behaviors.categories")
+local category_row = require("hollow.ui.components.category")
 local list_item = require("hollow.ui.components.list_item")
 local list_row = require("hollow.ui.recipes.list_row")
 local props = require("hollow.ui.components.props")
-local rich = require("hollow.ui.components.rich")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.palette")
 local util = require("hollow.util")
@@ -196,8 +196,7 @@ local function filtered_entries(all_entries, query)
   return entries
 end
 
-local function grouped_entries(entries, collapsed)
-  collapsed = collapsed or {}
+local function grouped_entries(entries, sections, query)
   local groups, order = util.group_by(entries, function(entry)
     return entry.category
   end)
@@ -208,7 +207,7 @@ local function grouped_entries(entries, collapsed)
     end)
     :flat_map(function(category)
       local items = groups[category]
-      local children = collapsed[category] and {}
+      local children = sections.is_collapsed(category, query) and {}
         or hollow
           .tbl(items)
           :map(function(item)
@@ -217,7 +216,12 @@ local function grouped_entries(entries, collapsed)
           :get()
       return hollow
         .tbl({
-          { _type = "header", label = items[1].category_label, category = category },
+          {
+            _type = "header",
+            label = items[1].category_label,
+            category = category,
+            collapsed = sections.is_collapsed(category, query),
+          },
         })
         :concat(children)
         :get()
@@ -230,22 +234,6 @@ local function item_position(flat, index)
     return entry._type == "item"
   end
   return hollow.tbl(flat):take(index):count(is_item), hollow.tbl(flat):count(is_item)
-end
-
----@param theme HollowUiTheme
----@param label string
----@param is_selected boolean
----@param is_hovered boolean
----@param is_collapsed boolean
----@return HollowUiRenderableNode[]
-local function section_nodes(theme, label, is_selected, is_hovered, is_collapsed)
-  local arrow = is_collapsed and icons.collapsed or icons.expanded
-  local row_s =
-    list_row(theme, { variant = "section", selected = is_selected, hovered = is_hovered })
-  return {
-    ui.text("  ", row_s.section_indicator),
-    ui.text(arrow .. " " .. label, styles(theme).section_title),
-  }
 end
 
 ---@param entry table
@@ -304,13 +292,13 @@ function ui.command_palette.open(opts)
     end)
     :get()
   local filter = ui.text_input({ initial = opts.query or "" })
-  local collapsed = {}
+  local sections = categories.new()
   local nav
   local modal
   local clay_budget, section_units, reveal_start = math.min(20, list_row_budget(opts)), 1, false
 
   local function current_flat()
-    return grouped_entries(filtered_entries(all_entries, filter.value), collapsed)
+    return grouped_entries(filtered_entries(all_entries, filter.value), sections, filter.value)
   end
 
   local function entry_key(entry)
@@ -323,7 +311,7 @@ function ui.command_palette.open(opts)
     index = math.max(1, math.min(#flat, index or nav.index))
     local entry = flat[index]
     if entry and entry._type == "header" then
-      collapsed[entry.category] = not collapsed[entry.category]
+      sections.toggle(entry.category, filter.value)
       return
     end
     if entry and entry._type == "item" then
@@ -369,7 +357,7 @@ function ui.command_palette.open(opts)
       nav.index = math.max(1, math.min(#flat, nav.index or 1))
       local item_idx, total_items = item_position(flat, nav.index)
       local line_h = list_item.line_height(render_theme, ctx)
-      section_units = rich.height(section_nodes(render_theme, "", false, false, false), ctx)
+      section_units = category_row.height(render_theme, ctx, styles(render_theme).section_title)
         / line_h
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
@@ -430,34 +418,39 @@ function ui.command_palette.open(opts)
             local id = "palette:item:" .. key
             local selected, hovered = index == nav.index, state and state.hovered_id == id
             local header = entry._type == "header"
+            local function on_activate()
+              for current_index, current in ipairs(current_flat()) do
+                if entry_key(current) == key then
+                  nav.index, reveal_start = current_index, false
+                  activate(current_index)
+                  return
+                end
+              end
+            end
+            if header then
+              return c.category({
+                id = id,
+                theme = render_theme,
+                selected = selected,
+                hovered = hovered,
+                label = entry.label,
+                collapsed = entry.collapsed,
+                plain = view.plain,
+                title_style = s.section_title,
+                on_activate = on_activate,
+              })
+            end
             return c.list_item({
               id = id,
               theme = render_theme,
-              variant = header and "section" or nil,
               selected = selected,
               hovered = hovered,
-              on_activate = function()
-                for current_index, current in ipairs(current_flat()) do
-                  if entry_key(current) == key then
-                    nav.index, reveal_start = current_index, false
-                    activate(current_index)
-                    return
-                  end
-                end
-              end,
+              on_activate = on_activate,
               c.rich({
                 width = "grow",
                 prefix = id,
                 plain = view.plain,
-                header
-                    and section_nodes(
-                      render_theme,
-                      entry.label,
-                      selected,
-                      hovered,
-                      collapsed[entry.category]
-                    )
-                  or entry_nodes(entry.item, selected, hovered, render_theme, filter.value),
+                entry_nodes(entry.item, selected, hovered, render_theme, filter.value),
               }),
             })
           end,

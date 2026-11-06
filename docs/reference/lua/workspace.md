@@ -79,7 +79,7 @@ hollow.ui.workspace.configure({
 
   status_column_width = 2,
   name_column_width = 24,
-  column_gap = 2,
+  column_gap = 1,
 
   rename_key = "<C-r>", rename_desc = "rename",
   close_key  = "<C-w>", close_desc  = "close",
@@ -237,7 +237,10 @@ Open workspaces appear under **OPEN**, followed by domain sections for detached 
 Search spans every loaded section, including domain names and session IDs.
 Domain headings reuse command-palette section rows; focus one and press `<C-n>`, or click its trailing **+**, to create in that domain.
 The new workspace becomes persistent only if that domain already has `persist = true`.
-Enter on a domain heading explicitly loads its sessions and configured SSH project sources without closing the picker.
+Enter or click on a heading toggles collapse; search temporarily reveals matching children.
+Activate the explicit load row to load sessions and configured SSH project sources without closing the picker.
+Domain headings share their pill colors.
+Open rows use compact indentation; current/attention markers and colored work indicators share the leading column, while session badges remain beside names.
 Domain pills are retained for mixed-domain open rows; other rows inherit their heading instead of repeating the pill.
 Name/path columns truncate within reserved widths rather than pushing pills out of view.
 

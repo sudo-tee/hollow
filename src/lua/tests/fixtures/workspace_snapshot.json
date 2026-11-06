@@ -130,11 +130,10 @@
     "bg": "#333640",
     "children": 2,
     "clickable": true,
-    "height": 24,
     "hover_bg": "#2a2d38",
-    "id": "test:select:item:group:0:OPEN",
+    "id": "test:select:item:group:0:OPENED",
     "kind": 1,
-    "label": "OPEN",
+    "label": "OPENED",
     "list_item": true,
     "radius": 4,
     "width": -1
@@ -152,20 +151,30 @@
   {
     "align_y": 1,
     "children": 1,
-    "height": 24,
     "kind": 1,
     "width": -1
   },
   {
     "children": 1,
+    "height": 28,
     "kind": 1,
     "width": -1
   },
   {
+    "children": 1,
+    "label": "▼ OPENED",
+    "padding": {
+      "bottom": 4,
+      "left": 4,
+      "right": 4,
+      "top": 4
+    }
+  },
+  {
     "bold": true,
-    "fg": "#81a1c1",
+    "fg": "#8fbcdf",
     "kind": 2,
-    "text": "OPEN",
+    "text": "▼ OPENED",
     "wrap": 2
   },
   {
@@ -176,7 +185,7 @@
     "hover_bg": "#3b4252",
     "id": "test:select:item:1",
     "kind": 1,
-    "label": "•   main                      /tmp/project                                            ",
+    "label": "•  main                     /tmp/project                                              ",
     "list_item": true,
     "radius": 4,
     "width": -1
@@ -202,7 +211,7 @@
     "children": 1,
     "padding": {
       "bottom": 0,
-      "left": 22,
+      "left": 2,
       "right": 0,
       "top": 0
     },
@@ -227,7 +236,10 @@
     "width": -1
   },
   {
+    "align_y": 1,
     "children": 1,
+    "id": "test:select:item:1:status",
+    "kind": 1,
     "width": 20
   },
   {
@@ -238,7 +250,7 @@
     "wrap": 2
   },
   {
-    "width": 20
+    "width": 10
   },
   {
     "align_y": 1,
@@ -257,7 +269,7 @@
     "wrap": 2
   },
   {
-    "width": 20
+    "width": 10
   },
   {
     "align_y": 1,
@@ -266,7 +278,7 @@
     "id": "test:select:item:1:cwd",
     "kind": 1,
     "scroll_x": true,
-    "width": 460
+    "width": 480
   },
   {
     "fg": "#6d7178",

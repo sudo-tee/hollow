@@ -1221,6 +1221,8 @@
 ---@field group_label? fun(group: string): string Category heading text (defaults to key)
 ---@field group_item? fun(group: string): any Action payload for keyboard-focusable category headings
 ---@field group_create? fun(group: string) Adds a trailing + button to headings whose payload has a domain
+---@field group_colors? fun(group: string): HollowUiColorPair|nil Category title/row paint; geometry is unaffected
+---@field item_indent? number Item content indent in cells; defaults to 2
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string
 ---@field fuzzy? boolean
@@ -2615,6 +2617,19 @@ local workspace = {}
 ---@field line_height fun(theme?: HollowUiTheme, ctx?: HollowUiLayoutContext): number One list line: cell height plus row indicator padding.
 ---@overload fun(props: HollowUiListItemProps): HollowUiLayoutNode
 
+---@class HollowUiCategoryProps: HollowUiListItemProps
+---@field label string Accessible category title
+---@field text? string Optional truncated display title
+---@field collapsed? boolean Disclosure arrow state
+---@field title_style? HollowUiNodeStyle
+---@field colors? HollowUiColorPair Category foreground/background
+---@field plain? boolean Simplify inline rendering
+---@field [integer] HollowUiLayoutNode|table|boolean Optional trailing controls, separate from disclosure activation
+
+---@class HollowUiCategory
+---@field height fun(theme: HollowUiTheme, ctx: HollowUiLayoutContext, title_style?: HollowUiNodeStyle): number
+---@overload fun(props: HollowUiCategoryProps): HollowUiLayoutNode
+
 ---@class HollowUiListProps: HollowUiScrollProps
 ---@field items? any[]
 ---@field render_item fun(item: any, index: integer, view: {plain: boolean}): HollowUiLayoutNode|table
@@ -2688,6 +2703,7 @@ local workspace = {}
 ---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
 ---@field rich HollowUiRich
 ---@field list_item HollowUiListItem
+---@field category HollowUiCategory Shared disclosure row used by command palette and grouped selectors
 ---@field list fun(props: HollowUiListProps): HollowUiLayoutNode
 ---@field picker fun(props: HollowUiPickerProps): HollowUiLayoutNode
 ---@field toast fun(props: HollowUiToastProps): HollowUiLayoutNode

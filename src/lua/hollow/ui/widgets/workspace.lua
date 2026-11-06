@@ -23,7 +23,7 @@ local DEFAULT_SELECT_WIDTH = 96
 local DEFAULT_SELECT_MAX_HEIGHT = 24
 local DEFAULT_STATUS_COLUMN_WIDTH = 2
 local DEFAULT_NAME_COLUMN_WIDTH = 24
-local DEFAULT_COLUMN_GAP = 2
+local DEFAULT_COLUMN_GAP = 1
 local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
@@ -77,17 +77,36 @@ local function session_badge(workspace)
   return badge ~= "" and (badge .. " ") or ""
 end
 
+local function workspace_marker(workspace)
+  if workspace.has_bell or workspace.program_status_attention then
+    return icons.bell
+  end
+  return workspace.is_active and icons.workspace_active or " "
+end
+
+local function leading_status(workspace)
+  return workspace_marker(workspace) .. source.trim_string(workspace.program_status_badge)
+end
+
+local function status_column_width(items)
+  local width = tonumber(switcher_state().status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH
+  for _, item in ipairs(items) do
+    width = math.max(width, util.display_width(leading_status(item)))
+  end
+  return width
+end
+
 -- Retain the original padded accessibility labels independently of layout.
-local function default_item_columns(workspace, domain_width)
+local function default_item_columns(workspace, domain_width, leading_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
-  local status_width =
-    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local status_width = leading_width
+    or math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
-  local badge = workspace.program_status_badge or session_badge(workspace)
+  local badge = session_badge(workspace)
   local badge_width = util.display_width(badge)
   domain_width = workspace.is_open and (domain_width or 0) or 0
   local cwd_width = math.max(
@@ -105,7 +124,7 @@ local function default_item_columns(workspace, domain_width)
     variant = variant,
     attention = attention,
     domain = domain,
-    status = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
+    status = leading_status(workspace),
     status_width = status_width,
     name_width = name_width,
     gap_width = gap_width,
@@ -120,8 +139,8 @@ local function default_item_columns(workspace, domain_width)
   }
 end
 
-local function default_plain_item(workspace, domain_width)
-  local c = default_item_columns(workspace, domain_width)
+local function default_plain_item(workspace, domain_width, leading_width)
+  local c = default_item_columns(workspace, domain_width, leading_width)
   local function pad(text, width)
     return util.pad_right(util.truncate_end(tostring(text or ""), width), width)
   end
@@ -136,7 +155,7 @@ end
 
 -- Native counterpart of the default formatter: retain column settings/paint,
 -- but let Clay allocate the remaining cwd width instead of padding strings.
-local function layout_format_item(workspace, domain_width, ctx, view)
+local function layout_format_item(workspace, domain_width, leading_width, ctx, view)
   local c = ui.components
   local switcher = switcher_state()
   ctx._workspace_palette = ctx._workspace_palette or derived_palette()
@@ -163,10 +182,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   if domain_width < 3 then
     domain_width = 0
   end
-  local status_width = math.min(
-    available,
-    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
-  )
+  local status_width = math.min(available, leading_width)
   local name_width = math.max(
     1,
     math.min(
@@ -196,7 +212,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
       shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
     })
   end
-  local badge = workspace.program_status_badge or session_badge(workspace)
+  local badge = session_badge(workspace)
   local badge_width = math.min(util.display_width(badge), math.floor(available / 3))
   badge = util.truncate_end(badge, badge_width)
   name_width = math.max(
@@ -205,18 +221,27 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   )
   local cwd_width =
     math.max(0, available - status_width - name_width - 2 * gap_width - badge_width - domain_width)
-  local badge_fg = workspace.program_status_badge
-      and program_status.color(workspace.program_status_state)
-    or palette.muted
+  local badge_fg = palette.muted
   local domain = source.normalize_domain(workspace.domain)
   return c.row({
-    c.column({
+    c.row({
       c.text(
-        attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
+        workspace_marker(workspace),
         ui.style(s.status, attention and { fg = bell, bold = true }),
         { wrap = "none" }
       ),
-    }, { width = tostring(status_width) .. "ch" }),
+      c.when(workspace.program_status_badge, function()
+        local text = util.truncate_end(
+          source.trim_string(workspace.program_status_badge),
+          math.max(0, status_width - 1)
+        )
+        return c.text(
+          text,
+          { fg = program_status.color(workspace.program_status_state), bold = true },
+          { wrap = "none" }
+        )
+      end),
+    }, { id = view.id .. ":status", width = tostring(status_width) .. "ch", align_y = "center" }),
     c.gap(gap),
     column(
       util.truncate_end(workspace.name, name_width),
@@ -324,9 +349,6 @@ local function switcher_actions()
       desc = "switch",
       fn = function(item)
         if item and item.source == "domain_header" then
-          if item.domain then
-            load_domain(item.domain)
-          end
           return
         end
         if is_load_row(item) then
@@ -450,6 +472,7 @@ function ui.workspace.open_switcher(opts)
   sessions.refresh_on_open()
   local items = source.items(force_refresh)
   local domain_width = domain_column_width(items)
+  local leading_width = status_column_width(items)
   local switcher = switcher_state()
   local host_revision = switcher.host_scan_revision or 0
   local dirty = false
@@ -540,12 +563,14 @@ function ui.workspace.open_switcher(opts)
         item.program_status_attention = attention[item.workspace_id]
         item.program_status_attention_level = attention_levels[item.workspace_id]
       end
+      leading_width = status_column_width(items)
       return items
     end,
     fuzzy = false,
+    item_indent = 0,
     group_by = function(item)
       if item.is_open then
-        return "0:OPEN"
+        return "0:OPENED"
       end
       local domain = source.normalize_domain(item.domain)
         or source.current_domain_name()
@@ -554,6 +579,11 @@ function ui.workspace.open_switcher(opts)
     end,
     group_label = function(group)
       return group:sub(3)
+    end,
+    group_colors = function(group)
+      if group:sub(1, 2) == "1:" then
+        return workspace_name_color(group:sub(3))
+      end
     end,
     group_item = function(group)
       return {
@@ -582,13 +612,13 @@ function ui.workspace.open_switcher(opts)
       if formatter then
         return formatter(item)
       end
-      return default_plain_item(item, domain_width)
+      return default_plain_item(item, domain_width, leading_width)
     end,
     layout_label = function(item, ctx, view)
       if switcher_state().format_item then
         return nil
       end
-      return layout_format_item(item, domain_width, ctx, view)
+      return layout_format_item(item, domain_width, leading_width, ctx, view)
     end,
     search_text = search_text_for_item,
     actions = switcher_actions(),

@@ -57,7 +57,9 @@ Open work, in suggested order:
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
 3. Phase 3: native Windows owner, WSL keepalive.
 
-Workspace-picker follow-up: open workspaces now appear above domain categories, using command-palette section-style list items.
+Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
+Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
+Domain headings use pill colors, and compact rows place work indicators beside current/attention markers in the leading column.
 Domain headings are keyboard-focusable and offer a trailing **+** plus `<C-n>` creation in the captured domain.
 SSH sessions and configured SSH project sources load only on explicit demand, including after reopening the picker.
 Loading has elapsed feedback, a configurable 15-second default deadline, and generation-guarded late replies; empty/error states remain visible.
@@ -65,8 +67,8 @@ The SSH project scanner is independent of local scans and bounded to 256-entry p
 Row columns reserve pill/badge widths before truncating names/paths.
 Guide: [workspace-picker.md](workspace-picker.md); implementation plan: [workspace-picker-plan.md](workspace-picker-plan.md).
 Manual GUI verification of category creation, narrow widths, and SSH empty/error states is still required.
-Picker validation passes: 976 Lua tests, bundled LuaJIT syntax checks, and the ReleaseFast Windows GUI cross-build.
-Restart the rebuilt GUI for the newly embedded project-discovery module; owner processes and persistent sessions can stay running.
+Collapse/layout refinement validation passes: 977 Lua tests, bundled LuaJIT syntax checks, and the ReleaseFast Windows GUI cross-build.
+Restart the rebuilt GUI for the newly embedded category modules; owner processes and persistent sessions can stay running.
 
 Repaint visual recheck completed: user reports persistence now feels on par after output-read coalescing.
 No further repaint-lag work is currently needed; investigate with pipeline measurements only if it returns, before changing the 64 KiB credit window.

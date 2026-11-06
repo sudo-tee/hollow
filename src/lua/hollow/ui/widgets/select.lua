@@ -1,5 +1,7 @@
 local box = require("hollow.ui.style.box")
 local c = require("hollow.ui.components")
+local categories = require("hollow.ui.behaviors.categories")
+local category_row = require("hollow.ui.components.category")
 local list_item = require("hollow.ui.components.list_item")
 local list_row = require("hollow.ui.recipes.list_row")
 local props = require("hollow.ui.components.props")
@@ -25,6 +27,9 @@ end
 ---@param entry HollowUiSelectEntry
 ---@return integer
 local function entry_row_count(entry)
+  if entry.is_group then
+    return entry.row_units or 1
+  end
   return (entry.detail_text and entry.detail_text ~= "") and 2 or 1
 end
 
@@ -104,7 +109,7 @@ end
 ---@param query string
 ---@param prepared HollowUiSelectEntry[]
 ---@return HollowUiSelectEntry[]
-local function filtered_entries(opts, query, prepared)
+local function filtered_entries(opts, query, prepared, sections)
   local fuzzy = opts.fuzzy ~= false
   local query_lower = query:lower()
   local entries = hollow
@@ -149,11 +154,14 @@ local function filtered_entries(opts, query, prepared)
           item = type(opts.group_item) == "function" and opts.group_item(entry.group) or nil,
           is_group = true,
           group = entry.group,
+          collapsed = sections.is_collapsed(entry.group, query),
           label_text = label,
           source_index = "group:" .. entry.group,
         }
       end
-      grouped[#grouped + 1] = entry
+      if not sections.is_collapsed(entry.group, query) then
+        grouped[#grouped + 1] = entry
+      end
       previous = entry.group
     end
     return grouped
@@ -231,39 +239,34 @@ local function render_entry(entry, index, view, plain)
     local pixels = measured and measured.width
       or math.min(ctx.width or math.huge, (view.width or 60) * props.cell_w(ctx))
     local title =
-      util.truncate_end(entry.label_text, math.max(0, math.floor(pixels / props.cell_w(ctx)) - 7))
-    return c.list_item({
+      util.truncate_end(entry.label_text, math.max(0, math.floor(pixels / props.cell_w(ctx)) - 9))
+    return c.category({
       id = id,
       theme = theme,
-      variant = "section",
       selected = selected,
       hovered = hovered,
       label = entry.label_text,
-      height = line_h,
+      text = title,
+      collapsed = entry.collapsed,
+      plain = plain,
+      colors = view.group_colors and view.group_colors(entry.group),
       on_activate = function()
         view.on_activate(entry.source_index)
       end,
-      c.row({
-        c.rich({
-          width = "grow",
-          plain = plain,
-          ui.text(title, ui.style(s.detail, { bold = true })),
-        }),
-        c.when(view.group_create and entry.item and entry.item.domain, function()
-          return c.button({
-            id = id .. ":create",
-            text = "+",
-            label = "Create on " .. entry.item.domain,
-            width = "3ch",
-            height = line_h,
-            appearance = "quiet",
-            theme = theme,
-            on_click = function()
-              view.group_create(entry.group)
-            end,
-          })
-        end),
-      }, { width = "grow", height = line_h, align_y = "center" }),
+      c.when(view.group_create and entry.item and entry.item.domain, function()
+        return c.button({
+          id = id .. ":create",
+          text = "+",
+          label = "Create on " .. entry.item.domain,
+          width = "3ch",
+          height = line_h,
+          appearance = "quiet",
+          theme = theme,
+          on_click = function()
+            view.group_create(entry.group)
+          end,
+        })
+      end),
     })
   end
   local line =
@@ -307,7 +310,10 @@ local function render_entry(entry, index, view, plain)
     end,
     c.column(
       lines,
-      { width = "grow", padding = { left = props.cell_w(ctx) * 2 + padding.left - 2 } }
+      {
+        width = "grow",
+        padding = { left = props.cell_w(ctx) * (view.item_indent or 2) + padding.left - 2 },
+      }
     ),
   })
   return row
@@ -326,6 +332,8 @@ function ui.select.open(opts)
   local actions = opts.actions or {}
   local clay_row_budget = math.min(20, list_row_budget(opts))
   local reveal_start = false
+  local sections = categories.new()
+  local category_units = 1
 
   local selectable
   local filter = ui.text_input({
@@ -336,16 +344,26 @@ function ui.select.open(opts)
   })
 
   local function current_entries()
-    return filtered_entries(opts, filter.value, prepared)
+    local entries = filtered_entries(opts, filter.value, prepared, sections)
+    for _, entry in ipairs(entries) do
+      if entry.is_group then
+        entry.row_units = category_units
+      end
+    end
+    return entries
   end
 
   local function activate(action_index, selected_index)
     local action = actions[action_index]
+    local entries = current_entries()
+    local entry = entries[clamp_index(selected_index, entries)]
+    if action_index == 1 and entry and entry.is_group then
+      sections.toggle(entry.group, filter.value)
+      return
+    end
     if not action then
       return
     end
-    local entries = current_entries()
-    local entry = entries[clamp_index(selected_index, entries)]
     if type(action.fn) == "function" then
       action.fn(entry and entry.item or nil)
     end
@@ -411,6 +429,8 @@ function ui.select.open(opts)
     layout_refresh_after = opts.layout_refresh_after,
     on_unmount = opts.on_unmount,
     render = function(render_theme, state, ctx)
+      local line_h = list_item.line_height(render_theme, ctx)
+      category_units = category_row.height(render_theme, ctx) / line_h
       if type(opts.items) == "function" then
         local old = current_entries()[nav.index]
         local old_id = opts.group_by and old and type(old.item) == "table" and old.item.id
@@ -426,7 +446,6 @@ function ui.select.open(opts)
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-      local line_h = list_item.line_height(render_theme, ctx)
       local measured = ctx.metrics and ctx.metrics["select:viewport"]
       if measured then
         clay_row_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
@@ -448,6 +467,8 @@ function ui.select.open(opts)
         hovered_id = state and state.hovered_id,
         render_label = opts.layout_label,
         group_create = opts.group_create,
+        group_colors = opts.group_colors,
+        item_indent = opts.item_indent,
         width = opts.width,
         theme = render_theme,
         ctx = ctx,

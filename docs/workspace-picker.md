@@ -1,12 +1,14 @@
 # Workspace picker
 
 Open the workspace switcher to switch among open workspaces, reattach persistent sessions, or open configured projects.
-Open workspaces stay in **OPEN** at the top; everything else is grouped by terminal domain.
+Open workspaces stay in **OPENED** at the top; everything else is grouped by terminal domain.
 Search matches loaded workspaces and projects globally, including domain names and persistent session IDs.
 
 ## Domain actions
 
-Domain headings use the same section-style list-item component as command-palette categories.
+Headings share the reusable collapsible category component with the command palette.
+Press Enter or click a heading to collapse or expand it; search reveals matching children without changing saved collapse choices.
+Domain headings use the same foreground and background colors as their pills.
 Focus a domain heading and press `<C-n>`, or click its trailing **+**, to name a new workspace on that domain.
 For a domain with `persist = true`, this creates a persistent session.
 Other domains create ordinary workspaces; the picker never changes domain configuration automatically.
@@ -17,7 +19,7 @@ Headings and status rows cannot be renamed or closed.
 
 Opening, filtering, or reopening the picker does not contact SSH hosts.
 An unloaded SSH domain offers **Load sessions**, **Load projects**, or **Load sessions and projects**, depending on configuration.
-Press Enter on its heading or load row to start the configured work without closing the picker.
+Press Enter on its load row to start the configured work without closing the picker.
 Session listing and project discovery finish independently, so a failed session query does not hide successfully discovered projects.
 Loaded SSH results stay cached until you explicitly load or refresh them again.
 `<C-l>` refreshes local sources and previously loaded SSH domains without contacting unloaded SSH domains.
@@ -59,5 +61,6 @@ Successful empty results keep **No sessions**, **All sessions already open**, or
 An SSH timeout does not block local project discovery.
 
 Name and path columns truncate to leave space for status badges and domain pills.
+Compact open rows place colored work indicators beside current/attention markers in the leading column.
 Only mixed-domain open rows need domain pills; other rows inherit their domain heading.
 See the [workspace reference](reference/lua/workspace.md) for custom formatting, source options, and actions.

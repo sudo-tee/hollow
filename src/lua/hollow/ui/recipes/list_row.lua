@@ -43,8 +43,9 @@ return sheet.define("list_row", {
   },
   -- Leading gutter keeps labels stable as selection moves between rows.
   indicator = indicator,
-  section_indicator = sheet.merge(indicator, { padding = { top = 8 } }),
+  section_indicator = sheet.merge(indicator, { padding = { top = 4 } }),
+  section_title = { fg = "title", bold = true, padding = { top = 4 } },
   -- Spacing shared with other sheets through `list_row.slots`.
   row_gap = { padding = ROW_PADDING },
-  section_gap = { padding = { top = 8 } },
+  section_gap = { padding = { top = 4 } },
 })
