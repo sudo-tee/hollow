@@ -47,16 +47,18 @@ Commit map (current IDs, oldest first):
 | `494178d` | Auto-close exited interactive shells |
 | `e274c74` | Dedicated rejected-respawn notice |
 | `f93d9b8` | Explicit recovery by reserved create ID |
+| `b409297` | Coalesce output frames within GUI parser reads |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
 Open work, in suggested order:
 
-1. Recheck `./bench.sh repaint` visually with the rebuilt GUI after output-read coalescing below.
-2. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
-3. Investigate any remaining output lag with pipeline measurements before changing the 64 KiB credit window; window negotiation not started.
-4. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-5. Phase 3: native Windows owner, WSL keepalive.
+1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
+2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
+3. Phase 3: native Windows owner, WSL keepalive.
+
+Repaint visual recheck completed: user reports persistence now feels on par after output-read coalescing.
+No further repaint-lag work is currently needed; investigate with pipeline measurements only if it returns, before changing the 64 KiB credit window.
 
 Repaint lag investigation (2026-11-06): user reports equal producer/DSR timings but visually 1.5–2x longer to finish with persistence.
 Confirmed a GUI-side throughput cap independent of credit-window negotiation: `SessionPty.read` returned one transport frame, while App polls at most 16 reads per pane.
@@ -64,7 +66,8 @@ With 4 KiB frames, that limited parsing to 64 KiB per tick despite 128/384 KiB p
 `SessionPty.read` now combines queued frames into the caller's bounded buffer without waiting, allocating, or increasing time/byte budgets.
 A concrete regression queues 262,162 bytes ending in a repaint-completion marker: before, one poll parsed only 65,536 bytes; after, it parses all bytes and reaches the marker.
 Additional coverage checks partial frame tails, credit accounting, and draining output before EOF.
-This demonstrates removal of the artificial parser cap, not a measured GUI speedup; user visual recheck is still needed.
+User visually rechecked the rebuilt GUI on 2026-11-06 and reports repaint now feels on par with non-persistent panes.
+This is subjective confirmation, not a measured GUI speedup; no credit-window change is currently needed.
 Owner DSR replies explain why both reported benchmark timings and shell `time` can miss GUI backlog.
 No owner/protocol changes are needed for this fix; rebuild/relaunch the GUI while keeping existing owner sessions.
 Validation passes: Linux pane/client/snapshot suites in Debug, ReleaseSafe, and ReleaseSmall; pane regressions also pass ReleaseFast.
@@ -238,7 +241,7 @@ Gotchas that cost time before:
   frames left on primary screen). Controller resync now drops queued output
   and releases its receive-ahead. User still reports a small residual lag:
   initially suspected to be the 64 KiB window / WSL RTT; the later GUI adapter
-  read-boundary cap above is now confirmed, with visual recheck pending.
+  read-boundary cap above was fixed, and the user now reports visual parity.
   Window negotiation has not started.
 - `7beae1e`: stale layout reconciliation, quit flush and receive-ahead.
 - `496f032` discovery (slice 2): `session/query.zig` (single-use

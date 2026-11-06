@@ -613,8 +613,7 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Recheck repaint visual completion after GUI output-read coalescing; measure any remaining pipeline bottleneck before adding bounded window negotiation.
-3. Placeholder workspaces for missing sessions, if wanted.
+2. Placeholder workspaces for missing sessions, if wanted.
 
 Respawn rejection now has dedicated native notice wording and preserves the pane's screen and exit status without retry.
 Lost-create recovery now uses a random client-reserved ID when the owner advertises `create-id`.
@@ -626,7 +625,8 @@ Recovery is not durable GUI-side state: after a restart, use the log or host ses
 The persistent pane adapter now combines queued output frames within each parser read.
 Previously, small transport frames consumed the GUI's 16-read allowance one frame at a time, imposing a 64 KiB/tick cap with 4 KiB frames despite a 2 MiB byte budget.
 A regression checks byte-quota draining through a final repaint marker; time/byte budgets, credit limits, and protocol remain unchanged.
-Producer/DSR timings still measure the owner parser rather than GUI completion, so visual confirmation remains necessary.
+Producer/DSR timings still measure the owner parser rather than GUI completion.
+On 2026-11-06, the user visually confirmed repaint now feels on par with non-persistent panes; this is not a measured GUI speedup.
 
 `persist = true` is experimental and defaults to false.
 Native Windows owner and WSL keepalive remain Phase 3.
