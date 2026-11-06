@@ -15,6 +15,10 @@ local host_api
 local inflight = {}
 local prompts = {}
 local prompt_open = false
+-- Lists, prompts, and attaches still running; each attach focuses its
+-- workspace, so the last active session is refocused once this drops to 0.
+local restoring = 0
+local focus_target
 
 local function key(domain, id)
   return domain .. "\0" .. id
@@ -43,27 +47,55 @@ local function load()
     end
     return hollow.json.decode(host_api.read_file(file))
   end)
-  local entries = {}
+  local entries, active = {}, nil
   if ok and type(decoded) == "table" and type(decoded.sessions) == "table" then
     for _, entry in ipairs(decoded.sessions) do
       if valid_entry(entry) then
         entries[#entries + 1] = { domain = entry.domain, id = entry.id, host = entry.host }
       end
     end
+    if valid_entry(decoded.active) then
+      active = { domain = decoded.active.domain, id = decoded.active.id }
+    end
   end
   while #entries > M.max_entries do
     table.remove(entries, 1)
   end
-  return entries
+  return entries, active
 end
 
-local function save(entries)
+--- `active` is the session focused last.
+local function save(entries, active)
   while #entries > M.max_entries do
     table.remove(entries, 1)
   end
   pcall(function()
-    host_api.write_file(path(), hollow.json.encode({ version = 1, sessions = entries }) .. "\n")
+    host_api.write_file(
+      path(),
+      hollow.json.encode({ version = 1, sessions = entries, active = active }) .. "\n"
+    )
   end)
+end
+
+local function focus_restored()
+  if restoring > 0 or focus_target == nil then
+    return
+  end
+  local target = focus_target
+  focus_target = nil
+  for _, workspace in ipairs(hollow.term.workspaces()) do
+    if workspace.session_id == target.id then
+      if not workspace.is_active then
+        hollow.term.switch_workspace(workspace.index)
+      end
+      return
+    end
+  end
+end
+
+local function busy(delta)
+  restoring = restoring + delta
+  focus_restored()
 end
 
 local function domain_config(domain)
@@ -82,19 +114,37 @@ function M.remember(domain, id, host)
   if not M.enabled(domain) or not valid_entry({ domain = domain, id = id, host = host }) then
     return
   end
-  local entries = load()
+  local entries, active = load()
   for index = #entries, 1, -1 do
     if entries[index].domain == domain and entries[index].id == id then
       table.remove(entries, index)
     end
   end
   entries[#entries + 1] = { domain = domain, id = id, host = host }
-  save(entries)
+  save(entries, active)
+end
+
+--- Record the focused session. Restores in progress focus their own
+--- workspaces and must not overwrite the one to return to.
+function M.activate(domain, id)
+  if restoring > 0 or not M.enabled(domain) then
+    return
+  end
+  local entries, active = load()
+  if active and active.domain == domain and active.id == id then
+    return
+  end
+  for _, entry in ipairs(entries) do
+    if entry.domain == domain and entry.id == id then
+      save(entries, { domain = domain, id = id })
+      return
+    end
+  end
 end
 
 --- Forget `id`. A nil domain matches every domain.
 function M.forget(domain, id)
-  local entries = load()
+  local entries, active = load()
   local changed = false
   for index = #entries, 1, -1 do
     local entry = entries[index]
@@ -103,8 +153,11 @@ function M.forget(domain, id)
       changed = true
     end
   end
+  if active and active.id == id and (domain == nil or active.domain == domain) then
+    active = nil
+  end
   if changed then
-    save(entries)
+    save(entries, active)
   end
 end
 
@@ -176,6 +229,7 @@ local function restore_domain(domain, entries, fallback)
     end
     inflight[entry_key] = true
     state.pending = state.pending + 1
+    busy(1)
     local ok = pcall(hollow.term.attach_session, entry.id, {
       domain = domain,
       on_complete = function(result)
@@ -189,15 +243,18 @@ local function restore_domain(domain, entries, fallback)
           state.uncertain = true
         end
         settle()
+        busy(-1)
       end,
     })
     if not ok then
       inflight[entry_key] = nil
       state.pending = state.pending - 1
+      busy(-1)
     end
   end
 
   state.pending = 1
+  busy(1)
   local ok, queued = pcall(hollow.term.list_sessions, {
     domain = domain,
     on_complete = function(result)
@@ -208,6 +265,7 @@ local function restore_domain(domain, entries, fallback)
           level = "warn",
           title = "Session restore",
         })
+        busy(-1)
         return
       end
       local live = {}
@@ -235,6 +293,7 @@ local function restore_domain(domain, entries, fallback)
       end
       if #elsewhere > 0 then
         state.prompting = true
+        busy(1)
         local noun = #elsewhere == 1 and "session is" or "sessions are"
         ask(
           string.format(
@@ -251,14 +310,17 @@ local function restore_domain(domain, entries, fallback)
               end
             end
             settle()
+            busy(-1)
           end
         )
       end
       settle()
+      busy(-1)
     end,
   })
   if not ok or not queued then
     state.pending = state.pending - 1
+    busy(-1)
     state.uncertain = true
     notify("Could not list sessions in " .. domain .. "; nothing was restored.", {
       level = "warn",
@@ -303,7 +365,9 @@ end
 --- creating the persistent default domain's first session.
 function M.startup(default_domain)
   local pty = require("hollow.host.pty")
-  local order, groups = group(load(), nil)
+  local entries, active = load()
+  local order, groups = group(entries, nil)
+  focus_target = active
   local took_over = false
   local remote = 0
   for _, domain in ipairs(order) do
@@ -337,6 +401,7 @@ function M.startup(default_domain)
       )
     end)
   end
+  focus_restored()
   return took_over
 end
 
@@ -354,6 +419,13 @@ function M.setup(hollow_ref, host_api_ref)
       domain = hollow.config.get("default_domain")
     end
     M.remember(domain, workspace.session_id, workspace.session_host)
+  end)
+
+  hollow.events.on("workspace:changed", function(event)
+    local workspace = event and event.workspace
+    if type(workspace) == "table" and type(workspace.session_id) == "string" then
+      M.activate(workspace.domain or hollow.config.get("default_domain"), workspace.session_id)
+    end
   end)
 
   hollow.events.on("workspace:closed", function(event)

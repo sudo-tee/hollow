@@ -178,6 +178,8 @@ At startup it lists each local and WSL domain that has remembered sessions, then
 - forgets sessions the host no longer has, without a notice;
 - keeps sessions whose host answers with a different host ID.
 
+Once every startup attach has finished, the session you had focused last is focused again.
+
 A fresh session in the default domain is created only when the host confirmed that none of its remembered sessions survive, or when you decline every take-over.
 If the host cannot be listed, or an attach may have reached the owner, startup creates nothing and shows a warning instead, so a live session is never duplicated.
 A startup command always gets its own fresh session.

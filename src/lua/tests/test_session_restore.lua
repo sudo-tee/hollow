@@ -154,6 +154,30 @@ describe("session restore", function()
     harness.assert_equal(#calls.new, 0, "restored sessions must not create a fresh one")
   end)
 
+  it("refocuses the last active session once every restore settles", function()
+    new_workspace("main", "a")
+    new_workspace("main", "b")
+    new_workspace("main", "a")
+    hollow._emit_builtin_event("workspace:changed", { workspace_index = 0 })
+    local switched = {}
+    hollow.term.switch_workspace = function(index)
+      switched[#switched + 1] = index
+    end
+    hollow._session_startup("main")
+    calls.list[1].on_complete({ success = true, sessions = { { id = "a" }, { id = "b" } } })
+    hollow.term.workspaces = function()
+      return {
+        { index = 1, domain = "main", session_id = "a" },
+        { index = 2, domain = "main", session_id = "b", is_active = true },
+      }
+    end
+    calls.attach[1].opts.on_complete({ success = true })
+    hollow._emit_builtin_event("workspace:changed", { workspace_index = 1 })
+    harness.assert_equal(#switched, 0, "focus waits for every attach")
+    calls.attach[2].opts.on_complete({ success = true })
+    harness.assert_equal(switched[1], 1, "the last active session should be refocused")
+  end)
+
   it("creates one fresh session once nothing survives", function()
     remembered({ { domain = "main", id = "gone" }, { domain = "main", id = "stale" } })
     harness.assert_equal(

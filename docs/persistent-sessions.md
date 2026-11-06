@@ -164,6 +164,8 @@ placeholders in their original layout. Scrollback is not written to disk in v1.
   `workspace:new` and dropped when `workspace:closed` reports
   `session_ended`, on a successful kill, or when a reachable host lacks them.
   `domains.X.restore = false` opts a domain out.
+  `active` records the session focused on `workspace:changed` (ignored while
+  a restore runs); startup refocuses it once every list and attach settles.
 - Startup creates a fresh default-domain session only when the list confirmed
   no remembered session survives and no attach outcome is uncertain. Sessions
   attached by another client prompt before take-over.
