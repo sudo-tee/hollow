@@ -44,17 +44,21 @@ Commit map (current IDs, oldest first):
 | `e611a81` | Respawn exited panes, native dead-pane footer |
 | `82cab71` | Slice 3: remembered sessions and startup restore |
 | `8a33cea` | Slice 4: sessions in the workspace switcher |
+| `494178d` | Auto-close exited interactive shells |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
 Open work, in suggested order:
 
 1. Manual GUI smoke test of slices 3 and 4 on Windows (`./launch.sh`): switcher rows, take-over confirm, kill confirm, SSH "Load sessions" row, startup restore. Not yet done by anyone; the native notice cards have never been checked visually either.
-2. Dedicated notice wording for a rejected respawn (currently reuses "Session open failed: …").
-3. Recovery of a lost create reply (an uncertain create currently just warns).
-4. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-5. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
-6. Phase 3: native Windows owner, WSL keepalive.
+2. Recovery of a lost create reply (an uncertain create currently just warns).
+3. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
+4. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
+5. Phase 3: native Windows owner, WSL keepalive.
+
+Respawn rejections now show "Pane respawn failed: <owner reason>" and explain that the existing screen was kept, with no automatic retry.
+Notice unit tests and a Windows App regression verify wording, retained exit status, and absence of replay.
+Linux pane tests, Windows borrower/App tests, and the Windows GUI cross-build pass.
 
 Latest follow-up: interactive-shell exits (Ctrl+D or `exit`) now schedule
 owner-acknowledged pane removal rather than leaving the respawn footer.
@@ -239,7 +243,7 @@ Gotchas that cost time before:
   A `SessionNotFound` rejection shows "Session not found on host" with
   `hollow-cli session list` guidance; new_workspace/attach `on_complete`
   failures carry `status`, `error`, `outcome`, `remote?`.
-  Known wart: respawn rejection reuses the "Session open failed: …" notice.
+  Respawn rejection uses a dedicated "Pane respawn failed: …" notice and preserves the existing screen without retry.
 - Remembered sessions (slice 3): `src/lua/hollow/session_restore.lua` keeps
   `{version=1, sessions=[{domain,id,host?}]}` in `<data dir>/sessions.json`
   (max 64, oldest dropped, corrupt file reads empty). Recorded on

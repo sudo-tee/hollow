@@ -611,8 +611,10 @@ Owner-backed tabs and splits implemented:
   asks first); kill confirms, never retries, and re-lists on failure.
 
 Next implementation slices:
-1. Dedicated respawn-rejection notice wording.
+1. Recover a lost create reply without replaying create.
 2. Placeholder workspaces for missing sessions, if wanted.
+
+Respawn rejection now has dedicated native notice wording and preserves the pane's screen and exit status without retry.
 
 `persist = true` is experimental and defaults to false.
 Native Windows owner and WSL keepalive remain Phase 3.

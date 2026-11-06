@@ -1369,6 +1369,45 @@ test "session borrowers keep App pane close gated on owner acknowledgement" {
     try app.lua.?.runString("assert(#closed == 1 and closed[1].session_id == 'mock' and closed[1].session_ended == true)");
 }
 
+test "session borrowers rejected respawn keeps dead pane and shows dedicated notice without replay" {
+    const allocator = std.testing.allocator;
+    const connection = try mockAttachedSessionConnection(allocator);
+    var owned = false;
+    defer if (!owned) connection.destroy();
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.deinit();
+    app.ghostty = try GhosttyRuntime.init(allocator, null);
+    app.mux = Mux.init(allocator);
+    _ = try addSessionWorkspace(app, connection, .{
+        .id = "mock",
+        .attached = true,
+        .revision = 0,
+        .panes = &.{.{ .id = 1, .cols = 80, .rows = 24, .exit = 7 }},
+    }, "session-domain");
+    owned = true;
+    connection.client.respawn_supported = true;
+    const pane_id = app.activePane().?.id;
+    try respawnPane(app, pane_id);
+    const request = connection.client.nextWrite().?;
+    defer request.deinit();
+    const parsed = try p.parse(p.Request, allocator, request.payload);
+    defer parsed.deinit();
+    try std.testing.expectEqual(p.Op.respawn, parsed.value.op);
+    const rejected = try p.stringify(allocator, p.Reply{ .id = parsed.value.id, .ok = false, .@"error" = "PaneNotFound" });
+    defer allocator.free(rejected);
+    try connection.client.receive(p.header(.reply, 0, rejected.len), rejected);
+    pumpSessionControllers(app, &app.ghostty.?);
+    const pane = app.findPaneById(pane_id).?;
+    try std.testing.expectEqual(@as(?i32, 7), pane.content.terminal.pty.?.session.status);
+    var text: @import("../session/notice.zig").Text = .{};
+    text.format(app.session_notices.current().?);
+    try std.testing.expectEqualStrings("Pane respawn failed: PaneNotFound", text.lines[0]);
+    pumpSessionControllers(app, &app.ghostty.?);
+    try std.testing.expect(connection.client.nextWrite() == null);
+}
+
 const recordWorkspaceClosed =
     \\closed = {}
     \\hollow = {_emit_builtin_event = function(name, payload)

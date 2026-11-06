@@ -129,6 +129,7 @@ Directly launched applications and commands keep their final screen and show a f
 Shell launches with explicit command or script arguments also retain their output.
 Press Enter to respawn the original command in the same cwd, or Ctrl+D to close the pane.
 The new process writes below the old output.
+If the owner rejects a respawn, a "Pane respawn failed" notice shows its reason; the existing screen stays intact and Hollow never retries automatically.
 Bind the `respawn_pane` action, or call `hollow.term.respawn_pane()`, to respawn from elsewhere.
 Owners started by an older Hollow cannot respawn, so the footer offers only Ctrl+D.
 Owners predating shell-exit policy retain exited shells too; restart the owner after ending its sessions to enable the new policy.

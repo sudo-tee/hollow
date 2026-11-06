@@ -90,6 +90,13 @@ pub const Text = struct {
             return;
         }
         const remote = notice.remote[0..notice.remote_len];
+        if (notice.outcome == .rejected and (notice.reason orelse error.Unknown) == error.RespawnRejected) {
+            self.lines[0] = std.fmt.bufPrint(&self.buffer, "Pane respawn failed: {s}", .{if (remote.len > 0) remote else "Owner rejected request"}) catch "Pane respawn failed";
+            self.lines[1] = "Owner rejected respawn. Existing screen was kept.";
+            self.lines[2] = "Click to dismiss. No automatic retry.";
+            self.count = 3;
+            return;
+        }
         if (notice.outcome == .rejected and std.mem.eql(u8, remote, "SessionNotFound")) {
             // The owner is alive and authoritative: the session ended or was
             // killed. Nothing was created, so starting fresh is safe.
@@ -211,5 +218,24 @@ test "session pane notice explains a missing session and how to recover" {
     // A lost reply is not a missing session: keep the do-not-recreate warning.
     try std.testing.expect(notices.failedRemote(2, error.Disconnected, .uncertain, "SessionNotFound"));
     text.format(notices.current().?);
+    try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
+}
+
+test "respawn rejection names pane operation without suggesting a new session" {
+    var notices: Notices = .{};
+    for ([_]?[]const u8{ "PaneAlive", "PaneNotFound", "SessionNotFound", null }) |remote| {
+        try std.testing.expect(notices.failedRemote(1, error.RespawnRejected, .rejected, remote));
+        var text: Text = .{};
+        text.format(notices.current().?);
+        try std.testing.expect(std.mem.startsWith(u8, text.lines[0], "Pane respawn failed:"));
+        try std.testing.expectEqualStrings("Owner rejected respawn. Existing screen was kept.", text.lines[1]);
+        try std.testing.expectEqualStrings("Click to dismiss. No automatic retry.", text.lines[2]);
+        try std.testing.expectEqual(@as(usize, 3), text.count);
+    }
+    // Never let rejection wording erase uncertainty about a submitted mutation.
+    try std.testing.expect(notices.failedRemote(1, error.RespawnRejected, .uncertain, "PaneAlive"));
+    var text: Text = .{};
+    text.format(notices.current().?);
+    try std.testing.expectEqual(@as(usize, 4), text.count);
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
 }
