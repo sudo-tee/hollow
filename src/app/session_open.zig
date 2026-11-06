@@ -196,6 +196,11 @@ pub fn pump(app: *App) void {
                 }
                 // Initial geometry/name belongs to this new session only.
                 // Attach must never silently overwrite a saved owner layout.
+                // Splits inherit this before the shell reports a cwd (and
+                // forever for programs like nvim that never do).
+                if (pending.operation.request.op == .create) if (pending.operation.request.spawn) |spawn| {
+                    workspace.setDefaultCwd(spawn.cwd) catch |err| std.log.warn("session default cwd failed: {s}", .{@errorName(err)});
+                };
                 if (pending.operation.request.op == .create) save_initial: {
                     const bytes = @import("../mux/session_layout.zig").capture(app.allocator, workspace) catch |err| {
                         std.log.warn("initial session geometry capture failed: {s}", .{@errorName(err)});

@@ -161,6 +161,15 @@ const Pane = struct {
     removed: bool = false,
 };
 
+/// Shell-reported cwd, else the spawn cwd: programs like nvim never report
+/// one, and clients split new panes from this value.
+fn paneCwd(arena: std.mem.Allocator, pane: *const Pane) ![]const u8 {
+    const pwd = try pane.vt.pwd(arena);
+    if (pwd.len > 0) return pwd;
+    const spawn = std.json.parseFromSliceLeaky(p.Spawn, arena, pane.spawn, .{ .ignore_unknown_fields = true }) catch return pwd;
+    return spawn.cwd orelse pwd;
+}
+
 const Session = struct {
     id: [32]u8,
     panes: std.ArrayList(*Pane) = .empty,
@@ -554,7 +563,7 @@ pub const Owner = struct {
             .cols = pane.cols,
             .rows = pane.rows,
             .title = try pane.vt.title(arena),
-            .cwd = try pane.vt.pwd(arena),
+            .cwd = try paneCwd(arena, pane),
             .exit = pane.status,
             .close_on_exit = pane.close_on_exit,
         });
@@ -987,7 +996,7 @@ pub const Owner = struct {
         const PaneState = struct { id: u32, spawn: []const u8, title: []const u8, cwd: []const u8, exit: ?i32 };
         var panes: std.ArrayList(PaneState) = .empty;
         for (s.panes.items) |pane| if (!pane.removed) {
-            panes.append(arena, .{ .id = pane.id, .spawn = pane.spawn, .title = pane.vt.title(arena) catch "", .cwd = pane.vt.pwd(arena) catch "", .exit = pane.status }) catch return;
+            panes.append(arena, .{ .id = pane.id, .spawn = pane.spawn, .title = pane.vt.title(arena) catch "", .cwd = paneCwd(arena, pane) catch "", .exit = pane.status }) catch return;
         };
         const body = p.stringify(arena, .{ .id = &s.id, .revision = s.revision, .layout = s.layout, .panes = panes.items }) catch return;
         const tmp = std.fmt.allocPrintSentinel(arena, "{s}/{s}.json.tmp", .{ dir, &s.id }, 0) catch return;

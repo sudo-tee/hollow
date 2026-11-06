@@ -238,6 +238,18 @@ test "host id is created once, persisted, and sent in every welcome" {
     try std.testing.expect(!std.mem.eql(u8, first.host, third.host));
 }
 
+test "pane without a shell-reported cwd reports its spawn cwd" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    var spawn = shell("sleep 30");
+    spawn.cwd = "/tmp";
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = spawn }));
+    defer created.deinit();
+    try std.testing.expectEqualStrings("/tmp", created.value.session.?.panes[0].cwd);
+}
+
 test "foreign ghostty identity gets a VT formatter snapshot" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();
