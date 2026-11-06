@@ -161,10 +161,22 @@ const Pane = struct {
     removed: bool = false,
 };
 
+/// OSC 7 reports `file://host/path`; clients want the bare path, matching
+/// the client-side pwd callback.
+pub fn osc7Path(pwd: []const u8) []const u8 {
+    var path = pwd;
+    if (std.mem.startsWith(u8, path, "cwd;")) path = path[4..];
+    if (std.mem.startsWith(u8, path, "file://")) {
+        path = path[7..];
+        path = if (std.mem.indexOfScalar(u8, path, '/')) |idx| path[idx..] else "";
+    }
+    return path;
+}
+
 /// Shell-reported cwd, else the spawn cwd: programs like nvim never report
 /// one, and clients split new panes from this value.
 fn paneCwd(arena: std.mem.Allocator, pane: *const Pane) ![]const u8 {
-    const pwd = try pane.vt.pwd(arena);
+    const pwd = osc7Path(try pane.vt.pwd(arena));
     if (pwd.len > 0) return pwd;
     const spawn = std.json.parseFromSliceLeaky(p.Spawn, arena, pane.spawn, .{ .ignore_unknown_fields = true }) catch return pwd;
     return spawn.cwd orelse pwd;

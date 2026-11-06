@@ -250,6 +250,15 @@ test "pane without a shell-reported cwd reports its spawn cwd" {
     try std.testing.expectEqualStrings("/tmp", created.value.session.?.panes[0].cwd);
 }
 
+test "shell-reported OSC 7 cwd is reported as a bare path" {
+    const osc7Path = @import("session_posix.zig").osc7Path;
+    try std.testing.expectEqualStrings("/home/user", osc7Path("file://host/home/user"));
+    try std.testing.expectEqualStrings("/srv", osc7Path("file:///srv"));
+    try std.testing.expectEqualStrings("/tmp", osc7Path("cwd;/tmp"));
+    try std.testing.expectEqualStrings("", osc7Path("file://host"));
+    try std.testing.expectEqualStrings("/plain", osc7Path("/plain"));
+}
+
 test "attach restores foreground command reported while detached and completion clears it" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();
