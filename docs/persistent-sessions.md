@@ -1,13 +1,12 @@
 # Persistent sessions plan
 
-Status: design approved 2026-11-04. Phase 0 (headless VT spike) done: go (see
-[Phase 0 results](#phase-0-results-2026-11-04-go)). Phase 1 (Linux owner +
-`connect`) done; see [Phase 1 status](#phase-1-status-2026-11-04). Phase 2
-(GUI) started: snapshot decoder, asynchronous transport, and session-backed
-terminal pane adapter are implemented; workspace/controller wiring is next. See
-[Phase 2 status](#phase-2-status-2026-11-04).
-Snapshot format revised the same
-day to ghostty's binary snapshot API with VT formatter fallback.
+Status: design approved 2026-11-04; updated 2026-11-06.
+Phase 0 (headless VT spike) and Phase 1 (Linux owner + `connect`) are complete.
+Phase 2 GUI integration includes owner-backed tabs/splits, layout autosave, startup restore, discovery, and switcher actions; manual GUI qualification remains open.
+Phase 3 (native Windows owner and WSL keepalive) is starting in tested sub-slices.
+Phase 4 is partially delivered; its remaining promises need an explicit implementation audit.
+Historical checkpoints below retain their original dates and are superseded by later milestone notes.
+Snapshots use ghostty's binary snapshot API with VT formatter fallback.
 Supersedes the unapproved October 26 proposal.
 
 ## Goal
@@ -615,7 +614,32 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Placeholder workspaces for missing sessions, if wanted.
+2. Phase 3 Windows owner foundations, followed by native owner transport, GUI integration, and WSL keepalive (see below).
+3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
+4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
+
+### Phase 3 implementation slices
+
+Keep native Windows persistence rejected until transport and owner lifecycle are usable end to end.
+Do not restart existing Linux owners or change the Linux wire contract merely to introduce Windows mechanisms.
+
+1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
+2. Add a session-only Windows owner executable and user-SID-only, local named-pipe endpoint, including singleton admission and detached startup.
+3. Share session semantics across owners: bounded queues, snapshots, output credit, take-over, layout revisions, close, and respawn without replay.
+4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
+5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
+6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
+
+The first slice adds `WindowsPty.spawnSession`, not a user-facing Windows persistence switch.
+Its child starts suspended and is assigned to an unnamed, noninheritable kill-on-close Job Object before either shell or application code executes.
+Owner-side creation explicitly clears redirected standard handles so child output cannot bypass ConPTY into the owner's transport.
+Both I/O workers start before resume, and owner-side teardown closes the job before waiting on ConPTY workers.
+Ordinary GUI spawning retains its existing process flags and direct-child lifetime; the pre-output input buffer gains a 1 MiB bound.
+Session input is admitted without waiting for first output and overflow rejects atomically without killing the pane.
+Headless Windows process-tree tests live in `test-session-windows-pty` in the standalone agent build graph.
+All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and ReleaseFast; Windows CI now runs this target too.
+
+Crash/reboot layout placeholders from the original lifecycle section also need an implementation audit; live-process recovery after owner loss remains out of scope.
 
 The workspace picker now groups non-open sessions and projects by domain beneath **OPEN**.
 It reuses command-palette section rows and provides domain-scoped creation from the heading's **+** or `<C-n>`.

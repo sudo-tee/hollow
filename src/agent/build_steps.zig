@@ -78,6 +78,23 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
 }
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const windows_pty_step = b.step("test-session-windows-pty", "Run headless Windows ConPTY session job lifecycle tests");
+    if (target.result.os.tag == .windows) {
+        const options = b.addOptions();
+        options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        const module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_pty_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        module.addOptions("build_options", options);
+        const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
+        run.has_side_effects = true;
+        windows_pty_step.dependOn(&run.step);
+    } else {
+        windows_pty_step.dependOn(&b.addFail("test-session-windows-pty requires a Windows target (-Dtarget=x86_64-windows-gnu from WSL)").step);
+    }
     const agent_step = b.step("agent", "Build the standalone Linux musl agent for the selected architecture");
     if (target.result.cpu.arch != .x86_64 and target.result.cpu.arch != .aarch64) {
         agent_step.dependOn(&b.addFail("hollow-agent supports only x86_64 and aarch64 Linux targets").step);
@@ -103,6 +120,9 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     all_step.dependOn(&install_manifest.step);
     // Guest management is a default capability, not a separately prepared add-on.
     b.getInstallStep().dependOn(all_step);
+    // The remaining tests construct POSIX-only native agent modules. Windows
+    // can run the independent ConPTY target without constructing those modules.
+    if (b.graph.host.result.os.tag == .windows) return;
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/protocol.zig"),
         .target = b.graph.host,

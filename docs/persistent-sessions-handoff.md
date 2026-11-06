@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-06 after explicit lost-create recovery and GUI output-read coalescing.
+Updated 2026-11-06 as Phase 3 Windows-owner foundations begin.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -55,7 +55,20 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: native Windows owner, WSL keepalive.
+3. Phase 3 is starting with owner-side ConPTY process-tree ownership; native Windows owner transport and WSL keepalive follow.
+
+Phase 3 foundation: `WindowsPty.spawnSession` creates an unnamed, noninheritable kill-on-close Job Object for each owner pane.
+The child starts suspended, joins its job before executing, and resumes only after both bounded I/O workers exist.
+Unlike ordinary GUI spawning, session children inherit no arbitrary owner handles and explicitly clear redirected standard handles so output stays inside ConPTY rather than leaking into an owner's framed transport.
+They can receive input before their first output.
+Owner-side destruction kills descendants too; GUI detach must never destroy this owner-side PTY.
+Session input overflow rejects admission atomically with `ResourceExhausted`, without marking the pane dead.
+The ordinary GUI pre-output input buffer is now bounded to the same 1 MiB input limit.
+Native Windows persistence remains unsupported until the session-only executable, secured named-pipe transport, shared session semantics, and GUI wiring land.
+This foundation does not change Linux owners or require restarting existing sessions.
+Foundation validation: real Windows ConPTY/job tests pass (11 tests each in Debug, ReleaseSafe, and ReleaseFast), Linux ReleaseSafe transport/agent-loop/PTY suites pass (138 tests), Windows borrower/App tests pass (49 tests, one optional fixture skipped), and the ReleaseFast Windows GUI cross-build passes.
+The standalone target is registered in Windows CI; final read-only review found no actionable issues.
+Next concrete slice: session-only Windows owner bootstrap with secured named pipe, singleton ownership, detached launch, and bounded hello/list/kill-server checks.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
@@ -348,6 +361,8 @@ Gotchas that cost time before:
 - `zig build --build-file build-agent.zig test-session-transport test-agent-loop test-agent-pty`
 - `HOLLOW_TEST_AGENT=$PWD/zig-out/agents/linux-x86_64/hollow-agent zig build --build-file build.zig test-session-pane test-session-snapshot test-session-client test-background test-search test-command test-lua test-luajit -Dagent-only=false --summary all`
 - Windows GUI cross-build: `./launch.sh --build-only`.
+- Windows owner-side ConPTY foundation (no GUI dependencies): `zig build --build-file build-agent.zig test-session-windows-pty -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all`.
+  Run on Windows or through WSL executable interop; this target creates isolated test processes, never connects to existing owners.
 - Repeat pane/snapshot/client suites with `-Doptimize=ReleaseSafe|ReleaseSmall`.
 - Windows tests through WSL interop:
   `zig build --build-file build.zig test test-session-pane test-session-snapshot test-session-client test-session-borrowers -Dagent-only=false -Dtarget=x86_64-windows-gnu -Dsession-test-wsl="$WSL_DISTRO_NAME" -Dsession-test-agent=/tmp/opencode/hollow-session-agent-next --summary all`

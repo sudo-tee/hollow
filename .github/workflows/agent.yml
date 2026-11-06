@@ -22,11 +22,19 @@ jobs:
       - name: Benchmark window invariant checks (no live windows modified)
         shell: pwsh
         run: ./scripts/test_windows_bench_window.ps1
+      - name: Headless Windows session ConPTY process-tree lifecycle
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pty 2>&1 | Tee-Object -FilePath session-windows-pty.log
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: fs-exec-windows-native
-          path: fs-exec-windows-native.log
+          path: |
+            fs-exec-windows-native.log
+            session-windows-pty.log
   docker:
     runs-on: ubuntu-latest
     steps:
