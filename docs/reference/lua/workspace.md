@@ -239,7 +239,8 @@ Domain headings reuse command-palette section rows; focus one and press `<C-n>`,
 The new workspace becomes persistent only if that domain already has `persist = true`.
 Enter or click on a heading toggles collapse; search temporarily reveals matching children.
 Activate the explicit load row to load sessions and configured SSH project sources without closing the picker.
-Domain headings share their pill colors.
+Domain headings are flat titles in a brighter shade of their pill hue (**OPENED** uses the theme magenta), with **loading…** while the domain lists sessions or projects.
+A search whose matches all fall in one section hides that heading.
 Open rows use compact indentation; current/attention markers and colored work indicators share the leading column, while session badges remain beside names.
 Domain pills are retained for mixed-domain open rows; other rows inherit their heading instead of repeating the pill.
 Name/path columns truncate within reserved widths rather than pushing pills out of view.

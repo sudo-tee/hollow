@@ -1223,6 +1223,7 @@
 ---@field group_item? fun(group: string): any Action payload for keyboard-focusable category headings
 ---@field group_create? fun(group: string) Adds a trailing + button to headings whose payload has a domain
 ---@field group_colors? fun(group: string): HollowUiColorPair|nil Category title/row paint; geometry is unaffected
+---@field group_meta? fun(group: string): string|nil Muted status text at the end of a heading
 ---@field item_indent? number Item content indent in cells; defaults to 2
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string

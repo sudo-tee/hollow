@@ -45,7 +45,9 @@ return setmetatable(M, {
     if #trailing > 0 then
       content = c.row({ title, trailing }, { width = "grow", align_y = "center" })
     end
-    options.variant, options.theme = "section", theme
+    -- Flat headers drop the section fill and read as colored titles.
+    options.variant, options.theme = options.flat and "selectable" or "section", theme
+    options.flat = nil
     options.style = ui.style(options.style, options.colors and { bg = options.colors.bg })
     options[1] = content
     return c.list_item(options)

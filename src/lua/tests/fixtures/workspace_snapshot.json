@@ -127,7 +127,6 @@
     "width": -1
   },
   {
-    "bg": "#333640",
     "children": 2,
     "clickable": true,
     "hover_bg": "#2a2d38",
@@ -172,7 +171,7 @@
   },
   {
     "bold": true,
-    "fg": "#8fbcdf",
+    "fg": "#c895bf",
     "kind": 2,
     "text": "▼ OPENED",
     "wrap": 2

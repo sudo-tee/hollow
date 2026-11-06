@@ -138,6 +138,10 @@ function M.tick()
   end
 end
 
+function M.status(name)
+  return domains[name] and domains[name].status or "idle"
+end
+
 function M.loading()
   for _, entry in pairs(domains) do
     if entry.status == "loading" then

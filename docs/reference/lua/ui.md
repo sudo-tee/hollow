@@ -926,8 +926,11 @@ Optional `group_by(item)` returns a category key, ordered lexically; filtering r
 Headings use shared `c.category` disclosure rows and participate in keyboard navigation.
 Primary activation toggles collapse; secondary actions still receive the `group_item` payload.
 Search exposes matching children without changing saved collapse choices.
-`group_colors(key)` supplies category foreground/background colors, and `item_indent` sets child indentation in cells (default 2).
-`c.category({ label, collapsed, colors, on_activate, ... })` accepts optional trailing controls independent of disclosure activation.
+When every match falls in one category, search hides that heading and shows a flat list.
+Select headings are flat titles without a section fill.
+`group_colors(key)` supplies the category title color (`fg`), and `item_indent` sets child indentation in cells (default 2).
+`group_meta(key)` returns optional muted status text shown at the end of a heading.
+`c.category({ label, collapsed, colors, flat, on_activate, ... })` accepts optional trailing controls independent of disclosure activation; `flat = true` drops the section fill.
 `c.category.height(theme, ctx, title_style?)` measures its padded title height for list navigation.
 Search initially selects the first matching child rather than its heading.
 For domain-style groups, `group_create(key)` adds a trailing **+** button when the heading payload has a `domain` field; clicking it does not activate the parent row.

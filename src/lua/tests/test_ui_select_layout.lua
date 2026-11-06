@@ -96,10 +96,10 @@ describe("Clay selectable list", function()
       assert.equals("remote", created)
       assert.is_nil(selected)
       assert.is_nil(row(1)) -- Its + button does not toggle the category.
-      -- Search still defaults to the matching child, not its category header.
+      -- Search selects the matching child; a single matching group drops its header.
       ui.dispatch_overlay_key("a", 0)
       ui.dispatch_overlay_key("l", 0)
-      assert.is_truthy(row("group:remote"))
+      assert.is_nil(row("group:remote"))
       assert.is_nil(row("group:local"))
       ui.dispatch_overlay_key("enter", 0)
       assert.equals("alpha", selected.name)

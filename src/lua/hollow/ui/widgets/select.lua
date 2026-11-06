@@ -138,7 +138,10 @@ local function filtered_entries(opts, query, prepared, sections)
     end)
   end
 
-  if not grouped_view then
+  -- A filtered view that lands in a single group needs no header.
+  if
+    not grouped_view or (query ~= "" and entries[1] and entries[1].group == entries[#entries].group)
+  then
     return entries
   end
 
@@ -225,19 +228,27 @@ local function render_group_entry(entry, row, view, plain)
   local measured = viewport_metrics(ctx)
   local pixels = measured and measured.width
     or math.min(ctx.width or math.huge, (view.width or 60) * cell_w)
+  local meta = view.group_meta and view.group_meta(entry.group) or ""
   return c.category({
     id = id,
     theme = theme,
     selected = row.selected,
     hovered = row.hovered,
+    flat = true,
     label = entry.label_text,
-    text = util.truncate_end(entry.label_text, math.max(0, math.floor(pixels / cell_w) - 9)),
+    text = util.truncate_end(
+      entry.label_text,
+      math.max(0, math.floor(pixels / cell_w) - 9 - util.display_width(meta))
+    ),
     collapsed = entry.collapsed,
     plain = plain,
     colors = view.group_colors and view.group_colors(entry.group),
     on_activate = function()
       view.on_activate(entry.source_index)
     end,
+    c.when(meta ~= "", function()
+      return c.text(meta, styles(theme).muted, { wrap = "none" })
+    end),
     c.when(view.group_create and entry.item and entry.item.domain, function()
       return c.button({
         id = id .. ":create",
@@ -375,15 +386,20 @@ function ui.select.open(opts)
   local sections = categories.new()
   local category_units = 1
 
-  local selectable
+  local selectable, current_entries
   local filter = ui.text_input({
     initial = opts.query or "",
-    on_change = function(value)
-      selectable.nav.index = opts.group_by and value ~= "" and 2 or 1
+    on_change = function()
+      local entries = current_entries()
+      local first = 1
+      while entries[first] and entries[first].is_group do
+        first = first + 1
+      end
+      selectable.nav.index = entries[first] and first or 1
     end,
   })
 
-  local function current_entries()
+  function current_entries()
     local entries = filtered_entries(opts, filter.value, prepared, sections)
     for _, entry in ipairs(entries) do
       if entry.is_group then
@@ -490,6 +506,7 @@ function ui.select.open(opts)
       render_label = opts.layout_label,
       group_create = opts.group_create,
       group_colors = opts.group_colors,
+      group_meta = opts.group_meta,
       item_indent = opts.item_indent,
       width = opts.width,
       theme = render_theme,

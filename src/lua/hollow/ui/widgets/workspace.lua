@@ -582,7 +582,18 @@ function ui.workspace.open_switcher(opts)
     end,
     group_colors = function(group)
       if group:sub(1, 2) == "1:" then
-        return workspace_name_color(group:sub(3))
+        local colors = workspace_name_color(group:sub(3))
+        return { fg = colors.accent or colors.bg }
+      end
+      -- Keep OPENED distinct from the blue open rows beneath it.
+      return { fg = shared.resolve_theme().palette.bright_magenta }
+    end,
+    group_meta = function(group)
+      local domain = group:sub(1, 2) == "1:" and group:sub(3)
+      if
+        domain and (sessions.status(domain) == "loading" or projects.status(domain) == "loading")
+      then
+        return "loading… "
       end
     end,
     group_item = function(group)

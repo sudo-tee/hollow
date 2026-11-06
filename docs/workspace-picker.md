@@ -8,7 +8,9 @@ Search matches loaded workspaces and projects globally, including domain names a
 
 Headings share the reusable collapsible category component with the command palette.
 Press Enter or click a heading to collapse or expand it; search reveals matching children without changing saved collapse choices.
-Domain headings use the same foreground and background colors as their pills.
+Domain headings are flat titles colored like their pills.
+A heading shows **loading…** while its domain is still listing sessions or projects.
+When a search matches only one section, its heading is hidden and results show as a flat list.
 Focus a domain heading and press `<C-n>`, or click its trailing **+**, to name a new workspace on that domain.
 For a domain with `persist = true`, this creates a persistent session.
 Other domains create ordinary workspaces; the picker never changes domain configuration automatically.

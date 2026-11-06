@@ -92,11 +92,11 @@ describe("built-in declarative authoring parity", function()
     end
     assert.is_true(found)
     local category = assert(clay.find(ui, ":select:item:group:1:remote"))
-    assert.equals("#234567", category.bg)
-    assert.equals(4, category.radius)
+    -- Headers are flat: the domain color paints the title, not a fill.
+    assert.is_nil(category.bg)
     assert.is_truthy(
       clay.text_node(ui, require("hollow.ui.icons").expanded .. " remote", function(node)
-        return node.fg == "#123456"
+        return node.fg == "#234567"
       end)
     )
     assert.equals(99, colors.radius)
