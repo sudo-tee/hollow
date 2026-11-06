@@ -1217,6 +1217,10 @@
 ---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field search_text? fun(item: any): string|nil
+---@field group_by? fun(item: any): string Optional lexically ordered category key; search ranks within categories
+---@field group_label? fun(group: string): string Category heading text (defaults to key)
+---@field group_item? fun(group: string): any Action payload for keyboard-focusable category headings
+---@field group_create? fun(group: string) Adds a trailing + button to headings whose payload has a domain
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string
 ---@field fuzzy? boolean
@@ -2340,7 +2344,8 @@ function select.close() end
 ---@field name string
 ---@field cwd? string
 ---@field domain? string
----@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"|"session"|"session_load" `session` rows are persistent sessions not open in this window; `session_load` rows load or retry a host's session list
+---@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"|"session"|"session_load"|"project_load" Status rows explicitly load/retry their domain's sessions and configured SSH projects
+---@field load_state? "idle"|"loading"|"ready"|"failed" State of a session/project status row
 ---@field host_id? string Host-backed discovery identity
 ---@field is_active boolean
 ---@field is_open boolean
@@ -2402,6 +2407,7 @@ function select.close() end
 ---@field format_item? fun(workspace: HollowUiWorkspaceItem): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field filter_item? fun(workspace: HollowUiWorkspaceItem): boolean|nil
 ---@field cache_ttl_ms? integer
+---@field load_timeout_ms? number Session/project picker loading deadline, 1000–300000 ms; default 15000
 ---@field force_refresh? boolean
 ---@field project_roots? string[] Deprecated; use sources[].roots
 ---@field status_column_width? integer

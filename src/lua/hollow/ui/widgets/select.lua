@@ -77,6 +77,7 @@ local function prepare_entries(opts)
         searchable = searchable,
         searchable_lower = searchable:lower(),
         source_index = source_index,
+        group = type(opts.group_by) == "function" and tostring(opts.group_by(item) or "") or nil,
       }
     end)
     :get()
@@ -123,15 +124,39 @@ local function filtered_entries(opts, query, prepared)
     end)
     :get()
 
-  if query ~= "" then
+  if query ~= "" or type(opts.group_by) == "function" then
     hollow.tbl(entries):sort(function(a, b)
-      if a.score ~= b.score then
+      if a.group ~= b.group then
+        return a.group < b.group
+      elseif query == "" then
+        return a.source_index < b.source_index
+      elseif a.score ~= b.score then
         return a.score > b.score
       elseif a.label_text ~= b.label_text then
         return a.label_text < b.label_text
       end
       return a.source_index < b.source_index
     end)
+  end
+
+  if type(opts.group_by) == "function" then
+    local grouped, previous = {}, nil
+    for _, entry in ipairs(entries) do
+      if entry.group ~= previous then
+        local label = type(opts.group_label) == "function" and opts.group_label(entry.group)
+          or entry.group
+        grouped[#grouped + 1] = {
+          item = type(opts.group_item) == "function" and opts.group_item(entry.group) or nil,
+          is_group = true,
+          group = entry.group,
+          label_text = label,
+          source_index = "group:" .. entry.group,
+        }
+      end
+      grouped[#grouped + 1] = entry
+      previous = entry.group
+    end
+    return grouped
   end
 
   return entries
@@ -201,6 +226,46 @@ local function render_entry(entry, index, view, plain)
   local s = styles(theme, { selected = selected, hovered = hovered })
   local padding = box.normalize(list_row(theme).indicator.padding)
   local line_h = list_item.line_height(theme, ctx)
+  if entry.is_group then
+    local measured = ctx.metrics and ctx.metrics["select:viewport"]
+    local pixels = measured and measured.width
+      or math.min(ctx.width or math.huge, (view.width or 60) * props.cell_w(ctx))
+    local title =
+      util.truncate_end(entry.label_text, math.max(0, math.floor(pixels / props.cell_w(ctx)) - 7))
+    return c.list_item({
+      id = id,
+      theme = theme,
+      variant = "section",
+      selected = selected,
+      hovered = hovered,
+      label = entry.label_text,
+      height = line_h,
+      on_activate = function()
+        view.on_activate(entry.source_index)
+      end,
+      c.row({
+        c.rich({
+          width = "grow",
+          plain = plain,
+          ui.text(title, ui.style(s.detail, { bold = true })),
+        }),
+        c.when(view.group_create and entry.item and entry.item.domain, function()
+          return c.button({
+            id = id .. ":create",
+            text = "+",
+            label = "Create on " .. entry.item.domain,
+            width = "3ch",
+            height = line_h,
+            appearance = "quiet",
+            theme = theme,
+            on_click = function()
+              view.group_create(entry.group)
+            end,
+          })
+        end),
+      }, { width = "grow", height = line_h, align_y = "center" }),
+    })
+  end
   local line =
     { width = "grow", height = line_h, padding = { top = padding.top, bottom = padding.bottom } }
   local label = plain and { ui.text(entry.label_text) }
@@ -227,7 +292,7 @@ local function render_entry(entry, index, view, plain)
     detail_line.padding.left = props.cell_w(ctx)
     lines[2] = c.rich(detail_line)
   end
-  return c.list_item({
+  local row = c.list_item({
     id = id,
     theme = theme,
     selected = selected,
@@ -245,6 +310,7 @@ local function render_entry(entry, index, view, plain)
       { width = "grow", padding = { left = props.cell_w(ctx) * 2 + padding.left - 2 } }
     ),
   })
+  return row
 end
 
 ---@param opts HollowUiSelectOptions|nil
@@ -264,8 +330,8 @@ function ui.select.open(opts)
   local selectable
   local filter = ui.text_input({
     initial = opts.query or "",
-    on_change = function()
-      selectable.nav.index = 1
+    on_change = function(value)
+      selectable.nav.index = opts.group_by and value ~= "" and 2 or 1
     end,
   })
 
@@ -297,6 +363,9 @@ function ui.select.open(opts)
     end,
   })
   local nav = selectable.nav
+  if opts.group_by then
+    nav.index = 2
+  end
 
   local action_keys = hollow.tbl(actions):reduce(function(keys, action, action_index)
     if action.key and action.key ~= "" then
@@ -343,7 +412,17 @@ function ui.select.open(opts)
     on_unmount = opts.on_unmount,
     render = function(render_theme, state, ctx)
       if type(opts.items) == "function" then
+        local old = current_entries()[nav.index]
+        local old_id = opts.group_by and old and type(old.item) == "table" and old.item.id
         prepared = prepare_entries(opts)
+        if old_id ~= nil then
+          for index, entry in ipairs(current_entries()) do
+            if type(entry.item) == "table" and entry.item.id == old_id then
+              nav.index = index
+              break
+            end
+          end
+        end
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
@@ -368,6 +447,8 @@ function ui.select.open(opts)
         selected = nav.index,
         hovered_id = state and state.hovered_id,
         render_label = opts.layout_label,
+        group_create = opts.group_create,
+        width = opts.width,
         theme = render_theme,
         ctx = ctx,
         on_activate = function(source_index)

@@ -46,6 +46,14 @@ describe("workspace switcher sessions", function()
     return out
   end
 
+  local function load_row(domain)
+    for _, item in ipairs(rows("session_load")) do
+      if item.domain == domain then
+        return item
+      end
+    end
+  end
+
   local function complete_list(domain, sessions)
     local pending = list_calls(domain)
     pending[#pending].on_complete({ success = true, domain = domain, sessions = sessions })
@@ -130,24 +138,64 @@ describe("workspace switcher sessions", function()
 
   it("loads an SSH host only when its row is activated", function()
     open_switcher()
-    local load = rows("session_load")[1]
+    local load = load_row("remote")
     action("select")(load)
     harness.assert_equal(calls.closed, 0, "load row should keep the switcher open")
     harness.assert_equal(#list_calls("remote"), 1, "activating the load row should list the host")
-    harness.assert_equal(rows("session_load")[1].name, "Loading sessions…", "row shows progress")
+    harness.assert_equal(load_row("remote").name, "Loading sessions…", "row shows progress")
 
     list_calls("remote")[1].on_complete({ success = false, error = "unreachable" })
-    local failed = rows("session_load")[1]
+    local failed = load_row("remote")
     harness.assert_equal(failed.name, "Sessions unavailable", "failure should be shown")
     harness.assert_equal(failed.cwd, "unreachable", "failure reason should be shown")
 
     action("select")(failed)
     complete_list("remote", { { id = "r1", attached = false, open = false, panes = {} } })
-    harness.assert_equal(#rows("session_load"), 0, "loaded host should drop its status row")
+    harness.assert_equal(
+      load_row("remote"),
+      nil,
+      "loaded host with sessions should drop its status row"
+    )
     harness.assert_equal(rows("session")[1].session_id, "r1", "remote session should be listed")
 
     open_switcher()
-    harness.assert_equal(#list_calls("remote"), 3, "a loaded SSH host is re-listed on next open")
+    harness.assert_equal(
+      #list_calls("remote"),
+      2,
+      "opening again must not reconnect a loaded SSH host"
+    )
+  end)
+
+  it("retains distinct empty and all-open states", function()
+    open_switcher()
+    complete_list("main", {})
+    harness.assert_equal(load_row("main").name, "No sessions", "empty result remains visible")
+    action("select")(load_row("main"))
+    complete_list("main", { { id = "s1", open = true, panes = {} } })
+    harness.assert_equal(
+      load_row("main").name,
+      "All sessions already open",
+      "open sessions are not missing"
+    )
+  end)
+
+  it("times out loading and ignores late replies after an explicit retry", function()
+    open_switcher()
+    action("select")(load_row("remote"))
+    local first = list_calls("remote")[1]
+    env.recorded.now_ms = env.recorded.now_ms + 16000
+    select_opts.items()
+    local failed = load_row("remote")
+    harness.assert_equal(failed.cwd, "Connection timed out", "loading must terminate")
+    action("select")(failed)
+    first.on_complete({ success = true, sessions = { { id = "stale", panes = {} } } })
+    harness.assert_equal(
+      load_row("remote").load_state,
+      "loading",
+      "old callback cannot overwrite retry"
+    )
+    complete_list("remote", {})
+    harness.assert_equal(load_row("remote").name, "No sessions", "retry completes normally")
   end)
 
   it("attaches detached sessions and drops the row on success", function()
@@ -244,5 +292,21 @@ describe("workspace switcher sessions", function()
     for _, entry in ipairs(select_opts.actions) do
       harness.assert_true(entry.name ~= "refresh", "refresh hint should be hidden")
     end
+  end)
+
+  it("creates in a captured domain from the category keyboard action and plus button", function()
+    open_switcher()
+    local input
+    hollow.ui.input.open = function(value)
+      input = value
+    end
+    local header = select_opts.group_item("1:remote")
+    action("new")(header)
+    input.on_confirm("from-keyboard")
+    harness.assert_equal(calls.new[1].domain, "remote", "header action captures domain")
+    select_opts.group_create("1:remote")
+    input.on_confirm("from-plus")
+    harness.assert_equal(calls.new[2].domain, "remote", "plus captures domain")
+    harness.assert_equal(#list_calls("remote"), 0, "creation does not preemptively list SSH")
   end)
 end)

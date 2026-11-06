@@ -76,7 +76,12 @@ Press Enter on a session row to attach it.
 A session another window holds is marked "attached elsewhere", and Enter asks before taking it over.
 
 SSH domains are never contacted just because the switcher opened.
-Each SSH persistent domain shows one "Load sessions" row instead; press Enter on it to list that host.
+Each SSH persistent domain shows an on-demand load row instead; press Enter on it or its domain heading to list that host.
+Configured SSH project sources are loaded by the same action, without connecting while the picker merely opens or filters.
+Loaded SSH results remain cached until an explicit refresh.
+Open workspaces stay in the **OPEN** section; detached sessions and projects are grouped by domain below it.
+Each domain heading offers a **+** button and `<C-n>` to create in that domain.
+Loading has an elapsed indicator and a bounded timeout; empty and failed hosts keep a visible status row with a refresh/retry action.
 Once loaded, the host is listed again whenever the switcher opens.
 A host that cannot be listed shows "Sessions unavailable" with the reason; press Enter to retry.
 

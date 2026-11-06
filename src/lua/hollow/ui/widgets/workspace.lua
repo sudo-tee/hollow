@@ -2,6 +2,7 @@ local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
+local projects = require("hollow.ui.workspace.projects")
 local props = require("hollow.ui.components.props")
 local sessions = require("hollow.ui.workspace.sessions")
 local shared = require("hollow.ui.shared")
@@ -88,7 +89,7 @@ local function default_item_columns(workspace, domain_width)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local badge = workspace.program_status_badge or session_badge(workspace)
   local badge_width = util.display_width(badge)
-  domain_width = domain_width or 0
+  domain_width = workspace.is_open and (domain_width or 0) or 0
   local cwd_width = math.max(
     12,
     total_width - status_width - name_width - badge_width - domain_width - (gap_width * 2) - 10
@@ -144,10 +145,40 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   local s = styles(palette, { variant = variant })
   local match = require("hollow.ui.recipes.select")(view.theme).match
   local cell_h = props.cell_h(ctx)
-  local status_width =
+  local cell_w = props.cell_w(ctx)
+  local viewport = ctx.metrics and ctx.metrics["select:viewport"]
+  local available = math.max(
+    1,
+    math.floor(
+      (
+        viewport and viewport.width
+        or math.min(
+          ctx.width or math.huge,
+          (tonumber(switcher.width) or DEFAULT_SELECT_WIDTH) * cell_w
+        )
+      ) / cell_w
+    ) - 4
+  )
+  domain_width = workspace.is_open and math.min(domain_width, math.floor(available / 3)) or 0
+  if domain_width < 3 then
+    domain_width = 0
+  end
+  local status_width = math.min(
+    available,
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
-  local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
-  local gap = tostring(math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)) .. "ch"
+  )
+  local name_width = math.max(
+    1,
+    math.min(
+      tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH,
+      math.floor(available / 3)
+    )
+  )
+  local gap_width = math.min(
+    math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP),
+    math.floor(available / 12)
+  )
+  local gap = tostring(gap_width) .. "ch"
   local attention = workspace.has_bell or workspace.program_status_attention
   local bell = workspace.program_status_attention_level == "error" and palette.bell_error
     or palette.bell
@@ -166,6 +197,14 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     })
   end
   local badge = workspace.program_status_badge or session_badge(workspace)
+  local badge_width = math.min(util.display_width(badge), math.floor(available / 3))
+  badge = util.truncate_end(badge, badge_width)
+  name_width = math.max(
+    0,
+    math.min(name_width, available - status_width - 2 * gap_width - badge_width - domain_width)
+  )
+  local cwd_width =
+    math.max(0, available - status_width - name_width - 2 * gap_width - badge_width - domain_width)
   local badge_fg = workspace.program_status_badge
       and program_status.color(workspace.program_status_state)
     or palette.muted
@@ -187,9 +226,12 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     ),
     c.gap(gap),
     c.when(badge ~= "", function()
-      return c.text(badge, ui.style(s.badge, { fg = badge_fg }), { wrap = "none" })
+      return c.column(
+        { c.text(badge, ui.style(s.badge, { fg = badge_fg }), { wrap = "none" }) },
+        { width = tostring(badge_width) .. "ch" }
+      )
     end),
-    column(cwd, s.cwd, "grow", "cwd"),
+    column(util.truncate_end(cwd, cwd_width), s.cwd, tostring(cwd_width) .. "ch", "cwd"),
     c.when(domain and domain_width > 0, function()
       local colors = workspace_name_color(domain)
       return c.column({
@@ -199,6 +241,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
           { wrap = "none" }
         ),
       }, {
+        width = tostring(domain_width) .. "ch",
         style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
       })
     end),
@@ -256,8 +299,20 @@ local function search_text_for_item(workspace)
     :join("\n")
 end
 
+local function is_load_row(item)
+  return type(item) == "table" and (item.source == "session_load" or item.source == "project_load")
+end
+
 local function is_session_row(item)
-  return type(item) == "table" and (item.source == "session" or item.source == "session_load")
+  return is_load_row(item)
+    or (type(item) == "table" and (item.source == "session" or item.source == "domain_header"))
+end
+
+local function load_domain(domain)
+  if sessions.supports(domain) then
+    sessions.refresh(domain)
+  end
+  projects.load(domain)
 end
 
 ---@return HollowUiSelectAction[]
@@ -268,8 +323,14 @@ local function switcher_actions()
       name = "select",
       desc = "switch",
       fn = function(item)
-        if item and item.source == "session_load" then
-          sessions.activate(item)
+        if item and item.source == "domain_header" then
+          if item.domain then
+            load_domain(item.domain)
+          end
+          return
+        end
+        if is_load_row(item) then
+          load_domain(item.domain)
           return
         end
         ui.select.close()
@@ -297,7 +358,7 @@ local function switcher_actions()
       key = switcher.close_key or DEFAULT_CLOSE_KEY,
       desc = switcher.close_desc or "close",
       fn = function(item)
-        if item and item.source == "session_load" then
+        if is_load_row(item) or (item and item.source == "domain_header") then
           return
         end
         ui.select.close()
@@ -314,9 +375,9 @@ local function switcher_actions()
       desc = switcher.create_desc or "new",
       fn = function(item)
         ui.select.close()
-        if is_session_row(item) then
+        if item and item.domain then
           actions.open_create_input({
-            prompt = "New session on " .. item.domain,
+            prompt = "New workspace on " .. item.domain,
             domain = item.domain,
           })
           return
@@ -325,7 +386,7 @@ local function switcher_actions()
       end,
     },
   }
-  if sessions.enabled() then
+  if sessions.enabled() or #source.remote_sources() > 0 then
     list[#list + 1] = {
       name = "refresh",
       key = switcher.refresh_key or DEFAULT_REFRESH_KEY,
@@ -333,6 +394,7 @@ local function switcher_actions()
       fn = function()
         source.clear_cache()
         sessions.refresh_all()
+        projects.refresh_all()
       end,
     }
   end
@@ -441,6 +503,11 @@ function ui.workspace.open_switcher(opts)
     end,
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
+      sessions.tick()
+      projects.tick()
+      if sessions.loading() or projects.loading() then
+        dirty = true
+      end
       local current_revision = switcher_state().host_scan_revision or 0
       if dirty or current_revision ~= host_revision then
         items = source.items()
@@ -454,6 +521,9 @@ function ui.workspace.open_switcher(opts)
       local attention = {}
       local attention_levels = {}
       deadline = nil
+      if sessions.loading() or projects.loading() then
+        deadline = util.host_now_ms(require("hollow.state").get().host_api) + 1000
+      end
       for _, workspace in ipairs(hollow.term.mux_tree()) do
         local next_frame
         badges[workspace.id], states[workspace.id], next_frame =
@@ -473,6 +543,34 @@ function ui.workspace.open_switcher(opts)
       return items
     end,
     fuzzy = false,
+    group_by = function(item)
+      if item.is_open then
+        return "0:OPEN"
+      end
+      local domain = source.normalize_domain(item.domain)
+        or source.current_domain_name()
+        or "default"
+      return "1:" .. domain
+    end,
+    group_label = function(group)
+      return group:sub(3)
+    end,
+    group_item = function(group)
+      return {
+        id = "group:" .. group,
+        source = "domain_header",
+        name = group:sub(3),
+        domain = group:sub(1, 2) == "1:" and group:sub(3) or nil,
+      }
+    end,
+    group_create = function(group)
+      local domain = group:sub(1, 2) == "1:" and group:sub(3) or nil
+      if not domain then
+        return
+      end
+      ui.select.close()
+      actions.open_create_input({ domain = domain, prompt = "New workspace on " .. domain })
+    end,
     width = switcher.width or DEFAULT_SELECT_WIDTH,
     height = switcher.height,
     max_height = switcher.max_height or DEFAULT_SELECT_MAX_HEIGHT,

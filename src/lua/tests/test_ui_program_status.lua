@@ -287,7 +287,7 @@ describe("program status in navigation overlays", function()
     env.get_key_handler()("arrow_down", 0)
     local before = overlay_text(hollow)
     assert.is_truthy(before:find("Filter: m", 1, true))
-    assert.is_truthy(before:find("2/2", 1, true))
+    assert.is_truthy(before:find("3/4", 1, true)) -- Category headers participate in navigation.
     failed[1].attention = false
     failed[1].state = "done"
     hollow.config.set({
@@ -295,7 +295,7 @@ describe("program status in navigation overlays", function()
     })
     local after = overlay_text(hollow)
     assert.is_truthy(after:find("Filter: m", 1, true))
-    assert.is_truthy(after:find("2/2", 1, true))
+    assert.is_truthy(after:find("3/4", 1, true))
     assert.is_nil(after:find("✗", 1, true))
     assert.same({ "#123456" }, bell_colors(hollow))
   end)

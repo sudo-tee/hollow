@@ -615,6 +615,10 @@ Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
 2. Placeholder workspaces for missing sessions, if wanted.
 
+The workspace picker now groups non-open sessions and projects by domain beneath **OPEN**.
+It reuses command-palette section rows and provides domain-scoped creation from the heading's **+** or `<C-n>`.
+SSH sessions and configured SSH projects load explicitly, with bounded loading and persistent empty/error states; see [the picker guide](workspace-picker.md).
+
 Respawn rejection now has dedicated native notice wording and preserves the pane's screen and exit status without retry.
 Lost-create recovery now uses a random client-reserved ID when the owner advertises `create-id`.
 Owners reject collisions instead of attaching or spawning again.

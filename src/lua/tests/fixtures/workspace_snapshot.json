@@ -52,7 +52,7 @@
   {
     "fg": "#81a1c1",
     "kind": 2,
-    "text": "   1/1",
+    "text": "   2/2",
     "wrap": 2
   },
   {
@@ -117,7 +117,7 @@
     "wrap": 2
   },
   {
-    "children": 1,
+    "children": 2,
     "height": -1,
     "id": "test:select:viewport",
     "measure": true,
@@ -125,6 +125,48 @@
     "scroll": true,
     "scroll_x": true,
     "width": -1
+  },
+  {
+    "bg": "#333640",
+    "children": 2,
+    "clickable": true,
+    "height": 24,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:group:0:OPEN",
+    "kind": 1,
+    "label": "OPEN",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "align_y": 1,
+    "children": 1,
+    "height": 24,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "bold": true,
+    "fg": "#81a1c1",
+    "kind": 2,
+    "text": "OPEN",
+    "wrap": 2
   },
   {
     "bg": "#3b4252",
@@ -224,7 +266,7 @@
     "id": "test:select:item:1:cwd",
     "kind": 1,
     "scroll_x": true,
-    "width": -1
+    "width": 460
   },
   {
     "fg": "#6d7178",

@@ -160,6 +160,10 @@ describe("host-first workspace guests", function()
     for _, kind in ipairs({ "ssh", "podman", "docker" }) do
       local spec = { type = kind, destination = "build", container = "dev", timeout_ms = 1000 }
       hollow.ui.workspace.configure({ sources = { { host = spec, roots = { "/p" }, domain = "shell" } } })
+      if kind == "ssh" then
+        assert.are.equal(0, #items(true))
+        require("hollow.ui.workspace.projects").load("shell")
+      end
       assert.are.equal("shell", items(true)[1].domain)
       assert.are.equal(kind, calls[#calls].kind)
       assert.is_nil(calls[#calls].opts.type)
@@ -191,8 +195,10 @@ describe("host-first workspace guests", function()
   it("does not start disabled or items-only guest sources", function()
     hollow.ui.workspace.configure({ sources = {
       { host = { type = "wsl", distro = "Ubuntu" }, roots = { "/p" }, default = false },
-      { host = { type = "ssh", destination = "build" }, items = function() return { { name = "manual" } } end },
+      { host = { type = "ssh", destination = "build" }, domain = "shell", items = function() return { { name = "manual" } } end },
     } })
+    assert.are.equal(0, #items())
+    require("hollow.ui.workspace.projects").load("shell")
     assert.are.equal("manual", items()[1].name)
     assert.are.equal(0, #calls)
   end)
@@ -225,7 +231,9 @@ describe("host-first workspace guests", function()
       { resolver = "wsl", domain = "ubuntu", roots = { "/p" } },
       { resolver = "ssh", domain = "build", roots = { "/srv" } },
     } })
-    assert.are.equal(2, #items(true))
+    assert.are.equal(1, #items(true))
+    require("hollow.ui.workspace.projects").load("build")
+    assert.are.equal(2, #items())
     assert.are.equal("Ubuntu", calls[1].opts.distro)
     assert.are.equal("trusted-alias", calls[2].opts.destination)
     assert.are.equal("alice", calls[2].opts.user)

@@ -921,6 +921,13 @@ processes from them.
 The first action is the primary action bound to `Enter` (or whatever
 key you put in `actions[1].key`).
 
+Optional `group_by(item)` returns a category key, ordered lexically; filtering remains global and ranks matches within each category.
+`group_label(key)` supplies its heading, and `group_item(key)` supplies the payload passed to actions when that heading is focused.
+Headings use the same section-style `list_item` component as command-palette categories and participate in keyboard navigation.
+Search initially selects the first matching child rather than its heading.
+For domain-style groups, `group_create(key)` adds a trailing **+** button when the heading payload has a `domain` field; clicking it does not activate the parent row.
+Grouped live providers preserve selection by item `id` when available.
+
 ## Workspace switcher
 
 See [`hollow.ui.workspace`](workspace.md).

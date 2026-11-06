@@ -8,6 +8,21 @@ local hollow = _G.hollow
 
 local domains = {}
 local revision = 0
+local util = require("hollow.util")
+
+local function now()
+  return util.host_now_ms(require("hollow.state").get().host_api)
+end
+
+local function timeout()
+  return math.max(
+    1000,
+    math.min(
+      300000,
+      tonumber(require("hollow.state").get().ui.workspace_switcher.load_timeout_ms) or 15000
+    )
+  )
+end
 
 local function changed()
   revision = revision + 1
@@ -53,9 +68,16 @@ function M.refresh(name)
   end
   entry.status = "loading"
   entry.error = nil
+  entry.started = now()
+  entry.deadline = entry.started + timeout()
+  entry.request = (entry.request or 0) + 1
+  local request = entry.request
   local ok, queued, err = pcall(hollow.term.list_sessions, {
     domain = name,
     on_complete = function(result)
+      if domains[name] ~= entry or entry.request ~= request or entry.status ~= "loading" then
+        return
+      end
       if result and result.success and type(result.sessions) == "table" then
         entry.status = "ready"
         entry.sessions = result.sessions
@@ -79,9 +101,17 @@ function M.enabled()
   return #persist_domains() > 0
 end
 
---- Called when the switcher opens: list local hosts and re-list any remote
---- host the user already loaded.
+--- Opening the switcher lists local hosts only; remote results stay cached.
 function M.refresh_on_open()
+  for _, domain in ipairs(persist_domains()) do
+    if local_kind(domain.kind) then
+      M.refresh(domain.name)
+    end
+  end
+end
+
+--- Re-list every host already loaded, plus local ones.
+function M.refresh_all()
   for _, domain in ipairs(persist_domains()) do
     local entry = domains[domain.name]
     if local_kind(domain.kind) or (entry and entry.status ~= "idle") then
@@ -90,9 +120,31 @@ function M.refresh_on_open()
   end
 end
 
---- Re-list every host already loaded, plus local ones.
-function M.refresh_all()
-  M.refresh_on_open()
+function M.supports(name)
+  for _, domain in ipairs(persist_domains()) do
+    if domain.name == name then
+      return true
+    end
+  end
+  return false
+end
+
+function M.tick()
+  for _, entry in pairs(domains) do
+    if entry.status == "loading" and now() >= entry.deadline then
+      entry.status, entry.error = "failed", "Connection timed out"
+      changed()
+    end
+  end
+end
+
+function M.loading()
+  for _, entry in pairs(domains) do
+    if entry.status == "loading" then
+      return true
+    end
+  end
+  return false
 end
 
 local function forget_row(domain, id)
@@ -149,29 +201,39 @@ local function status_item(domain, entry)
     name, badge = "Loading sessions…", "loading"
   elseif entry.status == "failed" then
     name, badge = "Sessions unavailable", "retry"
+  elseif entry.status == "ready" then
+    name = #entry.sessions == 0 and "No sessions" or "All sessions already open"
+    badge = "refresh"
   else
     name, badge = "Load sessions", "remote"
   end
   return {
     id = "session-load:" .. domain,
     name = name,
-    cwd = entry.status == "failed" and entry.error or ("Persistent sessions on " .. domain),
+    cwd = entry.status == "failed" and entry.error
+      or (entry.status == "loading" and ("Connecting… " .. math.floor(
+        (now() - entry.started) / 1000
+      ) .. "s"))
+      or ("Persistent sessions on " .. domain),
     domain = domain,
     source = "session_load",
     is_open = false,
     is_active = false,
     has_bell = false,
     session_badge = badge,
+    load_state = entry.status,
   }
 end
 
 --- Switcher rows: detached sessions, then load/retry rows for hosts that are
 --- not listed yet or failed.
 function M.items()
+  M.tick()
   local items = {}
   for _, domain in ipairs(persist_domains()) do
     local entry = domain_state(domain.name)
     if entry.status == "ready" then
+      local before = #items
       for _, session in ipairs(entry.sessions) do
         if
           type(session) == "table"
@@ -182,7 +244,10 @@ function M.items()
           items[#items + 1] = session_item(domain.name, session)
         end
       end
-    elseif entry.status == "failed" or not local_kind(domain.kind) then
+      if #items == before then
+        items[#items + 1] = status_item(domain.name, entry)
+      end
+    elseif entry.status ~= "idle" or not local_kind(domain.kind) then
       items[#items + 1] = status_item(domain.name, entry)
     end
   end
