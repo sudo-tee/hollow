@@ -182,6 +182,7 @@ function M.setup(hollow, state, term_helpers)
     ["term:pane_focused"] = adapt_pane_focused,
     ["term:pane_created"] = adapt_pane_focused,
     ["term:pane_exited"] = adapt_pane_exited,
+    ["term:pane_respawned"] = adapt_pane_focused,
     ["term:pane_closed"] = adapt_pane_closed,
     ["term:pane_layout_changed"] = adapt_pane_focused,
     ["term:title_changed"] = adapt_title_changed,

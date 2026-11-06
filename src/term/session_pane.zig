@@ -24,6 +24,18 @@ pub fn bootstrap(term: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, ca
     term.child_alive_cached = pty.status == null;
 }
 
+/// After an accepted respawn: the owner restarted the process under the same
+/// screen, so only liveness and exit bookkeeping reset.
+pub fn revive(term: *TerminalPane, node: *Pane) void {
+    if (term.pty) |*pty| if (pty.* == .session) {
+        pty.session.status = null;
+    };
+    term.child_alive_cached = true;
+    term.last_child_alive_check_ns = 0;
+    term.exit_event_emitted = false;
+    node.invalidate();
+}
+
 pub fn beginSnapshot(term: *TerminalPane, node: *Pane, format: p.SnapshotFormat) !void {
     if (term.session_callbacks == null) return error.NotSessionPane;
     // Construct before abandoning the old job; failed admission preserves the

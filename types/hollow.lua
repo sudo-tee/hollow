@@ -180,6 +180,7 @@
 ---| "term:pane_focused"
 ---| "term:pane_created"
 ---| "term:pane_exited"
+---| "term:pane_respawned"
 ---| "term:pane_closed"
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
@@ -232,6 +233,7 @@
 ---@field ["term:pane_focused"] { pane: HollowPane }
 ---@field ["term:pane_created"] { pane: HollowPane }
 ---@field ["term:pane_exited"] { pane: HollowPane, status: integer|nil }
+---@field ["term:pane_respawned"] { pane: HollowPane } A persistent pane's exited process was restarted in place
 ---@field ["term:pane_closed"] { pane: HollowPane }
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
@@ -655,12 +657,20 @@
 ---@field height? number
 ---@field on_complete? fun(result: { success: boolean, pane_id?: integer })
 
+---@class HollowWorkspaceOpenResult
+---@field success boolean
+---@field workspace_index? integer 1-based index of the published workspace
+---@field status? "session_not_found"|"session_open_failed" Persistent open failure code
+---@field error? string Persistent open failure reason
+---@field outcome? "not_sent"|"uncertain"|"rejected" Whether the owner may have acted; never retried
+---@field remote? string Owner error text, e.g. "SessionNotFound"
+
 ---@class HollowNewWorkspaceOpts
 ---@field cwd? string
 ---@field domain? string
 ---@field command? string
 ---@field name? string
----@field on_complete? fun(result: { success: boolean, workspace_index?: integer })
+---@field on_complete? fun(result: HollowWorkspaceOpenResult)
 
 ---@class HollowPromise<T>
 ---@field status fun(self: HollowPromise<T>): "pending"|"fulfilled"|"rejected"
@@ -1784,6 +1794,15 @@ function term.move_pane(direction_or_opts, opts) end
 ---@param pane_id? integer
 function term.close_pane(pane_id) end
 
+--- Restarts the exited process of a persistent pane from its original spawn,
+--- keeping the screen. Asynchronous: `term:pane_respawned` fires once the
+--- owner accepted it. Returns false and a reason, e.g. "PaneAlive",
+--- "NotSessionPane", "Unsupported" (older owner), "Detached".
+---@param pane_id? integer Defaults to the active pane
+---@return boolean queued
+---@return string? reason
+function term.respawn_pane(pane_id) end
+
 ---@param direction string
 function term.focus_pane(direction) end
 
@@ -1805,7 +1824,7 @@ function term.new_workspace(opts) end
 
 ---Attach an existing host-owned session explicitly; completion runs asynchronously.
 ---@param session_id string Non-empty, at most 128 bytes, without NUL
----@param opts? { domain?: string, name?: string, on_complete?: fun(result: { success: boolean, workspace_index?: integer }) }
+---@param opts? { domain?: string, name?: string, on_complete?: fun(result: HollowWorkspaceOpenResult) }
 function term.attach_session(session_id, opts) end
 
 ---@class HollowSessionPaneInfo
@@ -3214,7 +3233,7 @@ function plugins.sync() end
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
----@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, on_complete?: fun(result: { success: boolean, workspace_index?: integer }) })
+---@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, on_complete?: fun(result: HollowWorkspaceOpenResult) })
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field schedule fun(handler: fun())
 ---@field close_workspace fun()
@@ -3234,6 +3253,7 @@ function plugins.sync() end
 ---@field switch_tab_by_id fun(tab_id: integer): boolean
 ---@field close_tab_by_id fun(tab_id: integer): boolean
 ---@field close_pane_by_id fun(pane_id: integer): boolean
+---@field respawn_pane fun(pane_id?: integer): boolean, string?
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
 ---@field bell_pane fun(pane_id: integer): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean

@@ -31,6 +31,7 @@ const mux_ops = @import("../app/session_controller.zig");
 const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
 const session_notice = @import("../session/notice.zig");
+const dead_pane = @import("../session/dead_pane.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
@@ -1892,6 +1893,29 @@ fn drawSessionNotice(app: *App, renderer: *FtRenderer, value: session_notice.Not
         renderer.drawLabel(x, y, line, color.r, color.g, color.b);
         y += renderer.cell_h;
     }
+}
+
+/// One-line placeholder over the bottom row of an exited persistent pane.
+fn drawDeadPaneFooter(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf, value: dead_pane.State) void {
+    const x: f32 = @floatFromInt(leaf.bounds.x);
+    const w: f32 = @floatFromInt(leaf.bounds.width);
+    const h: f32 = @floatFromInt(leaf.bounds.height);
+    const row = renderer.cell_h * 1.25;
+    if (w <= renderer.cell_w * 2 or h < row) return;
+    const y = @as(f32, @floatFromInt(leaf.bounds.y)) + h - row;
+    const theme = &app.config.terminal_theme;
+    const fg = theme.foreground;
+    const bg = theme.background;
+    const accent = if (value.status orelse 0 == 0) theme.palette[4] else theme.palette[1];
+    c.sgl_scissor_rect(@intFromFloat(x), @intFromFloat(y), @intFromFloat(w), @intFromFloat(row), true);
+    defer {
+        c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+        c.sgl_load_default_pipeline();
+    }
+    drawBorderRect(x, y, w, row, bg.r, bg.g, bg.b, 255);
+    drawBorderRect(x, y, w, 1, accent.r, accent.g, accent.b, 255);
+    var buf: [dead_pane.max_text]u8 = undefined;
+    renderer.drawLabel(x + renderer.cell_w * 0.5, y + renderer.cell_h * 0.125, dead_pane.format(&buf, value), fg.r, fg.g, fg.b);
 }
 
 /// Topmost scrollbar under the pointer, unless a higher overlay's clickable
@@ -4603,8 +4627,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         // Keep native notices and the Lua UI above direct terminal glyphs.
         // Their order within this layer leaves Lua overlays above the card.
-        if (notice_value != null) c.sgl_layer(1);
+        var any_dead = false;
+        if (app.mux) |*mux| if (mux.session_workspace_count != 0) {
+            for (leaves) |leaf| if (dead_pane.state(leaf.pane) != null) {
+                any_dead = true;
+                break;
+            };
+        };
+        if (notice_value != null or any_dead) c.sgl_layer(1);
         defer c.sgl_layer(0);
+        if (any_dead) for (leaves) |leaf| {
+            if (dead_pane.state(leaf.pane)) |value| drawDeadPaneFooter(app, renderer, leaf, value);
+        };
         if (notice_value) |value| drawSessionNotice(app, renderer, value, &notice_text);
 
         if (app.lua) |*lua| {

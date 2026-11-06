@@ -112,6 +112,24 @@ describe("term test suite", function()
       env.host_api.get_workspace_session_id = old
     end)
 
+    it("respawns a pane through the host and reports refusals", function()
+      harness.assert_true(hollow.term.respawn_pane(), "active pane respawn is queued")
+      harness.assert_equal(recorded.respawn_pane, "active")
+      hollow.action.respawn_pane()
+      harness.assert_equal(recorded.respawn_pane, "active", "action targets the active pane")
+      harness.assert_true(hollow.term.respawn_pane(101))
+      harness.assert_equal(recorded.respawn_pane, 101)
+      local old = env.host_api.respawn_pane
+      env.host_api.respawn_pane = function()
+        return false, "PaneAlive"
+      end
+      local ok, reason = hollow.term.respawn_pane(101)
+      harness.assert_true(not ok)
+      harness.assert_equal(reason, "PaneAlive")
+      env.host_api.respawn_pane = old
+      harness.assert_true(not pcall(hollow.term.respawn_pane, "101"))
+    end)
+
     it("exposes the owner host id of persistent workspaces", function()
       local old = env.host_api.get_workspace_session_host
       env.host_api.get_workspace_session_host = function(index)

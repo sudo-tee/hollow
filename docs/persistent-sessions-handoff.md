@@ -157,14 +157,28 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   `wait_revision` over socket, else 50 ms polls, for max(--timeout, 10 s).
   Real-owner Windows->WSL App test lists the reattached session (open,
   attached, saved name, three panes) and gets `rejected` for an unknown kill.
-  Not yet done: actionable dead/missing-session UX, a GUI picker; manual GUI
-  smoke of the CLI against a running instance.
+  Not yet done: a GUI picker; manual GUI smoke of the CLI against a running
+  instance.
 - Host identity: owner `loadHost` persists `<state dir>/host-id` and sends
   optional `Welcome.host` (old clients ignore it, old owners send none).
   `Client.host()`/`Connection.host(buf)`, `Controller.host`,
   `workspace.session_host`, list/kill `host`, host-aware `open`. Real-owner
   App test checks the host survives reattach and matches the list result.
   Remembering attached sessions client-side is slice 3 (Lua policy).
+- Dead/missing-session UX: owner `Op.respawn` re-forks an exited pane from its
+  saved spawn at the current size, keeping VT and screen (`PaneAlive` if live).
+  Owners advertise `Welcome.features = ["respawn"]`; clients never send it
+  otherwise (unknown ops close the connection) and return `Unsupported`.
+  `Controller.requestRespawn`/`finishRespawn` (one pending per pane, never
+  replayed); an ok reply clears exit status in `route` before new output.
+  App revives the pane and emits `term:pane_respawned`; Lua
+  `hollow.term.respawn_pane(pane_id?)` and action `respawn_pane`.
+  `src/session/dead_pane.zig` drives a native footer (exit code, Enter respawn
+  when advertised, Ctrl+D close) intercepted first in `App.sendKey`.
+  A `SessionNotFound` rejection shows "Session not found on host" with
+  `hollow-cli session list` guidance; new_workspace/attach `on_complete`
+  failures carry `status`, `error`, `outcome`, `remote?`.
+  Known wart: respawn rejection reuses the "Session open failed: …" notice.
 
 ## Architecture / invariants
 

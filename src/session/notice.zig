@@ -89,7 +89,18 @@ pub const Text = struct {
             self.count = 2;
             return;
         }
-        self.lines[0] = std.fmt.bufPrint(&self.buffer, "Session open failed: {s}", .{if (notice.remote_len > 0) notice.remote[0..notice.remote_len] else if (notice.reason) |reason| @errorName(reason) else "Unknown"}) catch "Session open failed";
+        const remote = notice.remote[0..notice.remote_len];
+        if (notice.outcome == .rejected and std.mem.eql(u8, remote, "SessionNotFound")) {
+            // The owner is alive and authoritative: the session ended or was
+            // killed. Nothing was created, so starting fresh is safe.
+            self.lines[0] = "Session not found on host";
+            self.lines[1] = "It ended or was killed. Run `hollow-cli session list`";
+            self.lines[2] = "to see live sessions, or open a new workspace.";
+            self.lines[3] = "Click to dismiss.";
+            self.count = 4;
+            return;
+        }
+        self.lines[0] = std.fmt.bufPrint(&self.buffer, "Session open failed: {s}", .{if (notice.remote_len > 0) remote else if (notice.reason) |reason| @errorName(reason) else "Unknown"}) catch "Session open failed";
         switch (notice.outcome) {
             .not_sent => {
                 self.lines[1] = "Request was not sent. Check host settings.";
@@ -188,4 +199,17 @@ test "session pane notice remote rejection detail owns bounded safe bytes" {
     var text: Text = .{};
     text.format(notices.current().?);
     try std.testing.expectEqualStrings("Session open failed: SessionNotFound?", text.lines[0]);
+}
+
+test "session pane notice explains a missing session and how to recover" {
+    var notices: Notices = .{};
+    try std.testing.expect(notices.failedRemote(1, error.Rejected, .rejected, "SessionNotFound"));
+    var text: Text = .{};
+    text.format(notices.current().?);
+    try std.testing.expectEqualStrings("Session not found on host", text.lines[0]);
+    try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "session list") != null);
+    // A lost reply is not a missing session: keep the do-not-recreate warning.
+    try std.testing.expect(notices.failedRemote(2, error.Disconnected, .uncertain, "SessionNotFound"));
+    text.format(notices.current().?);
+    try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
 }

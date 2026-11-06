@@ -28,6 +28,7 @@ const Binding = struct {
     close_request: ?u64 = null,
     close_completed: bool = false,
     close_desired: bool = false,
+    respawn_request: ?u64 = null,
     job: ?*Job = null,
     encoded_bytes: usize = 0,
 };
@@ -172,6 +173,33 @@ pub const Controller = struct {
         return id;
     }
 
+    /// Restarts an exited pane in place. Never replayed: a lost reply leaves
+    /// the pane dead until the user retries.
+    pub fn requestRespawn(self: *Controller, id: usize) !u64 {
+        if (self.detached) return error.Detached;
+        if (self.kill_request != null) return error.SessionClosing;
+        const entry = self.byNode(id) orelse return error.PaneNotFound;
+        const node = entry.node orelse return error.PaneNotFound;
+        if (entry.respawn_request) |request| return request;
+        if ((entry.close_request != null and !entry.close_completed) or entry.close_desired) return error.SessionClosing;
+        const pty = &node.content.terminal.pty.?.session;
+        if (pty.status == null) return error.PaneAlive;
+        if (!self.connection.supportsRespawn()) return error.Unsupported;
+        const request = try self.connection.respawnPane(self.generation, entry.pane);
+        entry.respawn_request = request;
+        return request;
+    }
+
+    /// Consumes the pending respawn for `request_id`, returning its pane.
+    pub fn finishRespawn(self: *Controller, request_id: u64) ?usize {
+        for (&self.bindings) |*slot| if (slot.*) |*entry| {
+            if (entry.respawn_request != request_id) continue;
+            entry.respawn_request = null;
+            return entry.local_id;
+        };
+        return null;
+    }
+
     pub fn requestSpawn(self: *Controller, spawn: p.Spawn) !u64 {
         if (self.detached) return error.Detached;
         if (self.kill_request != null) return error.SessionClosing;
@@ -312,6 +340,14 @@ pub const Controller = struct {
                     self.detached = false;
                 };
                 for (&self.bindings) |*slot| if (slot.*) |*entry| {
+                    if (entry.respawn_request != parsed.value.id) continue;
+                    // Revive before any new output is read; the reply precedes it.
+                    if (parsed.value.ok) if (entry.node) |node| {
+                        node.content.terminal.pty.?.session.status = null;
+                    };
+                    break;
+                };
+                for (&self.bindings) |*slot| if (slot.*) |*entry| {
                     if (entry.close_request != parsed.value.id) continue;
                     entry.close_completed = true;
                     if (!parsed.value.ok) {
@@ -366,7 +402,10 @@ pub const Controller = struct {
                         if (entry.job == null) try self.beginSnapshot(entry);
                         entry.job.?.end();
                     },
-                    .exit => term.pty.?.session.setExit(try p.decodeExit(message.payload)),
+                    .exit => {
+                        term.pty.?.session.setExit(try p.decodeExit(message.payload));
+                        node.invalidate(); // Shows the dead-pane footer.
+                    },
                     else => unreachable,
                 }
                 return .consumed;

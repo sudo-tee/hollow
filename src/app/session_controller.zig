@@ -158,6 +158,10 @@ fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *Sessi
     if (message.kind == .reply) {
         if (@import("session_spawn.zig").handle(self, controller, message)) return true;
         const request_id = message.request_id orelse return false;
+        if (controller.finishRespawn(request_id)) |pane_id| {
+            finishRespawn(self, pane_id, message);
+            return true;
+        }
         const pane_id = controller.closeTarget(request_id) orelse return false;
         const reply = SessionProtocol.parse(SessionProtocol.Reply, self.allocator, message.payload) catch |err| {
             std.log.err("invalid session close reply: {s}", .{@errorName(err)});
@@ -185,6 +189,33 @@ fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *Sessi
 
     if (message.kind == .event) return true;
     return false;
+}
+
+fn finishRespawn(self: *App, pane_id: usize, message: SessionTransport.Message) void {
+    const reply = SessionProtocol.parse(SessionProtocol.Reply, self.allocator, message.payload) catch |err| {
+        std.log.err("invalid session respawn reply: {s}", .{@errorName(err)});
+        return;
+    };
+    defer reply.deinit();
+    if (!reply.value.ok) {
+        @import("session_spawn.zig").respawnRejected(self, reply.value.@"error");
+        return;
+    }
+    const pane = self.findPaneById(pane_id) orelse return;
+    const term = pane.asTerminal() orelse return;
+    term.reviveSession(pane);
+    self.requestRedraw();
+    self.markAutomationChanged();
+    self.emitLuaBuiltInEvent("term:pane_respawned", .{ .pane_id = pane.id });
+}
+
+/// Restarts the exited process of a persistent pane, keeping its screen.
+pub fn respawnPane(self: *App, pane_id: usize) !void {
+    const mux = if (self.mux) |*value| value else return error.PaneNotFound;
+    const controller = mux.controllerForPane(pane_id) orelse return error.NotSessionPane;
+    if (!sessionCanCloseRemotely(controller)) return error.Detached;
+    _ = try controller.requestRespawn(pane_id);
+    self.signalWake();
 }
 
 fn retireSessionControllers(self: *App) void {

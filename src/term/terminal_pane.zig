@@ -147,6 +147,10 @@ pub const TerminalPane = struct {
         try @import("session_pane.zig").beginSnapshot(self, node, format);
     }
 
+    pub fn reviveSession(self: *TerminalPane, node: *Pane) void {
+        @import("session_pane.zig").revive(self, node);
+    }
+
     pub fn pollSessionSnapshot(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime) !void {
         try @import("session_pane.zig").pollSnapshot(self, node, runtime);
     }

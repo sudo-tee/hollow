@@ -403,6 +403,18 @@ An omitted domain inherits the current terminal domain, then the configured defa
 Attachment is asynchronous and uses the same `{ success, workspace_index }` completion result as `new_workspace`.
 It takes over any existing attachment without creating another shell.
 No create or attach request is automatically replayed after connection loss.
+A failed persistent open reports `status`, `error`, and `outcome`, plus `remote` when the owner answered.
+`status = "session_not_found"` means the owner is reachable and the session no longer exists, so opening a fresh workspace is safe.
+Any other failure has `status = "session_open_failed"`.
+An `outcome` of `"uncertain"` means the owner may have acted, so do not create a replacement.
+
+`respawn_pane(pane_id?)` restarts the exited process of a persistent pane from its original command, cwd, and environment.
+The old screen stays, and the new process writes below it.
+It returns `true` once queued; otherwise it returns `false, reason`, for example `"PaneAlive"`, `"NotSessionPane"`, or `"Unsupported"` for an owner that predates respawn.
+`term:pane_respawned` fires with `{ pane }` when the owner accepts; a rejection shows a native notice.
+A lost reply is never retried, and the pane stays exited until you respawn it again.
+While a persistent pane is exited, a footer shows its exit code, and Enter respawns it and Ctrl+D closes it.
+The `respawn_pane` action binds the same behavior to any key.
 
 `list_sessions({ domain?, on_complete })` asks the domain's host owner for its sessions without attaching to any of them.
 `kill_session(session_id, { domain?, on_complete? })` ends one session and all of its panes.

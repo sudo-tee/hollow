@@ -250,6 +250,8 @@ pub const AppCallbacks = struct {
     move_tab_to_workspace: *const fn (app: *anyopaque, tab_id: usize, workspace_index: usize) bool,
     move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
+    /// Pane 0 is the active pane. Returns null once queued, else the reason.
+    respawn_pane: ?*const fn (app: *anyopaque, pane_id: usize) ?[:0]const u8 = null,
     bell_pane: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     send_key_to_pane: *const fn (app: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool,
@@ -763,6 +765,8 @@ pub const OperationCallbackPayload = union(enum) {
     pane_id: usize,
     tab_id: usize,
     workspace_index: usize,
+    /// Persistent open failure. `remote` is the owner's error text, if any.
+    failure: struct { reason: []const u8, outcome: []const u8, remote: ?[]const u8 = null },
 };
 
 pub const HtpDispatchResult = struct {
@@ -1428,6 +1432,19 @@ pub const Runtime = struct {
             .workspace_index => |workspace_index| {
                 api.push_number(self.state, @floatFromInt(workspace_index + 1));
                 api.set_field(self.state, -2, "workspace_index");
+            },
+            .failure => |failure| {
+                api.push_lstring(self.state, failure.reason.ptr, failure.reason.len);
+                api.set_field(self.state, -2, "error");
+                api.push_lstring(self.state, failure.outcome.ptr, failure.outcome.len);
+                api.set_field(self.state, -2, "outcome");
+                if (failure.remote) |remote| {
+                    api.push_lstring(self.state, remote.ptr, remote.len);
+                    api.set_field(self.state, -2, "remote");
+                }
+                const status = if (failure.remote) |remote| (if (std.mem.eql(u8, remote, "SessionNotFound")) "session_not_found" else "session_open_failed") else "session_open_failed";
+                api.push_lstring(self.state, status.ptr, status.len);
+                api.set_field(self.state, -2, "status");
             },
         }
 
@@ -2776,6 +2793,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_close_pane_by_id, 1);
         api.set_field(self.state, -2, "close_pane_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_respawn_pane, 1);
+        api.set_field(self.state, -2, "respawn_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_move_tab_to_workspace, 1);
@@ -7410,6 +7431,29 @@ fn l_send_text_to_pane(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_respawn_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const reason: [:0]const u8 = blk: {
+        const cbs = ctx.app_callbacks orelse break :blk "unavailable";
+        const respawn = cbs.respawn_pane orelse break :blk "unavailable";
+        var pane_id: usize = 0;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number) {
+            const value = api.to_number(state, 1);
+            if (!std.math.isFinite(value) or value < 1 or value >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) break :blk "PaneNotFound";
+            pane_id = @intFromFloat(value);
+        }
+        const failure = respawn(cbs.app, pane_id) orelse {
+            api.push_boolean(state, 1);
+            return 1;
+        };
+        break :blk failure;
+    };
+    api.push_boolean(state, 0);
+    api.push_lstring(state, reason.ptr, reason.len);
+    return 2;
+}
+
 fn l_close_pane_by_id(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -8536,6 +8580,28 @@ test "overlay segment padding parses and contributes to row insets" {
     const truncated = parseSegmentArray(api, runtime.state, segments[0..1], &text, -1);
     try std.testing.expectEqual(@as(usize, 1), truncated.len);
     try std.testing.expectEqual(stack_top, api.get_top(runtime.state));
+}
+
+test "operation callback reports persistent open failure details" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("results = {}; function record(value) results[#results + 1] = value end");
+    const api = runtime.context.api;
+    inline for (.{
+        OperationCallbackPayload{ .failure = .{ .reason = "Rejected", .outcome = "rejected", .remote = "SessionNotFound" } },
+        OperationCallbackPayload{ .failure = .{ .reason = "Disconnected", .outcome = "uncertain" } },
+    }) |payload| {
+        api.get_field(runtime.state, LUA_GLOBALSINDEX, "record");
+        runtime.invokeOperationCallback(api.ref(runtime.state, LUA_REGISTRYINDEX), false, payload);
+    }
+    try runtime.runString(
+        \\local missing, lost = results[1], results[2]
+        \\assert(missing.success == false and missing.status == "session_not_found")
+        \\assert(missing.error == "Rejected" and missing.outcome == "rejected" and missing.remote == "SessionNotFound")
+        \\assert(lost.status == "session_open_failed" and lost.outcome == "uncertain" and lost.remote == nil)
+    );
 }
 
 test "HTP bridge forwards receipt timestamp and cwd" {

@@ -44,14 +44,14 @@ pub const Kind = enum(u8) {
 pub const Direction = enum { to_owner, to_client };
 
 pub fn header(kind: Kind, stream: u32, len: usize) Header {
-    return .{ .kind = @fromBackingInt(@intFromEnum(kind)), .stream = stream, .len = @intCast(len) };
+    return .{ .kind = @fromBackingInt(@backingInt(kind)), .stream = stream, .len = @intCast(len) };
 }
 
 /// Validates kind, direction, stream, and size from the header alone, before
 /// the payload is buffered.
 pub fn validate(h: Header, direction: Direction) !Kind {
     const kind = std.enums.fromInt(Kind, @backingInt(h.kind)) orelse return error.InvalidKind;
-    const to_owner = @intFromEnum(kind) < @intFromEnum(Kind.welcome);
+    const to_owner = @backingInt(kind) < @backingInt(Kind.welcome);
     if (to_owner != (direction == .to_owner)) return error.InvalidKind;
     const control, const limit: u32 = switch (kind) {
         .hello, .request, .welcome, .reply, .event => .{ true, control_limit },
@@ -84,7 +84,18 @@ pub const Welcome = struct {
     /// Stable identity of this owner's state (user + machine), persisted in
     /// its state dir. Empty from owners that predate it.
     host: []const u8 = "",
+    /// Optional ops this owner understands, e.g. "respawn". An owner closes
+    /// the connection on an unknown op, so clients send these only when
+    /// advertised.
+    features: []const []const u8 = &.{},
 };
+
+pub const owner_features = [_][]const u8{"respawn"};
+
+pub fn hasFeature(features: []const []const u8, name: []const u8) bool {
+    for (features) |feature| if (std.mem.eql(u8, feature, name)) return true;
+    return false;
+}
 
 pub const max_host_len = 64;
 
@@ -117,6 +128,9 @@ pub const Op = enum {
     layout,
     /// Kill every session and stop the owner.
     kill_server,
+    /// Restart exited `pane` in the attached session from its original spawn,
+    /// keeping its screen. Requires the "respawn" feature.
+    respawn,
 };
 
 pub const PaneSize = struct { pane: u32, cols: u16, rows: u16 };

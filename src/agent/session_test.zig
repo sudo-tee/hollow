@@ -300,6 +300,58 @@ test "dead pane keeps output and exit status across reattach" {
     try std.testing.expectEqual(p.EventKind.session_end, event.value.event);
 }
 
+test "respawn restarts an exited pane from its spawn and keeps its screen" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(dir);
+    const script = try std.fmt.allocPrint(a, "f='{s}/ran'; if [ -e \"$f\" ]; then printf 'second-run\\n'; read x; printf 'got-%s\\n' \"$x\"; sleep 30; fi; touch \"$f\"; printf 'first-run\\n'; exit 3", .{dir});
+    defer a.free(script);
+
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const welcome = try p.parse(p.Welcome, a, client.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(p.hasFeature(welcome.value.features, "respawn"));
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = .{ .cols = 60, .rows = 10, .argv = &.{ "/bin/sh", "-c", script }, .shell_integration = false } }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    _ = try client.wait(&owner, .exit, pane);
+
+    const respawned = try client.reply(&owner, try client.request(.{ .id = 0, .op = .respawn, .pane = pane }));
+    defer respawned.deinit();
+    try std.testing.expect(respawned.value.ok);
+    try std.testing.expectEqual(@as(?u32, pane), respawned.value.pane);
+    try client.waitOutput(&owner, pane, "second-run");
+    try client.sendBytes(.input, pane, "abc\n");
+    try client.waitOutput(&owner, pane, "got-abc");
+
+    // A live pane cannot be respawned.
+    const alive = try client.reply(&owner, try client.request(.{ .id = 0, .op = .respawn, .pane = pane }));
+    defer alive.deinit();
+    try std.testing.expect(!alive.value.ok);
+    try std.testing.expectEqualStrings("PaneAlive", alive.value.@"error".?);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(?i32, null), listed.value.sessions.?[0].panes[0].exit);
+
+    // The old screen is still in the owner VT under the new output.
+    const other = try Fake.open(&owner, "some-other-build");
+    defer other.deinit();
+    const attached = try other.reply(&owner, try other.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    _ = try other.wait(&owner, .snapshot_end, pane);
+    const snapshot = try other.bytes(.snapshot, pane);
+    defer a.free(snapshot);
+    const first = std.mem.indexOf(u8, snapshot, "first-run") orelse return error.TestUnexpectedResult;
+    const second = std.mem.indexOf(u8, snapshot, "second-run") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(first < second);
+}
+
 test "exit follows output even when a background job keeps the PTY open" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();

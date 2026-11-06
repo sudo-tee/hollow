@@ -123,6 +123,7 @@ for an observational event does not change its host behavior.
 | `term:pane_focused` | `{ pane }` |
 | `term:pane_created` | `{ pane }` |
 | `term:pane_exited` | `{ pane, status }` |
+| `term:pane_respawned` | `{ pane }` |
 | `term:pane_closed` | `{ pane }` |
 | `term:pane_layout_changed` | `{ pane }` |
 | `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
@@ -162,6 +163,9 @@ automatic removal. `status` is the process exit code; POSIX signal termination
 uses `128 + signal`. Agent-backed panes report the guest exit status. If the OS status is
 unavailable (for example, a failed transport), `status` is `nil`. This event does
 not require shell integration, and its pane snapshot is no longer busy.
+
+`term:pane_respawned` fires when the owner of a persistent pane accepted `hollow.term.respawn_pane`.
+The pane keeps its ID and screen, and a later exit of the new process emits `term:pane_exited` again.
 
 `term:pane_closed` fires immediately before removal, with a final pane snapshot
 that remains usable after removal. Closing a tab or workspace emits it for each

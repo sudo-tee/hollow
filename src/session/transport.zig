@@ -207,6 +207,22 @@ pub const Connection = struct {
         return id;
     }
 
+    /// error.Unsupported when the owner did not advertise respawn.
+    pub fn respawnPane(self: *Connection, generation: u64, pane: u32) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        const id = try self.client.request(.{ .id = 0, .op = .respawn, .pane = pane });
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
+    pub fn supportsRespawn(self: *Connection) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.client.respawn_supported;
+    }
+
     pub fn spawnAttached(self: *Connection, generation: u64, spawn: p.Spawn) !u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

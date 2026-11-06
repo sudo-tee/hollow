@@ -140,6 +140,10 @@ pub fn layoutRejected(app: *App, reason: anyerror) void {
     report(app, reason, .rejected, null);
 }
 
+pub fn respawnRejected(app: *App, remote: ?[]const u8) void {
+    report(app, error.RespawnRejected, .rejected, remote);
+}
+
 fn report(app: *App, reason: anyerror, outcome: @import("../session/open.zig").Outcome, remote: ?[]const u8) void {
     const id = app.session_open_next_id;
     if (id != std.math.maxInt(u64)) app.session_open_next_id += 1;

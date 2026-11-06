@@ -349,6 +349,7 @@ function ui.workspace.open_switcher(opts)
     "term:pane_focused",
     "term:pane_created",
     "term:pane_exited",
+    "term:pane_respawned",
     "term:pane_closed",
     "term:pane_layout_changed",
     "term:title_changed",

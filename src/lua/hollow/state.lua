@@ -52,6 +52,7 @@ function M.new(host_api)
         ["term:pane_focused"] = true,
         ["term:pane_created"] = true,
         ["term:pane_exited"] = true,
+        ["term:pane_respawned"] = true,
         ["term:pane_closed"] = true,
         ["term:pane_layout_changed"] = true,
         ["term:cwd_changed"] = true,

@@ -160,6 +160,13 @@ pub fn luaClosePaneByIdCallback(app_ptr: *anyopaque, pane_id: usize) bool {
     return app.enqueueMouse(.{ .close_pane_by_id = pane_id });
 }
 
+pub fn luaRespawnPaneCallback(app_ptr: *anyopaque, pane_id: usize) ?[:0]const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const id = if (pane_id != 0) pane_id else if (app.activePane()) |pane| pane.id else return "PaneNotFound";
+    @import("session_controller.zig").respawnPane(app, id) catch |err| return @errorName(err);
+    return null;
+}
+
 pub fn luaNextTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.next_tab);

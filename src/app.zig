@@ -71,6 +71,7 @@ const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
 const mux_ops = @import("app/session_controller.zig");
+const dead_pane = @import("session/dead_pane.zig");
 const pane_lifecycle = @import("app/pane_lifecycle.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
@@ -1320,6 +1321,7 @@ pub const App = struct {
             .switch_tab_by_id = lua_callbacks.luaSwitchTabByIdCallback,
             .close_tab_by_id = lua_callbacks.luaCloseTabByIdCallback,
             .close_pane_by_id = lua_callbacks.luaClosePaneByIdCallback,
+            .respawn_pane = lua_callbacks.luaRespawnPaneCallback,
             .move_tab_to_workspace = lua_callbacks.luaMoveTabToWorkspaceCallback,
             .move_pane_to_workspace = lua_callbacks.luaMovePaneToWorkspaceCallback,
             .bell_pane = lua_callbacks.luaBellPaneCallback,
@@ -1939,6 +1941,18 @@ pub const App = struct {
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
         const term = pane.asTerminal() orelse return false;
+        // An exited persistent pane has no process to receive keys; its
+        // placeholder footer owns Enter and Ctrl+D instead.
+        if (dead_pane.state(pane)) |dead| if (dead_pane.key(dead, key, mods)) |choice| {
+            if (action != .press) return true;
+            switch (choice) {
+                .respawn => mux_ops.respawnPane(self, pane.id) catch |err| {
+                    std.log.warn("pane respawn not queued: {s}", .{@errorName(err)});
+                },
+                .close => mux_ops.closePaneById(self, pane.id),
+            }
+            return true;
+        };
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
             return true;

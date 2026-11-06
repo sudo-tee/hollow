@@ -10,6 +10,10 @@ const fixture = @import("session_pane_test.zig");
 const p = transport.p;
 const a = std.testing.allocator;
 
+test {
+    _ = @import("session/dead_pane.zig");
+}
+
 fn setup(controller: *Controller) !void {
     controller.session_id = try a.dupe(u8, "mock");
     controller.generation = controller.connection.client.generation;
@@ -132,6 +136,64 @@ test "session pane controller keeps close tombstone and connection until acknowl
     try std.testing.expect(controller.closesSettled());
     try std.testing.expectEqual(@as(usize, 0), controller.pendingCloses());
     try std.testing.expect(connection.status().phase == .ready);
+}
+
+test "session pane controller respawns only advertised dead panes and revives on acceptance" {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var node = Pane.init(a);
+    defer node.deinit(&runtime);
+    try bind(&controller, &node, &runtime, cfg, 1);
+    const pty = &node.content.terminal.pty.?.session;
+
+    try std.testing.expectError(error.PaneAlive, controller.requestRespawn(node.id));
+    try frame(&connection, .exit, 1, &p.encodeExit(3));
+    try std.testing.expect(try controller.step() == .dispatched);
+    try std.testing.expect(!pty.isAlive());
+    const dead_pane = @import("session/dead_pane.zig");
+    try std.testing.expectEqual(dead_pane.State{ .status = 3, .respawn = false }, dead_pane.state(&node).?);
+    // Without the owner feature nothing is sent: unknown ops drop the connection.
+    try std.testing.expectError(error.Unsupported, controller.requestRespawn(node.id));
+    try std.testing.expect(connection.client.nextWrite() == null);
+
+    connection.client.respawn_supported = true;
+    try std.testing.expect(dead_pane.state(&node).?.respawn);
+    const rejected = try controller.requestRespawn(node.id);
+    try std.testing.expectEqual(rejected, try controller.requestRespawn(node.id));
+    const sent = connection.client.nextWrite().?;
+    defer sent.deinit();
+    const request = try p.parse(p.Request, a, sent.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.respawn, request.value.op);
+    try std.testing.expectEqual(@as(?u32, 1), request.value.pane);
+    try json(&connection, .reply, p.Reply{ .id = rejected, .ok = false, .@"error" = "ForkFailed" });
+    const failed = try controller.step();
+    try std.testing.expect(failed == .control);
+    failed.control.deinit();
+    try std.testing.expectEqual(@as(?usize, node.id), controller.finishRespawn(rejected));
+    try std.testing.expect(!pty.isAlive());
+
+    const accepted = try controller.requestRespawn(node.id);
+    try std.testing.expect(accepted != rejected);
+    connection.client.nextWrite().?.deinit();
+    try json(&connection, .reply, p.Reply{ .id = accepted, .pane = 1 });
+    const ok = try controller.step();
+    try std.testing.expect(ok == .control);
+    ok.control.deinit();
+    try std.testing.expect(pty.isAlive());
+    try std.testing.expect(dead_pane.state(&node) == null);
+    try std.testing.expectEqual(@as(?usize, node.id), controller.finishRespawn(accepted));
+    try std.testing.expectEqual(@as(?usize, null), controller.finishRespawn(accepted));
+    node.content.terminal.reviveSession(&node);
+    try std.testing.expect(node.content.terminal.hasLiveChild());
+    try std.testing.expect(!node.content.terminal.exit_event_emitted);
 }
 
 test "session pane controller aggregate snapshot budget unblocks after history polling" {

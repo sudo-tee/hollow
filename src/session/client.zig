@@ -100,6 +100,8 @@ pub const Client = struct {
     /// Owner host ID from the welcome; empty from older or invalid owners.
     host_buf: [p.max_host_len]u8 = undefined,
     host_len: u8 = 0,
+    /// The owner advertised the optional respawn op.
+    respawn_supported: bool = false,
     generation: u64 = 0,
     next_id: u64 = 1,
     pending: [max_requests]?Pending = @splat(null),
@@ -137,8 +139,10 @@ pub const Client = struct {
         // These ops target the implicitly attached workspace. Do not let UI
         // actions for the old workspace queue behind a new attach/create and
         // accidentally mutate panes with the same IDs in that new session.
+        // Unknown ops make an owner drop the connection.
+        if (value.op == .respawn and !self.respawn_supported) return error.Unsupported;
         const attached_op = switch (value.op) {
-            .spawn, .close, .layout, .detach => true,
+            .spawn, .close, .layout, .detach, .respawn => true,
             .kill => value.session == null,
             else => false,
         };
@@ -397,6 +401,7 @@ pub const Client = struct {
                     @memcpy(self.host_buf[0..w.host.len], w.host);
                     self.host_len = @intCast(w.host.len);
                 }
+                self.respawn_supported = p.hasFeature(w.features, "respawn");
             },
             .reply => {
                 const reply = try p.parse(p.Reply, self.allocator, bytes);

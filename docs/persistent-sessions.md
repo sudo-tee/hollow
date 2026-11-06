@@ -569,11 +569,18 @@ Owner-backed tabs and splits implemented:
   the host from publication; `workspace.session_host`, list/kill results and
   `open` matching (session ID plus host when both are known) use it.
 
+- Dead/missing-session UX: owners advertise `Welcome.features = ["respawn"]`
+  and accept `respawn` for exited panes, re-forking the saved spawn under the
+  same screen. Clients send it only when advertised and never replay it.
+  An exited, attached pane shows a native footer (exit code, Enter respawn,
+  Ctrl+D close); Lua `hollow.term.respawn_pane`, action `respawn_pane`, event
+  `term:pane_respawned`. `SessionNotFound` gets an actionable notice, and
+  open/attach callbacks report `status`, `error`, `outcome`, `remote`.
+
 Next implementation slices:
-1. Actionable dead/missing-session UX (dead-pane placeholder, owner respawn
-   gated by a welcome capability, attach failures carrying error details).
-2. Remember attached host/session IDs, auto-reattach local/WSL sessions and
+1. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
+2. GUI session picker; dedicated respawn-rejection notice wording.
 
 `persist = true` is experimental and defaults to false.
 Native Windows owner and WSL keepalive remain Phase 3.

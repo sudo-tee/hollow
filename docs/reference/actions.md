@@ -20,6 +20,7 @@ The full list, grouped by intent:
 | `float_pane` | Make the active pane floating |
 | `tile_pane` | Return a floating pane to the tiled layout |
 | `close_pane` | Close the active pane |
+| `respawn_pane` | Restart the exited process of the active persistent pane, keeping its screen |
 
 ## Focus
 

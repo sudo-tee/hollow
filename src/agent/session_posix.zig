@@ -430,7 +430,7 @@ pub const Owner = struct {
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
                 client.hello = true;
                 client.binary = std.mem.eql(u8, hello.value.ghostty, self.identity);
-                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host });
+                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host, .features = &p.owner_features });
             },
             .request => {
                 const parsed = try p.parse(p.Request, self.a, payload);
@@ -521,6 +521,12 @@ pub const Owner = struct {
                 s.revision += 1;
                 self.reply(client, .{ .id = req.id, .revision = s.revision });
                 self.saveState(s);
+            },
+            .respawn => {
+                const s = client.session orelse return error.NotAttached;
+                const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
+                try self.respawnPane(s, pane);
+                self.reply(client, .{ .id = req.id, .pane = pane.id });
             },
             .kill_server => {
                 for (self.sessions.items) |s| self.endSession(s);
@@ -647,14 +653,47 @@ pub const Owner = struct {
         const pane = try self.a.create(Pane);
         errdefer self.a.destroy(pane);
         try s.panes.ensureUnusedCapacity(self.a, 1);
+        const child = try self.forkChild(spawn, spawn.cols, spawn.rows);
+        pane.* = .{ .id = s.next_pane, .pid = child.pid, .master = child.master, .launch = child.launch, .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json };
+        s.next_pane += 1;
+        s.panes.appendAssumeCapacity(pane);
+        self.saveState(s);
+        return pane;
+    }
 
+    /// Restarts an exited pane from its saved spawn at its current size. The
+    /// VT, scrollback, and output credit carry over: the new process writes
+    /// below the old screen.
+    fn respawnPane(self: *Owner, s: *Session, pane: *Pane) !void {
+        if (pane.status == null) return error.PaneAlive;
+        var arena_state = std.heap.ArenaAllocator.init(self.a);
+        defer arena_state.deinit();
+        const spawn = try std.json.parseFromSliceLeaky(p.Spawn, arena_state.allocator(), pane.spawn, .{ .ignore_unknown_fields = true });
+        const child = try self.forkChild(spawn, pane.cols, pane.rows);
+        // Late output of the old process (already reported dead) is dropped.
+        if (pane.master >= 0) _ = c.close(pane.master);
+        if (pane.launch >= 0) _ = c.close(pane.launch);
+        pane.input.clear();
+        pane.unsent.clear();
+        pane.pid = child.pid;
+        pane.master = child.master;
+        pane.launch = child.launch;
+        pane.status = null;
+        pane.exit_sent = false;
+        pane.exit_deadline = 0;
+        self.saveState(s);
+    }
+
+    const Child = struct { pid: c.pid_t, master: c_int, launch: c_int };
+
+    fn forkChild(self: *Owner, spawn: p.Spawn, cols: u16, rows: u16) !Child {
         var launch: [2]c_int = undefined;
         if (c.pipe2(&launch, c.O_CLOEXEC | c.O_NONBLOCK) != 0) return error.PipeFailed;
         errdefer _ = c.close(launch[0]);
         defer _ = c.close(launch[1]);
         var size = std.mem.zeroes(c.struct_winsize);
-        size.ws_col = spawn.cols;
-        size.ws_row = spawn.rows;
+        size.ws_col = cols;
+        size.ws_row = rows;
         var master: c_int = -1;
         const pid = c.forkpty(&master, null, null, &size);
         if (pid < 0) return error.ForkFailed;
@@ -676,11 +715,7 @@ pub const Owner = struct {
             c._exit(127);
         }
         setNonBlocking(master);
-        pane.* = .{ .id = s.next_pane, .pid = pid, .master = master, .launch = launch[0], .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json };
-        s.next_pane += 1;
-        s.panes.appendAssumeCapacity(pane);
-        self.saveState(s);
-        return pane;
+        return .{ .pid = pid, .master = master, .launch = launch[0] };
     }
 
     fn readLaunch(self: *Owner, pane: *Pane) void {

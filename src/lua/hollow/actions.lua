@@ -348,6 +348,17 @@ function M.setup(hollow, host_api)
     category = "pane",
   })
 
+  register(hollow, "respawn_pane", {
+    run = function()
+      local ok, reason = hollow.term.respawn_pane()
+      if not ok then
+        hollow.log("respawn_pane: " .. tostring(reason))
+      end
+    end,
+    desc = "Restart the exited process of a persistent pane",
+    category = "pane",
+  })
+
   register(hollow, "focus_pane_left", {
     run = function()
       host_api.focus_pane("left")

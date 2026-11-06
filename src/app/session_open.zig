@@ -246,7 +246,9 @@ fn retire(app: *App, pending: *Pending, reason: anyerror, outcome: opener.Outcom
     }
     app.requestRedraw();
     std.log.warn("session workspace open failed: {s} ({s}; not replayed)", .{ @errorName(reason), @tagName(outcome) });
-    complete(app, callback_ref, pending.lua_generation, null);
+    if (app.lua) |*lua| if (lua.generation == pending.lua_generation) {
+        lua.invokeOperationCallback(callback_ref, false, .{ .failure = .{ .reason = @errorName(reason), .outcome = @tagName(outcome), .remote = remote } });
+    };
 }
 
 fn complete(app: *App, callback_ref: c_int, generation: u64, workspace_index: ?usize) void {

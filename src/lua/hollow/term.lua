@@ -1304,6 +1304,16 @@ function M.setup(hollow, host_api)
     host_api.close_pane()
   end
 
+  function hollow.term.respawn_pane(pane_id)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.respawn_pane(pane_id?) expects pane_id to be a number")
+    end
+    if host_api.respawn_pane == nil then
+      return false, "unavailable"
+    end
+    return host_api.respawn_pane(pane_id)
+  end
+
   function hollow.term.focus_pane(direction)
     if type(direction) ~= "string" then
       error("hollow.term.focus_pane(direction) expects a direction string")

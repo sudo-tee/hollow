@@ -101,6 +101,17 @@ Another request while it is busy reports an error rather than silently falling b
 Pane domains must remain the workspace's domain; use another workspace for another host/domain.
 Changing a domain's host profile does not retarget an already attached session.
 
+## Exited panes and missing sessions
+
+When a process in a persistent pane exits, the pane keeps its final screen and shows a footer with the exit code.
+Press Enter to respawn the original command in the same cwd, or Ctrl+D to close the pane.
+The new process writes below the old output.
+Bind the `respawn_pane` action, or call `hollow.term.respawn_pane()`, to respawn from elsewhere.
+Owners started by an older Hollow cannot respawn, so the footer offers only Ctrl+D.
+
+If an attach names a session the owner no longer has, Hollow shows "Session not found on host".
+Run `hollow-cli session list` to see live sessions, or open a new workspace.
+
 ## Persistent startup
 
 Set `default_domain = "persistent_test"` only when you want startup to create a persistent workspace.
