@@ -3,6 +3,7 @@ local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local props = require("hollow.ui.components.props")
+local sessions = require("hollow.ui.workspace.sessions")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 local styles = require("hollow.ui.recipes.workspace")
@@ -25,6 +26,7 @@ local DEFAULT_COLUMN_GAP = 2
 local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
+local DEFAULT_REFRESH_KEY = "<C-l>"
 local CWD_FALLBACK = {
   active = "Current workspace",
   open = "Open workspace",
@@ -69,6 +71,11 @@ local function derived_palette()
   }
 end
 
+local function session_badge(workspace)
+  local badge = source.trim_string(workspace.session_badge)
+  return badge ~= "" and (badge .. " ") or ""
+end
+
 -- Retain the original padded accessibility labels independently of layout.
 local function default_item_columns(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
@@ -79,7 +86,7 @@ local function default_item_columns(workspace, domain_width)
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
-  local badge = workspace.program_status_badge or ""
+  local badge = workspace.program_status_badge or session_badge(workspace)
   local badge_width = util.display_width(badge)
   domain_width = domain_width or 0
   local cwd_width = math.max(
@@ -158,7 +165,10 @@ local function layout_format_item(workspace, domain_width, ctx, view)
       shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
     })
   end
-  local badge = workspace.program_status_badge or ""
+  local badge = workspace.program_status_badge or session_badge(workspace)
+  local badge_fg = workspace.program_status_badge
+      and program_status.color(workspace.program_status_state)
+    or palette.muted
   local domain = source.normalize_domain(workspace.domain)
   return c.row({
     c.column({
@@ -177,11 +187,7 @@ local function layout_format_item(workspace, domain_width, ctx, view)
     ),
     c.gap(gap),
     c.when(badge ~= "", function()
-      return c.text(
-        badge,
-        ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
-        { wrap = "none" }
-      )
+      return c.text(badge, ui.style(s.badge, { fg = badge_fg }), { wrap = "none" })
     end),
     column(cwd, s.cwd, "grow", "cwd"),
     c.when(domain and domain_width > 0, function()
@@ -244,20 +250,33 @@ local function search_text_for_item(workspace)
     .tbl({ workspace.name })
     :concat(
       basename ~= "" and basename ~= workspace.name and { basename } or {},
-      domain ~= nil and { domain } or {}
+      domain ~= nil and { domain } or {},
+      workspace.session_id ~= nil and { workspace.session_id } or {}
     )
     :join("\n")
+end
+
+local function is_session_row(item)
+  return type(item) == "table" and (item.source == "session" or item.source == "session_load")
 end
 
 ---@return HollowUiSelectAction[]
 local function switcher_actions()
   local switcher = switcher_state()
-  return {
+  local list = {
     {
       name = "select",
       desc = "switch",
       fn = function(item)
+        if item and item.source == "session_load" then
+          sessions.activate(item)
+          return
+        end
         ui.select.close()
+        if item and item.source == "session" then
+          sessions.activate(item)
+          return
+        end
         actions.switch_to_workspace(item)
       end,
     },
@@ -266,6 +285,9 @@ local function switcher_actions()
       key = switcher.rename_key or DEFAULT_RENAME_KEY,
       desc = switcher.rename_desc or "rename",
       fn = function(item)
+        if is_session_row(item) then
+          return
+        end
         ui.select.close()
         actions.open_rename_input(item)
       end,
@@ -275,7 +297,14 @@ local function switcher_actions()
       key = switcher.close_key or DEFAULT_CLOSE_KEY,
       desc = switcher.close_desc or "close",
       fn = function(item)
+        if item and item.source == "session_load" then
+          return
+        end
         ui.select.close()
+        if item and item.source == "session" then
+          sessions.kill(item)
+          return
+        end
         actions.close_workspace(item)
       end,
     },
@@ -283,12 +312,31 @@ local function switcher_actions()
       name = "new",
       key = switcher.create_key or DEFAULT_CREATE_KEY,
       desc = switcher.create_desc or "new",
-      fn = function()
+      fn = function(item)
         ui.select.close()
+        if is_session_row(item) then
+          actions.open_create_input({
+            prompt = "New session on " .. item.domain,
+            domain = item.domain,
+          })
+          return
+        end
         actions.open_create_input()
       end,
     },
   }
+  if sessions.enabled() then
+    list[#list + 1] = {
+      name = "refresh",
+      key = switcher.refresh_key or DEFAULT_REFRESH_KEY,
+      desc = switcher.refresh_desc or "refresh",
+      fn = function()
+        source.clear_cache()
+        sessions.refresh_all()
+      end,
+    }
+  end
+  return list
 end
 
 ---@param opts? HollowUiWorkspaceSwitcherOptions
@@ -337,6 +385,7 @@ function ui.workspace.open_switcher(opts)
     source.configure(config)
   end
 
+  sessions.refresh_on_open()
   local items = source.items(force_refresh)
   local domain_width = domain_column_width(items)
   local switcher = switcher_state()

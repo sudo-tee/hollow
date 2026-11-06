@@ -197,6 +197,16 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   ack/takeover tests assert `session_ended`.
   App Lua runtimes in tests must use `Runtime.initForTests`: `init` starts
   platform discovery and crashed intermittently in an App test.
+- Switcher sessions (slice 4): `src/lua/hollow/ui/workspace/sessions.lua`
+  feeds `source = "session"` / `"session_load"` rows, merged by `source.lua`
+  after open workspaces. `open_switcher` calls `refresh_on_open` (local/WSL
+  persist domains plus SSH domains already loaded); per-domain status is
+  idle/loading/ready/failed and changes emit `workspace:items_changed`.
+  Switcher actions dispatch on `item.source`: Enter attaches (take-over
+  confirm), load rows list without closing; `<C-x>` kill with confirm; `<C-n>`
+  new session in the row's domain; `<C-l>` refresh (only when a persist
+  domain exists, so existing hint snapshots are unchanged).
+  Tests: `src/lua/tests/test_ui_workspace_sessions.lua`.
 
 ## Architecture / invariants
 

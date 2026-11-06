@@ -108,6 +108,7 @@ end
 local function open_create_input(opts)
   opts = opts or {}
   local input_opts = hollow.util.clone_value(opts)
+  input_opts.domain = nil
   input_opts.prompt = opts.prompt or "New workspace name"
   input_opts.on_confirm = function(value)
     local name = trim_string(value)
@@ -116,7 +117,7 @@ local function open_create_input(opts)
       return
     end
 
-    open_new_workspace_from_item({ name = name, cwd = "" })
+    open_new_workspace_from_item({ name = name, cwd = "", domain = opts.domain })
     if type(opts.on_confirm) == "function" then
       opts.on_confirm(name)
     end

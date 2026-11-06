@@ -2339,7 +2339,7 @@ function select.close() end
 ---@field name string
 ---@field cwd? string
 ---@field domain? string
----@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"
+---@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"|"session"|"session_load" `session` rows are persistent sessions not open in this window; `session_load` rows load or retry a host's session list
 ---@field host_id? string Host-backed discovery identity
 ---@field is_active boolean
 ---@field is_open boolean
@@ -2350,6 +2350,9 @@ function select.close() end
 ---@field program_status_attention_level? "warn"|"error"
 ---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer
+---@field session_id? string Persistent session id on `session` rows
+---@field session_attached? boolean True when another window holds the session; activating asks before taking over
+---@field session_badge? string Session summary such as "2 panes" or "attached elsewhere", without trailing space
 
 ---@class HollowWorkspaceLocalHost
 ---@field type "local"
@@ -2410,6 +2413,8 @@ function select.close() end
 ---@field close_desc? string
 ---@field create_key? string
 ---@field create_desc? string
+---@field refresh_key? string Re-list persistent sessions and rescan sources (default `<C-l>`)
+---@field refresh_desc? string
 
 ---@class HollowUiWorkspaceNamespace
 ---@field configure fun(opts?: HollowUiWorkspaceSwitcherOptions)

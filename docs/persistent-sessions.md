@@ -596,8 +596,15 @@ Owner-backed tabs and splits implemented:
   `restore_sessions`. Missing sessions are forgotten silently rather than
   shown as placeholder workspaces.
 
+- Switcher sessions: the workspace switcher is the single GUI entry point.
+  `src/lua/hollow/ui/workspace/sessions.lua` keeps per-domain list state
+  (idle/loading/ready/failed), lists local/WSL persist domains on open and SSH
+  ones only on demand, and emits `workspace:items_changed`. Rows for sessions
+  open here or with an attach pending are hidden. Enter attaches (take-over
+  asks first); kill confirms, never retries, and re-lists on failure.
+
 Next implementation slices:
-1. GUI session picker; dedicated respawn-rejection notice wording.
+1. Dedicated respawn-rejection notice wording.
 2. Placeholder workspaces for missing sessions, if wanted.
 
 `persist = true` is experimental and defaults to false.

@@ -84,6 +84,7 @@ hollow.ui.workspace.configure({
   rename_key = "<C-r>", rename_desc = "rename",
   close_key  = "<C-w>", close_desc  = "close",
   create_key = "<C-n>", create_desc = "create",
+  refresh_key = "<C-l>", refresh_desc = "refresh",
 })
 ```
 
@@ -236,6 +237,7 @@ Custom formatters can use `workspace.program_status_attention` for this indicato
 - `rename_key`: rename the active workspace (default `<C-r>`)
 - `close_key`: close the active workspace (default `<C-w>`)
 - `create_key`: create a new workspace (default `<C-n>`)
+- `refresh_key`: list persistent sessions again and rescan sources (default `<C-l>`); shown only when a domain has `persist = true`
 
 Selection behaviour:
 
@@ -244,6 +246,16 @@ Selection behaviour:
 - `source = "ssh"` workspaces: open in the target domain and send a
   `cd` command
 - User-defined items with a `cwd` resend `cd` when re-activated
+- `source = "session"` rows: attach the persistent session; one attached in another window asks before taking over
+- `source = "session_load"` rows: list that domain's sessions, keeping the switcher open
+
+### Persistent sessions
+
+Domains with `persist = true` add rows for sessions not open in this window.
+Local and WSL domains are listed every time the switcher opens; SSH domains only after their "Load sessions" row is activated.
+Session rows carry `session_id`, `session_attached` and `session_badge`, and leave `program_status_badge` empty.
+On a session row, `close_key` kills the session after confirmation and `create_key` creates a new session in its domain; `rename_key` does nothing.
+See the [persistent sessions guide](../../persistent-sessions-guide.md#find-and-clean-up-sessions).
 
 `open(opts)` is the programmatic entry point. Pass an item directly
 or specify `source = "..."` plus an item payload to resolve through

@@ -69,7 +69,27 @@ To clean up the test session, explicitly close its workspace after reattaching.
 
 ## Find and clean up sessions
 
-Instead of saving IDs by hand, list what a host owns:
+The workspace switcher is the one place to restore and manage sessions.
+When it opens, it lists each local and WSL persistent domain in the background.
+Sessions not open in this window appear after the open workspaces, with their first pane's cwd and a pane count.
+Press Enter on a session row to attach it.
+A session another window holds is marked "attached elsewhere", and Enter asks before taking it over.
+
+SSH domains are never contacted just because the switcher opened.
+Each SSH persistent domain shows one "Load sessions" row instead; press Enter on it to list that host.
+Once loaded, the host is listed again whenever the switcher opens.
+A host that cannot be listed shows "Sessions unavailable" with the reason; press Enter to retry.
+
+On a session row:
+
+- `<C-x>` kills the session after confirmation;
+- `<C-n>` creates a new session in that row's domain;
+- `<C-l>` lists every loaded host again and rescans workspace sources.
+
+The refresh key appears only when some domain has `persist = true`.
+See the [workspace reference](reference/lua/workspace.md) to change the keys.
+
+Outside the GUI, list what a host owns with the CLI:
 
 ```sh
 hollow-cli session list --domain persistent_test
@@ -153,7 +173,7 @@ The list is stored in `sessions.json` in the user data directory and holds at mo
 - Moving tabs or panes across a persistent-workspace boundary is rejected.
 - Quitting waits briefly (up to 500 ms) for the final layout save; a lost connection can still drop the latest geometry, but never kills owner processes.
 - Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
-- GUI session discovery and recovery of a lost create reply are not implemented yet.
+- Recovery of a lost create reply is not implemented yet.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
 - WSL keepalive remains future work.
 

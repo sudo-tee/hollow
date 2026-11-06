@@ -684,6 +684,10 @@ local function merged_workspace_items(force_refresh)
     seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
   end
 
+  for _, item in ipairs(require("hollow.ui.workspace.sessions").items()) do
+    merged[#merged + 1] = item
+  end
+
   for _, workspace in ipairs(cached_known_workspaces(force_refresh)) do
     local existing = seen[workspace.id]
     if existing == nil and workspace.host_id == nil then
