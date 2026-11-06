@@ -90,7 +90,21 @@ pub const Welcome = struct {
     features: []const []const u8 = &.{},
 };
 
-pub const owner_features = [_][]const u8{"respawn"};
+pub const owner_features = [_][]const u8{ "respawn", "create-id" };
+
+pub fn validCreateId(id: []const u8) bool {
+    if (id.len != 32) return false;
+    for (id) |byte| if (!(byte >= '0' and byte <= '9') and !(byte >= 'a' and byte <= 'f')) return false;
+    return true;
+}
+
+test "reserved create IDs are fixed lowercase hexadecimal tokens" {
+    try std.testing.expect(validCreateId("0123456789abcdef0123456789abcdef"));
+    try std.testing.expect(!validCreateId(""));
+    try std.testing.expect(!validCreateId("0123456789ABCDEF0123456789ABCDEF"));
+    try std.testing.expect(!validCreateId("/123456789abcdef0123456789abcdef"));
+    try std.testing.expect(!validCreateId("0123456789abcdef0123456789abcdef0"));
+}
 
 pub fn hasFeature(features: []const []const u8, name: []const u8) bool {
     for (features) |feature| if (std.mem.eql(u8, feature, name)) return true;
@@ -139,6 +153,9 @@ pub const Request = struct {
     id: u64,
     op: Op,
     session: ?[]const u8 = null,
+    /// Optional client-reserved create identity. Requires "create-id".
+    /// A collision rejects create; it never attaches or replays a spawn.
+    create_id: ?[]const u8 = null,
     pane: ?u32 = null,
     spawn: ?Spawn = null,
     panes: []const PaneSize = &.{},

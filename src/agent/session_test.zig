@@ -263,6 +263,40 @@ test "foreign ghostty identity gets a VT formatter snapshot" {
     try std.testing.expect(std.mem.indexOf(u8, text, "vt-fallback") != null);
 }
 
+test "reserved create identity recovers original process without replay or implicit takeover" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.open(&owner, owner.identity);
+    defer first.deinit();
+    const sid = "0123456789abcdef0123456789abcdef";
+    const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .create_id = sid, .spawn = shell("read x; printf 'recovered-%s\\n' \"$x\"; sleep 30") }));
+    defer created.deinit();
+    try std.testing.expectEqualStrings(sid, created.value.session.?.id);
+    const pane = created.value.session.?.panes[0].id;
+    // Ignore the original create reply, as though the GUI never received it.
+    const second = try Fake.open(&owner, owner.identity);
+    defer second.deinit();
+    const listed = try second.reply(&owner, try second.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), listed.value.sessions.?.len);
+    try std.testing.expectEqualStrings(sid, listed.value.sessions.?[0].id);
+    try std.testing.expect(listed.value.sessions.?[0].attached);
+    const collision = try second.reply(&owner, try second.request(.{ .id = 0, .op = .create, .create_id = sid, .spawn = shell("exit 99") }));
+    defer collision.deinit();
+    try std.testing.expectEqualStrings("SessionExists", collision.value.@"error".?);
+    // Collision does not attach or replace the original process.
+    const invalid = try second.reply(&owner, try second.request(.{ .id = 0, .op = .create, .create_id = "invalid", .spawn = .{} }));
+    defer invalid.deinit();
+    try std.testing.expectEqualStrings("InvalidSessionId", invalid.value.@"error".?);
+    const attached = try second.reply(&owner, try second.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expectEqual(@as(usize, 1), attached.value.session.?.panes.len);
+    try std.testing.expectEqual(pane, attached.value.session.?.panes[0].id);
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.sendBytes(.input, pane, "original\n");
+    try second.waitOutput(&owner, pane, "recovered-original");
+}
+
 test "dead pane keeps output and exit status across reattach" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();

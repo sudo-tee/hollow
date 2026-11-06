@@ -238,16 +238,18 @@ fn retire(app: *App, pending: *Pending, reason: anyerror, outcome: opener.Outcom
     pending.connection.?.close();
     const callback_ref = pending.callback_ref;
     pending.callback_ref = no_ref;
+    const recovery = if (outcome == .uncertain) pending.operation.recoverySession() else null;
     if (app.startup_session_target == .opening and app.startup_session_target.opening == pending.id) app.startup_session_target = .failed;
     if (reason == error.Canceled and outcome == .not_sent) {
         _ = app.session_notices.clear(pending.id);
     } else {
-        _ = app.session_notices.failedRemote(pending.id, reason, outcome, remote);
+        _ = app.session_notices.failedWithRecovery(pending.id, reason, outcome, remote, recovery);
     }
     app.requestRedraw();
     std.log.warn("session workspace open failed: {s} ({s}; not replayed)", .{ @errorName(reason), @tagName(outcome) });
+    if (recovery) |sid| std.log.warn("recover session {s} in domain {s}; list/attach explicitly, do not recreate", .{ sid, pending.domain orelse "default" });
     if (app.lua) |*lua| if (lua.generation == pending.lua_generation) {
-        lua.invokeOperationCallback(callback_ref, false, .{ .failure = .{ .reason = @errorName(reason), .outcome = @tagName(outcome), .remote = remote } });
+        lua.invokeOperationCallback(callback_ref, false, .{ .failure = .{ .reason = @errorName(reason), .outcome = @tagName(outcome), .remote = remote, .session_id = recovery } });
     };
 }
 
@@ -436,6 +438,32 @@ test "session borrowers uncertain cancellation remains visible until deliberatel
     activateNotice(app, 3);
     try std.testing.expect(app.session_notices.current() == null);
     try std.testing.expectEqual(@as(u64, 2), connection.client.next_id);
+}
+
+test "session borrowers lost create reply retains recovery ID after opener retirement" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    const pending = try Pending.prepare(a, .{ .id = 0, .op = .create, .spawn = .{} }, "captured-domain", null, no_ref, 0, 3);
+    app.session_opens[0] = pending;
+    app.session_open_count = 1;
+    const connection = try mockConnection(a);
+    pending.connection = connection;
+    pending.operation.bind(connection);
+    connection.client.create_id_supported = true;
+    const sid: [32]u8 = pending.operation.request.create_id.?[0..32].*;
+    pump(app);
+    connection.client.nextWrite().?.deinit();
+    connection.client.ended = true;
+    connection.finished = true;
+    pump(app);
+    try std.testing.expectEqual(@as(?[32]u8, sid), app.session_notices.current().?.recovery_session);
+    try std.testing.expectEqual(@as(u64, 2), connection.client.next_id);
+    pump(app); // Retire transport and opener, not the recovery notice.
+    try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
+    try std.testing.expectEqual(@as(?[32]u8, sid), app.session_notices.current().?.recovery_session);
 }
 
 test "session borrowers startup command targets its own pane without changing focus" {

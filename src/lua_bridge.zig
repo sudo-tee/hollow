@@ -769,7 +769,7 @@ pub const OperationCallbackPayload = union(enum) {
     tab_id: usize,
     workspace_index: usize,
     /// Persistent open failure. `remote` is the owner's error text, if any.
-    failure: struct { reason: []const u8, outcome: []const u8, remote: ?[]const u8 = null },
+    failure: struct { reason: []const u8, outcome: []const u8, remote: ?[]const u8 = null, session_id: ?[]const u8 = null },
 };
 
 pub const HtpDispatchResult = struct {
@@ -1465,6 +1465,10 @@ pub const Runtime = struct {
                 if (failure.remote) |remote| {
                     api.push_lstring(self.state, remote.ptr, remote.len);
                     api.set_field(self.state, -2, "remote");
+                }
+                if (failure.session_id) |sid| {
+                    api.push_lstring(self.state, sid.ptr, sid.len);
+                    api.set_field(self.state, -2, "session_id");
                 }
                 const status = if (failure.remote) |remote| (if (std.mem.eql(u8, remote, "SessionNotFound")) "session_not_found" else "session_open_failed") else "session_open_failed";
                 api.push_lstring(self.state, status.ptr, status.len);
@@ -8618,16 +8622,16 @@ test "overlay segment padding parses and contributes to row insets" {
     try std.testing.expectEqual(stack_top, api.get_top(runtime.state));
 }
 
-test "operation callback reports persistent open failure details" {
+test "session borrowers operation callback reports persistent open failure and recovery details" {
     var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
-    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
     defer runtime.deinit();
     try runtime.runString("results = {}; function record(value) results[#results + 1] = value end");
     const api = runtime.context.api;
     inline for (.{
         OperationCallbackPayload{ .failure = .{ .reason = "Rejected", .outcome = "rejected", .remote = "SessionNotFound" } },
-        OperationCallbackPayload{ .failure = .{ .reason = "Disconnected", .outcome = "uncertain" } },
+        OperationCallbackPayload{ .failure = .{ .reason = "Disconnected", .outcome = "uncertain", .session_id = "0123456789abcdef0123456789abcdef" } },
     }) |payload| {
         api.get_field(runtime.state, LUA_GLOBALSINDEX, "record");
         runtime.invokeOperationCallback(api.ref(runtime.state, LUA_REGISTRYINDEX), false, payload);
@@ -8637,6 +8641,7 @@ test "operation callback reports persistent open failure details" {
         \\assert(missing.success == false and missing.status == "session_not_found")
         \\assert(missing.error == "Rejected" and missing.outcome == "rejected" and missing.remote == "SessionNotFound")
         \\assert(lost.status == "session_open_failed" and lost.outcome == "uncertain" and lost.remote == nil)
+        \\assert(missing.session_id == nil and lost.session_id == "0123456789abcdef0123456789abcdef")
     );
 }
 

@@ -665,6 +665,7 @@
 ---@field error? string Persistent open failure reason
 ---@field outcome? "not_sent"|"uncertain"|"rejected" Whether the owner may have acted; never retried
 ---@field remote? string Owner error text, e.g. "SessionNotFound"
+---@field session_id? string Reserved session ID for explicit recovery of an uncertain create; list/attach in original domain, never replay create
 
 ---@class HollowNewWorkspaceOpts
 ---@field cwd? string

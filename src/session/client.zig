@@ -102,6 +102,7 @@ pub const Client = struct {
     host_len: u8 = 0,
     /// The owner advertised the optional respawn op.
     respawn_supported: bool = false,
+    create_id_supported: bool = false,
     generation: u64 = 0,
     next_id: u64 = 1,
     pending: [max_requests]?Pending = @splat(null),
@@ -141,6 +142,7 @@ pub const Client = struct {
         // accidentally mutate panes with the same IDs in that new session.
         // Unknown ops make an owner drop the connection.
         if (value.op == .respawn and !self.respawn_supported) return error.Unsupported;
+        if (value.create_id != null and !self.create_id_supported) return error.Unsupported;
         const attached_op = switch (value.op) {
             .spawn, .close, .layout, .detach, .respawn => true,
             .kill => value.session == null,
@@ -402,6 +404,7 @@ pub const Client = struct {
                     self.host_len = @intCast(w.host.len);
                 }
                 self.respawn_supported = p.hasFeature(w.features, "respawn");
+                self.create_id_supported = p.hasFeature(w.features, "create-id");
             },
             .reply => {
                 const reply = try p.parse(p.Reply, self.allocator, bytes);

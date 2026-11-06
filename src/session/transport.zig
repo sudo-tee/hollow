@@ -223,6 +223,12 @@ pub const Connection = struct {
         return self.client.respawn_supported;
     }
 
+    pub fn supportsCreateId(self: *Connection) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.client.create_id_supported;
+    }
+
     pub fn spawnAttached(self: *Connection, generation: u64, spawn: p.Spawn) !u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

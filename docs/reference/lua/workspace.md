@@ -256,6 +256,7 @@ Local and WSL domains are listed every time the switcher opens; SSH domains only
 Session rows carry `session_id`, `session_attached` and `session_badge`, and leave `program_status_badge` empty.
 On a session row, `close_key` kills the session after confirmation and `create_key` creates a new session in its domain; `rename_key` does nothing.
 See the [persistent sessions guide](../../persistent-sessions-guide.md#find-and-clean-up-sessions).
+To recover a lost create reply, list the original domain and attach the ID from the native warning or the `new_workspace` callback's `session_id`; never create a replacement while the result is uncertain.
 
 `open(opts)` is the programmatic entry point. Pass an item directly
 or specify `source = "..."` plus an item payload to resolve through

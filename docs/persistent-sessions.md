@@ -137,6 +137,7 @@ edits `.wslconfig`.
 - Dead pane: when a process exits, the owner keeps its final screen and exit
   code until a client closes or respawns it. The client shows a placeholder
   with respawn/close keys.
+  Interactive-shell exits instead schedule owner-acknowledged close when attached.
 - Missing session on reopen: same placeholder, using the last known cwd and
   command. Hollow never silently starts a fresh shell.
 - Activity while detached: the owner keeps a bounded per-session event log
@@ -611,10 +612,16 @@ Owner-backed tabs and splits implemented:
   asks first); kill confirms, never retries, and re-lists on failure.
 
 Next implementation slices:
-1. Recover a lost create reply without replaying create.
-2. Placeholder workspaces for missing sessions, if wanted.
+1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
+2. Investigate residual output lag and bounded window negotiation.
+3. Placeholder workspaces for missing sessions, if wanted.
 
 Respawn rejection now has dedicated native notice wording and preserves the pane's screen and exit status without retry.
+Lost-create recovery now uses a random client-reserved ID when the owner advertises `create-id`.
+Owners reject collisions instead of attaching or spawning again.
+An uncertain create exposes its ID in a native notice, log, and Lua failure callback for explicit list/attach in the original domain.
+No automatic create replay, takeover, or startup-command replay occurs; old owners keep the generic warning.
+Recovery is not durable GUI-side state: after a restart, use the log or host session list.
 
 `persist = true` is experimental and defaults to false.
 Native Windows owner and WSL keepalive remain Phase 3.

@@ -137,6 +137,28 @@ Owners predating shell-exit policy retain exited shells too; restart the owner a
 If an attach names a session the owner no longer has, Hollow shows "Session not found on host".
 Run `hollow-cli session list` to see live sessions, or open a new workspace.
 
+## Recover a lost create reply
+
+New owners advertise `create-id`, allowing Hollow to reserve a random session ID before sending create.
+If the reply is lost, or you cancel after submission, the warning shows that exact ID and an attach command.
+The same ID is written to the log with the original domain and returned as `session_id` in an uncertain `new_workspace` completion result.
+The ID identifies a possible session, not proof that create succeeded.
+
+List the original domain, then explicitly attach the matching session:
+
+```sh
+hollow-cli session list --domain persistent_test
+hollow-cli session attach <id-from-warning> --domain persistent_test
+```
+
+The workspace switcher can also list and attach it, with confirmation if it is attached elsewhere.
+CLI attach takes over another attachment without confirmation, so check the list first.
+Hollow never repeats create, automatically attaches, or resends the original startup command during recovery.
+The original command may not have run if its reply was lost before publication; inspect the recovered shell before running it yourself.
+An ID collision rejects create rather than creating another process or implicitly attaching.
+Older owners do not support reserved IDs; their warning still asks you to find the session through the list.
+Recovery notices are not saved across GUI restarts; use the log or session list if the notice is gone.
+
 ## Persistent startup
 
 Set `default_domain = "persistent_test"` only when you want startup to create a persistent workspace.
@@ -178,7 +200,7 @@ The list is stored in `sessions.json` in the user data directory and holds at mo
 - Moving tabs or panes across a persistent-workspace boundary is rejected.
 - Quitting waits briefly (up to 500 ms) for the final layout save; a lost connection can still drop the latest geometry, but never kills owner processes.
 - Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
-- Recovery of a lost create reply is not implemented yet.
+- Lost-create recovery is explicit list/attach, not automatic; old owners cannot provide the exact ID.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
 - WSL keepalive remains future work.
 

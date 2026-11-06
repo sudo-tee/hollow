@@ -476,7 +476,7 @@ pub const Owner = struct {
                 self.reply(client, .{ .id = req.id, .sessions = list.items });
             },
             .create => {
-                const s = try self.createSession();
+                const s = try self.createSession(req.create_id);
                 errdefer self.endSession(s);
                 _ = try self.spawnPane(s, req.spawn orelse .{});
                 if (req.layout) |layout| s.layout = try self.a.dupe(u8, layout);
@@ -635,12 +635,20 @@ pub const Owner = struct {
         return null;
     }
 
-    fn createSession(self: *Owner) !*Session {
+    fn createSession(self: *Owner, reserved: ?[]const u8) !*Session {
+        const id: [32]u8 = if (reserved) |value| blk: {
+            if (!p.validCreateId(value)) return error.InvalidSessionId;
+            break :blk value[0..32].*;
+        } else blk: {
+            var random: [16]u8 = undefined;
+            try fillRandom(&random);
+            break :blk std.fmt.bytesToHex(random, .lower);
+        };
+        // Even an ended identity cannot be reused during this owner's lifetime.
+        for (self.sessions.items) |existing| if (std.mem.eql(u8, &existing.id, &id)) return error.SessionExists;
         const s = try self.a.create(Session);
         errdefer self.a.destroy(s);
-        var random: [16]u8 = undefined;
-        try fillRandom(&random);
-        s.* = .{ .id = std.fmt.bytesToHex(random, .lower) };
+        s.* = .{ .id = id };
         try self.sessions.append(self.a, s);
         return s;
     }

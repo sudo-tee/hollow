@@ -138,8 +138,8 @@ test "session pane controller keeps close tombstone and connection until acknowl
     try std.testing.expect(connection.status().phase == .ready);
 }
 
-test "session shell exit schedules acknowledged removal while apps retain their screen" {
-    for (.{ false, true }) |auto_close| {
+test "session pane shell exit schedules acknowledged removal while apps retain their screen" {
+    for ([_]bool{ false, true }) |auto_close| {
         var connection = try fixture.mockConnection();
         defer fixture.freeMock(&connection);
         var controller = Controller.init(a, &connection);
@@ -172,8 +172,8 @@ test "session shell exit schedules acknowledged removal while apps retain their 
     }
 }
 
-test "reattached exited shell schedules removal but detached live shell does not" {
-    for (.{ false, true }) |exited| {
+test "session pane reattached exited shell schedules removal but detached live shell does not" {
+    for ([_]bool{ false, true }) |exited| {
         var connection = try fixture.mockConnection();
         defer fixture.freeMock(&connection);
         var controller = Controller.init(a, &connection);

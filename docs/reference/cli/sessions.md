@@ -54,6 +54,9 @@ Run `session list` to find out whether the session is gone.
 `session attach <id>` queues attaching the session as a new workspace, like `hollow.term.attach_session`.
 It takes over the session from any other attached client.
 Success means the request was queued, not that the workspace was published.
+If a create reply was lost, new owners let the GUI warning show the exact reserved session ID for this command.
+List using the original `--domain` first: the ID may not exist, and CLI attach takes over another attachment without asking.
+Recovery never repeats create or resends a startup command.
 
 ## Failures
 

@@ -409,6 +409,9 @@ A failed persistent open reports `status`, `error`, and `outcome`, plus `remote`
 `status = "session_not_found"` means the owner is reachable and the session no longer exists, so opening a fresh workspace is safe.
 Any other failure has `status = "session_open_failed"`.
 An `outcome` of `"uncertain"` means the owner may have acted, so do not create a replacement.
+An uncertain create also includes `session_id` when the owner supports reserved create IDs.
+Use `list_sessions` in the original domain to check whether that ID exists, then explicitly call `attach_session`; never replay `new_workspace` or its startup command automatically.
+The ID is a recovery hint, not proof of success, and is absent for older owners and failed attaches.
 
 `respawn_pane(pane_id?)` restarts the exited process of a persistent pane from its original command, cwd, and environment.
 The old screen stays, and the new process writes below it.

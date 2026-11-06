@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-06 after slice 4.
+Updated 2026-11-06 after slice 4, shell auto-close, and explicit lost-create recovery.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -45,16 +45,28 @@ Commit map (current IDs, oldest first):
 | `82cab71` | Slice 3: remembered sessions and startup restore |
 | `8a33cea` | Slice 4: sessions in the workspace switcher |
 | `494178d` | Auto-close exited interactive shells |
+| `e274c74` | Dedicated rejected-respawn notice |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
 Open work, in suggested order:
 
 1. Manual GUI smoke test of slices 3 and 4 on Windows (`./launch.sh`): switcher rows, take-over confirm, kill confirm, SSH "Load sessions" row, startup restore. Not yet done by anyone; the native notice cards have never been checked visually either.
-2. Recovery of a lost create reply (an uncertain create currently just warns).
+2. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
 3. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-4. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
-5. Phase 3: native Windows owner, WSL keepalive.
+4. Phase 3: native Windows owner, WSL keepalive.
+
+Lost-create recovery is now explicit and identity-based.
+`Open.prepare` reserves a random 32-hex ID before connecting; it is sent as `Request.create_id` only to owners advertising `create-id`.
+Owner collisions reject with `SessionExists`, never implicitly attach or replay spawn.
+An uncertain create puts its exact ID in the native warning, log (with domain), and Lua failure callback's optional `session_id`.
+List the original domain, then explicitly attach; the session may not exist, and CLI attach can take over another client.
+No automatic retry, takeover, or startup-command resend occurs.
+Old owners keep the generic warning; recovery notices are not saved across GUI restarts, so use logs/session list then.
+Regression tests cover exact-ID ownership, legacy fallback, lost replies, collision rejection, process recovery, callback payload, and notice lifetime after opener teardown.
+Validation: Linux pane/snapshot/client suites pass with the real agent (103 tests) in Debug, and also in ReleaseSafe and ReleaseSmall.
+Agent protocol/loop/transport/PTY suites, Windows pane/client/borrower suites, Windows-to-WSL real-owner suites, and the Windows GUI cross-build pass.
+Shell lifecycle and respawn-notice regression names were corrected to match the headless target's filter; those previously excluded tests now execute and pass.
 
 Respawn rejections now show "Pane respawn failed: <owner reason>" and explain that the existing screen was kept, with no automatic retry.
 Notice unit tests and a Windows App regression verify wording, retained exit status, and absence of replay.
@@ -76,6 +88,8 @@ Gotchas that cost time before:
 
 - Native Linux `zig build test` cannot link GUI deps (X11/GL/ALSA missing); use `-Dtarget=x86_64-windows-gnu` or the headless steps in Validation.
 - App tests with a Lua runtime must use `Runtime.initForTests`; `Runtime.init` starts platform discovery and crashed intermittently ("switch on corrupt value"). Any `std.log.err` in a test fails it.
+- Headless pane tests filter names by `session pane`; borrower/App tests filter by `session borrowers`.
+  Regression names must include the matching prefix or the target silently excludes them.
 - The 7 Windows `session_transport_test` FileNotFound failures are expected; judge by "Build Summary".
 - Lua tests emit built-in events with `hollow._emit_builtin_event(name, payload)`; `hollow.events.emit` rejects built-ins. `harness.boot()` clears `package.loaded`, so module state resets per boot.
 - When stubbing `hollow.ui.select.open` in switcher tests, call the captured `opts.on_mount()` or item refreshes never fire.

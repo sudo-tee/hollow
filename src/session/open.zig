@@ -26,6 +26,7 @@ pub const Open = struct {
     request_id: ?u64 = null,
     finished: bool = false,
     failure: ?Failure = null,
+    create_id_sent: bool = false,
 
     pub fn init(a: Allocator, connection: *transport.Connection, request: p.Request) !Open {
         var self = try prepare(a, request);
@@ -42,14 +43,23 @@ pub const Open = struct {
             .create => {
                 if (request.session != null or request.spawn == null) return error.InvalidRequest;
                 if (request.spawn.?.cols == 0 or request.spawn.?.rows == 0) return error.InvalidRequest;
+                if (request.create_id) |id| if (!p.validCreateId(id)) return error.InvalidRequest;
             },
-            .attach => if (request.spawn != null or request.session == null or request.session.?.len == 0) return error.InvalidRequest,
+            .attach => if (request.create_id != null or request.spawn != null or request.session == null or request.session.?.len == 0) return error.InvalidRequest,
             else => return error.InvalidRequest,
+        }
+        var prepared = request;
+        var reserved: [32]u8 = undefined;
+        if (prepared.op == .create and prepared.create_id == null) {
+            var random: [16]u8 = undefined;
+            std.Io.random(@import("../io.zig").get(), &random);
+            reserved = std.fmt.bytesToHex(random, .lower);
+            prepared.create_id = &reserved;
         }
         const buffer = try a.alloc(u8, p.control_limit);
         defer a.free(buffer);
         var writer = std.Io.Writer.fixed(buffer);
-        std.json.Stringify.value(request, .{ .emit_null_optional_fields = false }, &writer) catch return error.PayloadTooLarge;
+        std.json.Stringify.value(prepared, .{ .emit_null_optional_fields = false }, &writer) catch return error.PayloadTooLarge;
         var arena = std.heap.ArenaAllocator.init(a);
         errdefer arena.deinit();
         const copy = try std.json.parseFromSlice(p.Request, arena.allocator(), writer.buffered(), .{ .allocate = .alloc_always });
@@ -78,7 +88,12 @@ pub const Open = struct {
         if (status.phase == .connecting) return .pending;
         if (status.phase == .closing or status.phase == .ended)
             return .{ .failed = self.fail(status.failure orelse error.Disconnected, self.outcome(), null) };
-        if (self.request_id == null) self.request_id = try connection.request(self.request);
+        if (self.request_id == null) {
+            var request = self.request;
+            if (!connection.supportsCreateId()) request.create_id = null;
+            self.request_id = try connection.request(request);
+            self.create_id_sent = request.create_id != null;
+        }
         // One welcome plus one reply maximum. Never cross the reply barrier.
         for (0..2) |_| {
             const message = connection.poll() orelse return .pending;
@@ -102,6 +117,7 @@ pub const Open = struct {
                 session.panes.len > @import("client.zig").max_panes or
                 message.generation == 0 or message.generation != connection.attachmentGeneration()) return error.InvalidReply;
             if (self.request.op == .attach and !std.mem.eql(u8, self.request.session.?, session.id)) return error.InvalidReply;
+            if (self.create_id_sent and !std.mem.eql(u8, self.request.create_id.?, session.id)) return error.InvalidReply;
             for (session.panes, 0..) |pane, i| {
                 if (pane.id == 0 or pane.cols == 0 or pane.rows == 0) return error.InvalidReply;
                 for (session.panes[0..i]) |previous| if (previous.id == pane.id) return error.InvalidReply;
@@ -119,6 +135,12 @@ pub const Open = struct {
             .queued, .not_sent => .not_sent,
             else => .uncertain,
         };
+    }
+
+    /// Only meaningful for uncertain creates; never identifies an old owner's
+    /// randomly named session or an attach target.
+    pub fn recoverySession(self: *const Open) ?[]const u8 {
+        return if (self.create_id_sent) self.request.create_id else null;
     }
 
     fn fail(self: *Open, reason: anyerror, result: Outcome, remote: ?[]const u8) Failure {
@@ -263,6 +285,49 @@ test "session pane open lost reply queued cancellation and preadmission" {
     }
 }
 
+test "session pane open reserves create identity only with owner support and never replays" {
+    for ([_]bool{ false, true }) |supported| {
+        var connection = mockConnection();
+        defer mockDeinit(&connection);
+        try welcome(&connection);
+        connection.client.create_id_supported = supported;
+        var operation = try Open.init(std.testing.allocator, &connection, .{ .id = 0, .op = .create, .spawn = .{} });
+        defer operation.deinit();
+        try std.testing.expect(p.validCreateId(operation.request.create_id.?));
+        _ = try operation.step();
+        const message = connection.client.nextWrite().?;
+        defer message.deinit();
+        const request = try p.parse(p.Request, std.testing.allocator, message.payload);
+        defer request.deinit();
+        try std.testing.expectEqual(supported, request.value.create_id != null);
+        if (supported) try std.testing.expectEqualStrings(operation.request.create_id.?, request.value.create_id.?);
+        connection.client.ended = true;
+        connection.finished = true;
+        const failure = (try operation.step()).failed;
+        try std.testing.expectEqual(Outcome.uncertain, failure.outcome);
+        try std.testing.expectEqual(supported, operation.recoverySession() != null);
+        _ = try operation.step();
+        try std.testing.expectEqual(@as(u64, 2), connection.client.next_id);
+        try std.testing.expect(connection.client.nextWrite() == null);
+    }
+}
+
+test "session pane open rejects a create reply naming a different reserved identity" {
+    var connection = mockConnection();
+    defer mockDeinit(&connection);
+    try welcome(&connection);
+    connection.client.create_id_supported = true;
+    var operation = try Open.init(std.testing.allocator, &connection, .{ .id = 0, .op = .create, .spawn = .{} });
+    defer operation.deinit();
+    _ = try operation.step();
+    try submit(&connection);
+    try reply(&connection, .{ .id = operation.request_id.?, .session = .{ .id = "wrong-session", .attached = true, .revision = 0, .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }} } });
+    const failure = (try operation.step()).failed;
+    try std.testing.expectEqual(error.InvalidReply, failure.reason);
+    try std.testing.expectEqual(Outcome.uncertain, failure.outcome);
+    try std.testing.expectEqualStrings(operation.request.create_id.?, operation.recoverySession().?);
+}
+
 test "session pane open invalid initial requests leave connection alone" {
     var connection = mockConnection();
     defer mockDeinit(&connection);
@@ -272,6 +337,8 @@ test "session pane open invalid initial requests leave connection alone" {
         .{ .id = 0, .op = .list },
         .{ .id = 0, .op = .attach, .session = "" },
         .{ .id = 0, .op = .attach, .session = "s", .spawn = .{} },
+        .{ .id = 0, .op = .attach, .session = "s", .create_id = "0123456789abcdef0123456789abcdef" },
+        .{ .id = 0, .op = .create, .spawn = .{}, .create_id = "invalid" },
         .{ .id = 0, .op = .create, .spawn = .{}, .session = "s" },
         .{ .id = 0, .op = .create, .spawn = .{}, .pane = 1 },
         .{ .id = 0, .op = .create, .spawn = .{}, .revision = 0 },

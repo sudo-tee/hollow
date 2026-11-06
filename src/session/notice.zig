@@ -10,6 +10,7 @@ pub const Notice = struct {
     outcome: Outcome = .not_sent,
     remote: [64]u8 = undefined,
     remote_len: usize = 0,
+    recovery_session: ?[32]u8 = null,
 };
 
 pub const Notices = struct {
@@ -25,7 +26,14 @@ pub const Notices = struct {
     }
 
     pub fn failedRemote(self: *Notices, id: u64, reason: anyerror, outcome: Outcome, remote: ?[]const u8) bool {
+        return self.failedWithRecovery(id, reason, outcome, remote, null);
+    }
+
+    pub fn failedWithRecovery(self: *Notices, id: u64, reason: anyerror, outcome: Outcome, remote: ?[]const u8, session: ?[]const u8) bool {
         var value: Notice = .{ .id = id, .state = .failed, .reason = reason, .outcome = outcome };
+        if (outcome == .uncertain) if (session) |sid| {
+            if (@import("../agent/session_protocol.zig").validCreateId(sid)) value.recovery_session = sid[0..32].*;
+        };
         if (remote) |message| {
             value.remote_len = @min(message.len, value.remote.len);
             for (message[0..value.remote_len], 0..) |byte, i| value.remote[i] = if (byte >= 32 and byte <= 126) byte else '?';
@@ -90,6 +98,14 @@ pub const Text = struct {
             return;
         }
         const remote = notice.remote[0..notice.remote_len];
+        if (notice.outcome == .uncertain) if (notice.recovery_session) |sid| {
+            self.lines[0] = "Session creation outcome unknown";
+            self.lines[1] = std.fmt.bufPrint(&self.buffer, "Recover: hollow-cli session attach {s}", .{sid}) catch unreachable;
+            self.lines[2] = "Use original --domain; list first. Do not recreate.";
+            self.lines[3] = "Click to dismiss. No automatic retry.";
+            self.count = 4;
+            return;
+        };
         if (notice.outcome == .rejected and (notice.reason orelse error.Unknown) == error.RespawnRejected) {
             self.lines[0] = std.fmt.bufPrint(&self.buffer, "Pane respawn failed: {s}", .{if (remote.len > 0) remote else "Owner rejected request"}) catch "Pane respawn failed";
             self.lines[1] = "Owner rejected respawn. Existing screen was kept.";
@@ -221,7 +237,7 @@ test "session pane notice explains a missing session and how to recover" {
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
 }
 
-test "respawn rejection names pane operation without suggesting a new session" {
+test "session pane notice respawn rejection names operation without suggesting a new session" {
     var notices: Notices = .{};
     for ([_]?[]const u8{ "PaneAlive", "PaneNotFound", "SessionNotFound", null }) |remote| {
         try std.testing.expect(notices.failedRemote(1, error.RespawnRejected, .rejected, remote));
@@ -238,4 +254,19 @@ test "respawn rejection names pane operation without suggesting a new session" {
     text.format(notices.current().?);
     try std.testing.expectEqual(@as(usize, 4), text.count);
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
+}
+
+test "session pane notice uncertain create owns exact recovery identity but never invents one" {
+    var notices: Notices = .{};
+    var sid = "0123456789abcdef0123456789abcdef".*;
+    try std.testing.expect(notices.failedWithRecovery(1, error.Disconnected, .uncertain, null, &sid));
+    @memset(&sid, 'x');
+    var text: Text = .{};
+    text.format(notices.current().?);
+    try std.testing.expectEqualStrings("Recover: hollow-cli session attach 0123456789abcdef0123456789abcdef", text.lines[1]);
+    try std.testing.expect(std.mem.indexOf(u8, text.lines[2], "Do not recreate") != null);
+    try std.testing.expect(notices.failedWithRecovery(1, error.Rejected, .rejected, null, "0123456789abcdef0123456789abcdef"));
+    try std.testing.expect(notices.current().?.recovery_session == null);
+    try std.testing.expect(notices.failedWithRecovery(1, error.Disconnected, .uncertain, null, "bad"));
+    try std.testing.expect(notices.current().?.recovery_session == null);
 }
