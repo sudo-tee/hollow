@@ -642,6 +642,7 @@ test {
     if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");
     _ = @import("platform.zig");
+    _ = @import("window_placement_test.zig");
     _ = @import("lua_bridge.zig");
     _ = @import("render/color_math.zig");
     _ = @import("render/text_util.zig");

@@ -298,6 +298,7 @@ pub const Config = struct {
     window_title: ?[]u8 = null,
     window_width: u32 = 1280,
     window_height: u32 = 800,
+    restore_window_placement: bool = true,
     cols: u16 = 120,
     rows: u16 = 34,
     /// Scrollback history budget in bytes, matching Ghostty's native API.

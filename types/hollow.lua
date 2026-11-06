@@ -485,6 +485,7 @@
 ---@field window_title? string
 ---@field window_width? integer
 ---@field window_height? integer
+---@field restore_window_placement? boolean Windows: restore and save window placement (default true).
 ---@field window_titlebar_show? boolean
 ---@field top_bar_mode? HollowTopBarMode
 ---@field top_bar_height? integer

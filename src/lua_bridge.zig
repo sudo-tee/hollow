@@ -4879,6 +4879,10 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
 }
 
 fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
+    if (std.mem.eql(u8, key, "restore_window_placement")) {
+        cfg.restore_window_placement = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "font_lcd")) {
         cfg.fonts.smoothing = if (value) .subpixel else .grayscale;
         return;
@@ -8419,6 +8423,19 @@ test "set_config ignores window size once the GUI is ready" {
     try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
     try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
     try std.testing.expectEqual(@as(u16, 90), cfg.cols);
+}
+
+test "set_config toggles window placement restoration" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(cfg.restore_window_placement);
+    try runtime.runString("host_api.set_config({ restore_window_placement = false })");
+    try std.testing.expect(!cfg.restore_window_placement);
+    runtime.markGuiReady();
+    try runtime.runString("host_api.set_config({ restore_window_placement = true })");
+    try std.testing.expect(cfg.restore_window_placement);
 }
 
 test "spawn filter bridge commits valid results atomically and preserves stack" {

@@ -14,6 +14,7 @@ The is the main entry point for Hollow's documentation.
 
 - [Getting started](getting-started.md) — install, first run, mental model
 - [Configuration](configuration.md) — config model, defaults, overrides
+- [Window size and position](window-placement.md) — restore Windows window placement on reopen
 - [Keybindings](keybindings.md) — default keymaps, modal bindings, the leader key
 - [Panes, tabs, workspaces](panes-tabs-workspaces.md) — the three layout primitives
 - [Workspace picker](workspace-picker.md) — domain categories, SSH project/session loading, and creation actions

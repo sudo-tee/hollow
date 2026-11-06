@@ -3,6 +3,7 @@ const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
+const window_placement = if (builtin.os.tag == .windows) @import("window_placement_windows.zig") else struct {};
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
@@ -3468,6 +3469,9 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
+    if (builtin.os.tag == .windows and app.config.restore_window_placement) {
+        if (c.sapp_win32_get_hwnd()) |hwnd| window_placement.restore(@ptrCast(@constCast(hwnd)));
+    }
     rebuildFtRenderer(app);
 
     _ = app.enqueueMouse(.{ .focus = true });
@@ -5064,6 +5068,9 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
         // after it. Hide it so slow teardown cannot show a white
         // "Not Responding" window.
         if (c.sapp_win32_get_hwnd()) |hwnd_raw| {
+            if (appFromUserData(user_data)) |app| {
+                if (app.config.restore_window_placement) window_placement.save(@ptrCast(@constCast(hwnd_raw)));
+            }
             _ = win32.ShowWindow(@ptrCast(@constCast(hwnd_raw)), win32.SW_HIDE);
         }
     }
