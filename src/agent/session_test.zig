@@ -23,7 +23,7 @@ const Fake = struct {
         _ = try owner.addClient(pair[0]);
         const self = try a.create(Fake);
         self.* = .{ .fd = pair[1] };
-        try self.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = identity }));
+        try self.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = identity, .foreground_events = true }));
         _ = try self.wait(owner, .welcome, 0);
         return self;
     }
@@ -248,6 +248,49 @@ test "pane without a shell-reported cwd reports its spawn cwd" {
     const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = spawn }));
     defer created.deinit();
     try std.testing.expectEqualStrings("/tmp", created.value.session.?.panes[0].cwd);
+}
+
+test "attach restores foreground command reported while detached and completion clears it" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.open(&owner, owner.identity);
+    defer first.deinit();
+    const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .spawn = shell(
+        "printf 'ready\\n'; read x; " ++
+            "printf '\\033]1337;Hollow;{\"kind\":\"event\",\"name\":\"command_started\",\"payload\":{\"command\":\"nvim\"}}\\007'; " ++
+            "read x; printf '\\033]1337;Hollow;{\"kind\":\"event\",\"name\":\"command_ended\",\"payload\":{\"exit_code\":0}}\\007done\\n'; sleep 30",
+    ) }));
+    defer created.deinit();
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const pane = created.value.session.?.panes[0].id;
+    try first.waitOutput(&owner, pane, "ready");
+    first.close();
+    try owner.step(10);
+    const remote = owner.sessions.items[0].panes.items[0];
+    try std.testing.expectEqual(@as(isize, 3), c.write(remote.master, "go\n", 3));
+    const deadline = nowMs() + 5000;
+    while (remote.vt.shell_command.value().len == 0 and nowMs() < deadline) try owner.step(10);
+    try std.testing.expectEqualStrings("nvim", remote.vt.shell_command.value());
+
+    const second = try Fake.open(&owner, owner.identity);
+    defer second.deinit();
+    const attached = try second.reply(&owner, try second.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expectEqualStrings("nvim", attached.value.session.?.panes[0].foreground_process);
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.waitOutput(&owner, pane, "\"command\":\"nvim\"");
+    try second.sendBytes(.input, pane, "end\n");
+    try second.waitOutput(&owner, pane, "done");
+    const listed = try second.reply(&owner, try second.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("", listed.value.sessions.?[0].panes[0].foreground_process);
+
+    // A subsequent snapshot must also clear the client's old command value.
+    second.clear();
+    remote.snapshot_pending = true;
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.waitOutput(&owner, pane, "\"command\":\"\"");
 }
 
 test "foreign ghostty identity gets a VT formatter snapshot" {

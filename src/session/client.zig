@@ -132,6 +132,7 @@ pub const Client = struct {
             .version = p.version,
             .ghostty = self.identity,
             .client = "hollow",
+            .foreground_events = true,
         });
     }
 

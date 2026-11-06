@@ -300,6 +300,7 @@ pub const Mux = struct {
         term.session_before_replace = before_replace;
         if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
         if (remote.cwd.len > 0) pane.cwd = try self.allocator.dupe(u8, remote.cwd);
+        if (remote.foreground_process.len > 0) pane.foreground_process = try self.allocator.dupe(u8, remote.foreground_process);
         pane.cols = remote.cols;
         pane.rows = remote.rows;
         return pane;

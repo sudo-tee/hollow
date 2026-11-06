@@ -95,6 +95,28 @@ pub fn text(pane: *Pane) ![]u8 {
     return vt.plain(@ptrCast(pane.content.terminal.terminal), a);
 }
 
+test "session workspace hydrates the owner's foreground process on attach" {
+    var connection = try mockConnection();
+    defer freeMock(&connection);
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var controller = @import("session/controller.zig").Controller.init(a, &connection);
+    defer controller.deinit();
+    controller.session_id = try a.dupe(u8, "mock");
+    controller.generation = connection.client.generation;
+    var mux = @import("mux/mux.zig").Mux.init(a);
+    defer mux.deinit(&runtime);
+    _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, .{
+        .id = "mock",
+        .attached = true,
+        .revision = 0,
+        .panes = &.{.{ .id = 1, .cols = 80, .rows = 24, .foreground_process = "nvim" }},
+    }, null, null);
+    try std.testing.expectEqualStrings("nvim", mux.activePane().?.foreground_process.?);
+}
+
 test "session pane output is credited once on receipt and preserves user paste" {
     var connection = try mockConnection();
     defer freeMock(&connection);

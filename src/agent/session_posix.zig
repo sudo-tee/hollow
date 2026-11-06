@@ -191,6 +191,7 @@ const Client = struct {
     out: Queue = .{},
     hello: bool = false,
     binary: bool = false,
+    foreground_events: bool = false,
     session: ?*Session = null,
     /// Close once `out` is flushed.
     closing: bool = false,
@@ -440,6 +441,7 @@ pub const Owner = struct {
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
                 client.hello = true;
                 client.binary = std.mem.eql(u8, hello.value.ghostty, self.identity);
+                client.foreground_events = hello.value.foreground_events;
                 self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host, .features = &p.owner_features });
             },
             .request => {
@@ -564,6 +566,7 @@ pub const Owner = struct {
             .rows = pane.rows,
             .title = try pane.vt.title(arena),
             .cwd = try paneCwd(arena, pane),
+            .foreground_process = if (pane.status == null) pane.vt.shell_command.value() else "",
             .exit = pane.status,
             .close_on_exit = pane.close_on_exit,
         });
@@ -635,6 +638,26 @@ pub const Owner = struct {
             }
         } else |_| bytes.clearRetainingCapacity();
         self.send(client, .snapshot_end, pane.id, "");
+        if (!client.foreground_events) return;
+        // HTP events swallowed by the snapshot must not leave stale foreground
+        // state. Sync only the value, not command-start/completion side effects.
+        const state = p.stringify(self.a, .{
+            .kind = "event",
+            .name = "session_foreground_process",
+            .payload = .{ .command = if (pane.status == null) pane.vt.shell_command.value() else "" },
+        }) catch {
+            client.dead = true;
+            return;
+        };
+        defer self.a.free(state);
+        const framed = std.fmt.allocPrint(self.a, "\x1b]1337;Hollow;{s}\x1b\\", .{state}) catch {
+            client.dead = true;
+            return;
+        };
+        defer self.a.free(framed);
+        pane.unsent.append(self.a, framed) catch {
+            client.dead = true;
+        };
     }
 
     // -- sessions and panes -----------------------------------------------
@@ -698,6 +721,7 @@ pub const Owner = struct {
         pane.master = child.master;
         pane.launch = child.launch;
         pane.status = null;
+        pane.vt.shell_command = .{};
         pane.exit_sent = false;
         pane.exit_deadline = 0;
         self.saveState(s);

@@ -179,6 +179,9 @@ At startup it lists each local and WSL domain that has remembered sessions, then
 - keeps sessions whose host answers with a different host ID.
 
 Once every startup attach has finished, the session you had focused last is focused again.
+Shell integration works without client-local pane IDs in persistent panes, and the owner retains the shell-reported foreground command for reattachment.
+This keeps foreground-process-based tab labels and plugins such as smart-splits working after reconnecting.
+After updating shell integration or owner code, existing owners and shells must be restarted after their sessions end; updating the GUI alone does not replace a running owner or install hooks in an existing shell.
 
 A fresh session in the default domain is created only when the host confirmed that none of its remembered sessions survive, or when you decline every take-over.
 If the host cannot be listed, or an attach may have reached the owner, startup creates nothing and shows a warning instead, so a live session is never duplicated.

@@ -10,6 +10,7 @@ pub const Vt = struct {
     /// Query responses (DA, DSR, ...) waiting to be written to the PTY.
     replies: std.ArrayList(u8) = .empty,
     reply_failed: bool = false,
+    shell_command: @import("session_command.zig").Command = .{},
 
     /// Largest unfinished escape sequence a snapshot can carry.
     pub const continuation_max = 64 * 1024;
@@ -47,6 +48,7 @@ pub const Vt = struct {
     }
 
     pub fn write(self: *Vt, bytes: []const u8) void {
+        self.shell_command.feed(self.allocator, bytes);
         g.ghostty_terminal_vt_write(self.terminal, bytes.ptr, bytes.len);
     }
 

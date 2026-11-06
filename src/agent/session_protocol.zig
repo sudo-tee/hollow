@@ -71,6 +71,8 @@ pub const Hello = struct {
     version: u32,
     ghostty: []const u8,
     client: []const u8 = "",
+    /// Client understands the pane-bound HTP foreground sync after snapshots.
+    foreground_events: bool = false,
 };
 
 pub const SnapshotFormat = enum { binary, vt };
@@ -170,6 +172,8 @@ pub const PaneInfo = struct {
     rows: u16,
     title: []const u8 = "",
     cwd: []const u8 = "",
+    /// Shell-reported command at attachment time; absent on older owners.
+    foreground_process: []const u8 = "",
     /// Encoded exit status (see `encodeExit`) once the process has exited.
     exit: ?i32 = null,
     /// Interactive shells close on exit; commands/apps normally retain output.
