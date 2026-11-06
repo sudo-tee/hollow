@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-06 after slice 4, shell auto-close, and explicit lost-create recovery.
+Updated 2026-11-06 after explicit lost-create recovery and GUI output-read coalescing.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -46,15 +46,29 @@ Commit map (current IDs, oldest first):
 | `8a33cea` | Slice 4: sessions in the workspace switcher |
 | `494178d` | Auto-close exited interactive shells |
 | `e274c74` | Dedicated rejected-respawn notice |
+| `f93d9b8` | Explicit recovery by reserved create ID |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
 Open work, in suggested order:
 
-1. Manual GUI smoke test of slices 3 and 4 on Windows (`./launch.sh`): switcher rows, take-over confirm, kill confirm, SSH "Load sessions" row, startup restore. Not yet done by anyone; the native notice cards have never been checked visually either.
-2. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
-3. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-4. Phase 3: native Windows owner, WSL keepalive.
+1. Recheck `./bench.sh repaint` visually with the rebuilt GUI after output-read coalescing below.
+2. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
+3. Investigate any remaining output lag with pipeline measurements before changing the 64 KiB credit window; window negotiation not started.
+4. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
+5. Phase 3: native Windows owner, WSL keepalive.
+
+Repaint lag investigation (2026-11-06): user reports equal producer/DSR timings but visually 1.5–2x longer to finish with persistence.
+Confirmed a GUI-side throughput cap independent of credit-window negotiation: `SessionPty.read` returned one transport frame, while App polls at most 16 reads per pane.
+With 4 KiB frames, that limited parsing to 64 KiB per tick despite 128/384 KiB parse chunks and a 2 MiB byte limit.
+`SessionPty.read` now combines queued frames into the caller's bounded buffer without waiting, allocating, or increasing time/byte budgets.
+A concrete regression queues 262,162 bytes ending in a repaint-completion marker: before, one poll parsed only 65,536 bytes; after, it parses all bytes and reaches the marker.
+Additional coverage checks partial frame tails, credit accounting, and draining output before EOF.
+This demonstrates removal of the artificial parser cap, not a measured GUI speedup; user visual recheck is still needed.
+Owner DSR replies explain why both reported benchmark timings and shell `time` can miss GUI backlog.
+No owner/protocol changes are needed for this fix; rebuild/relaunch the GUI while keeping existing owner sessions.
+Validation passes: Linux pane/client/snapshot suites in Debug, ReleaseSafe, and ReleaseSmall; pane regressions also pass ReleaseFast.
+Windows pane/client/borrower suites with real Windows-to-WSL owner fixtures, Windows GUI cross-build, Zig formatting, and `git diff --check` pass.
 
 Lost-create recovery is now explicit and identity-based.
 `Open.prepare` reserves a random 32-hex ID before connecting; it is sent as `Request.create_id` only to owners advertising `create-id`.
@@ -223,7 +237,9 @@ Gotchas that cost time before:
   means "all parsed"; stale queued frames replayed over the snapshot (bench
   frames left on primary screen). Controller resync now drops queued output
   and releases its receive-ahead. User still reports a small residual lag:
-  likely 64 KiB window / WSL RTT; window negotiation not started.
+  initially suspected to be the 64 KiB window / WSL RTT; the later GUI adapter
+  read-boundary cap above is now confirmed, with visual recheck pending.
+  Window negotiation has not started.
 - `7beae1e`: stale layout reconciliation, quit flush and receive-ahead.
 - `496f032` discovery (slice 2): `session/query.zig` (single-use
   list/kill, never replayed) and `app/session_query.zig` (8 bounded slots,

@@ -194,6 +194,17 @@ hollow.config.set({
 
 The list is stored in `sessions.json` in the user data directory and holds at most 64 sessions.
 
+## Performance and benchmark timing
+
+Persistent sessions parse output in the host owner before forwarding it to the GUI.
+The owner answers the DSR query used by `./bench.sh repaint`, so its printed timings and shell `time` can finish before the GUI has drained the forwarded output.
+Those timings do not establish GUI display throughput or time to the final visible frame.
+
+The GUI adapter combines queued output frames within each bounded parser read, as ordinary PTYs do.
+Without combining them, the GUI's 16-read poll limit could process only 64 KiB when transport frames were 4 KiB, despite a 2 MiB byte limit.
+Combining frames removes that artificial cap without changing parser time budgets, receive-ahead bounds, or the owner's credit window.
+This is a GUI-only fix; an existing owner need not be restarted for it.
+
 ## Current limits
 
 - New ordinary panes cannot be spawned directly on a persistent domain; create a workspace instead.

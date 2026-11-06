@@ -84,24 +84,27 @@ pub const SessionPty = struct {
     pub fn read(self: *SessionPty, buffer: []u8) !usize {
         self.flushResize();
         if (buffer.len == 0) return 0;
-        while (true) {
-            if (self.current) |message| {
-                const n = @min(buffer.len, message.payload.len - self.offset);
-                @memcpy(buffer[0..n], message.payload[self.offset..][0..n]);
-                self.offset += n;
-                self.unparsed += n;
-                if (self.offset == message.payload.len) {
-                    message.deinit();
-                    self.current = null;
-                    self.offset = 0;
-                }
-                if (n > 0) return n;
+        // Transport frame boundaries are not parser work boundaries. Small
+        // PTY reads must not turn the GUI's bounded read-loop count into a
+        // much smaller byte quota than an ordinary PTY's contiguous buffer.
+        var copied: usize = 0;
+        while (copied < buffer.len) {
+            if (self.current == null) self.current = self.output.pop();
+            const message = self.current orelse break;
+            const n = @min(buffer.len - copied, message.payload.len - self.offset);
+            @memcpy(buffer[copied..][0..n], message.payload[self.offset..][0..n]);
+            self.offset += n;
+            copied += n;
+            if (self.offset == message.payload.len) {
+                message.deinit();
+                self.current = null;
+                self.offset = 0;
             }
-            self.current = self.output.pop();
-            if (self.current != null) continue;
-            if (!self.isAlive()) return error.EndOfStream;
-            return 0;
         }
+        self.unparsed += copied;
+        if (copied > 0) return copied;
+        if (!self.isAlive()) return error.EndOfStream;
+        return 0;
     }
 
     /// Return credit after the bytes have passed through the terminal parser.

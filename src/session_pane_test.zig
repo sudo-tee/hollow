@@ -129,6 +129,67 @@ test "session pane output is credited once on receipt and preserves user paste" 
     try std.testing.expect(std.mem.indexOf(u8, output, "live text") != null);
 }
 
+test "session pane repaint backlog drains by byte quota rather than output frame count" {
+    var connection = try mockConnection();
+    defer freeMock(&connection);
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    var pane = Pane.init(a);
+    defer pane.deinit(&runtime);
+    try pane.content.terminal.bootstrapSession(&pane, &runtime, callbacks(), cfg, SessionPty.init(a, &connection, 1, connection.client.generation, null));
+    // Linux PTY reads frequently produce 4 KiB frames, far smaller than the
+    // GUI's 128/384 KiB parse chunks. Transport boundaries are not parse work.
+    const chunk: [4096]u8 = @splat('x');
+    const chunks = 64;
+    for (0..chunks) |_| {
+        try deliver(&connection, &pane, &chunk);
+        connection.client.nextWrite().?.deinit();
+    }
+    try deliver(&connection, &pane, "\x1b[HREPAINT-DONE\x1b[J");
+    connection.client.nextWrite().?.deinit();
+    const expected = chunks * chunk.len + "\x1b[HREPAINT-DONE\x1b[J".len;
+    const read = try pane.content.terminal.pollPty(&pane, &runtime, 16, 512 * 1024, std.time.ns_per_s, 128 * 1024, false);
+    try std.testing.expectEqual(expected, read);
+    try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
+    const output = try text(&pane);
+    defer a.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "REPAINT-DONE") != null);
+}
+
+test "session pane coalesced reads preserve frame tails credit and output before EOF" {
+    var connection = try mockConnection();
+    defer freeMock(&connection);
+    var pty = SessionPty.init(a, &connection, 1, connection.client.generation, null);
+    defer pty.deinit();
+    for ([_][]const u8{ "abc", "defgh", "ij" }) |bytes| {
+        try connection.client.receive(p.header(.output, 1, bytes.len), bytes);
+        try pty.offerOutput(connection.poll().?);
+    }
+    const grant = connection.client.nextWrite().?;
+    defer grant.deinit();
+    try std.testing.expectEqual(@as(u32, 10), try p.decodeCredit(grant.payload));
+    var first: [5]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, first.len), try pty.read(&first));
+    try std.testing.expectEqualStrings("abcde", &first);
+    try std.testing.expectEqual(@as(usize, 5), pty.pendingOutputBytes());
+    try std.testing.expectEqual(@as(usize, 5), pty.unparsed);
+    try pty.parsed(3);
+    try std.testing.expectEqual(@as(usize, 7), connection.client.buffered);
+    pty.setExit(0);
+    var last: [8]u8 = undefined;
+    const count = try pty.read(&last);
+    try std.testing.expectEqual(@as(usize, 5), count);
+    try std.testing.expectEqualStrings("fghij", last[0..count]);
+    try std.testing.expectEqual(@as(usize, 7), pty.unparsed);
+    try std.testing.expectEqual(@as(usize, 0), pty.pendingOutputBytes());
+    try pty.parsed(7);
+    try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
+    try std.testing.expect(connection.client.nextWrite() == null);
+    try std.testing.expectError(error.EndOfStream, pty.read(&last));
+}
+
 test "session pane adapter partial reads do not return premature or duplicate credit" {
     var connection = try mockConnection();
     defer freeMock(&connection);
