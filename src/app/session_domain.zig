@@ -277,6 +277,7 @@ test "session borrowers domain create and explicit attach preserve interactive s
         }
     }
     var session_id: []const u8 = undefined;
+    var host_id: []const u8 = undefined;
     var split_ratio: f32 = undefined;
     {
         const app = try testApp(a, connector.items, path);
@@ -299,6 +300,8 @@ test "session borrowers domain create and explicit attach preserve interactive s
             try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
         }
         session_id = try temp.dupe(u8, app.activeWorkspace().?.session_controller.?.session_id);
+        host_id = try temp.dupe(u8, app.activeWorkspace().?.session_controller.?.host);
+        try std.testing.expectEqual(@as(usize, 32), host_id.len);
         try std.testing.expect(app.activePane().?.content.terminal.pty.?.isAlive());
     }
     const app = try testApp(a, connector.items, path);
@@ -307,6 +310,8 @@ test "session borrowers domain create and explicit attach preserve interactive s
     attach(app, session_id, "persistent-test", null, -1);
     try testWaitText(app, "split-marker");
     const restored = app.activeWorkspace().?;
+    // A new connector to the same owner reports the same persisted host.
+    try std.testing.expectEqualStrings(host_id, restored.session_controller.?.host);
     try std.testing.expectEqual(@as(usize, 2), restored.tabs.items.len);
     try std.testing.expectEqual(@as(usize, 2), restored.tabs.items[1].panes.items.len);
     try std.testing.expectEqual(split_ratio, restored.tabs.items[1].root_split.?.ratio);
@@ -334,6 +339,7 @@ test "session borrowers domain create and explicit attach preserve interactive s
     defer list_response.deinit(a);
     const list_result = list_response.payload.?.object.get("result").?.object;
     try std.testing.expectEqualStrings("persistent-test", list_result.get("domain").?.string);
+    try std.testing.expectEqualStrings(host_id, list_result.get("host").?.string);
     var found = false;
     for (list_result.get("sessions").?.array.items) |entry| {
         if (!std.mem.eql(u8, entry.object.get("id").?.string, session_id)) continue;

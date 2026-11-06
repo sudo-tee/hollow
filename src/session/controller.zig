@@ -38,6 +38,8 @@ pub const Controller = struct {
     bindings: [core.max_panes]?Binding = @splat(null),
     pending: ?transport.Message = null,
     session_id: []u8 = &.{},
+    /// Owner host ID at publication; empty when the owner sent none.
+    host: []u8 = &.{},
     generation: u64 = 0,
     revision: u64 = 0,
     snapshot_bytes: usize = 0,
@@ -66,6 +68,7 @@ pub const Controller = struct {
         self.clearViewLinks();
         if (self.pending) |message| message.deinit();
         self.allocator.free(self.session_id);
+        self.allocator.free(self.host);
         self.connection.close();
         self.* = Controller.init(self.allocator, self.connection);
     }

@@ -198,6 +198,9 @@ pub const Owner = struct {
     listen_fd: c_int = -1,
     signal_fd: c_int = -1,
     state_dir: ?[:0]u8 = null,
+    /// Sent in every welcome; empty when no state dir could be used.
+    host_buf: [32]u8 = undefined,
+    host: []const u8 = "",
     /// Socket and lock paths to keep fresh; set by `serve`.
     touch_paths: []const [:0]const u8 = &.{},
     touched: i64 = 0,
@@ -427,7 +430,7 @@ pub const Owner = struct {
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
                 client.hello = true;
                 client.binary = std.mem.eql(u8, hello.value.ghostty, self.identity);
-                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid() });
+                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host });
             },
             .request => {
                 const parsed = try p.parse(p.Request, self.a, payload);
@@ -888,6 +891,46 @@ pub const Owner = struct {
         }
     }
 
+    /// Reads `<dir>/host-id`, creating it once. Runs under the owner lock, so
+    /// no other owner races the creation. A host ID that cannot be persisted
+    /// is not used: clients would mistake every restart for a new host.
+    pub fn loadHost(self: *Owner, dir: []const u8) void {
+        var path_buf: [4096]u8 = undefined;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/host-id", .{dir}, 0) catch return;
+        const fd = c.open(path.ptr, c.O_RDONLY | c.O_CLOEXEC | c.O_NOFOLLOW);
+        if (fd >= 0) {
+            defer _ = c.close(fd);
+            var buf: [self.host_buf.len + 1]u8 = undefined;
+            const n = c.read(fd, &buf, buf.len);
+            if (n == self.host_buf.len) {
+                const bytes = buf[0..self.host_buf.len];
+                const valid = for (bytes) |byte| {
+                    if (!std.ascii.isHex(byte)) break false;
+                } else true;
+                if (valid) {
+                    @memcpy(&self.host_buf, bytes);
+                    self.host = &self.host_buf;
+                    return;
+                }
+            }
+        }
+        var random: [16]u8 = undefined;
+        fillRandom(&random) catch return;
+        const id = std.fmt.bytesToHex(random, .lower);
+        var tmp_buf: [4096]u8 = undefined;
+        const tmp = std.fmt.bufPrintSentinel(&tmp_buf, "{s}/host-id.tmp", .{dir}, 0) catch return;
+        const out = c.open(tmp.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC | c.O_CLOEXEC | c.O_NOFOLLOW, @as(c_uint, 0o600));
+        if (out < 0) return;
+        const written = c.write(out, &id, id.len);
+        const closed = c.close(out);
+        if (written != id.len or closed != 0 or std.c.rename(tmp.ptr, path.ptr) != 0) {
+            _ = c.unlink(tmp.ptr);
+            return;
+        }
+        self.host_buf = id;
+        self.host = &self.host_buf;
+    }
+
     /// Metadata for crash recovery: layout plus per-pane spawn, title, cwd,
     /// exit. Written atomically on every structural change.
     fn saveState(self: *Owner, s: *Session) void {
@@ -982,6 +1025,7 @@ pub fn serve(a: std.mem.Allocator, io: std.Io) !void {
     owner.listen_fd = listen_fd;
     owner.signal_fd = signal_fd;
     owner.state_dir = stateDir(a) catch null;
+    if (owner.state_dir) |dir| owner.loadHost(dir);
     const touch = [_][:0]const u8{ paths.socket, paths.lock };
     owner.touch_paths = &touch;
     owner.touched = nowMs();

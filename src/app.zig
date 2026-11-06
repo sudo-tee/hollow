@@ -967,6 +967,10 @@ pub const App = struct {
             .{ .string = try self.allocator.dupe(u8, controller.session_id) }
         else
             .null);
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_host"), if (workspace.session_controller) |controller|
+            if (controller.host.len > 0) .{ .string = try self.allocator.dupe(u8, controller.host) } else .null
+        else
+            .null);
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
@@ -1239,6 +1243,7 @@ pub const App = struct {
         lua.registerAppCallbacks(.{
             .attach_session = lua_callbacks.luaAttachSessionCallback,
             .get_workspace_session_id = lua_callbacks.luaGetWorkspaceSessionIdCallback,
+            .get_workspace_session_host = lua_callbacks.luaGetWorkspaceSessionHostCallback,
             .job_request = lua_callbacks.luaJobRequestCallback,
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,

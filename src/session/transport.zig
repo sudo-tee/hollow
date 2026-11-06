@@ -104,6 +104,15 @@ pub const Connection = struct {
         };
     }
 
+    /// Owner host ID, copied out; empty until ready or from older owners.
+    pub fn host(self: *Connection, out: *[p.max_host_len]u8) []const u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const value = self.client.host();
+        @memcpy(out[0..value.len], value);
+        return out[0..value.len];
+    }
+
     pub fn attachmentGeneration(self: *Connection) u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

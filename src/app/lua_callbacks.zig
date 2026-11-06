@@ -639,10 +639,21 @@ pub fn luaGetWorkspaceSessionIdCallback(app_ptr: *anyopaque, index: usize, out_b
     const mux = if (app.mux) |*mux| mux else return "";
     if (index >= mux.workspaces.items.len) return "";
     const controller = mux.workspaces.items[index].session_controller orelse return "";
-    const session_id = controller.session_id;
-    if (session_id.len > out_buf.len) return "";
-    @memcpy(out_buf[0..session_id.len], session_id);
-    return out_buf[0..session_id.len];
+    return copyOut(controller.session_id, out_buf);
+}
+
+pub fn luaGetWorkspaceSessionHostCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*mux| mux else return "";
+    if (index >= mux.workspaces.items.len) return "";
+    const controller = mux.workspaces.items[index].session_controller orelse return "";
+    return copyOut(controller.host, out_buf);
+}
+
+fn copyOut(value: []const u8, out_buf: []u8) []const u8 {
+    if (value.len > out_buf.len) return "";
+    @memcpy(out_buf[0..value.len], value);
+    return out_buf[0..value.len];
 }
 
 pub fn luaGetWorkspaceIdCallback(app_ptr: *anyopaque, index: usize) usize {

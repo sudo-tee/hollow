@@ -19,6 +19,7 @@ An omitted domain inherits the active pane's domain, then the configured default
 ```json
 {
   "domain": "persistent_test",
+  "host": "5d0e…",
   "sessions": [
     {
       "id": "8f3c…",
@@ -34,14 +35,16 @@ An omitted domain inherits the active pane's domain, then the configured default
 }
 ```
 
+`host` is the owner's stable host ID, persisted in its state directory.
+It stays the same across owner restarts and is absent from owners that predate it.
 `attached` means some client is attached, possibly another GUI.
-`open` means a workspace in this GUI shows the session.
+`open` means a workspace in this GUI shows the session on the same host.
 `name` appears when the saved layout records a workspace name.
 An exited pane reports `exited: true` and its encoded `exit_status`.
 
 ## Kill
 
-`session kill <id>` ends the session and every process in it, and prints `{ "domain", "session" }`.
+`session kill <id>` ends the session and every process in it, and prints `{ "domain", "host", "session" }`.
 It is never retried.
 When the reply is lost, the command fails with outcome `uncertain` and prints the failure details on stdout.
 Run `session list` to find out whether the session is gone.

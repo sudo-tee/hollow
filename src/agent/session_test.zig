@@ -205,6 +205,39 @@ test "attach after disconnect restores the screen from a binary snapshot and tak
     try third.waitOutput(&owner, pane, "got-abc");
 }
 
+test "host id is created once, persisted, and sent in every welcome" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(dir);
+
+    var first = Owner.init(a, std.testing.io);
+    defer first.deinit();
+    try std.testing.expectEqualStrings("", first.host);
+    first.loadHost(dir);
+    try std.testing.expectEqual(@as(usize, 32), first.host.len);
+    try std.testing.expect(p.validHost(first.host));
+
+    var second = Owner.init(a, std.testing.io);
+    defer second.deinit();
+    second.loadHost(dir);
+    try std.testing.expectEqualStrings(first.host, second.host);
+
+    const client = try Fake.open(&second, second.identity);
+    defer client.deinit();
+    const welcome = try p.parse(p.Welcome, a, client.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expectEqualStrings(second.host, welcome.value.host);
+
+    // A corrupt file is replaced rather than trusted.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "host-id", .data = "not-a-host-id!" });
+    var third = Owner.init(a, std.testing.io);
+    defer third.deinit();
+    third.loadHost(dir);
+    try std.testing.expect(p.validHost(third.host));
+    try std.testing.expect(!std.mem.eql(u8, first.host, third.host));
+}
+
 test "foreign ghostty identity gets a VT formatter snapshot" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();

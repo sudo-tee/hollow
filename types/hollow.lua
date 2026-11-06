@@ -600,6 +600,7 @@
 ---@field name string
 ---@field domain? string
 ---@field session_id? string Host-owned persistent session ID; absent for ordinary workspaces
+---@field session_host? string Stable owner host ID of a persistent workspace; absent from older owners
 ---@field is_active boolean
 
 ---@class HollowMuxWorkspace: HollowWorkspace
@@ -1827,6 +1828,7 @@ function term.attach_session(session_id, opts) end
 ---@class HollowSessionQueryResult
 ---@field success boolean
 ---@field domain? string Resolved domain
+---@field host? string Owner host ID on success, when the owner reports one
 ---@field sessions? HollowSessionInfo[] `list_sessions` success
 ---@field session? string `kill_session` target
 ---@field status? string Failure code, e.g. "session_query_failed", "invalid_domain", "resource_exhausted"
@@ -3223,6 +3225,7 @@ function plugins.sync() end
 ---@field set_workspace_default_cwd fun(cwd: string)
 ---@field get_workspace_name fun(index: integer): string
 ---@field get_workspace_session_id fun(index: integer): string|nil
+---@field get_workspace_session_host fun(index: integer): string|nil
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)

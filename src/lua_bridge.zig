@@ -212,6 +212,7 @@ pub const AppCallbacks = struct {
     get_workspace_id: *const fn (app: *anyopaque, index: usize) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
     get_workspace_session_id: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
+    get_workspace_session_host: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
     get_workspace_tab_count: *const fn (app: *anyopaque, workspace_index: usize) usize,
     get_workspace_tab_id_at: *const fn (app: *anyopaque, workspace_index: usize, tab_index: usize) usize,
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -2512,6 +2513,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_session_id, 1);
         api.set_field(self.state, -2, "get_workspace_session_id");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_session_host, 1);
+        api.set_field(self.state, -2, "get_workspace_session_host");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_tab_count, 1);
@@ -6538,11 +6542,19 @@ fn l_get_workspace_name(state: *State) callconv(.c) c_int {
 }
 
 fn l_get_workspace_session_id(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_id");
+}
+
+fn l_get_workspace_session_host(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_host");
+}
+
+fn workspaceSessionString(state: *State, comptime field: []const u8) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     blk: {
         const cbs = ctx.app_callbacks orelse break :blk;
-        const get = cbs.get_workspace_session_id orelse break :blk;
+        const get = @field(cbs, field) orelse break :blk;
         const index = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number) api.to_number(state, 1) else 0;
         if (!std.math.isFinite(index) or index < 0 or index >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) break :blk;
         var out_buf: [128]u8 = undefined;

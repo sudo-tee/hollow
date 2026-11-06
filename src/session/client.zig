@@ -97,6 +97,9 @@ pub const Client = struct {
     ready: bool = false,
     ended: bool = false,
     format: ?p.SnapshotFormat = null,
+    /// Owner host ID from the welcome; empty from older or invalid owners.
+    host_buf: [p.max_host_len]u8 = undefined,
+    host_len: u8 = 0,
     generation: u64 = 0,
     next_id: u64 = 1,
     pending: [max_requests]?Pending = @splat(null),
@@ -113,6 +116,10 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.outgoing.deinit(self.allocator);
         self.incoming.deinit(self.allocator);
+    }
+
+    pub fn host(self: *const Client) []const u8 {
+        return self.host_buf[0..self.host_len];
     }
 
     /// Always sent first, independently of queued requests.
@@ -385,6 +392,11 @@ pub const Client = struct {
                 if (w.snapshot == .binary and !std.mem.eql(u8, w.ghostty, self.identity)) return error.IdentityMismatch;
                 self.ready = true;
                 self.format = w.snapshot;
+                // An unusable host ID only disables host matching.
+                if (p.validHost(w.host)) {
+                    @memcpy(self.host_buf[0..w.host.len], w.host);
+                    self.host_len = @intCast(w.host.len);
+                }
             },
             .reply => {
                 const reply = try p.parse(p.Reply, self.allocator, bytes);

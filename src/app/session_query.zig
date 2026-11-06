@@ -224,8 +224,11 @@ fn successText(app: *App, pending: *const Pending, reply: p.Reply) ![]u8 {
     defer arena.deinit();
     const a = arena.allocator();
     const options: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
+    var host_buf: [p.max_host_len]u8 = undefined;
+    const host_value = pending.connection.?.host(&host_buf);
+    const host: ?[]const u8 = if (host_value.len > 0) host_value else null;
     switch (pending.query.op) {
-        .kill => return std.json.Stringify.valueAlloc(app.allocator, .{ .domain = pending.domain, .session = pending.query.session.? }, options),
+        .kill => return std.json.Stringify.valueAlloc(app.allocator, .{ .domain = pending.domain, .host = host, .session = pending.query.session.? }, options),
         .list => {
             const sessions = reply.sessions orelse return error.InvalidReply;
             const out = try a.alloc(SessionResult, sessions.len);
@@ -243,13 +246,13 @@ fn successText(app: *App, pending: *const Pending, reply: p.Reply) ![]u8 {
                 entry.* = .{
                     .id = info.id,
                     .attached = info.attached,
-                    .open = isOpen(app, info.id),
+                    .open = isOpen(app, host_value, info.id),
                     .revision = info.revision,
                     .name = try layout.peekName(a, info.layout),
                     .panes = panes,
                 };
             }
-            return std.json.Stringify.valueAlloc(app.allocator, .{ .domain = pending.domain, .sessions = out }, options);
+            return std.json.Stringify.valueAlloc(app.allocator, .{ .domain = pending.domain, .host = host, .sessions = out }, options);
         },
     }
 }
@@ -264,14 +267,28 @@ fn failureText(a: std.mem.Allocator, pending: *const Pending, failure: querying.
     }, .{ .emit_null_optional_fields = false });
 }
 
-/// A workspace in this GUI views the session.
-fn isOpen(app: *App, session_id: []const u8) bool {
+/// A workspace in this GUI views the session. Host IDs are compared only
+/// when both sides have one; older owners send none.
+fn isOpen(app: *App, host: []const u8, session_id: []const u8) bool {
     const mux = if (app.mux) |*value| value else return false;
     for (mux.workspaces.items) |workspace| {
         const controller = workspace.session_controller orelse continue;
-        if (std.mem.eql(u8, controller.session_id, session_id)) return true;
+        if (sameSession(controller.host, controller.session_id, host, session_id)) return true;
     }
     return false;
+}
+
+fn sameSession(host_a: []const u8, session_a: []const u8, host_b: []const u8, session_b: []const u8) bool {
+    if (!std.mem.eql(u8, session_a, session_b)) return false;
+    return host_a.len == 0 or host_b.len == 0 or std.mem.eql(u8, host_a, host_b);
+}
+
+test "session borrowers query open match requires the same host when both are known" {
+    try std.testing.expect(sameSession("h1", "s", "h1", "s"));
+    try std.testing.expect(!sameSession("h1", "s", "h2", "s"));
+    try std.testing.expect(sameSession("", "s", "h2", "s"));
+    try std.testing.expect(sameSession("h1", "s", "", "s"));
+    try std.testing.expect(!sameSession("h1", "s", "h1", "t"));
 }
 
 pub fn shutdown(app: *App) void {
@@ -298,7 +315,7 @@ fn mockConnection(a: std.mem.Allocator) !*transport.Connection {
         connection.client.deinit();
         connection.arena.deinit();
     }
-    const welcome = try p.stringify(a, p.Welcome{ .ghostty = "test", .snapshot = .binary, .owner_pid = 1 });
+    const welcome = try p.stringify(a, p.Welcome{ .ghostty = "test", .snapshot = .binary, .owner_pid = 1, .host = "host-1" });
     defer a.free(welcome);
     try connection.client.receive(p.header(.welcome, 0, welcome.len), welcome);
     return connection;
@@ -364,6 +381,7 @@ test "session borrowers query list result is claimed once and marks open workspa
     defer done.deinit(a);
     const result = done.payload.?.object.get("result").?.object;
     try std.testing.expectEqualStrings("guest", result.get("domain").?.string);
+    try std.testing.expectEqualStrings("host-1", result.get("host").?.string);
     const session = result.get("sessions").?.array.items[0].object;
     try std.testing.expectEqualStrings("s1", session.get("id").?.string);
     try std.testing.expectEqualStrings("work", session.get("name").?.string);

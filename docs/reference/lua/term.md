@@ -393,6 +393,9 @@ hollow.term.set_theme(name)             -- switch active theme
 For a domain with `persist = true`, `new_workspace` admits asynchronous owner creation instead of spawning an ordinary pane.
 Its completion callback runs after the workspace is published, not when the request is merely queued.
 `workspace.session_id` is the host-owned ID for a persistent workspace and is absent for an ordinary workspace.
+`workspace.session_host` is the owner's stable host ID, kept in the owner's state directory across restarts.
+It is absent for ordinary workspaces and for owners that predate host IDs.
+Together, `session_host` and `session_id` identify one session across domains that reach the same host.
 
 `attach_session(session_id, opts)` accepts a nonempty ID and optional `{ domain, name, on_complete }` table.
 The domain must have persistence enabled and resolve to the host that owns the session.

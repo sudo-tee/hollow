@@ -563,9 +563,15 @@ Owner-backed tabs and splits implemented:
   Command API/CLI: `session_list`, `session_kill`, `session_result`,
   `session_attach`; `hollow-cli session list|kill|attach`.
 
+- Host identity: the owner creates `<state dir>/host-id` (32 hex chars, 0600)
+  once under its lock and sends it as optional `Welcome.host`. A host ID that
+  cannot be persisted is not sent. Clients ignore invalid IDs. Controllers keep
+  the host from publication; `workspace.session_host`, list/kill results and
+  `open` matching (session ID plus host when both are known) use it.
+
 Next implementation slices:
-1. Actionable dead/missing-session UX and explicit host identity storage for
-   automatic reattachment.
+1. Actionable dead/missing-session UX (dead-pane placeholder, owner respawn
+   gated by a welcome capability, attach failures carrying error details).
 2. Remember attached host/session IDs, auto-reattach local/WSL sessions and
    lazy SSH restore; missing sessions stay placeholders.
 

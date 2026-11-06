@@ -47,6 +47,21 @@ test "session client holds requests until welcome and records ambiguous submissi
     try std.testing.expectError(error.Disconnected, client.request(.{ .id = 0, .op = .create }));
 }
 
+test "session client records a valid welcome host and ignores an invalid one" {
+    var client: core.Client = .{ .allocator = a, .identity = "test" };
+    defer client.deinit();
+    try receive(&client, .welcome, p.Welcome{ .ghostty = "test", .snapshot = .binary, .owner_pid = 1, .host = "0123456789abcdef0123456789abcdef" });
+    client.poll().?.deinit();
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", client.host());
+
+    var other: core.Client = .{ .allocator = a, .identity = "test" };
+    defer other.deinit();
+    try receive(&other, .welcome, p.Welcome{ .ghostty = "test", .snapshot = .binary, .owner_pid = 1, .host = "bad host\x1b" });
+    other.poll().?.deinit();
+    try std.testing.expect(other.ready);
+    try std.testing.expectEqualStrings("", other.host());
+}
+
 test "session client validates welcome format direction and reply correlation" {
     var client: core.Client = .{ .allocator = a, .identity = "test" };
     defer client.deinit();

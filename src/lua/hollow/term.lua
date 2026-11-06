@@ -239,6 +239,9 @@ function M.setup(hollow, host_api)
       domain = pane and pane.domain or nil,
       session_id = host_api.get_workspace_session_id and host_api.get_workspace_session_id(index)
         or nil,
+      session_host = host_api.get_workspace_session_host and host_api.get_workspace_session_host(
+        index
+      ) or nil,
       is_active = is_active,
     }
   end

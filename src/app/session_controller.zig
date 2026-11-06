@@ -66,9 +66,12 @@ pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info
     controller.* = SessionController.init(self.allocator, connection);
     errdefer {
         self.allocator.free(controller.session_id);
+        self.allocator.free(controller.host);
         self.allocator.destroy(controller);
     }
     controller.session_id = try self.allocator.dupe(u8, info.id);
+    var host_buf: [SessionProtocol.max_host_len]u8 = undefined;
+    controller.host = try self.allocator.dupe(u8, connection.host(&host_buf));
     controller.generation = connection.attachmentGeneration();
     controller.revision = info.revision;
 

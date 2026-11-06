@@ -112,6 +112,18 @@ describe("term test suite", function()
       env.host_api.get_workspace_session_id = old
     end)
 
+    it("exposes the owner host id of persistent workspaces", function()
+      local old = env.host_api.get_workspace_session_host
+      env.host_api.get_workspace_session_host = function(index)
+        harness.assert_equal(index, 0, "host lookup uses native workspace index")
+        return "host-abc"
+      end
+      harness.assert_equal(hollow.term.current_workspace().session_host, "host-abc")
+      env.host_api.get_workspace_session_host = nil
+      harness.assert_equal(hollow.term.current_workspace().session_host, nil)
+      env.host_api.get_workspace_session_host = old
+    end)
+
     it("snapshots workspace state", function()
       harness.assert_equal(
         hollow.term.current_workspace().name,

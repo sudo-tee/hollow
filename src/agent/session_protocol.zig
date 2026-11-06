@@ -81,7 +81,22 @@ pub const Welcome = struct {
     ghostty: []const u8,
     snapshot: SnapshotFormat,
     owner_pid: i64,
+    /// Stable identity of this owner's state (user + machine), persisted in
+    /// its state dir. Empty from owners that predate it.
+    host: []const u8 = "",
 };
+
+pub const max_host_len = 64;
+
+/// Host IDs are opaque ASCII tokens, so they are safe to log and store.
+pub fn validHost(host: []const u8) bool {
+    if (host.len == 0 or host.len > max_host_len) return false;
+    for (host) |byte| switch (byte) {
+        '0'...'9', 'a'...'z', 'A'...'Z', '-', '_' => {},
+        else => return false,
+    };
+    return true;
+}
 
 pub const Op = enum {
     /// List sessions.
@@ -238,6 +253,17 @@ test "control JSON parses with defaults and ignores unknown fields" {
     defer create.deinit();
     try std.testing.expectEqual(@as(u16, 120), create.value.spawn.?.cols);
     try std.testing.expectError(error.InvalidEnumTag, parse(Request, a, "{\"id\":5,\"op\":\"nope\"}"));
+}
+
+test "host ids are bounded opaque tokens and optional in welcome" {
+    try std.testing.expect(validHost("0123abcdef-_Z"));
+    try std.testing.expect(!validHost(""));
+    try std.testing.expect(!validHost("a b"));
+    try std.testing.expect(!validHost("a\x00"));
+    try std.testing.expect(!validHost(&(@as([max_host_len + 1]u8, @splat('x')))));
+    const old = try parse(Welcome, std.testing.allocator, "{\"ghostty\":\"g\",\"snapshot\":\"vt\",\"owner_pid\":1}");
+    defer old.deinit();
+    try std.testing.expectEqualStrings("", old.value.host);
 }
 
 test "credit rejects zero and oversized grants" {

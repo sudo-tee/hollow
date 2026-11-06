@@ -157,8 +157,14 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   `wait_revision` over socket, else 50 ms polls, for max(--timeout, 10 s).
   Real-owner Windows->WSL App test lists the reattached session (open,
   attached, saved name, three panes) and gets `rejected` for an unknown kill.
-  Not yet done: actionable dead/missing-session UX, host identity storage,
-  a GUI picker; manual GUI smoke of the CLI against a running instance.
+  Not yet done: actionable dead/missing-session UX, a GUI picker; manual GUI
+  smoke of the CLI against a running instance.
+- Host identity: owner `loadHost` persists `<state dir>/host-id` and sends
+  optional `Welcome.host` (old clients ignore it, old owners send none).
+  `Client.host()`/`Connection.host(buf)`, `Controller.host`,
+  `workspace.session_host`, list/kill `host`, host-aware `open`. Real-owner
+  App test checks the host survives reattach and matches the list result.
+  Remembering attached sessions client-side is slice 3 (Lua policy).
 
 ## Architecture / invariants
 
