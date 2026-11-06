@@ -5610,6 +5610,9 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         _ = updateBarHover(app, g_mouse_x, g_mouse_y, c.sapp_widthf(), event.modifiers);
     }
 
+    // Windows closes the window on Alt+F4; the pane must not also get F4.
+    if (builtin.os.tag == .windows and isWindowCloseChord(key, mods)) return;
+
     if (quick_select.inputActive(app)) {
         if (key == .escape) {
             enqueueQuickSelectInput(app, .cancel);
@@ -6615,6 +6618,10 @@ fn modifierBitForKey(key: ghostty.Key) u32 {
     };
 }
 
+fn isWindowCloseChord(key: ghostty.Key, mods: u32) bool {
+    return key == .f4 and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0;
+}
+
 /// Strips the synthetic Ctrl+Alt bits that Windows reports while AltGr is
 /// held (and the Alt bit some X11 layouts put on ISO_Level3_Shift), so
 /// AltGr-produced characters are delivered as plain text.  Only applies
@@ -6828,6 +6835,13 @@ fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) vo
     c.sgl_v2f(x, y + h);
     c.sgl_end();
     c.sgl_load_default_pipeline();
+}
+
+test "Alt+F4 is the window close chord, not pane input" {
+    try std.testing.expect(isWindowCloseChord(.f4, ghostty.Mods.alt));
+    try std.testing.expect(isWindowCloseChord(.f4, ghostty.Mods.alt | ghostty.Mods.shift));
+    try std.testing.expect(!isWindowCloseChord(.f4, ghostty.Mods.none));
+    try std.testing.expect(!isWindowCloseChord(.f4, ghostty.Mods.ctrl | ghostty.Mods.alt));
 }
 
 test "altGrAdjustedModsFor strips synthetic ctrl+alt only while right alt is down" {
