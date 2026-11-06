@@ -1,29 +1,79 @@
 # Persistent sessions handoff
 
-Updated 2026-11-06. Working branch: `feat/persistent-sessions`. Nothing pushed.
+Updated 2026-11-06 after slice 4.
+Working branch: `feat/persistent-sessions`, 20 commits ahead of `main`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
-Earlier commit IDs below predate the user's rebase onto main; use `git log` for current IDs.
 
-## Current checkpoint
+## Start here
+
+Feature state: persistence is opt-in per domain (`domains.<name>.persist = true`) and works for Linux owners locally, in WSL, and over SSH.
+A user can create a persistent workspace, close the GUI, and get the same processes, screens, tabs, and splits back.
+Startup reattaches remembered sessions automatically (slice 3).
+The workspace switcher lists, attaches, kills, and creates sessions (slice 4).
+`hollow-cli session list|attach|kill` and Lua `hollow.term.list_sessions|kill_session|attach_session|restore_sessions` exist.
+
+Hard rules from the user and project:
+
+- Never touch, stage, or commit the dirty submodules `third_party/{lua-zluajit,luajit-upstream,nightwatch,sokol}`; stage paths explicitly.
+- Never replay an uncertain create, spawn, kill, or respawn; report `uncertain` and let the user re-list.
+- Bound every queue, payload, and job; overflow is `error.ResourceExhausted`.
+- "Commit and continue": commit each finished sub-slice with tests, Conventional Commits scoped `feat(sessions): …`.
+- Ship Lua API changes with `types/hollow.lua` and docs (`docs/reference/lua/term.md`, `events.md`, `workspace.md`, `docs/reference/actions.md`, the guide).
+- Refresh this handoff and the plan's "Next implementation slices" at milestones.
+- Workspace and discovery policy stays in Lua; Zig provides mechanisms.
+
+Commit map (current IDs, oldest first):
+
+| Commit | Content |
+| --- | --- |
+| `931d872` | Linux owner (`session serve`) and connect bridge |
+| `9e3d9f9` | Session socket kept out of `XDG_RUNTIME_DIR` |
+| `f28f4ae` | GUI snapshot decoder |
+| `b3e7413` | Asynchronous client transport |
+| `d771ec3` | Session-backed panes and READY handoff |
+| `ca6e05b` | Workspace controllers and acknowledged closes |
+| `1961dfc` | Versioned layout codec and revision-checked saves |
+| `41fb661` | Async create/attach admission |
+| `65158da` | Native status notices, startup-command targeting |
+| `cef7219` | Opt-in domain creation, explicit attach |
+| `8538661` | Owner-backed tabs/splits, layout autosave |
+| `7beae1e` | Stale layout reconciliation, quit flush, receive-ahead |
+| `496f032` | Slice 2: list/kill from Lua and CLI |
+| `b8f9d39` | Persistent owner host identity |
+| `e611a81` | Respawn exited panes, native dead-pane footer |
+| `82cab71` | Slice 3: remembered sessions and startup restore |
+| `8a33cea` | Slice 4: sessions in the workspace switcher |
+
+Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
+
+Open work, in suggested order:
+
+1. Manual GUI smoke test of slices 3 and 4 on Windows (`./launch.sh`): switcher rows, take-over confirm, kill confirm, SSH "Load sessions" row, startup restore. Not yet done by anyone; the native notice cards have never been checked visually either.
+2. Dedicated notice wording for a rejected respawn (currently reuses "Session open failed: …").
+3. Recovery of a lost create reply (an uncertain create currently just warns).
+4. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
+5. Residual output lag in persistent panes: likely the fixed 64 KiB in-flight window over WSL; window negotiation not started.
+6. Phase 3: native Windows owner, WSL keepalive.
+
+Gotchas that cost time before:
+
+- Native Linux `zig build test` cannot link GUI deps (X11/GL/ALSA missing); use `-Dtarget=x86_64-windows-gnu` or the headless steps in Validation.
+- App tests with a Lua runtime must use `Runtime.initForTests`; `Runtime.init` starts platform discovery and crashed intermittently ("switch on corrupt value"). Any `std.log.err` in a test fails it.
+- The 7 Windows `session_transport_test` FileNotFound failures are expected; judge by "Build Summary".
+- Lua tests emit built-in events with `hollow._emit_builtin_event(name, payload)`; `hollow.events.emit` rejects built-ins. `harness.boot()` clears `package.loaded`, so module state resets per boot.
+- When stubbing `hollow.ui.select.open` in switcher tests, call the captured `opts.on_mount()` or item refreshes never fire.
+- `stylua --check src/lua` reports pre-existing diffs; format only the files you changed, and never reformat `src/lua/hollow/ui/workspace/source.lua` wholesale.
+- `npx markdownlint` is unavailable locally; keep docs one sentence per line by hand.
+- `docs/reference/lua/workspace.md` says the default close key is `<C-w>` but code uses `<C-x>`; pre-existing, not fixed.
+
+## Implementation notes (chronological)
 
 - Phase 1 complete: Linux owner/connect; local, WSL and manual SSH checks pass.
-- `6b6548c`: GUI snapshot decoder foundation.
-- `ab6924a`: asynchronous session transport.
-- `3c6157d`: session-backed panes and READY handoff.
-- `af9ccd9`: GUI workspace controllers and acknowledged closes.
-- `ef13ec6`: versioned layout codec/restore and revision-checked updates.
-- `1b35661`: asynchronous workspace create/attach admission.
-- GUI workspace/controller wiring now supports publishing an already-attached
-  session. App owns controller/connection, pumps bounded frames around pane
-  parsing, retries backpressure, and removes panes only after close ACK. App
-  borrower invalidation and aggregate snapshot budgeting are wired. `domains.<name>.persist`
-   is now exposed experimentally for configured creation and explicit attachment;
-   automatic startup reattachment is not implemented.
-   Owner-backed tabs/splits and automatic layout saves now exist.
-   Next: stale/missing-pane reconciliation, graceful final-layout flush,
-   session discovery and remembered host/session identities.
-- Leave dirty `third_party/{lua-zluajit,luajit-upstream,nightwatch,sokol}` alone.
+- GUI workspace/controller wiring publishes an already-attached session.
+  App owns controller/connection, pumps bounded frames around pane parsing,
+  retries backpressure, and removes panes only after close ACK. App borrower
+  invalidation and aggregate snapshot budgeting are wired.
 - Review hardening: disconnected/taken-over views close locally; generic native
   creation and cross-workspace moves involving session workspaces remain guarded.
   Dedicated owner-backed creation is supported. Workspace count decrements on removal.
@@ -84,7 +134,7 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   Windows-native hosts fail visibly; Linux-local, WSL, SSH Linux use agent owners.
   Public `hollow.term.attach_session(id, {domain,name,on_complete})` reattaches;
   `workspace.session_id` exposes owner identity for manual recovery.
-  Startup currently creates a NEW session, not automatic reattach.
+  Startup reattach is now Lua policy (slice 3, below).
 - New workspace commands are prepared before connector start, transferred into
   the published pane's startup-input queue, and run inside its continuing shell.
   They must NOT be sent as `Spawn.command` (shell would exit after command).
@@ -157,8 +207,7 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   `wait_revision` over socket, else 50 ms polls, for max(--timeout, 10 s).
   Real-owner Windows->WSL App test lists the reattached session (open,
   attached, saved name, three panes) and gets `rejected` for an unknown kill.
-  Not yet done: a GUI picker; manual GUI smoke of the CLI against a running
-  instance.
+  Not yet done: manual GUI smoke of the CLI against a running instance.
 - Host identity: owner `loadHost` persists `<state dir>/host-id` and sends
   optional `Welcome.host` (old clients ignore it, old owners send none).
   `Client.host()`/`Connection.host(buf)`, `Controller.host`,
@@ -232,11 +281,14 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
 
 - Zig 0.17.0. Always use explicit build file/options if configure-cache selection
   appears stale (`-Dagent-only=false` for GUI graph).
+- Lua: `./scripts/test-lua.sh` (single file: `./scripts/test-lua.sh src/lua/tests/<file>.lua`);
+  bundled LuaJIT syntax: `zig build test-luajit -Dagent-only=false`.
 - `zig build --build-file build-agent.zig test-session-transport test-agent-loop test-agent-pty`
-- `HOLLOW_TEST_AGENT=$PWD/zig-out/agents/linux-x86_64/hollow-agent zig build --build-file build.zig test-session-pane test-session-snapshot test-session-client test-background test-search -Dagent-only=false`
+- `HOLLOW_TEST_AGENT=$PWD/zig-out/agents/linux-x86_64/hollow-agent zig build --build-file build.zig test-session-pane test-session-snapshot test-session-client test-background test-search test-command test-lua test-luajit -Dagent-only=false --summary all`
+- Windows GUI cross-build: `./launch.sh --build-only`.
 - Repeat pane/snapshot/client suites with `-Doptimize=ReleaseSafe|ReleaseSmall`.
 - Windows tests through WSL interop:
-  `zig build --build-file build.zig test-session-pane test-session-snapshot test-session-client -Dtarget=x86_64-windows-gnu -Dsession-test-wsl="$WSL_DISTRO_NAME" -Dsession-test-agent=/tmp/opencode/hollow-session-agent-next`
+  `zig build --build-file build.zig test test-session-pane test-session-snapshot test-session-client test-session-borrowers -Dagent-only=false -Dtarget=x86_64-windows-gnu -Dsession-test-wsl="$WSL_DISTRO_NAME" -Dsession-test-agent=/tmp/opencode/hollow-session-agent-next --summary all`
   That guest binary was copied from `zig-out/agents/linux-x86_64/hollow-agent`;
   rebuild/copy again if owner/protocol changes.
 - Windows GUI cross-build passes. Linux GUI/full-test linking is blocked by
@@ -250,8 +302,11 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
 - Latest mutation validation: Windows App/GUI plus real Windows-to-WSL three-shell
   detach/restore test passed; Linux pane/snapshot/client suites passed in Debug,
   ReleaseSafe and ReleaseSmall; agent loop/transport/PTY regressions passed.
-  All 940 Lua tests passed; Zig formatting and `git diff --check` passed.
+  Zig formatting and `git diff --check` passed.
   Markdown lint could not run: local `npx --no-install markdownlint` has no executable.
+- Slice 3 validation: Lua, Linux headless, Windows suites, `./launch.sh --build-only`.
+- Slice 4 validation (Lua-only change): `zig build test-luajit test-lua -Dagent-only=false`
+  passes with 965 Lua tests. Zig suites were not rerun because no Zig changed.
 
 ## Runtime / delegation
 
