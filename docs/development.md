@@ -80,7 +80,19 @@ installation are needed for `--build-only`, so it also works on Linux CI.
 Use `--install` from WSL to copy executables, available debug symbols,
 helpers, Lua files, and config to `C:\Applications\Hollow`. With this flag,
 the installed executable runs unless `--build-only` is also set.
+PDB files are copied only with `--pdb`, including when using `--no-build`; existing installed PDB files are otherwise left untouched.
 Combine `--install --no-build --build-only` to install an existing build.
+If the installed Hollow is running, `--install` restarts it, even with `--build-only`.
+It closes the app like the window close button, copies the files, and reopens it.
+The app stays closed during copying, and Windows may reopen it in the background.
+The reopened app is detached from the terminal, so the script exits and its log output is not shown.
+Restarts launch `hollow-native.exe` directly to avoid opening a console window for `hollow.exe`.
+Persistent sessions detach on close and are restored on reopen.
+It keeps going if closing Hollow hangs up the terminal running the install, and writes its output to `zig-out/install.log`.
+If Hollow does not exit within 3 seconds, installation stops without changing installed files or forcibly killing the app.
+The 3-second limit covers shutdown waiting only, not the build, PowerShell startup, copying, or app startup.
+The script reports close-check, copy, and launch-request timings separately and skips Lua/config files whose installed timestamps are already current.
+Dev copies running from `zig-out/bin` are left alone.
 Pass `--app-arg=...` to forward args the wrapper does not understand.
 
 Lua dev loop: after one build, Lua files under `src/lua/` are loaded

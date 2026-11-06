@@ -46,6 +46,7 @@ for arg in "$@"; do
     echo "ReleaseFast omits debug information by default. Use --pdb to retain symbols for profiling or crash reports."
     echo "--dev builds app code in Debug with ReleaseFast C dependencies, and only the app executables (no CLI/agent bundles) unless --install is set."
     echo "Windows targets run from zig-out/bin by default. --install copies them to C:\\Applications\\Hollow and runs from there unless --build-only is set."
+    echo "--install first closes a running installed Hollow and reopens it afterwards; persistent sessions are restored."
     exit 0
     ;;
   esac
@@ -70,15 +71,11 @@ fi
 if [[ "$TARGET" == *"windows"* ]]; then
   EXE_NAME="hollow.exe"
   PDB_NAME="hollow.pdb"
-  LAUNCHER_NAME="hollow.exe"
-  LAUNCHER_PDB_NAME="hollow.pdb"
   GUI_NAME="hollow-native.exe"
   GUI_PDB_NAME="hollow-native.pdb"
 else
   EXE_NAME="hollow"
   PDB_NAME=""
-  LAUNCHER_NAME=""
-  LAUNCHER_PDB_NAME=""
   GUI_NAME=""
   GUI_PDB_NAME=""
 fi
@@ -95,15 +92,12 @@ if [[ $BUILD -eq 1 ]]; then
       BUILD_ARGS+=("gui")
     fi
     BUILD_ARGS+=("-Dtarget=$TARGET" "-Ddev")
-    if [[ $PDB -eq 1 ]]; then
-      BUILD_ARGS+=("-Dpdb")
-    fi
   else
     echo "[launch] optimize mode: $OPTIMIZE"
     BUILD_ARGS+=("-Dtarget=$TARGET" "-Doptimize=$OPTIMIZE")
-    if [[ $PDB -eq 1 ]]; then
-      BUILD_ARGS+=("-Dpdb")
-    fi
+  fi
+  if [[ $PDB -eq 1 ]]; then
+    BUILD_ARGS+=("-Dpdb")
   fi
   zig build "${BUILD_ARGS[@]}"
   mkdir -p "$SCRIPT_DIR/zig-out"
@@ -116,28 +110,62 @@ if [[ $BUILD -eq 1 ]]; then
   fi
 fi
 
-mkdir -p "$SCRIPT_DIR"
-
 copy_if_exists() {
   local src="$1"
   local dst="$2"
-  if [[ -f "$src" ]]; then
-    if [[ "$src" == "$dst" ]]; then
-      return
-    fi
-    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
-      return
-    fi
-    if [[ -f "$dst" ]]; then
-      rm -f "$dst" 2>/dev/null || true
-    fi
-    cp "$src" "$dst"
-  fi
+  [[ -f "$src" && "$src" != "$dst" ]] || return 0
+  if [[ -f "$dst" ]]; then rm -f "$dst" 2>/dev/null || true; fi
+  cp "$src" "$dst"
 }
+
+# Encode the helper and its arguments together to avoid WSL/PowerShell quoting.
+windows_app() {
+  local action="$1"
+  shift
+  local encoded
+  encoded="$(printf '%s' "& { $(cat "$SCRIPT_DIR/scripts/restart-hollow.ps1") } -Action '$action' -AppArgs $(ps_list "$@")" |
+    iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
+  powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded" </dev/null
+}
+
+ps_list() {
+  local arg list=""
+  for arg in "$@"; do
+    list+="${list:+,}'${arg//\'/\'\'}'"
+  done
+  printf '@(%s)' "$list"
+}
+
+RUN_ARGS=()
+if [[ $RUN -eq 1 ]]; then
+  if [[ $SAFE_RENDER -eq 1 ]]; then
+    echo "[launch] renderer safe mode enabled"
+    RUN_ARGS+=("--renderer-safe-mode")
+    DISABLE_SWAPCHAIN_GLYPHS=1
+  fi
+  if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 1 ]]; then
+    echo "[launch] swapchain glyph draw disabled"
+    RUN_ARGS+=("--renderer-disable-swapchain-glyphs")
+  fi
+  if [[ $DISABLE_MULTI_PANE_CACHE -eq 1 ]]; then
+    echo "[launch] multi-pane cache disabled"
+    RUN_ARGS+=("--renderer-disable-multi-pane-cache")
+  fi
+  RUN_ARGS+=("${FORWARD_ARGS[@]}")
+  if [[ $LIST_FONTS -eq 1 ]]; then
+    RUN_ARGS+=("--list-fonts")
+  fi
+  if [[ -n "$MATCH_FONT" ]]; then
+    RUN_ARGS+=("--match-font" "$MATCH_FONT")
+  fi
+  if [[ $LIST_FONTS_JSON -eq 1 ]]; then
+    RUN_ARGS+=("--json")
+  fi
+fi
 
 if [[ $INSTALL -eq 1 ]]; then
   WINDOWS_APP_DIR="$(wslpath -u 'C:\Applications\Hollow')"
-  for name in "$LAUNCHER_NAME" "$GUI_NAME" hollow-cli.exe; do
+  for name in "$EXE_NAME" "$GUI_NAME" hollow-cli.exe; do
     if [[ ! -f "$BIN_DIR/$name" ]]; then
       echo "[launch] missing $BIN_DIR/$name; build before installing" >&2
       exit 1
@@ -155,13 +183,32 @@ if [[ $INSTALL -eq 1 ]]; then
       exit 1
     fi
   done
+  # Closing Hollow can hang up the terminal running this script (a
+  # non-persistent pane). Keep going so the app is always reopened, and keep
+  # a copy of the output in case the terminal is gone.
+  INSTALL_LOG="$SCRIPT_DIR/zig-out/install.log"
+  trap '' HUP
+  exec > >(tee -p "$INSTALL_LOG") 2>&1
+  echo "[launch] closing installed Hollow (up to 3s after PowerShell starts)"
+  PHASE_START=$SECONDS
+  CLOSE_STATUS=0
+  windows_app Close || CLOSE_STATUS=$?
+  case "$CLOSE_STATUS" in
+    0|3) ;; # Closed, or no installed copy was running.
+    *) echo "[launch] could not close Hollow; installation cancelled" >&2; exit 1 ;;
+  esac
+  echo "[launch] close check finished in $((SECONDS - PHASE_START))s"
+  PHASE_START=$SECONDS
   mkdir -p "$WINDOWS_APP_DIR"
-  echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
-  for name in "$LAUNCHER_NAME" "$GUI_NAME" \
-    "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" \
-    hollow-cli.exe hollow-cli.py; do
+  echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR (log: $INSTALL_LOG)"
+  for name in "$EXE_NAME" "$GUI_NAME" hollow-cli.exe hollow-cli.py; do
     copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
   done
+  if [[ $PDB -eq 1 ]]; then
+    for name in "$PDB_NAME" "$GUI_PDB_NAME"; do
+      copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
+    done
+  fi
   mkdir -p "$WINDOWS_APP_DIR/cli/linux-x86_64" "$WINDOWS_APP_DIR/cli/linux-aarch64"
   for name in linux-x86_64/hollow-cli linux-aarch64/hollow-cli SHA256SUMS; do
     copy_if_exists "$SCRIPT_DIR/zig-out/cli/$name" "$WINDOWS_APP_DIR/cli/$name"
@@ -172,40 +219,20 @@ if [[ $INSTALL -eq 1 ]]; then
   done
   # Keep on-disk Lua/config overrides available beside the relocated executable.
   mkdir -p "$WINDOWS_APP_DIR/src"
-  cp -R "$SCRIPT_DIR/src/lua" "$WINDOWS_APP_DIR/src/"
-  cp -R "$SCRIPT_DIR/conf" "$WINDOWS_APP_DIR/"
+  cp -Ru --preserve=timestamps "$SCRIPT_DIR/src/lua" "$WINDOWS_APP_DIR/src/"
+  cp -Ru --preserve=timestamps "$SCRIPT_DIR/conf" "$WINDOWS_APP_DIR/"
+  echo "[launch] copying finished in $((SECONDS - PHASE_START))s"
   EXE_PATH="$WINDOWS_APP_DIR/$EXE_NAME"
+  # Persistent sessions survive the restart.
+  if [[ $CLOSE_STATUS -eq 0 ]]; then
+    PHASE_START=$SECONDS
+    windows_app Start "${RUN_ARGS[@]}"
+    echo "[launch] restarted Hollow (launch request took $((SECONDS - PHASE_START))s)"
+    exit 0
+  fi
 fi
 
 if [[ $RUN -eq 1 ]]; then
-  RUN_ARGS=()
-  if [[ $SAFE_RENDER -eq 1 ]]; then
-    echo "[launch] renderer safe mode enabled"
-    RUN_ARGS+=("--renderer-safe-mode")
-    if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 0 ]]; then
-      DISABLE_SWAPCHAIN_GLYPHS=1
-    fi
-  fi
-  if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 1 ]]; then
-    echo "[launch] swapchain glyph draw disabled"
-    RUN_ARGS+=("--renderer-disable-swapchain-glyphs")
-  fi
-  if [[ $DISABLE_MULTI_PANE_CACHE -eq 1 ]]; then
-    echo "[launch] multi-pane cache disabled"
-    RUN_ARGS+=("--renderer-disable-multi-pane-cache")
-  fi
-  if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then
-    RUN_ARGS+=("${FORWARD_ARGS[@]}")
-  fi
-  if [[ $LIST_FONTS -eq 1 ]]; then
-    RUN_ARGS+=("--list-fonts")
-  fi
-  if [[ -n "$MATCH_FONT" ]]; then
-    RUN_ARGS+=("--match-font" "$MATCH_FONT")
-  fi
-  if [[ $LIST_FONTS_JSON -eq 1 ]]; then
-    RUN_ARGS+=("--json")
-  fi
   echo "[launch] running $EXE_PATH with args: ${RUN_ARGS[*]}"
 
   exec "$EXE_PATH" "${RUN_ARGS[@]}"
