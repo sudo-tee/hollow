@@ -65,6 +65,7 @@ The full list, grouped by intent:
 | Action | What it does |
 | --- | --- |
 | `new_workspace` | Create a new workspace |
+| `restore_sessions` | Reattach remembered persistent sessions, including SSH ones |
 | `save_workspace` | Save the current workspace layout to the project directory |
 | `workspace_switcher` | Open the workspace switcher picker |
 | `create_workspace` | Create a workspace via the input prompt |

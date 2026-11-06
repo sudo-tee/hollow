@@ -157,8 +157,17 @@ placeholders in their original layout. Scrollback is not written to disk in v1.
 ## Startup and UX
 
 - On launch, Hollow lists sessions on every local and WSL host whose domain
-  has `persist = true` and reattaches the ones this client last had attached.
-- SSH hosts are listed lazily; startup never blocks on an unreachable host.
+  has `persist = true` and reattaches the ones this client remembers.
+  Remembering is Lua policy (`src/lua/hollow/session_restore.lua`): entries
+  `{domain, id, host?}` in `<data dir>/sessions.json`, at most 64, recorded on
+  `workspace:new` and dropped when `workspace:closed` reports
+  `session_ended`, on a successful kill, or when a reachable host lacks them.
+  `domains.X.restore = false` opts a domain out.
+- Startup creates a fresh default-domain session only when the list confirmed
+  no remembered session survives and no attach outcome is uncertain. Sessions
+  attached by another client prompt before take-over.
+- SSH hosts are never contacted at startup; a notice and the
+  `restore_sessions` action restore them on demand.
 - SSH trust is the user's job in v1: the connector is non-interactive
   (`BatchMode=yes`, `StrictHostKeyChecking=yes`), so the host key must already
   be in `known_hosts` and key or agent auth must work (`ssh <host> true`
@@ -577,10 +586,19 @@ Owner-backed tabs and splits implemented:
   `term:pane_respawned`. `SessionNotFound` gets an actionable notice, and
   open/attach callbacks report `status`, `error`, `outcome`, `remote`.
 
+- Remembered sessions: `workspace:closed` now also fires for unnamed session
+  workspaces with `session_id`, `session_host?` and `session_ended` (true only
+  for an owner-acknowledged last close, never for detach, take-over or a lost
+  link; the last workspace's closure is emitted before quit). App calls
+  `hollow._session_startup(default_domain_or_nil)` once at init; true means
+  Lua owns the default domain's first session. Lua API
+  `hollow.term.restore_sessions`, `remembered_sessions`, action
+  `restore_sessions`. Missing sessions are forgotten silently rather than
+  shown as placeholder workspaces.
+
 Next implementation slices:
-1. Remember attached host/session IDs, auto-reattach local/WSL sessions and
-   lazy SSH restore; missing sessions stay placeholders.
-2. GUI session picker; dedicated respawn-rejection notice wording.
+1. GUI session picker; dedicated respawn-rejection notice wording.
+2. Placeholder workspaces for missing sessions, if wanted.
 
 `persist = true` is experimental and defaults to false.
 Native Windows owner and WSL keepalive remain Phase 3.

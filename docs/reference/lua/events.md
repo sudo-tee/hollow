@@ -114,7 +114,7 @@ for an observational event does not change its host behavior.
 | `config:ready` | (empty) — emitted once after config loading completes (including deferred defaults) |
 | `workspace:new` | `{ workspace, index }` |
 | `workspace:changed` | `{ workspace, index }` |
-| `workspace:closed` | `{ name }` — emitted when a workspace becomes empty and is auto-closed |
+| `workspace:closed` | `{ name?, session_id?, session_host?, session_ended? }` — emitted when a named or persistent workspace closes. `session_ended` is true only when the owner ended the session, and false when only this client's views closed |
 | `selection:begin` | (empty) |
 | `selection:cleared` | (empty) |
 | `term:title_changed` | `{ pane, old_title, new_title }` |

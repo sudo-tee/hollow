@@ -1220,7 +1220,11 @@ pub const App = struct {
 
         if (self.activePane()) |pane| pane_lifecycle.created(self, pane);
 
-        if (persistent_startup) {
+        // A startup command needs its own fresh pane, so it never restores into
+        // the default persistent domain; remembered extras still come back.
+        const restore_domain = if (persistent_startup and self.startup_command == null) self.config.defaultDomainName() else null;
+        const restored = if (self.lua) |*lua| lua.sessionStartup(restore_domain) else false;
+        if (persistent_startup and !(restored and restore_domain != null)) {
             _ = @import("app/session_domain.zig").begin(self, null, self.config.defaultDomainName(), null, null, LUA_NOREF, true) catch |err| blk: {
                 std.log.warn("persistent startup admission failed: {s}", .{@errorName(err)});
                 session_open.reportAdmissionFailure(self, err, true);

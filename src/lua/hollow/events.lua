@@ -77,7 +77,12 @@ function M.setup(hollow, state, term_helpers)
     return { workspace = w, index = payload.workspace_index + 1 }
   end
   local function adapt_workspace_closed(payload)
-    return { name = payload.name }
+    return {
+      name = payload.name,
+      session_id = payload.session_id,
+      session_host = payload.session_host,
+      session_ended = payload.session_id ~= nil and payload.session_ended == true or nil,
+    }
   end
   local function adapt_tab_closed(payload)
     return { tab_id = payload.tab_id }

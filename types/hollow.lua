@@ -226,7 +226,7 @@
 ---@field ["config:reloaded"] {}
 ---@field ["workspace:new"] { workspace: HollowWorkspace, index: integer }
 ---@field ["workspace:changed"] { workspace: HollowWorkspace, index: integer }
----@field ["workspace:closed"] { name: string }
+---@field ["workspace:closed"] { name?: string, session_id?: string, session_host?: string, session_ended?: boolean } `session_ended` is true only when the owner ended the session, false when just this client's views closed
 ---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
@@ -516,6 +516,7 @@
 
 ---@class HollowDomainConfig
 ---@field persist? boolean Experimental host-owned persistent workspaces; default false, Linux owner only
+---@field restore? boolean Remember this domain's persistent sessions and reattach them at startup; default true when `persist` is set
 ---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
@@ -1862,10 +1863,27 @@ function term.attach_session(session_id, opts) end
 function term.list_sessions(opts) end
 
 ---Kill one persistent session. A lost reply is reported as outcome "uncertain".
+---A successful kill also forgets the session for startup restore.
 ---@param session_id string Non-empty, at most 128 bytes, without NUL
 ---@param opts? { domain?: string, on_complete?: fun(result: HollowSessionQueryResult) }
 ---@return boolean?, string?
 function term.kill_session(session_id, opts) end
+
+---@class HollowRememberedSession
+---@field domain string
+---@field id string
+---@field host? string Owner host ID when the session was recorded
+
+---Reattach remembered persistent sessions on every restorable domain, SSH
+---included. Never creates a fresh session. Returns the number of domains
+---queried; results arrive asynchronously as new workspaces.
+---@param opts? { domain?: string }
+---@return integer
+function term.restore_sessions(opts) end
+
+---Sessions remembered for startup restore, oldest first (at most 64).
+---@return HollowRememberedSession[]
+function term.remembered_sessions() end
 
 ---@param id? integer
 function term.close_workspace(id) end

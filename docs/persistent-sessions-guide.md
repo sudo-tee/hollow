@@ -118,8 +118,34 @@ Set `default_domain = "persistent_test"` only when you want startup to create a 
 Hollow then starts with an empty mux while the connection opens, rather than launching a disposable ordinary shell.
 Startup commands remain targeted to that startup operation's pane even if another workspace gains focus.
 
-Automatic reattachment is not implemented yet.
-Each startup currently creates a new session, so save IDs and reconnect explicitly instead of expecting the previous session to be selected automatically.
+Hollow remembers the persistent sessions you open and reattaches them at the next launch.
+At startup it lists each local and WSL domain that has remembered sessions, then:
+
+- reattaches every remembered session that no client is using;
+- asks before taking over sessions another window has attached;
+- forgets sessions the host no longer has, without a notice;
+- keeps sessions whose host answers with a different host ID.
+
+A fresh session in the default domain is created only when the host confirmed that none of its remembered sessions survive, or when you decline every take-over.
+If the host cannot be listed, or an attach may have reached the owner, startup creates nothing and shows a warning instead, so a live session is never duplicated.
+A startup command always gets its own fresh session.
+
+SSH hosts are never contacted at startup.
+A notice offers to restore remembered SSH sessions, and the `restore_sessions` action or `hollow.term.restore_sessions()` does the same at any time.
+
+Sessions are forgotten when their last pane closes or they are killed.
+Quitting, detaching, or losing the connection keeps them.
+Set `restore = false` on a domain to stop remembering its sessions:
+
+```lua
+hollow.config.set({
+  domains = {
+    persistent_test = { persist = true, restore = false },
+  },
+})
+```
+
+The list is stored in `sessions.json` in the user data directory and holds at most 64 sessions.
 
 ## Current limits
 

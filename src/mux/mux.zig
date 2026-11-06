@@ -70,6 +70,28 @@ pub const Mux = struct {
         ratio: f32 = 0,
     };
 
+    /// Persistent identity of that workspace, consumed and freed alongside it.
+    last_removed_session: ?RemovedSession = null,
+
+    pub const RemovedSession = struct {
+        id: []u8,
+        host: ?[]u8,
+        /// The owner acknowledged closing every pane, so the session is gone.
+        /// False when only local views closed (detach, take-over, lost link).
+        ended: bool,
+
+        pub fn deinit(self: RemovedSession, allocator: std.mem.Allocator) void {
+            allocator.free(self.id);
+            if (self.host) |host| allocator.free(host);
+        }
+    };
+
+    pub fn takeRemovedSession(self: *Mux) ?RemovedSession {
+        const value = self.last_removed_session;
+        self.last_removed_session = null;
+        return value;
+    }
+
     pub const PaneIterator = struct {
         mux: *Mux,
         workspace_index: usize = 0,
@@ -123,6 +145,7 @@ pub const Mux = struct {
         self.workspaces.deinit(self.allocator);
         self.global_docks.deinit(self.allocator, runtime);
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
+        if (self.last_removed_session) |value| value.deinit(self.allocator);
         self.* = Mux.init(self.allocator);
     }
 
@@ -1422,6 +1445,15 @@ pub const Mux = struct {
         return false;
     }
 
+    fn removedSession(allocator: std.mem.Allocator, controller: *@import("../session/controller.zig").Controller) !RemovedSession {
+        const id = try allocator.dupe(u8, controller.session_id);
+        errdefer allocator.free(id);
+        const host = if (controller.host.len > 0) try allocator.dupe(u8, controller.host) else null;
+        // Only owner-acknowledged closes remove a live attachment's last pane.
+        const ended = !controller.detached and controller.connection.status().phase != .ended;
+        return .{ .id = id, .host = host, .ended = ended };
+    }
+
     fn removeWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace: *Workspace) bool {
         var idx: ?usize = null;
         for (self.workspaces.items, 0..) |ws, i| {
@@ -1435,6 +1467,8 @@ pub const Mux = struct {
 
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
         self.last_removed_workspace_name = if (workspace.name) |n| self.allocator.dupe(u8, n) catch null else null;
+        if (self.last_removed_session) |value| value.deinit(self.allocator);
+        self.last_removed_session = if (workspace.session_controller) |controller| removedSession(self.allocator, controller) catch null else null;
 
         for (workspace.tabs.items) |tab| self.notifyTabClosing(tab);
         var docked = workspace.docks.iterator();

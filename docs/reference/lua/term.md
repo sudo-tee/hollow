@@ -365,6 +365,8 @@ hollow.term.new_workspace(opts)         -- create
 hollow.term.attach_session(id, opts)    -- experimental persistent attachment
 hollow.term.list_sessions(opts)         -- discover persistent sessions on a host
 hollow.term.kill_session(id, opts?)     -- end one persistent session
+hollow.term.restore_sessions(opts?)     -- reattach remembered persistent sessions
+hollow.term.remembered_sessions()       -- sessions remembered for restore
 hollow.term.close_workspace(id?)
 hollow.term.next_workspace()
 hollow.term.prev_workspace()
@@ -445,6 +447,20 @@ hollow.term.list_sessions({
 A successful kill result is `{ success = true, domain, session }`.
 A failure carries `status` and `error`, and when the owner was contacted, `outcome` and an optional owner message in `remote`.
 An `outcome` of `"uncertain"` means the kill may have happened: list again rather than retrying it.
+A successful kill also forgets the session for startup restore.
+
+### Remembered sessions
+
+Hollow remembers each persistent session opened in a domain with `persist = true`, unless the domain sets `restore = false`.
+The list lives in `sessions.json` in the user data directory and keeps at most 64 entries, dropping the oldest.
+A session is forgotten when its owner ends it, when it is killed, or when a reachable host no longer has it.
+Closing the GUI or losing the connection keeps it remembered.
+
+`remembered_sessions()` returns the entries, oldest first, as `{ domain, id, host? }`.
+`restore_sessions({ domain? })` lists each remembered domain's host, SSH included, and reattaches the sessions it still has.
+It returns the number of domains it queried, and never creates a fresh session.
+Sessions already open here are skipped, and sessions attached by another client ask before taking them over.
+Startup does the same for local and WSL domains only; see the [guide](../../persistent-sessions-guide.md#persistent-startup).
 
 See the [persistent sessions guide](../../persistent-sessions-guide.md) for configuration, cleanup, and current limitations.
 

@@ -522,6 +522,16 @@ function M.setup(hollow, host_api)
     category = "workspace",
   })
 
+  register(hollow, "restore_sessions", {
+    run = function()
+      if hollow.term.restore_sessions() == 0 then
+        hollow.ui.notify.show("No remembered sessions to restore.", { title = "Session restore" })
+      end
+    end,
+    desc = "Reattach remembered persistent sessions",
+    category = "workspace",
+  })
+
   register(hollow, "save_workspace", {
     run = function()
       local path = hollow.workspace.project_local_path()

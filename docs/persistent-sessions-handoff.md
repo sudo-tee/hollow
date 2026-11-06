@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-05. Working branch: `feat/persistent-sessions`. Nothing pushed.
+Updated 2026-11-06. Working branch: `feat/persistent-sessions`. Nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
 Earlier commit IDs below predate the user's rebase onto main; use `git log` for current IDs.
@@ -164,7 +164,7 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   `Client.host()`/`Connection.host(buf)`, `Controller.host`,
   `workspace.session_host`, list/kill `host`, host-aware `open`. Real-owner
   App test checks the host survives reattach and matches the list result.
-  Remembering attached sessions client-side is slice 3 (Lua policy).
+  Remembering attached sessions client-side is slice 3 (Lua policy), below.
 - Dead/missing-session UX: owner `Op.respawn` re-forks an exited pane from its
   saved spawn at the current size, keeping VT and screen (`PaneAlive` if live).
   Owners advertise `Welcome.features = ["respawn"]`; clients never send it
@@ -179,6 +179,24 @@ Earlier commit IDs below predate the user's rebase onto main; use `git log` for 
   `hollow-cli session list` guidance; new_workspace/attach `on_complete`
   failures carry `status`, `error`, `outcome`, `remote?`.
   Known wart: respawn rejection reuses the "Session open failed: …" notice.
+- Remembered sessions (slice 3): `src/lua/hollow/session_restore.lua` keeps
+  `{version=1, sessions=[{domain,id,host?}]}` in `<data dir>/sessions.json`
+  (max 64, oldest dropped, corrupt file reads empty). Recorded on
+  `workspace:new` for domains with `persist` and `restore ~= false`; forgotten
+  on `workspace:closed` with `session_ended`, on a successful wrapped
+  `kill_session`, and when a reachable list lacks the id. `Mux.last_removed_session`
+  computes `ended = !detached and connection not ended` at removal.
+  `Runtime.sessionStartup` calls `hollow._session_startup`; App skips its own
+  startup create when Lua returns true for the default domain (no startup
+  command). Lua lists local/WSL domains, attaches unattached entries, queues a
+  confirm for entries attached elsewhere, and creates at most one fresh default
+  session only after a successful list with nothing restored, no prompt
+  pending, and no uncertain attach. SSH: deferred notice with a Restore action.
+  Tests: `src/lua/tests/test_session_restore.lua`, lua_bridge
+  "workspace close reports session identity", and the session_controller
+  ack/takeover tests assert `session_ended`.
+  App Lua runtimes in tests must use `Runtime.initForTests`: `init` starts
+  platform discovery and crashed intermittently in an App test.
 
 ## Architecture / invariants
 

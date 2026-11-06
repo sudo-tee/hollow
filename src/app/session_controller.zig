@@ -449,14 +449,23 @@ pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?
 }
 
 pub fn emitWorkspaceClosedIfRemoved(self: *App, mux: *Mux) void {
-    if (mux.last_removed_workspace_name) |name| {
-        self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = name } });
-        self.allocator.free(name);
-        mux.last_removed_workspace_name = null;
-    }
+    const name = mux.last_removed_workspace_name;
+    mux.last_removed_workspace_name = null;
+    defer if (name) |value| self.allocator.free(value);
+    const session = mux.takeRemovedSession();
+    defer if (session) |value| value.deinit(self.allocator);
+    if (name == null and session == null) return;
+    self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{
+        .name = name,
+        .session_id = if (session) |value| value.id else null,
+        .session_host = if (session) |value| value.host else null,
+        .session_ended = if (session) |value| value.ended else false,
+    } });
 }
 
 pub fn quitOnWorkspaceRemoved(self: *App, mux: *Mux, log_msg: ?[]const u8) void {
+    // Session restore must still learn that the last persistent session ended.
+    if (mux.last_removed_session != null) emitWorkspaceClosedIfRemoved(self, mux);
     if (mux.last_removed_workspace_name) |n| self.allocator.free(n);
     mux.last_removed_workspace_name = null;
     if (@import("session_open.zig").hasLiveOpen(self)) return;
@@ -1307,6 +1316,8 @@ test "session borrowers keep App pane close gated on owner acknowledgement" {
     app.mux.?.host_context = app;
     app.mux.?.pane_created = pane_lifecycle.created;
     app.mux.?.pane_closing = pane_lifecycle.closing;
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(allocator, &app.config);
+    try app.lua.?.runString(recordWorkspaceClosed);
 
     const info: SessionProtocol.SessionInfo = .{
         .id = "mock",
@@ -1354,7 +1365,16 @@ test "session borrowers keep App pane close gated on owner acknowledgement" {
     try std.testing.expectEqual(@as(usize, 0), app.mux.?.workspaces.items.len);
     try std.testing.expect(app.pending_quit);
     try std.testing.expect(!controller.hasBindings());
+    // The owner acknowledged the last close, so restore must forget it.
+    try app.lua.?.runString("assert(#closed == 1 and closed[1].session_id == 'mock' and closed[1].session_ended == true)");
 }
+
+const recordWorkspaceClosed =
+    \\closed = {}
+    \\hollow = {_emit_builtin_event = function(name, payload)
+    \\  if name == "workspace:closed" then closed[#closed + 1] = payload end
+    \\end}
+;
 
 test "session borrowers allow local close after takeover or connection loss" {
     const allocator = std.testing.allocator;
@@ -1368,6 +1388,8 @@ test "session borrowers allow local close after takeover or connection loss" {
         defer app.deinit();
         app.ghostty = try GhosttyRuntime.init(allocator, null);
         app.mux = Mux.init(allocator);
+        app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(allocator, &app.config);
+        try app.lua.?.runString(recordWorkspaceClosed);
         const info: SessionProtocol.SessionInfo = .{
             .id = "mock",
             .attached = true,
@@ -1391,5 +1413,7 @@ test "session borrowers allow local close after takeover or connection loss" {
         try std.testing.expect(app.findPaneById(pane_id) == null);
         try std.testing.expectEqual(@as(usize, 0), app.mux.?.session_workspace_count);
         try std.testing.expect(connection.client.nextWrite() == null);
+        // Only local views closed; the session must stay remembered.
+        try app.lua.?.runString("assert(#closed == 1 and closed[1].session_id == 'mock' and closed[1].session_ended == false)");
     }
 }

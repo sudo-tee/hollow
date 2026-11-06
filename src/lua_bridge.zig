@@ -669,7 +669,10 @@ pub const BuiltInPayload = union(enum) {
         pattern_index: ?usize = null,
     },
     workspace_closed: struct {
-        name: []const u8,
+        name: ?[]const u8 = null,
+        session_id: ?[]const u8 = null,
+        session_host: ?[]const u8 = null,
+        session_ended: bool = false,
     },
 };
 
@@ -1185,6 +1188,27 @@ pub const Runtime = struct {
             host = .{ .fallback = host.fallback, .error_message = "invalid PTY host descriptor" };
         };
         return host;
+    }
+
+    /// Runs once at startup so Lua can restore remembered sessions.
+    /// `persistent_domain` is the default domain when startup would create a
+    /// persistent session; true means Lua took over that creation.
+    pub fn sessionStartup(self: *Runtime, persistent_domain: ?[]const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return false;
+        api.get_field(self.state, -1, "_session_startup");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.function)) return false;
+        if (persistent_domain) |name| api.push_lstring(self.state, name.ptr, name.len) else api.push_nil(self.state);
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "session startup");
+            return false;
+        }
+        return api.value_type(self.state, -1) == @backingInt(LuaType.boolean) and api.to_boolean(self.state, -1) != 0;
     }
 
     /// Strict, synchronous session host resolution. No deployment or network I/O.
@@ -3283,9 +3307,21 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "pattern_index");
         },
         .workspace_closed => |value| {
-            api.create_table(state, 0, 1);
-            try pushOwnedString(allocator, api, state, value.name);
-            api.set_field(state, -2, "name");
+            api.create_table(state, 0, 4);
+            if (value.name) |name| {
+                try pushOwnedString(allocator, api, state, name);
+                api.set_field(state, -2, "name");
+            }
+            if (value.session_id) |id| {
+                try pushOwnedString(allocator, api, state, id);
+                api.set_field(state, -2, "session_id");
+                if (value.session_host) |host| {
+                    try pushOwnedString(allocator, api, state, host);
+                    api.set_field(state, -2, "session_host");
+                }
+                api.push_boolean(state, if (value.session_ended) 1 else 0);
+                api.set_field(state, -2, "session_ended");
+            }
         },
     }
 }
@@ -8602,6 +8638,34 @@ test "operation callback reports persistent open failure details" {
         \\assert(missing.error == "Rejected" and missing.outcome == "rejected" and missing.remote == "SessionNotFound")
         \\assert(lost.status == "session_open_failed" and lost.outcome == "uncertain" and lost.remote == nil)
     );
+}
+
+test "session borrowers workspace close reports session identity and startup restore" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\closed = {}
+        \\hollow = {
+        \\  _emit_builtin_event = function(name, payload) closed[#closed + 1] = payload end,
+        \\  _session_startup = function(domain) startup_domain = domain; return domain == "main" end,
+        \\}
+    );
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = "work" } });
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s1", .session_host = "h1", .session_ended = true } });
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s2" } });
+    try std.testing.expect(runtime.sessionStartup("main"));
+    try runtime.runString(
+        \\local named, ended, detached = closed[1], closed[2], closed[3]
+        \\assert(named.name == "work" and named.session_id == nil and named.session_ended == nil)
+        \\assert(ended.name == nil and ended.session_id == "s1" and ended.session_host == "h1" and ended.session_ended == true)
+        \\assert(detached.session_id == "s2" and detached.session_host == nil and detached.session_ended == false)
+        \\assert(startup_domain == "main")
+    );
+    try std.testing.expect(!runtime.sessionStartup(null));
+    try runtime.runString("hollow._session_startup = nil");
+    try std.testing.expect(!runtime.sessionStartup("main"));
 }
 
 test "HTP bridge forwards receipt timestamp and cwd" {

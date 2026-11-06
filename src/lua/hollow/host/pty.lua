@@ -219,6 +219,27 @@ function M.session_request(domain, shell)
   return host
 end
 
+--- Host kind ("local", "wsl", "ssh", ...) that owns a domain's persistent
+--- sessions, or nil when the domain cannot host them.
+function M.session_kind(domain)
+  local ok, kind = pcall(function()
+    local config = (_G.hollow.config.get("domains") or {})[domain]
+    local shell = type(config) == "string" and config
+      or type(config) == "table" and config.shell
+      or nil
+    config = type(config) == "table" and config or {}
+    if type(config.host) == "table" then
+      return config.host.type
+    end
+    if config.host ~= false and config.ssh ~= nil and config.ssh ~= false then
+      return nil -- Legacy SSH domains cannot own sessions.
+    end
+    local spec = M.descriptor(domain, shell)
+    return spec and spec.type or "local"
+  end)
+  return ok and type(kind) == "string" and kind or nil
+end
+
 function M.setup(hollow)
   function hollow._pty_host(domain, shell)
     return M.request(domain, shell)
