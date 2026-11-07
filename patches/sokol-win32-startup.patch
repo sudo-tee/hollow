@@ -1,0 +1,85 @@
+From: Hollow local patches
+Subject: [PATCH] win32: themed window background, pre-show hook and icon
+
+win32.has_background erases the window with a solid colour, so the client
+area shows that colour instead of white until the first frame is presented.
+win32.before_show_cb runs on the created window before ShowWindow, so the
+app can style the title bar before the window is first visible. The window
+icon is also set before ShowWindow, so the default icon never flashes.
+
+diff --git a/sokol_app.h b/sokol_app.h
+--- a/sokol_app.h
++++ b/sokol_app.h
+@@ -2004,6 +2004,11 @@ typedef struct sapp_win32_desc {
+     bool console_utf8;            // if true, set the output console codepage to UTF-8
+     bool console_create;          // if true, attach stdout/stderr to a new console window
+     bool console_attach;          // if true, attach stdout/stderr to parent process
++    bool has_background;          // if true, erase the window background with background_{r,g,b} (what shows before the first presented frame)
++    uint8_t background_r;
++    uint8_t background_g;
++    uint8_t background_b;
++    void (*before_show_cb)(const void* hwnd, void* user_data); // called with the created window just before it is first shown
+ } sapp_win32_desc;
+ 
+ typedef struct sapp_html5_desc {
+@@ -3009,6 +3014,7 @@ typedef struct {
+         size_t size;
+         void* ptr;
+     } raw_input_data;
++    HBRUSH background_brush;
+ } _sapp_win32_t;
+ 
+ #if defined(SOKOL_GLCORE)
+@@ -9617,6 +9623,11 @@ _SOKOL_PRIVATE LRESULT CALLBACK _sapp_win32_wndproc(HWND hWnd, UINT uMsg, WPARAM
+                 }
+                 break;
+             case WM_ERASEBKGND:
++                if (_sapp.win32.background_brush) {
++                    RECT client_rect;
++                    GetClientRect(hWnd, &client_rect);
++                    FillRect((HDC)wParam, &client_rect, _sapp.win32.background_brush);
++                }
+                 return 1;
+             case WM_SIZE:
+                 {
+@@ -9818,6 +9829,9 @@ _SOKOL_PRIVATE void _sapp_win32_create_window(void) {
+     wndclassw.hInstance = GetModuleHandleW(NULL);
+     wndclassw.hCursor = LoadCursor(NULL, IDC_ARROW);
+     wndclassw.hIcon = LoadIcon(NULL, IDI_WINLOGO);
++    if (_sapp.desc.win32.has_background) {
++        _sapp.win32.background_brush = CreateSolidBrush(RGB(_sapp.desc.win32.background_r, _sapp.desc.win32.background_g, _sapp.desc.win32.background_b));
++    }
+     wndclassw.lpszClassName = L"SOKOLAPP";
+     RegisterClassW(&wndclassw);
+ 
+@@ -9865,6 +9879,11 @@ _SOKOL_PRIVATE void _sapp_win32_create_window(void) {
+         _sapp_win32_set_fullscreen(_sapp.fullscreen, SWP_HIDEWINDOW);
+         _sapp_win32_update_dimensions();
+     }
++    sapp_set_icon(&_sapp.desc.icon);
++    if (_sapp.desc.win32.before_show_cb) {
++        _sapp.desc.win32.before_show_cb(_sapp.win32.hwnd, _sapp.desc.user_data);
++        _sapp_win32_update_dimensions();
++    }
+     ShowWindow(_sapp.win32.hwnd, SW_SHOW);
+     DragAcceptFiles(_sapp.win32.hwnd, 1);
+ }
+@@ -9872,6 +9891,10 @@ _SOKOL_PRIVATE void _sapp_win32_create_window(void) {
+ _SOKOL_PRIVATE void _sapp_win32_destroy_window(void) {
+     DestroyWindow(_sapp.win32.hwnd); _sapp.win32.hwnd = 0;
+     UnregisterClassW(L"SOKOLAPP", GetModuleHandleW(NULL));
++    if (_sapp.win32.background_brush) {
++        DeleteObject(_sapp.win32.background_brush);
++        _sapp.win32.background_brush = 0;
++    }
+ }
+ 
+ _SOKOL_PRIVATE void _sapp_win32_destroy_icons(void) {
+@@ -10172,7 +10195,6 @@ _SOKOL_PRIVATE void _sapp_win32_run(const sapp_desc* desc) {
+     _sapp_win32_init_dpi();
+     _sapp_win32_init_cursors();
+     _sapp_win32_create_window();
+-    sapp_set_icon(&desc->icon);
+     #if defined(SOKOL_D3D11)
+         _sapp_d3d11_create_device_and_swapchain();
+         _sapp_d3d11_create_default_render_target();
