@@ -2797,7 +2797,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             // Clay owns background, segments, clipping and scrolling.
             drawClaySurface(&g_sidebar_clay, ctx.renderer, sidebar_width, panel_h, panel_x, panel_y, true);
         }
-        pop(api, state, 1);
     }
     pop(api, state, 1);
 
