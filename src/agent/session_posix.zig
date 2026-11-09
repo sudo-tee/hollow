@@ -6,6 +6,8 @@
 const std = @import("std");
 const p = @import("session_protocol.zig");
 const core = @import("session_core.zig");
+const delivery = @import("session_stream.zig");
+const attachment = @import("session_attachment.zig");
 const pty = @import("pty.zig");
 const Vt = @import("session_vt.zig").Vt;
 const session_vt = @import("session_vt.zig");
@@ -99,39 +101,7 @@ fn stateDir(a: std.mem.Allocator) ![:0]u8 {
 // ---------------------------------------------------------------------------
 // Owner state
 
-/// Byte queue with a moving start, so consuming frames is O(1).
-const Queue = struct {
-    buf: std.ArrayList(u8) = .empty,
-    start: usize = 0,
-
-    fn len(self: *const Queue) usize {
-        return self.buf.items.len - self.start;
-    }
-    fn slice(self: *const Queue) []const u8 {
-        return self.buf.items[self.start..];
-    }
-    fn append(self: *Queue, a: std.mem.Allocator, bytes: []const u8) !void {
-        try self.buf.appendSlice(a, bytes);
-    }
-    fn consume(self: *Queue, n: usize) void {
-        self.start += n;
-        if (self.start == self.buf.items.len) {
-            self.clear();
-        } else if (self.start >= 64 * 1024 and self.start * 2 >= self.buf.items.len) {
-            const rest = self.len();
-            std.mem.copyForwards(u8, self.buf.items[0..rest], self.buf.items[self.start..]);
-            self.buf.items.len = rest;
-            self.start = 0;
-        }
-    }
-    fn clear(self: *Queue) void {
-        self.buf.clearRetainingCapacity();
-        self.start = 0;
-    }
-    fn deinit(self: *Queue, a: std.mem.Allocator) void {
-        self.buf.deinit(a);
-    }
-};
+const Queue = delivery.ByteQueue;
 
 const Pane = struct {
     id: u32,
@@ -149,16 +119,9 @@ const Pane = struct {
     status: ?i32 = null,
     /// Exit is sent at PTY EOF or at this deadline, whichever comes first.
     exit_deadline: i64 = 0,
-    exit_sent: bool = false,
-    /// The attached client still needs a snapshot; output waits for it.
-    snapshot_pending: bool = false,
+    stream: delivery.Stream = .{},
     /// Client input and VT query replies waiting for the PTY.
     input: Queue = .{},
-    /// Output read since the attached client's last grant ran out.
-    unsent: Queue = .{},
-    credit: u32 = p.window,
-    /// Backlog was dropped; resync with a snapshot once the client catches up.
-    stale: bool = false,
     removed: bool = false,
 };
 
@@ -208,6 +171,47 @@ const Client = struct {
 };
 
 const Doomed = struct { pid: c.pid_t, deadline: i64, killed: bool = false };
+
+test "output admission failure detaches without consuming cleared backlog or credit" {
+    const a = std.testing.allocator;
+    // Fail either the header allocation or the following payload allocation.
+    for (0..2) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        var owner = Owner.init(failing.allocator(), std.testing.io);
+        var client: Client = .{ .fd = -1 };
+        defer client.out.deinit(failing.allocator());
+        var session: Session = .{ .meta = .{ .id = @splat('a') } };
+        defer session.panes.deinit(a);
+        var pane: Pane = .{
+            .id = 1,
+            .pid = -1,
+            .master = -1,
+            .launch = -1,
+            .vt = undefined,
+            .cols = 80,
+            .rows = 24,
+            .spawn = undefined,
+        };
+        defer pane.stream.deinit(a);
+        try session.panes.append(a, &pane);
+        _ = attachment.link(&client, &session);
+        var bytes: [p.max_data]u8 = @splat('x');
+        pane.stream.appendOutput(a, &bytes);
+        owner.flushPane(&session, &pane);
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expect(client.dead);
+        try std.testing.expect(client.session == null and session.client == null);
+        try std.testing.expectEqual(@as(usize, 0), pane.stream.unsent.len());
+        try std.testing.expectEqual(@as(u32, p.window), pane.stream.credit);
+        // A delayed detach from the dropped client cannot clear a new owner.
+        var newer: Client = .{ .fd = -1 };
+        _ = attachment.link(&newer, &session);
+        pane.stream.appendOutput(a, "new backlog");
+        owner.detach(&client, &session);
+        try std.testing.expect(session.client == &newer and newer.session == &session);
+        try std.testing.expectEqualStrings("new backlog", pane.stream.nextOutput());
+    }
+}
 
 const Slot = union(enum) { listen, signal, client: *Client, master: struct { s: *Session, pane: *Pane }, launch: *Pane };
 
@@ -297,8 +301,8 @@ pub const Owner = struct {
             timeout = clampTimeout(timeout, d.deadline - now);
         };
         if (!self.had_client and self.sessions.items.len == 0) timeout = clampTimeout(timeout, self.started + startup_grace_ms - now);
-        for (self.sessions.items) |s| for (s.panes.items) |pane| if (pane.status != null and !pane.exit_sent and s.client != null and
-            pane.master >= 0 and pane.unsent.len() == 0 and !pane.snapshot_pending and !pane.stale)
+        for (self.sessions.items) |s| for (s.panes.items) |pane| if (pane.status != null and s.client != null and
+            pane.master >= 0 and pane.stream.exitReady(true))
         {
             timeout = clampTimeout(timeout, pane.exit_deadline - now);
         };
@@ -330,7 +334,7 @@ pub const Owner = struct {
         for (self.sessions.items) |s| for (s.panes.items) |pane| if (!pane.removed) {
             flushInput(pane);
             // Exit deadlines expire without any fd activity.
-            if (pane.status != null and !pane.exit_sent) self.flushPane(s, pane);
+            if (pane.status != null and !pane.stream.exit_sent) self.flushPane(s, pane);
         };
         for (self.clients.items) |client| if (!client.dead) {
             self.serveSnapshots(client);
@@ -414,17 +418,29 @@ pub const Owner = struct {
         if (client.closing and client.out.len() == 0) self.dropClient(client);
     }
 
-    fn send(self: *Owner, client: *Client, kind: p.Kind, stream: u32, payload: []const u8) void {
-        if (client.dead) return;
-        client.out.append(self.a, &p.header(kind, stream, payload.len).encode()) catch return self.dropClient(client);
-        client.out.append(self.a, payload) catch return self.dropClient(client);
+    /// Admission can synchronously detach and clear pane delivery queues.
+    fn send(self: *Owner, client: *Client, kind: p.Kind, stream: u32, payload: []const u8) bool {
+        if (client.dead) return false;
+        if (client.out.len() > client_out_limit - p.header_len or payload.len > client_out_limit - p.header_len - client.out.len()) {
+            self.dropClient(client);
+            return false;
+        }
+        client.out.append(self.a, &p.header(kind, stream, payload.len).encode(), client_out_limit) catch {
+            self.dropClient(client);
+            return false;
+        };
+        client.out.append(self.a, payload, client_out_limit) catch {
+            self.dropClient(client);
+            return false;
+        };
+        return true;
     }
 
     fn sendJson(self: *Owner, client: *Client, kind: p.Kind, value: anytype) void {
         const body = p.stringify(self.a, value) catch return self.dropClient(client);
         defer self.a.free(body);
         if (body.len > p.control_limit) return self.replyError(client, 0, error.ReplyTooLarge);
-        self.send(client, kind, 0, body);
+        _ = self.send(client, kind, 0, body);
     }
 
     fn reply(self: *Owner, client: *Client, value: p.Reply) void {
@@ -462,7 +478,7 @@ pub const Owner = struct {
                 const pane = self.attachedPane(client, h.stream) orelse return;
                 if (pane.master < 0 or pane.status != null) return;
                 if (pane.input.len() + payload.len > input_limit) return;
-                try pane.input.append(self.a, payload);
+                try pane.input.append(self.a, payload, input_limit);
             },
             .resize => {
                 const size = try p.decodeResize(payload);
@@ -473,7 +489,7 @@ pub const Owner = struct {
                 const grant = try p.decodeCredit(payload);
                 const s = client.session orelse return;
                 const pane = s.find(h.stream) orelse return;
-                pane.credit = @min(p.window, pane.credit + grant);
+                pane.stream.grant(grant);
                 self.flushPane(s, pane);
             },
             else => unreachable,
@@ -576,34 +592,29 @@ pub const Owner = struct {
     /// gets a snapshot (see `serveSnapshots`) and live output resumes.
     fn attach(self: *Owner, client: *Client, s: *Session, id: u64, sizes: []const p.PaneSize) void {
         if (client.session) |old| if (old != s) self.detach(client, old);
-        if (s.client) |other| if (other != client) {
-            other.session = null;
+        if (attachment.link(client, s)) |other| {
             self.event(other, .taken, s, null);
-        };
-        s.client = client;
-        client.session = s;
+        }
         for (sizes) |size| if (s.find(size.pane)) |pane| {
             if (size.cols > 0 and size.rows > 0) resizePane(pane, size.cols, size.rows) catch {};
         };
         var arena_state = std.heap.ArenaAllocator.init(self.a);
         defer arena_state.deinit();
+        // Existing edge: metadata OOM can reject after spawn/takeover. Keep
+        // this ordering here; transactional attachment admission is separate.
         const session_info = self.info(arena_state.allocator(), s) catch return self.replyError(client, id, error.OutOfMemory);
         self.reply(client, .{ .id = id, .session = session_info });
+        if (client.dead) return;
         for (s.panes.items) |pane| if (!pane.removed) {
-            pane.unsent.clear();
-            pane.stale = false;
-            pane.credit = p.window;
-            pane.exit_sent = false;
-            pane.snapshot_pending = true;
+            pane.stream.attach();
         };
         self.serveSnapshots(client);
         self.saveState(s);
     }
 
     fn detach(self: *Owner, client: *Client, s: *Session) void {
-        if (s.client == client) s.client = null;
-        client.session = null;
-        for (s.panes.items) |pane| pane.unsent.clear();
+        if (!attachment.unlink(client, s)) return;
+        for (s.panes.items) |pane| pane.stream.detach();
         self.saveState(s);
     }
 
@@ -615,10 +626,9 @@ pub const Owner = struct {
         const s = client.session orelse return;
         for (s.panes.items) |pane| {
             if (client.dead or client.out.len() >= snapshot_queue_low) return;
-            if (pane.removed or !pane.snapshot_pending) continue;
-            pane.snapshot_pending = false;
-            pane.unsent.clear();
+            if (pane.removed or !pane.stream.startSnapshot()) continue;
             self.sendSnapshot(client, pane);
+            if (client.dead) return;
             self.flushPane(s, pane);
         }
     }
@@ -632,11 +642,11 @@ pub const Owner = struct {
             var offset: usize = 0;
             while (offset < bytes.items.len) {
                 const n = @min(p.max_data, bytes.items.len - offset);
-                self.send(client, .snapshot, pane.id, bytes.items[offset..][0..n]);
+                if (!self.send(client, .snapshot, pane.id, bytes.items[offset..][0..n])) return;
                 offset += n;
             }
         } else |_| bytes.clearRetainingCapacity();
-        self.send(client, .snapshot_end, pane.id, "");
+        if (!self.send(client, .snapshot_end, pane.id, "")) return;
         if (!client.foreground_events) return;
         // HTP events swallowed by the snapshot must not leave stale foreground
         // state. Sync only the value, not command-start/completion side effects.
@@ -645,17 +655,17 @@ pub const Owner = struct {
             .name = "session_foreground_process",
             .payload = .{ .command = if (pane.status == null) pane.vt.shell_command.value() else "" },
         }) catch {
-            client.dead = true;
+            self.dropClient(client);
             return;
         };
         defer self.a.free(state);
         const framed = std.fmt.allocPrint(self.a, "\x1b]1337;Hollow;{s}\x1b\\", .{state}) catch {
-            client.dead = true;
+            self.dropClient(client);
             return;
         };
         defer self.a.free(framed);
-        pane.unsent.append(self.a, framed) catch {
-            client.dead = true;
+        pane.stream.unsent.append(self.a, framed, p.resync_limit) catch {
+            self.dropClient(client);
         };
     }
 
@@ -712,13 +722,12 @@ pub const Owner = struct {
         if (pane.master >= 0) _ = c.close(pane.master);
         if (pane.launch >= 0) _ = c.close(pane.launch);
         pane.input.clear();
-        pane.unsent.clear();
+        pane.stream.respawn();
         pane.pid = child.pid;
         pane.master = child.master;
         pane.launch = child.launch;
         pane.status = null;
         pane.vt.shell_command = .{};
-        pane.exit_sent = false;
         pane.exit_deadline = 0;
         self.saveState(s);
     }
@@ -795,19 +804,12 @@ pub const Owner = struct {
         var replies = pane.vt.takeReplies();
         defer replies.deinit(self.a);
         if (replies.items.len > 0 and pane.master >= 0 and pane.input.len() + replies.items.len <= input_limit) {
-            pane.input.append(self.a, replies.items) catch {};
+            pane.input.append(self.a, replies.items, input_limit) catch {};
         }
         // Output after the exit status only updates the VT (and so the next
         // snapshot); the client has already been told the pane is dead.
-        if (s.client == null or pane.stale or pane.snapshot_pending or pane.exit_sent) return;
-        pane.unsent.append(self.a, bytes) catch {
-            pane.unsent.clear();
-            pane.stale = true;
-        };
-        if (pane.unsent.len() > p.resync_limit) {
-            pane.unsent.clear();
-            pane.stale = true;
-        }
+        if (s.client == null) return;
+        pane.stream.appendOutput(self.a, bytes);
         self.flushPane(s, pane);
     }
 
@@ -816,23 +818,19 @@ pub const Owner = struct {
     /// returned all credit.
     fn flushPane(self: *Owner, s: *Session, pane: *Pane) void {
         const client = s.client orelse return;
-        if (pane.snapshot_pending) return;
-        if (pane.stale) {
-            if (pane.credit < p.window) return;
-            pane.stale = false;
-            pane.snapshot_pending = true;
+        if (pane.stream.snapshot_pending) return;
+        if (pane.stream.requestResync()) {
             self.event(client, .resync, s, pane.id);
             return self.serveSnapshots(client);
         }
-        while (pane.unsent.len() > 0 and pane.credit > 0) {
-            const n = @min(@min(pane.unsent.len(), p.max_data), pane.credit);
-            self.send(client, .output, pane.id, pane.unsent.slice()[0..n]);
-            pane.unsent.consume(n);
-            pane.credit -= @intCast(n);
+        while (true) {
+            const bytes = pane.stream.nextOutput();
+            if (bytes.len == 0) break;
+            if (!self.send(client, .output, pane.id, bytes)) return;
+            pane.stream.consumeOutput(bytes.len);
         }
-        if (pane.status) |status| if (!pane.exit_sent and pane.unsent.len() == 0 and (pane.master < 0 or nowMs() >= pane.exit_deadline)) {
-            pane.exit_sent = true;
-            self.send(client, .exit, pane.id, &p.encodeExit(status));
+        if (pane.status) |status| if (pane.stream.exitReady(pane.master < 0 or nowMs() >= pane.exit_deadline)) {
+            if (self.send(client, .exit, pane.id, &p.encodeExit(status))) pane.stream.exit_sent = true;
         };
     }
 
@@ -891,9 +889,8 @@ pub const Owner = struct {
         for (s.panes.items) |pane| self.closePane(s, pane);
         s.meta.ended = true;
         if (s.client) |client| {
-            client.session = null;
+            _ = attachment.unlink(client, s);
             self.event(client, .session_end, s, null);
-            s.client = null;
         }
         if (self.state_dir) |dir| {
             var path: [std.fs.max_path_bytes]u8 = undefined;
@@ -940,15 +937,13 @@ pub const Owner = struct {
         if (pane.launch >= 0) _ = c.close(pane.launch);
         pane.vt.destroy();
         pane.input.deinit(self.a);
-        pane.unsent.deinit(self.a);
+        pane.stream.deinit(self.a);
         self.a.free(pane.spawn);
         self.a.destroy(pane);
     }
 
     fn freeClient(self: *Owner, client: *Client) void {
-        if (client.session) |s| if (s.client == client) {
-            s.client = null;
-        };
+        if (client.session) |s| _ = attachment.unlink(client, s);
         _ = c.close(client.fd);
         client.reader.deinit(self.a);
         client.out.deinit(self.a);

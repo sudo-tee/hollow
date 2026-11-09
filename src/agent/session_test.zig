@@ -11,6 +11,8 @@ const a = std.testing.allocator;
 
 test {
     _ = @import("session_core.zig");
+    _ = @import("session_stream.zig");
+    _ = @import("session_attachment.zig");
 }
 
 const Frame = struct { kind: p.Kind, stream: u32, payload: []u8 };
@@ -209,6 +211,50 @@ test "attach after disconnect restores the screen from a binary snapshot and tak
     try third.waitOutput(&owner, pane, "got-abc");
 }
 
+test "detached owner answers VT queries and snapshots the resulting output" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell(
+        "stty raw -echo; printf ready; dd bs=1 count=1 of=/dev/null 2>/dev/null; " ++
+            "printf '\\033[6n'; reply=$(dd bs=1 count=6 2>/dev/null); " ++
+            "if [ \"$reply\" = \"$(printf '\\033[1;6R')\" ]; then printf reply-ok; fi; sleep 30",
+    ) }));
+    defer created.deinit();
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const pane_id = created.value.session.?.panes[0].id;
+    try client.waitOutput(&owner, pane_id, "ready");
+    const detached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .detach }));
+    defer detached.deinit();
+    const session = owner.sessions.items[0];
+    const pane = session.panes.items[0];
+    try std.testing.expect(session.client == null);
+    try std.testing.expectEqual(@as(isize, 1), c.write(pane.master, "g", 1));
+    const deadline = nowMs() + 5000;
+    while (true) {
+        const text = try vt.plain(pane.vt.terminal, a);
+        defer a.free(text);
+        if (std.mem.indexOf(u8, text, "reply-ok") != null) break;
+        if (nowMs() >= deadline) return error.Timeout;
+        try owner.step(10);
+    }
+    try std.testing.expectEqual(@as(usize, 0), pane.stream.unsent.len());
+    client.clear();
+    const attached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expect(attached.value.ok);
+    _ = try client.wait(&owner, .snapshot_end, pane_id);
+    const snapshot = try client.bytes(.snapshot, pane_id);
+    defer a.free(snapshot);
+    const restored = try vt.restore(snapshot, 1 << 20);
+    defer vt.freeTerminal(restored);
+    const text = try vt.plain(restored, a);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "reply-ok") != null);
+}
+
 test "host id is created once, persisted, and sent in every welcome" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -301,7 +347,7 @@ test "attach restores foreground command reported while detached and completion 
 
     // A subsequent snapshot must also clear the client's old command value.
     second.clear();
-    remote.snapshot_pending = true;
+    remote.stream.snapshot_pending = true;
     _ = try second.wait(&owner, .snapshot_end, pane);
     try second.waitOutput(&owner, pane, "\"command\":\"\"");
 }
@@ -609,8 +655,8 @@ test "a client that stops granting credit is resynced with a snapshot" {
     defer created.deinit();
     const pane = created.value.session.?.panes[0].id;
     const deadline = nowMs() + 10000;
-    while (nowMs() < deadline and !owner.sessions.items[0].panes.items[0].stale) try owner.step(10);
-    try std.testing.expect(owner.sessions.items[0].panes.items[0].stale);
+    while (nowMs() < deadline and !owner.sessions.items[0].panes.items[0].stream.stale) try owner.step(10);
+    try std.testing.expect(owner.sessions.items[0].panes.items[0].stream.stale);
     try client.drain();
     const sent = try client.bytes(.output, pane);
     defer a.free(sent);

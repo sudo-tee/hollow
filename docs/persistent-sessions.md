@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Shared metadata/admission is extracted and integrated into Linux; next share attachment/output/snapshot semantics and wire ConPTY/VT without replay.
+3. Shared metadata, attachment, and stream state are integrated into Linux; qualify the Windows ConPTY/VT adapter, then wire shared authority into the Windows owner without replay.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -671,7 +671,10 @@ Initial layout is allocated before spawning, and initial revision remains 0; sub
 The last nonzero `u32` pane ID remains valid, and session teardown does not depend on having revision space available.
 Ended identities remain reserved only while their records are retained, not after collection; lifetime tombstones are not introduced.
 No new session/pane count policy is inferred from GUI layout limits, and the pre-existing owner-wide count/aggregate-bound gap remains explicit.
-The Windows bootstrap still lacks live session semantics; shared attachment, streaming/snapshots, and ConPTY/VT integration remain next.
+The Windows bootstrap still lacks live session semantics; ConPTY/VT and live owner integration remain next.
+`session_attachment.zig` now shares typed takeover/unlink transitions, and `session_stream.zig` shares bounded backlog, credit, snapshot/resync, and exit-delivery state with the Linux owner.
+VT encoding, process drain/linger decisions, and transport framing remain runtime responsibilities.
+Boolean frame admission prevents consuming a backlog synchronously cleared by send failure and detach; regression coverage exercises both header and payload allocation failure.
 Shared metadata validation includes portable Linux/Windows tests, 53 owner-loop tests across Debug/ReleaseSafe/ReleaseSmall, and real Linux plus Windows-to-WSL detach/restore coverage.
 Windows CI also runs the standalone portable metadata tests.
 

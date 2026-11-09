@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 after raw Windows connect bridging and shared metadata/admission extraction.
+Updated 2026-11-09 during shared attachment/stream extraction and Windows pane adapter qualification.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -51,6 +51,7 @@ Commit map (current IDs, oldest first):
 | `e2b95ee` | Windows owner-side ConPTY process-tree lifetime |
 | `6d6adca` | Secured Windows session-owner bootstrap |
 | `06c923a` | Bounded raw Windows connect bridge |
+| `13b1b46` | Shared owner metadata and mutation admission |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -59,6 +60,15 @@ Open work, in suggested order:
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
 3. Phase 3: shared authoritative session semantics on top of the secured Windows owner and raw connect bridge, then GUI domains and WSL keepalive.
+
+Shared attachment and stream state now live in `session_attachment.zig` and `session_stream.zig`, integrated into the Linux owner.
+Typed non-owning links enforce takeover and identity-checked detach without another registry.
+Portable delivery state owns bounded backlog, credit, snapshot/resync barriers, and exit-delivery admission; runtime code retains VT encoding and process drain/linger policy.
+Queue admission checks bounds before allocation, and failed output-frame admission returns before consuming backlog or credit.
+This fixes a concrete synchronous send failure that detached the client, cleared its backlog, then consumed the cleared queue.
+Targeted regressions cover header/payload OOM, stale detach after takeover, detached terminal queries, overflow/resync, and exit barriers.
+Validation passes: Linux ReleaseSafe transport/owner/PTY suites execute 152 tests; owner-loop also passes Debug and ReleaseSmall, and portable stream/attachment tests pass natively and on Windows.
+The pre-existing attach-info OOM edge after spawn/takeover remains explicitly deferred.
 
 Phase 3 foundation: `WindowsPty.spawnSession` creates an unnamed, noninheritable kill-on-close Job Object for each owner pane.
 The child starts suspended, joins its job before executing, and resumes only after both bounded I/O workers exist.
