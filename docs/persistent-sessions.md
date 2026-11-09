@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Shared metadata, attachment, and stream state are integrated into Linux; qualify the Windows ConPTY/VT adapter, then wire shared authority into the Windows owner without replay.
+3. Shared metadata, attachment, and stream state are integrated into Linux; the standalone Windows ConPTY/VT adapter is implemented, with live Windows owner integration next.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -675,6 +675,12 @@ The Windows bootstrap still lacks live session semantics; ConPTY/VT and live own
 `session_attachment.zig` now shares typed takeover/unlink transitions, and `session_stream.zig` shares bounded backlog, credit, snapshot/resync, and exit-delivery state with the Linux owner.
 VT encoding, process drain/linger decisions, and transport framing remain runtime responsibilities.
 Boolean frame admission prevents consuming a backlog synchronously cleared by send failure and detach; regression coverage exercises both header and payload allocation failure.
+`session_pane_windows.zig` owns ConPTY and headless VT independently of attached views, accepts prepared native launch options, and retains snapshots after process exit.
+Process exit, raw Windows status, and fully drained output EOF are distinct; notification is installed before resume and drained during destruction.
+Pending query replies retain only unsubmitted suffixes under backpressure, and output draining continues even when the input queue is full.
+Replies are bounded to 4 MiB and snapshot encoding/VT fallback stream into a 64 MiB bounded sink.
+Session-owned child environments strip GUI identity/control variables and force OSC transport without changing ordinary GUI spawn behavior.
+Protocol-to-native launch mapping and live shared Windows owner authority are not wired yet; native Windows GUI persistence remains disabled.
 Shared metadata validation includes portable Linux/Windows tests, 53 owner-loop tests across Debug/ReleaseSafe/ReleaseSmall, and real Linux plus Windows-to-WSL detach/restore coverage.
 Windows CI also runs the standalone portable metadata tests.
 

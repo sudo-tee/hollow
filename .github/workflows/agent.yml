@@ -34,6 +34,12 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe session-owner-windows test-session-windows-owner 2>&1 | Tee-Object -FilePath session-windows-owner.log
           exit $LASTEXITCODE
+      - name: Headless Windows session pane, snapshots and owner lifetime
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pane 2>&1 | Tee-Object -FilePath session-windows-pane.log
+          exit $LASTEXITCODE
       - name: Portable session metadata and admission on Windows
         shell: pwsh
         run: |
@@ -47,6 +53,7 @@ jobs:
             fs-exec-windows-native.log
             session-windows-pty.log
             session-windows-owner.log
+            session-windows-pane.log
             session-core.log
   docker:
     runs-on: ubuntu-latest

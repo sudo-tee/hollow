@@ -52,6 +52,7 @@ Commit map (current IDs, oldest first):
 | `6d6adca` | Secured Windows session-owner bootstrap |
 | `06c923a` | Bounded raw Windows connect bridge |
 | `13b1b46` | Shared owner metadata and mutation admission |
+| `643ae0a` | Shared attachment and bounded stream delivery state |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -69,6 +70,23 @@ This fixes a concrete synchronous send failure that detached the client, cleared
 Targeted regressions cover header/payload OOM, stale detach after takeover, detached terminal queries, overflow/resync, and exit barriers.
 Validation passes: Linux ReleaseSafe transport/owner/PTY suites execute 152 tests; owner-loop also passes Debug and ReleaseSmall, and portable stream/attachment tests pass natively and on Windows.
 The pre-existing attach-info OOM edge after spawn/takeover remains explicitly deferred.
+
+`session_pane_windows.zig` now provides a separately tested owner-side ConPTY/headless-VT adapter, not a live Windows session implementation.
+It accepts prepared native options/launch commands; mapping session protocol requests and wiring shared authority into `session_windows.zig` remain next.
+The adapter keeps VT state after process exit, exposes raw Windows exit status separately from drained output EOF, and supports binary and VT-fallback snapshots.
+Latest resize is one pending value; input flushes pending replies/resize before application bytes, and accepted reply prefixes are never replayed.
+Output continues draining under input backpressure to avoid circular stdout/stdin blocking, while pending replies remain capped at 4 MiB.
+Reply exhaustion is explicit, and binary/VT snapshot output streams through a 64 MiB bounded sink.
+Process-exit notification is registered before child resume and drained before freeing callback state; writer completion/failure wakes the owner too.
+The caller's wake context must outlive pane destruction.
+Session-only environment filtering removes inherited/custom GUI pane/workspace/command identifiers case-insensitively and forces `HOLLOW_TRANSPORT=osc`.
+Normal GUI spawning keeps its environment behavior.
+The Windows executable root facade moves imports under `src/` and initializes shared I/O, without linking VT into the bootstrap or enabling native GUI persistence.
+Adapter validation passes 30 tests in Debug, ReleaseSafe, and ReleaseFast on real Windows through WSL, including process/variable continuity after view destruction, snapshot/fallback parity, resize, DSR replies, raw exit retention, environment isolation, idle exit wake, and descendant teardown.
+A deterministic full-input regression also verifies continued output draining, retained reply suffix, buffered-EOF handling, and liveness independent of writer failure.
+Existing Windows owner/bridge and ConPTY suites pass 42 tests with one known restrictive-job startup skip; Windows GUI cross-build passes.
+Linux pane/snapshot tests execute 93 tests with client tests cached, and Windows-to-WSL pane/snapshot/borrower tests execute 143 with client tests cached.
+The adapter target is registered in native Windows CI; CI itself was not run locally.
 
 Phase 3 foundation: `WindowsPty.spawnSession` creates an unnamed, noninheritable kill-on-close Job Object for each owner pane.
 The child starts suspended, joins its job before executing, and resumes only after both bounded I/O workers exist.

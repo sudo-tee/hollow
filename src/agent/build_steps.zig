@@ -52,6 +52,11 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     module.addImport("posix_c", shell.import_table.get("posix_c").?);
     // glibc keeps forkpty in libutil; musl has it in libc.
     if (target.result.abi != .musl) module.linkSystemLibrary("util", .{});
+    addSessionVt(b, module, target, optimize);
+    return module;
+}
+
+fn addSessionVt(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     // Headless VT for persistent sessions. ghostty is a URL dependency in
     // build.zig.zon (no submodules), shared with the GUI build.
     const ghostty = b.dependency("ghostty", .{
@@ -74,7 +79,6 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     // Binary snapshots are only exchanged between identical ghostty packages;
     // the version string alone does not change between dev builds.
     @import("../c_build.zig").addSessionIdentity(b, module, ghostty.builder);
-    return module;
 }
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
@@ -82,7 +86,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
     if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
         const owner_module = b.createModule(.{
-            .root_source_file = b.path("src/agent/session_main_windows.zig"),
+            .root_source_file = b.path("src/session_owner_windows.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -112,6 +116,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         windows_owner_tests.dependOn(&fail.step);
     }
     const windows_pty_step = b.step("test-session-windows-pty", "Run headless Windows ConPTY session job lifecycle tests");
+    const windows_pane_step = b.step("test-session-windows-pane", "Run headless Windows owner pane and terminal snapshot tests");
     if (target.result.os.tag == .windows) {
         const options = b.addOptions();
         options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
@@ -125,8 +130,20 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
         run.has_side_effects = true;
         windows_pty_step.dependOn(&run.step);
+        const pane_module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_pane_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        pane_module.addOptions("build_options", options);
+        addSessionVt(b, pane_module, target, optimize);
+        const pane_run = b.addRunArtifact(b.addTest(.{ .root_module = pane_module }));
+        pane_run.has_side_effects = true;
+        windows_pane_step.dependOn(&pane_run.step);
     } else {
         windows_pty_step.dependOn(&b.addFail("test-session-windows-pty requires a Windows target (-Dtarget=x86_64-windows-gnu from WSL)").step);
+        windows_pane_step.dependOn(&b.addFail("test-session-windows-pane requires a Windows target (-Dtarget=x86_64-windows-gnu from WSL)").step);
     }
     const agent_step = b.step("agent", "Build the standalone Linux musl agent for the selected architecture");
     if (target.result.cpu.arch != .x86_64 and target.result.cpu.arch != .aarch64) {

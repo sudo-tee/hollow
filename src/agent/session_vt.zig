@@ -4,6 +4,9 @@
 const std = @import("std");
 const g = @import("ghostty_c");
 
+pub const reply_limit = 4 * 1024 * 1024;
+pub const snapshot_limit = 64 * 1024 * 1024;
+
 pub const Vt = struct {
     allocator: std.mem.Allocator,
     terminal: g.GhosttyTerminal,
@@ -42,6 +45,10 @@ pub const Vt = struct {
 
     fn writePty(_: g.GhosttyTerminal, userdata: ?*anyopaque, data: [*c]const u8, len: usize) callconv(.c) void {
         const self: *Vt = @ptrCast(@alignCast(userdata orelse return));
+        if (self.replies.items.len > reply_limit or len > reply_limit - self.replies.items.len) {
+            self.reply_failed = true;
+            return;
+        }
         self.replies.appendSlice(self.allocator, data[0..len]) catch {
             self.reply_failed = true;
         };
@@ -94,7 +101,7 @@ pub const Vt = struct {
         var sink: Sink = .{ .allocator = allocator, .out = out };
         const writer: g.GhosttyWriter = .{ .write = Sink.write, .userdata = &sink };
         check(g.ghostty_snapshot_encode(self.terminal, writer)) catch |err| {
-            return if (sink.failed) error.OutOfMemory else err;
+            return sink.failure orelse err;
         };
     }
 
@@ -125,28 +132,54 @@ pub const Vt = struct {
         var formatter: g.GhosttyFormatter = null;
         try check(g.ghostty_formatter_terminal_new(null, &formatter, self.terminal, options));
         defer g.ghostty_formatter_free(formatter);
-        var ptr: [*c]u8 = null;
-        var len: usize = 0;
-        try check(g.ghostty_formatter_format_alloc(formatter, null, &ptr, &len));
-        defer g.ghostty_free(null, ptr, len);
-        try out.appendSlice(allocator, ptr[0..len]);
+        var sink: Sink = .{ .allocator = allocator, .out = out };
+        const writer: g.GhosttyWriter = .{ .write = Sink.write, .userdata = &sink };
+        check(g.ghostty_formatter_format(formatter, writer)) catch |err| {
+            return sink.failure orelse err;
+        };
     }
 };
 
 const Sink = struct {
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
-    failed: bool = false,
+    limit: usize = snapshot_limit,
+    failure: ?anyerror = null,
 
     fn write(userdata: ?*anyopaque, data: [*c]const u8, len: usize) callconv(.c) bool {
         const self: *Sink = @ptrCast(@alignCast(userdata.?));
+        if (self.out.items.len > self.limit or len > self.limit - self.out.items.len) {
+            self.failure = error.ResourceExhausted;
+            return false;
+        }
         self.out.appendSlice(self.allocator, data[0..len]) catch {
-            self.failed = true;
+            self.failure = error.OutOfMemory;
             return false;
         };
         return true;
     }
 };
+
+test "query replies and encoded snapshot sink reject overflow before append" {
+    const a = std.testing.allocator;
+    const vt = try Vt.create(a, 40, 6, 4096);
+    defer vt.destroy();
+    try vt.replies.resize(a, reply_limit);
+    Vt.writePty(vt.terminal, vt, "x", 1);
+    try std.testing.expect(vt.reply_failed);
+    try std.testing.expectEqual(reply_limit, vt.replies.items.len);
+    var replies = vt.takeReplies();
+    defer replies.deinit(a);
+    try std.testing.expect(!vt.reply_failed);
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    var sink: Sink = .{ .allocator = a, .out = &bytes, .limit = 3 };
+    try std.testing.expect(Sink.write(&sink, "ab", 2));
+    try std.testing.expect(!Sink.write(&sink, "cd", 2));
+    try std.testing.expectEqual(error.ResourceExhausted, sink.failure.?);
+    try std.testing.expectEqualStrings("ab", bytes.items);
+}
 
 /// The ghostty build identity sent in the session hello: the pinned package
 /// hash from build.zig.zon. Binary snapshots are only exchanged between

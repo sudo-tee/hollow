@@ -8,6 +8,7 @@ const windows = std.os.windows;
 extern "kernel32" fn GetStdHandle(windows.DWORD) callconv(.winapi) ?windows.HANDLE;
 
 pub fn main(init: std.process.Init) void {
+    @import("../io.zig").init(init.io, init.minimal.environ);
     var bridge_admitted = false;
     run(init, &bridge_admitted) catch |err| {
         // Stderr may share the blocked stdout pipe. Once relaying, report
