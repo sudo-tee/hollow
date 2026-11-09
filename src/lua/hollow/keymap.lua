@@ -1026,7 +1026,7 @@ function M.setup(hollow, host_api, state)
     return out
   end
 
-  host_api.on_key(function(key, mods)
+  local function handle_key(key, mods)
     key, mods = canonicalize_runtime_key(key, mods)
 
     local suppressed = keymap_state.suppress_next_key
@@ -1141,6 +1141,19 @@ function M.setup(hollow, host_api, state)
     end
 
     return pane_key()
+  end
+
+  -- `text` is what the keyboard layout typed with this key ("" for none, such
+  -- as a dead key); nil when unknown, so text inputs fall back to the key name.
+  host_api.on_key(function(key, mods, text)
+    local shared = require("hollow.ui.shared")
+    local previous = shared.set_key_text(text)
+    local ok, consumed = pcall(handle_key, key, mods)
+    shared.set_key_text(previous)
+    if not ok then
+      error(consumed, 0)
+    end
+    return consumed
   end)
 end
 

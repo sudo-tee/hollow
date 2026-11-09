@@ -155,7 +155,13 @@ end
 local function on_docked_key(key, mods)
   -- Bare bindings match any modifiers, so Ctrl/Alt chords would otherwise be
   -- eaten (e.g. <C-S-Left> as arrow_left) instead of reaching pane focus/close.
-  if mods ~= "" and mods ~= "<S>" and not bound_exactly(key, mods) then
+  -- AltGr text arrives as Ctrl+Alt but is still typed text.
+  if
+    mods ~= ""
+    and mods ~= "<S>"
+    and not bound_exactly(key, mods)
+    and not shared.printable_char_for_key(key, mods)
+  then
     return false
   end
   docked_key = true

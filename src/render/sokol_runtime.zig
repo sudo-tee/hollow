@@ -5309,6 +5309,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (event.type != c.SAPP_EVENTTYPE_CHAR and event.type != c.SAPP_EVENTTYPE_MOUSE_MOVE) flushPendingTextKey(app, event.frame_count);
     if (g_lua_pane_button != null and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
     if (takeLuaPaneRelease(event)) {
         g_mouse_x = event.mouse_x;
@@ -5502,47 +5503,109 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         return;
     }
 
-    // Let Lua/modal handlers consume keys before built-in shortcuts like paste.
-    if (key != .unidentified) {
-        const key_name = @tagName(key);
-        if (app.fireOnKey(key_name, mods)) {
-            const can_have_paired_char = (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 or is_altgr;
-            const should_swallow_paired_char = can_have_paired_char and text_helpers.isLayoutTextKey(key);
-            if (should_swallow_paired_char) {
-                g_swallow_char_pending = 1;
-                g_swallow_char_until_frame = event.frame_count + 1;
-            }
-            c.sapp_consume_event();
-            return;
-        }
-    }
-
-    if (shouldPasteOnKeyDown(event.key_code, mods)) {
-        _ = app.enqueueMouse(.paste_clipboard);
-        return;
-    }
-
-    if (key != .unidentified and !is_altgr and handleClipboardShortcut(app, key, mods)) {
+    const key_down: PendingKeyDown = .{
+        .key = key,
+        .key_code = event.key_code,
+        .mods = mods,
+        .is_altgr = is_altgr,
+        .repeat = event.key_repeat,
+    };
+    g_char_claimed = false;
+    if (key_down.typesText()) {
+        // Lua needs the layout's text, which only the following CHAR carries.
+        g_pending_text_key = key_down;
         c.sapp_consume_event();
         return;
     }
+    if (finishKeyDown(app, key_down, null, event.frame_count)) {
+        g_char_claimed = true;
+        c.sapp_consume_event();
+    }
+}
 
-    // Give Lua a chance to consume this key before the terminal sees it.
+/// Set when Lua consumed the last key-down, so a CHAR it produces (e.g. a
+/// numpad digit) is not offered to Lua a second time as text.
+var g_char_claimed = false;
+
+/// Text without a known key: injected input (WinCompose and other compose
+/// tools send VK_PACKET, which has no key code) or numpad digits. Lua text
+/// inputs get it first; returns true when consumed.
+fn dispatchOrphanText(app: *App, text: []const u8) bool {
+    return app.fireOnKey(@tagName(ghostty.Key.unidentified), 0, text);
+}
+
+/// A key-down whose dispatch may wait for its CHAR event.
+const PendingKeyDown = struct {
+    key: ghostty.Key,
+    key_code: c.sapp_keycode,
+    mods: u32,
+    is_altgr: bool,
+    repeat: bool,
+
+    /// Plain, Shift or AltGr layout keys: their text depends on the keyboard
+    /// layout, while key names are US physical positions.
+    fn typesText(self: PendingKeyDown) bool {
+        const can_have_paired_char = (self.mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 or self.is_altgr;
+        return can_have_paired_char and text_helpers.isLayoutTextKey(self.key);
+    }
+};
+
+test "layout text keys wait for their CHAR unless a shortcut modifier is held" {
+    const altgr = ghostty.Mods.ctrl | ghostty.Mods.alt;
+    var key_down: PendingKeyDown = .{ .key = .q, .key_code = c.SAPP_KEYCODE_Q, .mods = 0, .is_altgr = false, .repeat = false };
+    try std.testing.expect(key_down.typesText());
+    key_down.mods = ghostty.Mods.shift;
+    try std.testing.expect(key_down.typesText());
+    key_down.mods = ghostty.Mods.ctrl;
+    try std.testing.expect(!key_down.typesText());
+    key_down.mods = altgr;
+    try std.testing.expect(!key_down.typesText());
+    key_down.is_altgr = true;
+    try std.testing.expect(key_down.typesText());
+    key_down = .{ .key = .enter, .key_code = c.SAPP_KEYCODE_ENTER, .mods = 0, .is_altgr = false, .repeat = false };
+    try std.testing.expect(!key_down.typesText());
+    try std.testing.expectEqual(ghostty.Key.intl_backslash, mapKey(c.SAPP_KEYCODE_WORLD_1));
+    try std.testing.expectEqual(ghostty.Key.intl_backslash, mapKey(c.SAPP_KEYCODE_WORLD_2));
+}
+
+/// Sokol emits a key's CHAR right after its KEY_DOWN, so any other event
+/// means none is coming (for example a dead key).
+var g_pending_text_key: ?PendingKeyDown = null;
+
+fn flushPendingTextKey(app: *App, frame_count: u64) void {
+    const pending = g_pending_text_key orelse return;
+    g_pending_text_key = null;
+    _ = finishKeyDown(app, pending, "", frame_count);
+}
+
+/// `text` is the layout text the key typed ("" for none), or null when the key
+/// has none to wait for. Returns true when the key was consumed.
+fn finishKeyDown(app: *App, k: PendingKeyDown, text: ?[]const u8, frame_count: u64) bool {
+    // Let Lua/modal handlers consume keys before built-in shortcuts like paste.
     // fireOnKey calls LuaJIT (not the ghostty DLL) so it is safe on the
     // event thread.  If Lua consumes the key we stop here — no DLL call needed.
-    if (key != .unidentified) {
-        if (handleScrollbackKey(app, key, mods)) {
+    if (k.key != .unidentified and app.fireOnKey(@tagName(k.key), k.mods, text)) return true;
+
+    if (shouldPasteOnKeyDown(k.key_code, k.mods)) {
+        _ = app.enqueueMouse(.paste_clipboard);
+        return false;
+    }
+
+    if (k.key != .unidentified and !k.is_altgr and handleClipboardShortcut(app, k.key, k.mods)) return true;
+
+    if (k.key != .unidentified) {
+        if (handleScrollbackKey(app, k.key, k.mods)) {
             g_swallow_char_pending = 1;
-            g_swallow_char_until_frame = event.frame_count;
-            c.sapp_consume_event();
-            return;
+            g_swallow_char_until_frame = frame_count;
+            return true;
         }
     }
 
     // Defer the actual DLL call (encodeKey) to the frame thread via the queue.
     // This prevents a data race with syncKeyEncoder / syncMouseEncoder which
     // run on the frame thread inside tickPanes / resizeAllPanes.
-    if (key != .unidentified) _ = app.enqueueKey(key, mods, if (event.key_repeat) .repeat else .press, is_altgr);
+    if (k.key != .unidentified) _ = app.enqueueKey(k.key, k.mods, if (k.repeat) .repeat else .press, k.is_altgr);
+    return false;
 }
 
 fn handleKeyUp(app: *App, event: c.sapp_event) void {
@@ -5573,6 +5636,23 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
 
 fn handleChar(app: *App, event: c.sapp_event) void {
     if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
+    const char_claimed = g_char_claimed;
+    g_char_claimed = false;
+    const had_key = g_pending_text_key != null;
+    if (g_pending_text_key) |pending| {
+        g_pending_text_key = null;
+        var text_buf: [5]u8 = @splat(0);
+        const char_mods = altGrAdjustedMods(ghosttyMods(event.modifiers));
+        const typed = if (text_helpers.shouldForwardChar(char_mods, event.char_code, g_right_alt_down))
+            encodeCodepoint(event.char_code, &text_buf) orelse ""
+        else
+            "";
+        if (finishKeyDown(app, pending, typed, event.frame_count)) {
+            c.sapp_consume_event();
+            return;
+        }
+        // Declined keys were queued for the terminal; their CHAR follows as usual.
+    }
     if (g_swallow_char_pending > 0) {
         if (event.frame_count <= g_swallow_char_until_frame) {
             g_swallow_char_pending -= 1;
@@ -5596,6 +5676,10 @@ fn handleChar(app: *App, event: c.sapp_event) void {
         return;
     }
     if (!text_helpers.shouldForwardChar(mods, event.char_code, g_right_alt_down)) {
+        c.sapp_consume_event();
+        return;
+    }
+    if (!had_key and !char_claimed and dispatchOrphanText(app, utf8)) {
         c.sapp_consume_event();
         return;
     }
@@ -6345,6 +6429,8 @@ fn mapKey(key_code: c.sapp_keycode) ghostty.Key {
         c.SAPP_KEYCODE_COMMA => .comma,
         c.SAPP_KEYCODE_PERIOD => .period,
         c.SAPP_KEYCODE_SLASH => .slash,
+        // The ISO key between left Shift and Z: WORLD_2 on Windows, WORLD_1 elsewhere.
+        c.SAPP_KEYCODE_WORLD_1, c.SAPP_KEYCODE_WORLD_2 => .intl_backslash,
         c.SAPP_KEYCODE_ESCAPE => .escape,
         c.SAPP_KEYCODE_LEFT_SHIFT => .shift_left,
         c.SAPP_KEYCODE_RIGHT_SHIFT => .shift_right,
