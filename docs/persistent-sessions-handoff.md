@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-06 as Phase 3 Windows-owner foundations begin.
+Updated 2026-11-09 during Phase 3 secured Windows-owner bootstrap.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -48,6 +48,7 @@ Commit map (current IDs, oldest first):
 | `e274c74` | Dedicated rejected-respawn notice |
 | `f93d9b8` | Explicit recovery by reserved create ID |
 | `b409297` | Coalesce output frames within GUI parser reads |
+| `e2b95ee` | Windows owner-side ConPTY process-tree lifetime |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -55,7 +56,7 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3 is starting with owner-side ConPTY process-tree ownership; native Windows owner transport and WSL keepalive follow.
+3. Phase 3: connect the secured Windows owner bootstrap to shared session semantics and the connect bridge, then GUI domains and WSL keepalive.
 
 Phase 3 foundation: `WindowsPty.spawnSession` creates an unnamed, noninheritable kill-on-close Job Object for each owner pane.
 The child starts suspended, joins its job before executing, and resumes only after both bounded I/O workers exist.
@@ -64,11 +65,28 @@ They can receive input before their first output.
 Owner-side destruction kills descendants too; GUI detach must never destroy this owner-side PTY.
 Session input overflow rejects admission atomically with `ResourceExhausted`, without marking the pane dead.
 The ordinary GUI pre-output input buffer is now bounded to the same 1 MiB input limit.
-Native Windows persistence remains unsupported until the session-only executable, secured named-pipe transport, shared session semantics, and GUI wiring land.
+Native Windows persistence remains unsupported until shared session semantics, the connect bridge, and GUI wiring land.
 This foundation does not change Linux owners or require restarting existing sessions.
 Foundation validation: real Windows ConPTY/job tests pass (11 tests each in Debug, ReleaseSafe, and ReleaseFast), Linux ReleaseSafe transport/agent-loop/PTY suites pass (138 tests), Windows borrower/App tests pass (49 tests, one optional fixture skipped), and the ReleaseFast Windows GUI cross-build passes.
 The standalone target is registered in Windows CI; final read-only review found no actionable issues.
-Next concrete slice: session-only Windows owner bootstrap with secured named pipe, singleton ownership, detached launch, and bounded hello/list/kill-server checks.
+Windows bootstrap: `src/agent/session_main_windows.zig` builds a separate session-only `hollow-agent.exe` with no GUI/VT dependencies yet.
+Its `serve|list|kill-server` commands use the SID/version-scoped named-pipe endpoint in `session_pipe_windows.zig`; `connect` and all actual session mutations still return `Unsupported`.
+`session_windows.zig` implements a bounded overlapped loop, empty discovery, explicit shutdown, and an owner-only detached launcher that never submits or replays a create/spawn request.
+The protected user-only DACL and pipe owner are checked by clients, remote clients are rejected, and the first pipe instance remains alive across disconnect/reaccept.
+Fixture-only `--namespace <token>` suffixes are bounded and cannot change the SID or escape the pipe name.
+The owner has 16 client slots, 1 MiB/client output bounds, 5-second hello/partial/write deadlines, a 2-second shutdown deadline, and a 10-second unused-startup grace.
+With no sessions yet, the last client disconnect ends the owner.
+Detached launch fails visibly if `CREATE_BREAKAWAY_FROM_JOB` is denied; never retry without that flag.
+The WSL test runner's enclosing job has `KILL_ON_JOB_CLOSE` without breakaway permission, so successful detached-launch/survival qualification remains conditional on a permissive parent job.
+Protocol fixtures launch their own isolated child owners without claiming to qualify production detached startup.
+Production-namespace serve failures leave a bounded last-error record at `%LOCALAPPDATA%\hollow\session-owner-error.log`; fixture/CLI errors do not overwrite it.
+Bootstrap validation: 25 tests pass with one explicit auto-start skip in each of Debug, ReleaseSafe, and ReleaseFast on Windows through WSL.
+The skipped path first verifies restrictive-job startup fails and creates no endpoint; successful detached launch and launcher-exit survival remain unqualified here.
+The lifecycle suite verifies singleton rejection, malformed-frame isolation, last-client exit, idle connections, CLI empty discovery, and kill-server ACK retention even when read only after owner exit.
+Source audit caught unread-ACK loss from `DisconnectNamedPipe` during final destruction; final teardown now closes without disconnect, while slot reuse still disconnects.
+Linux transport and PTY suites pass (91 tests executed; the unchanged 47-test agent-loop result was cached), Windows ConPTY tests pass (11), and the Windows GUI cross-build passes.
+The new bootstrap target is registered alongside the ConPTY target in native Windows CI; CI itself was not run locally.
+Next concrete slice: shared session semantics, ConPTY/VT ownership, and raw connect bridging before enabling any native Windows GUI domain.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
@@ -363,6 +381,9 @@ Gotchas that cost time before:
 - Windows GUI cross-build: `./launch.sh --build-only`.
 - Windows owner-side ConPTY foundation (no GUI dependencies): `zig build --build-file build-agent.zig test-session-windows-pty -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all`.
   Run on Windows or through WSL executable interop; this target creates isolated test processes, never connects to existing owners.
+- Windows bootstrap: `zig build --build-file build-agent.zig session-owner-windows test-session-windows-owner -Dtarget=x86_64-windows-gnu -Doptimize=Debug --summary all`.
+  Its protocol fixtures use unique private namespaces; successful detached startup is separately qualified only when the enclosing Windows job permits breakaway.
+  Run the same target in ReleaseSafe and ReleaseFast, and report skipped startup checks rather than treating them as passes.
 - Repeat pane/snapshot/client suites with `-Doptimize=ReleaseSafe|ReleaseSmall`.
 - Windows tests through WSL interop:
   `zig build --build-file build.zig test test-session-pane test-session-snapshot test-session-client test-session-borrowers -Dagent-only=false -Dtarget=x86_64-windows-gnu -Dsession-test-wsl="$WSL_DISTRO_NAME" -Dsession-test-agent=/tmp/opencode/hollow-session-agent-next --summary all`

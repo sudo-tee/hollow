@@ -1,6 +1,6 @@
 # Persistent sessions plan
 
-Status: design approved 2026-11-04; updated 2026-11-06.
+Status: design approved 2026-11-04; updated 2026-11-09.
 Phase 0 (headless VT spike) and Phase 1 (Linux owner + `connect`) are complete.
 Phase 2 GUI integration includes owner-backed tabs/splits, layout autosave, startup restore, discovery, and switcher actions; manual GUI qualification remains open.
 Phase 3 (native Windows owner and WSL keepalive) is starting in tested sub-slices.
@@ -614,7 +614,7 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Phase 3 Windows owner foundations, followed by native owner transport, GUI integration, and WSL keepalive (see below).
+2. Finish Phase 3 Windows session semantics and connect bridge on the secured owner bootstrap, then GUI integration and WSL keepalive (see below).
 3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
 4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
 
@@ -624,7 +624,7 @@ Keep native Windows persistence rejected until transport and owner lifecycle are
 Do not restart existing Linux owners or change the Linux wire contract merely to introduce Windows mechanisms.
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
-2. Add a session-only Windows owner executable and user-SID-only, local named-pipe endpoint, including singleton admission and detached startup.
+2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
 3. Share session semantics across owners: bounded queues, snapshots, output credit, take-over, layout revisions, close, and respawn without replay.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
@@ -638,6 +638,23 @@ Ordinary GUI spawning retains its existing process flags and direct-child lifeti
 Session input is admitted without waiting for first output and overflow rejects atomically without killing the pane.
 Headless Windows process-tree tests live in `test-session-windows-pty` in the standalone agent build graph.
 All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and ReleaseFast; Windows CI now runs this target too.
+
+The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig session-owner-windows -Dtarget=x86_64-windows-gnu`.
+It installs `agents/windows-x86_64/hollow-agent.exe` without replacing the Linux agents or GUI executable.
+Only `session serve|list|kill-server` run at this checkpoint; `session connect` and actual session mutations remain unsupported until the following integration slice.
+The welcome advertises no optional features, and create/spawn/attach requests fail explicitly rather than creating nonpersistent shells.
+Each endpoint includes the current user's SID and protocol major; an optional bounded `--namespace` suffix isolates fixtures.
+The protected DACL permits only that SID, clients validate owner and DACL, remote pipe clients are rejected, and handles are noninheritable.
+The first named-pipe instance stays open through client disconnects, preventing a second owner from replacing it.
+The overlapped loop bounds clients to 16, queued output to 1 MiB/client, and partial input to the control limit plus one 64 KiB read.
+Hello, partial-frame, and write deadlines are 5 seconds; shutdown drains replies for at most 2 seconds, and an unused startup exits after 10 seconds.
+Without sessions, the owner exits after its last connected client disconnects.
+Detached startup requires `DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB` and does not fall back if the parent job forbids breakaway.
+WSL's interop job was observed with only `KILL_ON_JOB_CLOSE`, so successful detached launch cannot be qualified from that runner; protocol fixtures remain explicitly owned child processes instead.
+Detached startup does not send or replay any session request.
+Bootstrap tests pass on real Windows through WSL in Debug, ReleaseSafe, and ReleaseFast (25 passed, one explicit auto-start skip per run).
+The skipped check verifies denied breakaway leaves no endpoint before reporting its successful-launch path unqualified.
+Final teardown closes pipes without disconnecting them, preserving queued shutdown replies for clients that read after owner exit; explicit disconnect remains necessary for slot reuse.
 
 Crash/reboot layout placeholders from the original lifecycle section also need an implementation audit; live-process recovery after owner loss remains out of scope.
 

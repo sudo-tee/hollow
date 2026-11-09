@@ -4,6 +4,8 @@ Persistent workspaces keep terminal processes, screen state, and scrollback in a
 Persistence is opt-in per domain and leaves ordinary domains unchanged.
 This implementation supports Linux owners locally, inside WSL, or through SSH to Linux.
 Native Windows owners are not supported yet.
+The developer-only Windows owner bootstrap can serve empty session lists and explicit shutdown, but does not create, attach, or persist Windows terminals.
+Its separate `session-owner-windows` build target does not enable native Windows domains; see the [implementation plan](persistent-sessions.md#phase-3-implementation-slices).
 
 ## Enable a test domain
 

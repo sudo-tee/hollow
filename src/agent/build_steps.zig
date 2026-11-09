@@ -78,6 +78,39 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
 }
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner bootstrap");
+    const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        const owner_module = b.createModule(.{
+            .root_source_file = b.path("src/agent/session_main_windows.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        owner_module.linkSystemLibrary("advapi32", .{});
+        const owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = owner_module });
+        const install_owner = b.addInstallArtifact(owner, .{
+            .dest_dir = .{ .override = .{ .custom = "agents/windows-x86_64" } },
+        });
+        windows_owner_step.dependOn(&install_owner.step);
+        const options = b.addOptions();
+        options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        const module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_owner_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        module.linkSystemLibrary("advapi32", .{});
+        module.addOptions("build_options", options);
+        const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
+        run.has_side_effects = true;
+        windows_owner_tests.dependOn(&run.step);
+    } else {
+        const fail = b.addFail("Windows session owner requires -Dtarget=x86_64-windows-gnu (or native x86_64 Windows)");
+        windows_owner_step.dependOn(&fail.step);
+        windows_owner_tests.dependOn(&fail.step);
+    }
     const windows_pty_step = b.step("test-session-windows-pty", "Run headless Windows ConPTY session job lifecycle tests");
     if (target.result.os.tag == .windows) {
         const options = b.addOptions();

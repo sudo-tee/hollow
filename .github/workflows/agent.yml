@@ -28,6 +28,12 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pty 2>&1 | Tee-Object -FilePath session-windows-pty.log
           exit $LASTEXITCODE
+      - name: Headless Windows session owner bootstrap and isolated lifecycle
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe session-owner-windows test-session-windows-owner 2>&1 | Tee-Object -FilePath session-windows-owner.log
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -35,6 +41,7 @@ jobs:
           path: |
             fs-exec-windows-native.log
             session-windows-pty.log
+            session-windows-owner.log
   docker:
     runs-on: ubuntu-latest
     steps:
