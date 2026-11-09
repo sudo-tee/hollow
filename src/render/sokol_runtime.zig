@@ -3258,6 +3258,8 @@ pub fn run(app: *App) !void {
         .height = @intCast(app.config.window_height),
         .title = titleCString(app.config.windowTitle()),
         .vsync = app.config.vsync,
+        .background = defaultClearColor(app),
+        .before_show = if (builtin.os.tag == .windows) beforeShowCb else null,
     });
     if (builtin.os.tag == .linux) {
         // Sokol defaults to a GL 4.3 core context on Linux. Some GLX drivers
@@ -3388,7 +3390,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
-    _ = applyWindowChrome(app);
+    if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
     rebuildFtRenderer(app);
 
     _ = app.enqueueMouse(.{ .focus = true });
@@ -3574,14 +3576,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     // Resolve background color for the clear pass.
-    var clear_r: f32 = 0.07;
-    var clear_g: f32 = 0.08;
-    var clear_b: f32 = 0.11;
-    if (app.config.terminal_theme.enabled) {
-        clear_r = @as(f32, @floatFromInt(app.config.terminal_theme.background.r)) / 255.0;
-        clear_g = @as(f32, @floatFromInt(app.config.terminal_theme.background.g)) / 255.0;
-        clear_b = @as(f32, @floatFromInt(app.config.terminal_theme.background.b)) / 255.0;
-    }
+    const default_clear = defaultClearColor(app);
+    var clear_r: f32 = @as(f32, @floatFromInt(default_clear[0])) / 255.0;
+    var clear_g: f32 = @as(f32, @floatFromInt(default_clear[1])) / 255.0;
+    var clear_b: f32 = @as(f32, @floatFromInt(default_clear[2])) / 255.0;
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
             if (readyTerminal(pane)) |term| {
@@ -4755,6 +4753,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     updateWindowTitle(std.mem.span(@as([*:0]const u8, &window_title)));
 }
 
+fn defaultClearColor(app: *const App) [3]u8 {
+    if (!app.config.terminal_theme.enabled) return .{ 18, 20, 28 };
+    const bg = app.config.terminal_theme.background;
+    return .{ bg.r, bg.g, bg.b };
+}
+
 fn updatePerfCounters(frame_start_ns: i128) void {
     if (g_last_frame_time_ns != 0) {
         const frame_delta = frame_start_ns - g_last_frame_time_ns;
@@ -4993,8 +4997,17 @@ fn applyWindowChrome(app: *App) bool {
     if (builtin.os.tag != .windows) return false;
 
     const hwnd_raw = c.sapp_win32_get_hwnd() orelse return false;
-    const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
+    return applyWin32WindowChrome(@ptrCast(@constCast(hwnd_raw)), app);
+}
 
+fn beforeShowCb(hwnd_raw: ?*const anyopaque, user_data: ?*anyopaque) callconv(.c) void {
+    if (builtin.os.tag != .windows) return;
+    const app = appFromUserData(user_data) orelse return;
+    const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw orelse return));
+    g_window_chrome_applied = applyWin32WindowChrome(hwnd, app);
+}
+
+fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
     applyNativeWindowColors(hwnd, app);
 
     if (app.config.window_titlebar_show) return true;
@@ -5154,7 +5167,7 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
                 const width = rect.right - rect.left;
                 const height = rect.bottom - rect.top;
                 if (appFromUserData(c.sapp_userdata())) |app| {
-                    if (!app.config.window_titlebar_show) {
+                    if (g_gui_ready_fired and !app.config.window_titlebar_show) {
                         const border = windowFrameBorder();
                         const top_bar_h: i32 = @intCast(app.tabBarHeight());
                         if (top_bar_h > 0 and local_y >= border.y and local_y < border.y + top_bar_h) {
