@@ -184,7 +184,7 @@ pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?
     else
         null;
     mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command, insert_at_end) catch |err| {
-        std.log.err("app: newTab failed: {s}", .{@errorName(err)});
+        std.log.err("app: newTab failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
@@ -381,7 +381,7 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     else
         null;
     mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
-        std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
+        std.log.err("app: newWorkspace failed: {s} domain={s}", .{ @errorName(err), inherited_domain orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
@@ -506,7 +506,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         self.cell_height_px,
     });
     const pane = mux.splitActivePanePlaced(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command, edge) catch |err| {
-        std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
+        std.log.err("app: splitPane failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };

@@ -4848,6 +4848,8 @@ fn applyDomainsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_
         if (value_type == .table) {
             const domain_idx = absoluteIndex(api, state, -1);
             try applyDomainTable(cfg, api, state, key, domain_idx);
+            const has_shell = if (cfg.domainByName(key)) |domain| domain.shell != null else false;
+            if (!has_shell) std.log.warn("config: domain '{s}' has no shell; panes cannot open in it (set `shell`)", .{key});
         }
     }
 }
