@@ -82,7 +82,7 @@ fn addSessionVt(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
 }
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner bootstrap");
+    const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner");
     const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
     if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
         const owner_module = b.createModule(.{
@@ -92,6 +92,10 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .link_libc = true,
         });
         owner_module.linkSystemLibrary("advapi32", .{});
+        const owner_options = b.addOptions();
+        owner_options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        owner_module.addOptions("build_options", owner_options);
+        addSessionVt(b, owner_module, target, optimize);
         const owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = owner_module });
         const install_owner = b.addInstallArtifact(owner, .{
             .dest_dir = .{ .override = .{ .custom = "agents/windows-x86_64" } },
@@ -99,6 +103,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         windows_owner_step.dependOn(&install_owner.step);
         const options = b.addOptions();
         options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
         const module = b.createModule(.{
             .root_source_file = b.path("src/session_windows_owner_test.zig"),
             .target = target,
@@ -107,6 +112,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         });
         module.linkSystemLibrary("advapi32", .{});
         module.addOptions("build_options", options);
+        addSessionVt(b, module, target, optimize);
         const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
         run.has_side_effects = true;
         windows_owner_tests.dependOn(&run.step);

@@ -227,7 +227,7 @@ test "input backpressure preserves reply suffix while owner drains output" {
     }
     try testing.expectError(error.ResourceExhausted, pane.flush());
     pane.pty.reader_state.mutex.lock();
-    pane.pty.reader_state.buf.appendSlice(a, "DRAIN_WITH_FULL_INPUT") catch |err| {
+    pane.pty.reader_state.buf.appendSlice(std.heap.page_allocator, "DRAIN_WITH_FULL_INPUT") catch |err| {
         pane.pty.reader_state.mutex.unlock();
         return err;
     };

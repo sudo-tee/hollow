@@ -7,6 +7,7 @@ const io = @import("io.zig");
 const owner = @import("agent/session_windows.zig");
 const pipe = @import("agent/session_pipe_windows.zig");
 const p = @import("agent/session_protocol.zig");
+const WindowsJob = @import("pty/windows_job.zig").Job;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) windows.DWORD;
 extern "kernel32" fn OpenProcess(windows.DWORD, windows.BOOL, windows.DWORD) callconv(.winapi) ?windows.HANDLE;
@@ -16,6 +17,10 @@ extern "kernel32" fn GetCurrentProcess() callconv(.winapi) windows.HANDLE;
 extern "kernel32" fn IsProcessInJob(windows.HANDLE, ?windows.HANDLE, *windows.BOOL) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn QueryInformationJobObject(?windows.HANDLE, windows.DWORD, *anyopaque, windows.DWORD, ?*windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn Sleep(windows.DWORD) callconv(.winapi) void;
+extern "kernel32" fn SetInformationJobObject(windows.HANDLE, windows.DWORD, *const anyopaque, windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WriteFile(windows.HANDLE, [*]const u8, windows.DWORD, *windows.DWORD, ?*anyopaque) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn ReadFile(windows.HANDLE, [*]u8, windows.DWORD, *windows.DWORD, ?*anyopaque) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn PeekNamedPipe(windows.HANDLE, ?[*]u8, windows.DWORD, ?*windows.DWORD, ?*windows.DWORD, ?*windows.DWORD) callconv(.winapi) windows.BOOL;
 
 const BasicLimits = extern struct {
     process_user_time: i64 = 0,
@@ -124,9 +129,11 @@ fn hello(connection: *owner.Connection) !i64 {
     defer parsed.deinit();
     try testing.expectEqualStrings(p.protocol, parsed.value.protocol);
     try testing.expectEqual(@as(u32, p.version), parsed.value.version);
-    try testing.expectEqualStrings("bootstrap", parsed.value.ghostty);
+    try testing.expect(parsed.value.ghostty.len > 0);
+    try testing.expect(!std.mem.eql(u8, "bootstrap", parsed.value.ghostty));
     try testing.expectEqual(p.SnapshotFormat.vt, parsed.value.snapshot);
-    try testing.expectEqual(@as(usize, 0), parsed.value.features.len);
+    try testing.expect(p.hasFeature(parsed.value.features, "create-id"));
+    try testing.expect(!p.hasFeature(parsed.value.features, "respawn"));
     try testing.expect(parsed.value.owner_pid > 0);
     return parsed.value.owner_pid;
 }
@@ -150,11 +157,11 @@ fn expectEmpty(connection: *owner.Connection) !void {
     try testing.expectEqual(@as(usize, 0), (reply.value.sessions orelse return error.MissingSessions).len);
 }
 
-test "Windows owner bootstrap advertises no mutations and rejects create without disconnecting" {
+test "Windows single-pane owner rejects deferred spawn without disconnecting" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
     try expectEmpty(&fixture.connection);
-    const reply = try request(&fixture.connection, .{ .id = 2, .op = .create, .spawn = .{} });
+    const reply = try request(&fixture.connection, .{ .id = 2, .op = .spawn, .spawn = .{} });
     defer reply.deinit();
     try testing.expect(!reply.value.ok);
     try testing.expectEqualStrings("Unsupported", reply.value.@"error" orelse return error.MissingError);
@@ -261,14 +268,96 @@ test "Windows concurrent starters converge on one owner without replaying reques
     if (first.failure) |err| return err;
     if (second.failure) |err| return err;
     const pid = try hello(&first.connection.?);
-    const process = OpenProcess(0x00100000 | 0x1000, .FALSE, @intCast(pid)) orelse return error.OpenProcessFailed;
-    defer _ = CloseHandle(process);
-    var in_job: windows.BOOL = .TRUE;
-    try testing.expect(IsProcessInJob(process, null, &in_job).toBool());
-    try testing.expect(!in_job.toBool());
     try testing.expectEqual(pid, try hello(&second.connection.?));
     try expectEmpty(&first.connection.?);
     try expectEmpty(&second.connection.?);
+}
+
+test "Windows production owner survives closure of launcher's kill-on-close job" {
+    if (try restrictiveJob()) {
+        std.debug.print("launcher job survival skipped: parent job forbids breakaway; concurrent starters test verifies fail-closed startup\n", .{});
+        return error.SkipZigTest;
+    }
+    const exe = try executable();
+    defer a.free(exe);
+    serial += 1;
+    const namespace = try std.fmt.allocPrint(a, "owner-job-{d}-{d}-{d}", .{ GetCurrentProcessId(), io.nanoTimestamp(), serial });
+    defer a.free(namespace);
+
+    var job = try WindowsJob.create();
+    defer job.close();
+    const ExtendedLimits = extern struct {
+        basic: BasicLimits = .{},
+        io_counters: [6]u64 = @splat(0),
+        process_memory: usize = 0,
+        job_memory: usize = 0,
+        peak_process_memory: usize = 0,
+        peak_job_memory: usize = 0,
+    };
+    // Preserve KILL_ON_JOB_CLOSE and explicitly permit production breakaway.
+    const limits: ExtendedLimits = .{ .basic = .{ .flags = 0x2000 | 0x800 } };
+    try testing.expect(SetInformationJobObject(job.handle.?, 9, &limits, @sizeOf(ExtendedLimits)).toBool());
+
+    const quoted_exe = try std.mem.replaceOwned(u8, a, exe, "'", "''");
+    defer a.free(quoted_exe);
+    // Stdin gates launch until job assignment. Keep the actual CLI bridge's
+    // redirected stdin open: a short-lived list client could let the empty
+    // owner exit before our guard connects. R marks bridge process startup;
+    // closing the job must kill both launcher and bridge, not the owner.
+    const script = try std.fmt.allocPrint(
+        a,
+        "[void][Console]::ReadLine(); $bridge=New-Object System.Diagnostics.Process; $bridge.StartInfo.FileName='{s}'; $bridge.StartInfo.Arguments='session connect --namespace {s}'; $bridge.StartInfo.UseShellExecute=$false; $bridge.StartInfo.RedirectStandardInput=$true; $bridge.StartInfo.RedirectStandardOutput=$true; [void]$bridge.Start(); [Console]::Out.Write('R'); $bridge.WaitForExit(); exit $bridge.ExitCode",
+        .{ quoted_exe, namespace },
+    );
+    defer a.free(script);
+    var launcher = try std.process.spawn(io.get(), .{
+        .argv = &.{ "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .inherit,
+        .create_no_window = true,
+    });
+    defer launcher.kill(io.get());
+    try job.assign(launcher.id.?);
+    var member: windows.BOOL = .FALSE;
+    try testing.expect(IsProcessInJob(launcher.id.?, job.handle, &member).toBool());
+    try testing.expect(member.toBool());
+    var count: windows.DWORD = 0;
+    try testing.expect(WriteFile(launcher.stdin.?.handle, "\n", 1, &count, null).toBool());
+    try testing.expectEqual(@as(windows.DWORD, 1), count);
+
+    var connection = try connectFixture(namespace);
+    defer connection.deinit();
+    defer connection.sendJson(.request, p.Request{ .id = 999, .op = .kill_server }) catch {};
+    const pid = try hello(&connection);
+    const process = OpenProcess(0x00100000 | 0x1000, .FALSE, @intCast(pid)) orelse return error.OpenProcessFailed;
+    defer _ = CloseHandle(process);
+    try testing.expect(IsProcessInJob(process, job.handle, &member).toBool());
+    try testing.expect(!member.toBool());
+
+    const deadline = io.milliTimestamp() + 10_000;
+    while (true) {
+        var available: windows.DWORD = 0;
+        try testing.expect(PeekNamedPipe(launcher.stdout.?.handle, null, 0, null, &available, null).toBool());
+        if (available > 0) break;
+        if (io.milliTimestamp() >= deadline) return error.LauncherTimeout;
+        Sleep(10);
+    }
+    var marker: [1]u8 = undefined;
+    try testing.expect(ReadFile(launcher.stdout.?.handle, &marker, 1, &count, null).toBool());
+    try testing.expectEqual(@as(windows.DWORD, 1), count);
+    try testing.expectEqualStrings("R", &marker);
+    try testing.expectEqual(@as(windows.DWORD, 258), WaitForSingleObject(launcher.id.?, 0));
+    job.close();
+    try testing.expectEqual(@as(windows.DWORD, 0), WaitForSingleObject(launcher.id.?, 5000));
+    try testing.expectEqual(@as(windows.DWORD, 258), WaitForSingleObject(process, 250));
+    try expectEmpty(&connection);
+    const handle = try owner.connectOrStart(a, io.get(), namespace, exe);
+    var sibling = try owner.Connection.init(a, handle);
+    defer sibling.deinit();
+    try testing.expectEqual(pid, try hello(&sibling));
+    try expectEmpty(&sibling);
+    try expectEmpty(&connection);
 }
 
 test "Windows production startup fails closed for invalid executable" {
@@ -354,4 +443,5 @@ test {
     // Include colocated pipe security tests in this standalone test root.
     testing.refAllDecls(pipe);
     _ = @import("session_windows_bridge_test.zig");
+    _ = @import("session_windows_live_test.zig");
 }

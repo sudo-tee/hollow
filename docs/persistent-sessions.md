@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Shared metadata, attachment, and stream state are integrated into Linux; the standalone Windows ConPTY/VT adapter is implemented, with live Windows owner integration next.
+3. Shared metadata, attachment, and stream state now support the first bounded single-pane Windows owner integration; multi-pane mutations and stable Windows host identity remain next.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -641,8 +641,9 @@ All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and Release
 
 The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig session-owner-windows -Dtarget=x86_64-windows-gnu`.
 It installs `agents/windows-x86_64/hollow-agent.exe` without replacing the Linux agents or GUI executable.
-The executable supports `session serve|connect|list|kill-server` at this checkpoint; actual session mutations remain unsupported until shared owner semantics are integrated.
-The welcome advertises no optional features, and create/spawn/attach requests fail explicitly rather than creating nonpersistent shells.
+The executable supports `session serve|connect|list|kill-server`; protocol clients can now create, list, attach, detach, and kill single-pane sessions, send input/resize/credit, and replace opaque layouts with revision checks.
+The welcome negotiates the real Ghostty build identity and advertises `create-id`, but not `respawn`.
+Individual pane spawn/close/respawn requests still fail explicitly with `Unsupported`.
 Each endpoint includes the current user's SID and protocol major; an optional bounded `--namespace` suffix isolates fixtures.
 The protected DACL permits only that SID, clients validate owner and DACL, remote pipe clients are rejected, and handles are noninheritable.
 The first named-pipe instance stays open through client disconnects, preventing a second owner from replacing it.
@@ -671,7 +672,7 @@ Initial layout is allocated before spawning, and initial revision remains 0; sub
 The last nonzero `u32` pane ID remains valid, and session teardown does not depend on having revision space available.
 Ended identities remain reserved only while their records are retained, not after collection; lifetime tombstones are not introduced.
 No new session/pane count policy is inferred from GUI layout limits, and the pre-existing owner-wide count/aggregate-bound gap remains explicit.
-The Windows bootstrap still lacks live session semantics; ConPTY/VT and live owner integration remain next.
+The Windows owner now wires these shared mechanisms to ConPTY and headless VT through `session_runtime_windows.zig`.
 `session_attachment.zig` now shares typed takeover/unlink transitions, and `session_stream.zig` shares bounded backlog, credit, snapshot/resync, and exit-delivery state with the Linux owner.
 VT encoding, process drain/linger decisions, and transport framing remain runtime responsibilities.
 Boolean frame admission prevents consuming a backlog synchronously cleared by send failure and detach; regression coverage exercises both header and payload allocation failure.
@@ -680,7 +681,15 @@ Process exit, raw Windows status, and fully drained output EOF are distinct; not
 Pending query replies retain only unsubmitted suffixes under backpressure, and output draining continues even when the input queue is full.
 Replies are bounded to 4 MiB and snapshot encoding/VT fallback stream into a 64 MiB bounded sink.
 Session-owned child environments strip GUI identity/control variables and force OSC transport without changing ordinary GUI spawn behavior.
-Protocol-to-native launch mapping and live shared Windows owner authority are not wired yet; native Windows GUI persistence remains disabled.
+The first live slice maps native launch requests, preserves session processes and terminal state across last-client disconnect, and delivers snapshots incrementally through the existing 1 MiB transport bound.
+The runtime limits live sessions to 16 with one pane each, 1 MiB scrollback per pane, and 4 MiB pending input per session; it leaves individual pane mutations, persisted Windows host identity, and native Windows GUI enablement for subsequent slices.
+Owner-side process/output events wake the overlapped transport loop without idle polling.
+Published creates that cannot allocate an attachment reply become uncertain disconnections, not definitive rejections, and remain discoverable by reserved identity.
+Input-channel failure preserves process liveness and output draining; the signed exit wire saturates high-bit Windows codes instead of encoding false Unix signals.
+Native Windows GUI persistence remains disabled; detached-start qualification depends on whether the runner's enclosing job permits breakaway.
+The live-owner suite passes 70 tests each in Debug, ReleaseSafe, and ReleaseFast on the permissive main runner, including binary restore, a snapshot larger than the transport queue, takeover, process continuity, and descendant teardown.
+The combined ReleaseSafe owner/pane/ConPTY suite passes 111 tests.
+The production launcher test now verifies independence from a known kill-on-close launcher job and reachability at the same owner PID after that job closes; restrictive runners retain explicit fail-closed skips.
 Shared metadata validation includes portable Linux/Windows tests, 53 owner-loop tests across Debug/ReleaseSafe/ReleaseSmall, and real Linux plus Windows-to-WSL detach/restore coverage.
 Windows CI also runs the standalone portable metadata tests.
 

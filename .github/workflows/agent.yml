@@ -28,7 +28,7 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pty 2>&1 | Tee-Object -FilePath session-windows-pty.log
           exit $LASTEXITCODE
-      - name: Headless Windows session owner bootstrap and isolated lifecycle
+      - name: Headless Windows live session owner and isolated lifecycle
         timeout-minutes: 5
         shell: pwsh
         run: |

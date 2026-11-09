@@ -1,14 +1,18 @@
-//! Windows owner bootstrap. Session mutation remains unsupported until the
-//! platform-neutral owner state is wired to ConPTY; do not enable GUI domains.
+//! Secured Windows owner transport. Live authority uses shared metadata,
+//! attachment and delivery state; native GUI domains remain disabled.
 const std = @import("std");
 const windows = std.os.windows;
 const pipe = @import("session_pipe_windows.zig");
 const p = @import("session_protocol.zig");
+const runtime = @import("session_runtime_windows.zig");
+const vt = @import("session_vt.zig");
 
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn WaitForSingleObject(windows.HANDLE, windows.DWORD) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn WaitForMultipleObjects(windows.DWORD, [*]const windows.HANDLE, windows.BOOL, windows.DWORD) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn Sleep(windows.DWORD) callconv(.winapi) void;
+extern "kernel32" fn CreateEventW(?*windows.SECURITY_ATTRIBUTES, windows.BOOL, windows.BOOL, ?windows.LPCWSTR) callconv(.winapi) ?windows.HANDLE;
+extern "kernel32" fn SetEvent(windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn CreateProcessW(?windows.LPCWSTR, windows.LPWSTR, ?*windows.SECURITY_ATTRIBUTES, ?*windows.SECURITY_ATTRIBUTES, windows.BOOL, windows.DWORD, ?*anyopaque, ?windows.LPCWSTR, *windows.STARTUPINFOW, *windows.PROCESS.INFORMATION) callconv(.winapi) windows.BOOL;
 
 const timeout_ms = 5000;
@@ -111,6 +115,8 @@ fn complete(operation: *pipe.Operation, handle: windows.HANDLE, deadline: u64) !
 }
 
 const Slot = struct {
+    a: std.mem.Allocator = undefined,
+    client: runtime.Client = undefined,
     handle: ?windows.HANDLE = null,
     input: pipe.Operation = undefined,
     output: pipe.Operation = undefined,
@@ -127,7 +133,7 @@ const Slot = struct {
     read_deadline: u64 = 0,
     write_deadline: u64 = 0,
 
-    fn init(self: *Slot, endpoint: *const pipe.Endpoint, first: bool) !void {
+    fn init(self: *Slot, a: std.mem.Allocator, endpoint: *const pipe.Endpoint, first: bool) !void {
         self.input = try pipe.Operation.init();
         errdefer self.input.deinit();
         self.output = try pipe.Operation.init();
@@ -136,6 +142,21 @@ const Slot = struct {
         errdefer pipe.close(handle);
         try self.input.accept(handle);
         self.handle = handle;
+        self.a = a;
+        self.client = .{ .context = self, .send_fn = enqueue };
+    }
+
+    /// An active OVERLAPPED write borrows `sending`, never this growing queue.
+    fn enqueue(context: *anyopaque, kind: p.Kind, stream: u32, bytes: []const u8) !void {
+        const self: *Slot = @ptrCast(@alignCast(context));
+        if (self.accepting or self.client.dead) return error.Disconnected;
+        _ = try p.validate(p.header(kind, stream, bytes.len), .to_client);
+        const used = self.queued.items.len + self.sending.len - self.sent;
+        if (used > output_limit - p.header_len or bytes.len > output_limit - p.header_len - used)
+            return error.ResourceExhausted;
+        try self.queued.ensureUnusedCapacity(self.a, p.header_len + bytes.len);
+        self.queued.appendSliceAssumeCapacity(&p.header(kind, stream, bytes.len).encode());
+        self.queued.appendSliceAssumeCapacity(bytes);
     }
 
     fn clear(self: *Slot, a: std.mem.Allocator, reuse: bool) void {
@@ -156,6 +177,7 @@ const Slot = struct {
         self.reading = false;
         self.writing = false;
         self.greeted = false;
+        self.client = .{ .context = self, .send_fn = enqueue };
     }
 
     fn deinit(self: *Slot, a: std.mem.Allocator) void {
@@ -175,29 +197,43 @@ const Owner = struct {
     stopping: bool = false,
     stop_deadline: u64 = 0,
     startup_deadline: u64,
+    wake_event: windows.HANDLE,
+    sessions: runtime.Owner,
 
     fn create(a: std.mem.Allocator, endpoint: *const pipe.Endpoint) !*Owner {
         // Slot buffers and pending OVERLAPPED values have stable heap addresses.
         const self = try a.create(Owner);
-        self.* = .{ .a = a, .startup_deadline = nowMs() + startup_grace_ms };
+        const wake_event = CreateEventW(null, .FALSE, .FALSE, null) orelse {
+            a.destroy(self);
+            return error.ResourceExhausted;
+        };
+        self.* = .{
+            .a = a,
+            .startup_deadline = nowMs() + startup_grace_ms,
+            .wake_event = wake_event,
+            .sessions = runtime.Owner.init(a, .{ .context = self, .callback = wake }),
+        };
         errdefer self.destroy();
-        for (&self.slots, 0..) |*slot, i| try slot.init(endpoint, i == 0);
+        for (&self.slots, 0..) |*slot, i| try slot.init(a, endpoint, i == 0);
         return self;
     }
 
+    fn wake(context: *anyopaque) void {
+        const self: *Owner = @ptrCast(@alignCast(context));
+        _ = SetEvent(self.wake_event);
+    }
+
     fn destroy(self: *Owner) void {
+        self.sessions.deinit();
         for (&self.slots) |*slot| slot.deinit(self.a);
+        pipe.close(self.wake_event);
         self.a.destroy(self);
     }
 
     fn queue(self: *Owner, slot: *Slot, kind: p.Kind, value: anytype) !void {
         const bytes = try p.stringify(self.a, value);
         defer self.a.free(bytes);
-        if (bytes.len > p.control_limit or slot.queued.items.len + slot.sending.len - slot.sent + p.header_len + bytes.len > output_limit)
-            return error.ResourceExhausted;
-        try slot.queued.ensureUnusedCapacity(self.a, p.header_len + bytes.len);
-        slot.queued.appendSliceAssumeCapacity(&p.header(kind, 0, bytes.len).encode());
-        slot.queued.appendSliceAssumeCapacity(bytes);
+        try Slot.enqueue(slot, kind, 0, bytes);
     }
 
     fn frame(self: *Owner, slot: *Slot, header: p.Header, bytes: []const u8) !void {
@@ -210,22 +246,32 @@ const Owner = struct {
                 defer hello.deinit();
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
                 slot.greeted = true;
-                try self.queue(slot, .welcome, p.Welcome{ .ghostty = "bootstrap", .snapshot = .vt, .owner_pid = windows.GetCurrentProcessId() });
+                slot.client.binary = std.mem.eql(u8, hello.value.ghostty, vt.buildIdentity());
+                slot.client.foreground_events = hello.value.foreground_events;
+                try self.queue(slot, .welcome, p.Welcome{
+                    .ghostty = vt.buildIdentity(),
+                    .snapshot = if (slot.client.binary) .binary else .vt,
+                    .owner_pid = windows.GetCurrentProcessId(),
+                    .features = &.{"create-id"},
+                });
             },
             .request => {
                 const request = try p.parse(p.Request, self.a, bytes);
                 defer request.deinit();
                 switch (request.value.op) {
-                    .list => try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .sessions = &.{} }),
                     .kill_server => {
+                        // Admit the acknowledgement before irreversible process
+                        // teardown; a failed admission must not become a partial
+                        // "kill sessions but keep serving" operation.
                         try self.queue(slot, .reply, p.Reply{ .id = request.value.id });
                         self.stopping = true;
+                        self.sessions.killAll();
                         self.stop_deadline = nowMs() + 2000;
                     },
-                    else => try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .ok = false, .@"error" = "Unsupported" }),
+                    else => self.sessions.request(&slot.client, &request.value),
                 }
             },
-            else => return error.Unsupported,
+            else => try self.sessions.frame(&slot.client, kind, header.stream, bytes),
         }
     }
 
@@ -239,6 +285,7 @@ const Owner = struct {
             _ = try p.validate(header, .to_owner);
             const next = (try slot.reader.next()) orelse return false;
             try self.frame(slot, next.header, next.payload);
+            if (slot.client.dead) return error.Disconnected;
             if (self.stopping) return false;
         }
         const rest = slot.reader.buffer.items[slot.reader.start..];
@@ -249,6 +296,7 @@ const Owner = struct {
     }
 
     fn reset(self: *Owner, slot: *Slot) !void {
+        self.sessions.disconnect(&slot.client);
         slot.clear(self.a, true);
         if (!self.stopping) try slot.input.accept(slot.handle.?);
     }
@@ -290,6 +338,10 @@ const Owner = struct {
                 if (n == 0) return error.EndOfStream;
                 slot.writing = false;
                 slot.sent += n;
+                // Runtime may retain a snapshot/output suffix behind this
+                // transport limit. Completion releases capacity, so retry it
+                // before sleeping even when no further PTY event will arrive.
+                more = true;
                 if (slot.sent == slot.sending.len) {
                     self.a.free(slot.sending);
                     slot.sending = &.{};
@@ -301,7 +353,7 @@ const Owner = struct {
         if (!slot.writing) {
             if (slot.sending.len == 0 and slot.queued.items.len > 0) {
                 slot.sending = try slot.queued.toOwnedSlice(self.a);
-                slot.write_deadline = now + timeout_ms;
+                slot.write_deadline = nowMs() + timeout_ms;
             }
             if (slot.sending.len > 0) {
                 try slot.output.write(handle, slot.sending[slot.sent..]);
@@ -314,17 +366,22 @@ const Owner = struct {
     fn run(self: *Owner) !void {
         while (true) {
             const now = nowMs();
-            var more = false;
+            var more = if (self.stopping) false else self.sessions.tick(now);
             for (&self.slots) |*slot| more = (self.pump(slot, now) catch blk: {
                 try self.reset(slot);
                 break :blk false;
             }) or more;
             var active: usize = 0;
             var writes: usize = 0;
-            var events: [pipe.max_clients * 2]windows.HANDLE = undefined;
-            var count: usize = 0;
+            var events: [pipe.max_clients * 2 + 1]windows.HANDLE = undefined;
+            events[0] = self.wake_event;
+            var count: usize = 1;
             var deadline = if (self.stopping) self.stop_deadline else if (!self.connected_once) self.startup_deadline else std.math.maxInt(u64);
+            if (!self.stopping) {
+                if (self.sessions.deadline()) |next| deadline = @min(deadline, next);
+            }
             for (&self.slots) |*slot| {
+                if (slot.client.dead) try self.reset(slot);
                 if (!slot.accepting) {
                     active += 1;
                     if (!slot.greeted or slot.reader.buffered() > 0) deadline = @min(deadline, slot.read_deadline);
@@ -343,9 +400,10 @@ const Owner = struct {
                 }
             }
             if (self.stopping and (writes == 0 or now >= self.stop_deadline)) return;
-            if (!self.stopping and ((self.connected_once and active == 0) or (!self.connected_once and now >= self.startup_deadline))) return;
+            if (!self.stopping and !self.sessions.hasSessions() and
+                ((self.connected_once and active == 0) or (!self.connected_once and now >= self.startup_deadline))) return;
             if (more) continue;
-            const wait_ms: u32 = @intCast(@min(deadline -| now, std.math.maxInt(u32)));
+            const wait_ms: u32 = @intCast(@min(deadline -| nowMs(), std.math.maxInt(u32)));
             const result = WaitForMultipleObjects(@intCast(count), &events, .FALSE, wait_ms);
             if (result == 0xffffffff) return error.WaitFailed;
         }
@@ -444,4 +502,27 @@ test "Windows owner launcher quotes paths and trailing backslashes" {
     text.clearRetainingCapacity();
     try appendArg(a, &text, "a\"b");
     try std.testing.expectEqualStrings("\"a\\\"b\"", text.items);
+}
+
+test "Windows frame admission includes active write and never queues a partial header" {
+    const a = std.testing.allocator;
+    var slot: Slot = .{ .a = a, .accepting = false };
+    slot.client = .{ .context = &slot, .send_fn = Slot.enqueue };
+    slot.sending = try a.alloc(u8, output_limit - p.header_len);
+    defer a.free(slot.sending);
+    defer slot.queued.deinit(a);
+    try std.testing.expectError(error.ResourceExhausted, Slot.enqueue(&slot, .output, 1, "x"));
+    try std.testing.expectEqual(@as(usize, 0), slot.queued.items.len);
+    // Credit for completed bytes permits new admission, without changing the
+    // immutable buffer still borrowed by the overlapped write.
+    slot.sent = 1;
+    try Slot.enqueue(&slot, .output, 1, "x");
+    try std.testing.expectEqual(p.header_len + 1, slot.queued.items.len);
+
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    var rejected: Slot = .{ .a = failing.allocator(), .accepting = false };
+    rejected.client = .{ .context = &rejected, .send_fn = Slot.enqueue };
+    defer rejected.queued.deinit(failing.allocator());
+    try std.testing.expectError(error.OutOfMemory, Slot.enqueue(&rejected, .output, 1, "x"));
+    try std.testing.expectEqual(@as(usize, 0), rejected.queued.items.len);
 }

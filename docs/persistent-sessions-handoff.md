@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 during shared attachment/stream extraction and Windows pane adapter qualification.
+Updated 2026-11-09 during the first live Windows owner integration.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -53,6 +53,7 @@ Commit map (current IDs, oldest first):
 | `06c923a` | Bounded raw Windows connect bridge |
 | `13b1b46` | Shared owner metadata and mutation admission |
 | `643ae0a` | Shared attachment and bounded stream delivery state |
+| `6597ca2` | Windows owner ConPTY/headless-VT pane adapter |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -60,7 +61,27 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: shared authoritative session semantics on top of the secured Windows owner and raw connect bridge, then GUI domains and WSL keepalive.
+3. Phase 3: finish multi-pane Windows owner mutations and stable host identity, then GUI domains and WSL keepalive.
+
+The first live Windows owner now uses `session_runtime_windows.zig` with the shared metadata, attachment, and stream helpers plus owner-side ConPTY/VT.
+It supports at most 16 single-pane sessions with 1 MiB scrollback per pane and 4 MiB pending application input per session.
+Create/list, attach/detach/takeover, input/resize/credit, layout CAS, session kill, and kill-server are wired; pane spawn/close/respawn remain `Unsupported`.
+Welcome negotiates the real Ghostty build identity and binary/VT snapshots, advertises `create-id`, and does not advertise `respawn`.
+Snapshots stream incrementally through the existing 1 MiB per-client transport bound; completed writes trigger another runtime turn so retained output cannot be stranded after capacity returns.
+Disconnect drops only view delivery state, and last-client disconnect no longer exits an owner that retains sessions.
+Process/output/writer events wake the transport loop; exit linger permits exit delivery without stopping later output from updating the authoritative VT.
+Post-create attachment allocation failure closes the connection as uncertain while preserving the published reserved identity, never as a definitive rejection.
+Writer failure disables input but continues output draining and does not fabricate process exit or kill an otherwise live session.
+The existing signed exit wire format saturates Windows codes above `maxInt(i32)` rather than treating their high bits as Unix signals; the pane adapter still exposes raw `u32` status.
+Native command mapping handles literal argv and PowerShell/cmd command launches, rejects unsupported command shells, and does not translate Unix argv or file-URI cwd values.
+Stable Windows host identity, multi-pane mutations, native GUI enablement, and WSL keepalive remain deferred.
+Live-owner validation passes 70 tests in each of Debug, ReleaseSafe, and ReleaseFast on real Windows through WSL, with no skips in this main runner.
+Coverage includes last-client reconnect with identical in-process state, takeover, collision rejection, invalid launch rollback, layout CAS, credit, binary restore, snapshots larger than the transport queue, and descendant kill/kill-server ACK retention.
+Runtime regressions cover published-create OOM uncertainty, read-side query failure without process loss, capacity preflight, native shell exit policy, and high-bit exit status encoding.
+The combined ReleaseSafe owner/pane/ConPTY suite passes 111 tests; Linux transport/owner/PTY suites and Windows GUI cross-build also pass.
+Production detached startup now has a successful permissive-job qualification: concurrent starters converge on one owner, and closing a known kill-on-close launcher job kills the actual CLI bridge/launcher while the independent owner remains reachable at the same PID.
+The test checks independence from that specific launcher job, not the stronger and incorrect assumption that the owner must belong to no job whatsoever.
+Restrictive subagent runners still explicitly skip successful startup/survival paths after checking fail-closed denial; production flags and no-fallback policy are unchanged.
 
 Shared attachment and stream state now live in `session_attachment.zig` and `session_stream.zig`, integrated into the Linux owner.
 Typed non-owning links enforce takeover and identity-checked detach without another registry.
@@ -81,7 +102,7 @@ Process-exit notification is registered before child resume and drained before f
 The caller's wake context must outlive pane destruction.
 Session-only environment filtering removes inherited/custom GUI pane/workspace/command identifiers case-insensitively and forces `HOLLOW_TRANSPORT=osc`.
 Normal GUI spawning keeps its environment behavior.
-The Windows executable root facade moves imports under `src/` and initializes shared I/O, without linking VT into the bootstrap or enabling native GUI persistence.
+The Windows executable root facade moves imports under `src/` and initializes shared I/O; the subsequent live-owner slice links headless VT without enabling native GUI persistence.
 Adapter validation passes 30 tests in Debug, ReleaseSafe, and ReleaseFast on real Windows through WSL, including process/variable continuity after view destruction, snapshot/fallback parity, resize, DSR replies, raw exit retention, environment isolation, idle exit wake, and descendant teardown.
 A deterministic full-input regression also verifies continued output draining, retained reply suffix, buffered-EOF handling, and liveness independent of writer failure.
 Existing Windows owner/bridge and ConPTY suites pass 42 tests with one known restrictive-job startup skip; Windows GUI cross-build passes.
@@ -99,19 +120,19 @@ Native Windows persistence remains unsupported until shared session semantics an
 This foundation does not change Linux owners or require restarting existing sessions.
 Foundation validation: real Windows ConPTY/job tests pass (11 tests each in Debug, ReleaseSafe, and ReleaseFast), Linux ReleaseSafe transport/agent-loop/PTY suites pass (138 tests), Windows borrower/App tests pass (49 tests, one optional fixture skipped), and the ReleaseFast Windows GUI cross-build passes.
 The standalone target is registered in Windows CI; final read-only review found no actionable issues.
-Windows bootstrap: `src/agent/session_main_windows.zig` builds a separate session-only `hollow-agent.exe` with no GUI/VT dependencies yet.
-Its `serve|connect|list|kill-server` commands use the SID/version-scoped named-pipe endpoint in `session_pipe_windows.zig`; all actual session mutations still return `Unsupported`.
-`session_windows.zig` implements a bounded overlapped loop, empty discovery, explicit shutdown, and an owner-only detached launcher that never submits or replays a create/spawn request.
+Windows owner: `src/agent/session_main_windows.zig` builds a separate session-only `hollow-agent.exe` linked to headless VT, without GUI dependencies.
+Its `serve|connect|list|kill-server` commands use the SID/version-scoped named-pipe endpoint in `session_pipe_windows.zig`; protocol support is described in the live-owner milestone above.
+`session_windows.zig` implements a bounded overlapped loop, discovery, explicit shutdown, and an owner-only detached launcher that never submits or replays a create/spawn request.
 The protected user-only DACL and pipe owner are checked by clients, remote clients are rejected, and the first pipe instance remains alive across disconnect/reaccept.
 Fixture-only `--namespace <token>` suffixes are bounded and cannot change the SID or escape the pipe name.
 The owner has 16 client slots, 1 MiB/client output bounds, 5-second hello/partial/write deadlines, a 2-second shutdown deadline, and a 10-second unused-startup grace.
-With no sessions yet, the last client disconnect ends the owner.
+When no sessions remain, the last client disconnect ends the owner.
 Detached launch fails visibly if `CREATE_BREAKAWAY_FROM_JOB` is denied; never retry without that flag.
-The WSL test runner's enclosing job has `KILL_ON_JOB_CLOSE` without breakaway permission, so successful detached-launch/survival qualification remains conditional on a permissive parent job.
+Some WSL test runners have an enclosing `KILL_ON_JOB_CLOSE` job without breakaway permission; successful detached-launch/survival qualification is conditional on a permissive parent job.
 Protocol fixtures launch their own isolated child owners without claiming to qualify production detached startup.
 Production-namespace serve failures leave a bounded last-error record at `%LOCALAPPDATA%\hollow\session-owner-error.log`; fixture/CLI errors do not overwrite it.
 Bootstrap validation: 25 tests pass with one explicit auto-start skip in each of Debug, ReleaseSafe, and ReleaseFast on Windows through WSL.
-The skipped path first verifies restrictive-job startup fails and creates no endpoint; successful detached launch and launcher-exit survival remain unqualified here.
+The skipped path first verifies restrictive-job startup fails and creates no endpoint; the original bootstrap run did not qualify successful launch or launcher-exit survival.
 The lifecycle suite verifies singleton rejection, malformed-frame isolation, last-client exit, idle connections, CLI empty discovery, and kill-server ACK retention even when read only after owner exit.
 Source audit caught unread-ACK loss from `DisconnectNamedPipe` during final destruction; final teardown now closes without disconnect, while slot reuse still disconnects.
 Linux transport and PTY suites pass (91 tests executed; the unchanged 47-test agent-loop result was cached), Windows ConPTY tests pass (11), and the Windows GUI cross-build passes.
@@ -137,11 +158,11 @@ The final nonzero `u32` pane ID remains usable via a wider cursor, then further 
 Initial creation remains revision 0, ordinary spawn/close advances once, and membership changes retain geometry for reconciliation.
 Whole-session termination and owner teardown bypass revision admission so they still kill children at numeric exhaustion.
 This extraction preserves existing session/pane count policy and does not claim the Linux owner is globally bounded; explicit count/aggregate admission limits remain a separate hardening task.
-The Windows bootstrap does not yet use this metadata for live sessions and still rejects all session mutations.
+The first live Windows owner now also uses this metadata; the earlier bootstrap checkpoint rejected all session mutations.
 Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
 The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
 Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
-Next concrete slice: shared attachment/output/snapshot semantics and ConPTY/VT ownership before enabling any native Windows GUI domain.
+Next concrete slice: multi-pane Windows owner spawn/close/respawn and stable host identity before enabling any native Windows GUI domain.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
