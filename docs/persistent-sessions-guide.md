@@ -4,8 +4,9 @@ Persistent workspaces keep terminal processes, screen state, and scrollback in a
 Persistence is opt-in per domain and leaves ordinary domains unchanged.
 This implementation supports Linux owners locally, inside WSL, or through SSH to Linux.
 Native Windows owners are not supported yet.
-The developer-only Windows owner supports raw `session connect` transport and a bounded single-pane session implementation for protocol fixtures.
-It supports create/list, attach/detach, input/resize, snapshots, layout revisions, and kill; adding, closing, or respawning individual panes remains unsupported.
+The developer-only Windows owner supports raw `session connect` transport and bounded multi-pane sessions for protocol fixtures.
+It supports create/list, attach/detach, input/resize, snapshots, layout revisions, pane spawn/close/respawn, and kill.
+Windows owner limits are 16 sessions, 16 panes per session, and 64 panes total; native Windows GUI domains remain disabled.
 Its separate `session-owner-windows` build target does not enable native Windows domains; see the [implementation plan](persistent-sessions.md#phase-3-implementation-slices).
 
 ## Enable a test domain

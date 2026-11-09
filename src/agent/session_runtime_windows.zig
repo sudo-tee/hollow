@@ -1,4 +1,4 @@
-//! Bounded, single-pane Windows owner policy. Transport owns client lifetimes;
+//! Bounded Windows owner policy. Transport owns client lifetimes;
 //! this module owns processes and VT state, never GUI views or pipe handles.
 const std = @import("std");
 const p = @import("session_protocol.zig");
@@ -12,6 +12,8 @@ const io = @import("../io.zig");
 pub const Wake = @import("../pty/wake.zig").Wake;
 
 pub const max_sessions = 16;
+pub const max_session_panes = 16;
+pub const max_panes = 64;
 pub const scrollback_bytes = 1024 * 1024;
 const input_limit = 4 * 1024 * 1024;
 const turn_budget = 256 * 1024;
@@ -40,7 +42,25 @@ pub const Client = struct {
 pub const Session = struct {
     meta: core.Metadata,
     client: ?*Client = null,
+    panes: [max_session_panes]*RuntimePane = undefined,
+    count: usize = 0,
+
+    fn find(self: *Session, id: u32) ?*RuntimePane {
+        for (self.panes[0..self.count]) |pane| if (pane.id == id) return pane;
+        return null;
+    }
+
+    fn resetDelivery(self: *Session, a: std.mem.Allocator) void {
+        for (self.panes[0..self.count]) |pane| pane.resetDelivery(a);
+    }
+};
+
+pub const RuntimePane = struct {
+    id: u32,
     backend: *Pane,
+    /// Prepared launch owns every argument/env byte and outlives request arenas.
+    launch_arena: std.heap.ArenaAllocator,
+    launch: Options,
     stream: delivery.Stream = .{},
     input: delivery.ByteQueue = .{},
     input_failed: bool = false,
@@ -55,12 +75,22 @@ pub const Session = struct {
     snapshot_offset: usize = 0,
     snapshot_active: bool = false,
 
-    fn resetDelivery(self: *Session, a: std.mem.Allocator) void {
+    fn resetDelivery(self: *RuntimePane, a: std.mem.Allocator) void {
         self.stream.detach();
         self.snapshot.deinit(a);
         self.snapshot = .empty;
         self.snapshot_offset = 0;
         self.snapshot_active = false;
+    }
+
+    fn destroy(self: *RuntimePane, a: std.mem.Allocator) void {
+        self.resetDelivery(a);
+        self.backend.destroy();
+        self.input.deinit(a);
+        self.stream.deinit(a);
+        self.launch_arena.deinit();
+        a.free(self.cwd);
+        a.destroy(self);
     }
 };
 
@@ -69,6 +99,8 @@ pub const Owner = struct {
     wake: Wake,
     sessions: [max_sessions]*Session = undefined,
     count: usize = 0,
+    pane_count: usize = 0,
+    turn: usize = 0,
 
     pub fn init(a: std.mem.Allocator, wake: Wake) Owner {
         return .{ .a = a, .wake = wake };
@@ -132,12 +164,12 @@ pub const Owner = struct {
                 self.control(client, .reply, p.Reply{ .id = req.id });
             },
             .kill => {
-                const s = self.find(req.session orelse return error.MissingSession) orelse return error.SessionNotFound;
+                const s = if (req.session) |id| self.find(id) orelse return error.SessionNotFound else try attached(client);
                 self.end(s);
                 self.control(client, .reply, p.Reply{ .id = req.id });
             },
             .layout => {
-                const s = try attached(client, 1);
+                const s = try attached(client);
                 s.meta.replaceLayout(self.a, req.revision, req.layout orelse "") catch |err| {
                     if (err != error.RevisionConflict) return err;
                     self.control(client, .reply, p.Reply{ .id = req.id, .ok = false, .@"error" = "RevisionConflict", .revision = s.meta.revision });
@@ -149,7 +181,27 @@ pub const Owner = struct {
                 self.killAll();
                 self.control(client, .reply, p.Reply{ .id = req.id });
             },
-            .spawn, .close, .respawn => return error.Unsupported,
+            .spawn => {
+                const s = try attached(client);
+                const pane = try self.spawnPane(s, req.spawn orelse .{}, true);
+                // From publication onward, failed control admission is uncertain,
+                // never a rejection that could cause command replay.
+                self.control(client, .reply, p.Reply{ .id = req.id, .pane = pane.id, .revision = s.meta.revision });
+                pane.stream.attach();
+            },
+            .close => {
+                const s = try attached(client);
+                const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
+                try self.closePane(s, pane);
+                self.control(client, .reply, p.Reply{ .id = req.id, .revision = s.meta.revision });
+                if (s.count == 0) self.end(s);
+            },
+            .respawn => {
+                const s = try attached(client);
+                const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
+                try self.respawnPane(pane);
+                self.control(client, .reply, p.Reply{ .id = req.id, .pane = pane.id });
+            },
         }
     }
 
@@ -158,38 +210,82 @@ pub const Owner = struct {
     }
 
     fn create(self: *Owner, req: *const p.Request) !*Session {
-        if (self.count == max_sessions) return error.ResourceExhausted;
+        if (self.count >= max_sessions or self.pane_count >= max_panes) return error.ResourceExhausted;
         const id = if (req.create_id) |reserved| try core.reservedId(reserved) else blk: {
             var random: [16]u8 = undefined;
             std.Io.random(io.get(), &random);
             break :blk core.randomId(random);
         };
         try core.checkCollision(self.sessions[0..self.count], &id);
-        const spawn = req.spawn orelse p.Spawn{};
-        try validateSpawn(spawn);
         const s = try self.a.create(Session);
         errdefer self.a.destroy(s);
-        var meta: core.Metadata = .{ .id = id };
-        errdefer meta.deinit(self.a);
-        try meta.setInitialLayout(self.a, req.layout orelse "");
-        const prepared = try meta.preparePane(false);
+        s.* = .{ .meta = .{ .id = id } };
+        errdefer s.meta.deinit(self.a);
+        try s.meta.setInitialLayout(self.a, req.layout orelse "");
+        _ = try self.spawnPane(s, req.spawn orelse .{}, false);
+        self.sessions[self.count] = s;
+        self.count += 1;
+        return s;
+    }
+
+    fn spawnPane(self: *Owner, s: *Session, spawn: p.Spawn, membership_change: bool) !*RuntimePane {
+        if (s.count >= max_session_panes or self.pane_count >= max_panes) return error.ResourceExhausted;
+        const prepared = try s.meta.preparePane(membership_change);
+        try validateSpawn(spawn);
+        const pane = try self.a.create(RuntimePane);
+        errdefer self.a.destroy(pane);
         // Copy original cwd before launch, including an omitted cwd's actual
         // inherited Windows directory. VT pwd may later supersede it.
         const cwd = if (spawn.cwd) |value| try self.a.dupeSentinel(u8, value, 0) else try std.process.currentPathAlloc(io.get(), self.a);
         errdefer self.a.free(cwd);
         var arena = std.heap.ArenaAllocator.init(self.a);
-        defer arena.deinit();
+        errdefer arena.deinit();
         var options = try prepareLaunch(arena.allocator(), spawn);
         options.cwd = cwd;
         options.wake = self.wake;
         options.scrollback_bytes = scrollback_bytes;
         const backend = try Pane.create(self.a, options);
         // Nothing fallible follows execution/publication.
-        prepared.commit(&meta);
-        s.* = .{ .meta = meta, .backend = backend, .cols = spawn.cols, .rows = spawn.rows, .cwd = cwd, .close_on_exit = closeOnExit(spawn) };
-        self.sessions[self.count] = s;
-        self.count += 1;
-        return s;
+        prepared.commit(&s.meta);
+        pane.* = .{ .id = prepared.id, .backend = backend, .launch_arena = arena, .launch = options, .cols = spawn.cols, .rows = spawn.rows, .cwd = cwd, .close_on_exit = closeOnExit(spawn) };
+        s.panes[s.count] = pane;
+        s.count += 1;
+        self.pane_count += 1;
+        return pane;
+    }
+
+    fn closePane(self: *Owner, s: *Session, pane: *RuntimePane) !void {
+        const revision = try s.meta.prepareMembershipChange();
+        for (s.panes[0..s.count], 0..) |entry, index| {
+            if (entry != pane) continue;
+            s.count -= 1;
+            std.mem.copyForwards(*RuntimePane, s.panes[index..s.count], s.panes[index + 1 .. s.count + 1]);
+            self.pane_count -= 1;
+            pane.destroy(self.a);
+            s.meta.revision = revision;
+            return;
+        }
+        unreachable;
+    }
+
+    fn respawnPane(self: *Owner, pane: *RuntimePane) !void {
+        if (pane.status == null) return error.PaneAlive;
+        var options = pane.launch;
+        options.cols = pane.cols;
+        options.rows = pane.rows;
+        // The replacement is fully allocated and running before changing any
+        // old state. Failed preparation/spawn preserves VT, status, and jobs.
+        const replacement = try Pane.create(self.a, options);
+        const old = pane.backend;
+        const fresh_vt = replacement.vt;
+        replacement.vt = old.vt;
+        old.vt = fresh_vt;
+        replacement.vt.shell_command = .{};
+        var replies = replacement.vt.takeReplies();
+        replies.deinit(self.a);
+        pane.backend = replacement;
+        old.destroy();
+        resetRespawnDelivery(pane);
     }
 
     fn attachCreated(self: *Owner, client: *Client, s: *Session, id: u64, a: std.mem.Allocator) void {
@@ -202,10 +298,11 @@ pub const Owner = struct {
     }
 
     fn attach(self: *Owner, client: *Client, s: *Session, id: u64, sizes: []const p.PaneSize, a: std.mem.Allocator) !void {
-        if (sizes.len > 1) return error.Unsupported;
-        for (sizes) |size| {
-            if (size.pane != 1) return error.PaneNotFound;
+        if (sizes.len > s.count) return error.InvalidPaneSizes;
+        for (sizes, 0..) |size, index| {
+            _ = s.find(size.pane) orelse return error.PaneNotFound;
             try validSize(size.cols, size.rows);
+            for (sizes[0..index]) |previous| if (previous.pane == size.pane) return error.InvalidPaneSizes;
         }
         // Materialize the entire reply before takeover. OOM must not evict an
         // existing controller or silently destroy a recoverable created session.
@@ -213,30 +310,49 @@ pub const Owner = struct {
         session_info.attached = true;
         for (sizes) |size| {
             const panes = @constCast(session_info.panes);
-            panes[0].cols = size.cols;
-            panes[0].rows = size.rows;
+            for (panes) |*pane| if (pane.id == size.pane) {
+                pane.cols = size.cols;
+                pane.rows = size.rows;
+            };
         }
         const reply = try p.stringify(a, p.Reply{ .id = id, .session = session_info });
         if (reply.len > p.control_limit) return error.ResourceExhausted;
         for (sizes) |size| {
-            try s.backend.resize(size.cols, size.rows);
-            s.cols = size.cols;
-            s.rows = size.rows;
+            const pane = s.find(size.pane).?;
+            // Validation and reply allocation precede all resize/takeover work.
+            // A VT allocation failure can leave earlier sizes applied, but never
+            // changes controller bindings or reports a successful takeover.
+            try pane.backend.resize(size.cols, size.rows);
+            pane.cols = size.cols;
+            pane.rows = size.rows;
         }
         self.disconnect(client);
         s.resetDelivery(self.a);
         if (attachment.link(client, s)) |old| self.event(old, .taken, s, null);
-        s.stream.attach();
+        for (s.panes[0..s.count]) |pane| pane.stream.attach();
         if (!client.send(.reply, 0, reply)) client.dead = true;
     }
 
     pub fn frame(self: *Owner, client: *Client, kind: p.Kind, stream: u32, bytes: []const u8) !void {
         if (client.dead) return error.Closed;
-        const s = try attached(client, stream);
+        // Validate malformed frames even if their pane was concurrently closed.
+        switch (kind) {
+            .input => if (bytes.len > p.max_data) return error.PayloadTooLarge,
+            .resize => {
+                const size = try p.decodeResize(bytes);
+                try validSize(size.cols, size.rows);
+            },
+            .credit => _ = try p.decodeCredit(bytes),
+            else => return error.InvalidKind,
+        }
+        const session = attached(client) catch return;
+        const s = session.find(stream) orelse return;
         switch (kind) {
             .input => {
                 if (bytes.len > p.max_data) return error.PayloadTooLarge;
-                if (s.status != null or s.input_failed) return error.WriteFailed;
+                // Late keystrokes for an exited/failed pane must not disconnect
+                // the controller of still-running siblings.
+                if (s.status != null or s.input_failed) return;
                 try s.input.append(self.a, bytes, input_limit);
             },
             .resize => {
@@ -268,12 +384,9 @@ pub const Owner = struct {
             std.mem.copyForwards(*Session, self.sessions[index..self.count], self.sessions[index + 1 .. self.count + 1]);
             break;
         }
-        s.resetDelivery(self.a);
-        s.backend.destroy();
-        s.input.deinit(self.a);
-        s.stream.deinit(self.a);
+        for (s.panes[0..s.count]) |pane| pane.destroy(self.a);
+        self.pane_count -= s.count;
         s.meta.deinit(self.a);
-        self.a.free(s.cwd);
         self.a.destroy(s);
     }
 
@@ -282,24 +395,40 @@ pub const Owner = struct {
     /// for the shared wake event or another transport frame.
     pub fn tick(self: *Owner, now: u64) bool {
         var more = false;
-        var index: usize = 0;
-        while (index < self.count) {
-            const s = self.sessions[index];
+        const Entry = struct { session: *Session, pane: *RuntimePane };
+        var entries: [max_panes]Entry = undefined;
+        var count: usize = 0;
+        for (self.sessions[0..self.count]) |s| {
             if (s.client) |client| if (client.dead) self.disconnect(client);
-            const immediate = self.tickSession(s, now) catch {
+            for (s.panes[0..s.count]) |pane| {
+                entries[count] = .{ .session = s, .pane = pane };
+                count += 1;
+            }
+        }
+        if (count == 0) return false;
+        const start = self.turn % count;
+        self.turn = (start + 1) % count;
+        for (0..count) |offset| {
+            const entry = entries[(start + offset) % count];
+            if (entry.session.meta.ended) continue;
+            const immediate = self.tickPane(entry.session, entry.pane, now) catch {
                 // Fatal VT/query/read failures cannot yield a trustworthy view.
-                // End this session explicitly, rather than inventing process
-                // status or spinning forever on a permanently failed backend.
-                self.end(s);
+                // Defer destruction until visitation ends: later entries may
+                // refer to siblings in this same session.
+                entry.session.meta.ended = true;
                 continue;
             };
             more = more or immediate;
-            index += 1;
+        }
+        var index: usize = 0;
+        while (index < self.count) {
+            const s = self.sessions[index];
+            if (s.meta.ended) self.end(s) else index += 1;
         }
         return more;
     }
 
-    fn tickSession(self: *Owner, s: *Session, now: u64) !bool {
+    fn tickPane(self: *Owner, session: *Session, s: *RuntimePane, now: u64) !bool {
         var more = false;
         // Flush query replies and latest resize even when no application input
         // is queued. Exhaustion here is waitable, except a fatal VT reply sink.
@@ -342,7 +471,7 @@ pub const Owner = struct {
             // that can no longer be answered, but continue consuming output.
             if (s.input_failed) failInput(s);
             read_budget -= n;
-            if (s.client != null) s.stream.appendOutput(self.a, buffer[0..n]);
+            if (session.client != null) s.stream.appendOutput(self.a, buffer[0..n]);
         }
         if (read_budget == 0 and s.backend.pty.hasPendingOutput()) more = true;
         if (s.status == null) if (s.backend.exitStatus()) |status| {
@@ -352,11 +481,11 @@ pub const Owner = struct {
         };
         if (s.status != null and (s.backend.outputEnded() or now >= s.exit_deadline.?)) s.drained = true;
 
-        const client = s.client orelse return more;
+        const client = session.client orelse return more;
         if (client.dead) return more;
-        if (!s.snapshot_active and s.stream.requestResync()) self.event(client, .resync, s, 1);
+        if (!s.snapshot_active and s.stream.requestResync()) self.event(client, .resync, session, s.id);
         if (client.dead) return more;
-        if (s.stream.startSnapshot()) {
+        if (!s.snapshot_active and s.stream.startSnapshot()) {
             s.snapshot_active = true;
             s.snapshot_offset = 0;
             const encoded = if (client.binary) s.backend.snapshot(self.a, &s.snapshot) else s.backend.formatVt(self.a, &s.snapshot);
@@ -378,13 +507,13 @@ pub const Owner = struct {
         var send_budget: usize = turn_budget;
         while (s.snapshot_active and s.snapshot_offset < s.snapshot.items.len and send_budget > 0) {
             const n = @min(@min(p.max_data, s.snapshot.items.len - s.snapshot_offset), send_budget);
-            if (!client.send(.snapshot, 1, s.snapshot.items[s.snapshot_offset..][0..n])) return more;
+            if (!client.send(.snapshot, s.id, s.snapshot.items[s.snapshot_offset..][0..n])) return more;
             s.snapshot_offset += n;
             send_budget -= n;
         }
         if (s.snapshot_active) {
             if (s.snapshot_offset != s.snapshot.items.len) return true;
-            if (!client.send(.snapshot_end, 1, "")) return more;
+            if (!client.send(.snapshot_end, s.id, "")) return more;
             s.snapshot_active = false;
             s.snapshot.deinit(self.a);
             s.snapshot = .empty;
@@ -394,20 +523,21 @@ pub const Owner = struct {
             const bytes = s.stream.nextOutput();
             if (bytes.len == 0) break;
             const n = @min(bytes.len, send_budget);
-            if (!client.send(.output, 1, bytes[0..n])) return more;
+            if (!client.send(.output, s.id, bytes[0..n])) return more;
             s.stream.consumeOutput(n);
             send_budget -= n;
         }
         if (send_budget == 0 and s.stream.nextOutput().len > 0) more = true;
         // A stale backlog produced while delivering a snapshot can now resync.
         if (s.stream.stale and s.stream.credit == p.window) more = true;
+        if (s.stream.snapshot_pending) more = true;
         if (s.status) |status| if (s.stream.exitReady(s.drained)) {
-            if (client.send(.exit, 1, &p.encodeExit(status))) s.stream.exit_sent = true;
+            if (client.send(.exit, s.id, &p.encodeExit(status))) s.stream.exit_sent = true;
         };
         return more;
     }
 
-    fn foreground(self: *Owner, s: *Session) !void {
+    fn foreground(self: *Owner, s: *RuntimePane) !void {
         const state = try p.stringify(self.a, .{
             .kind = "event",
             .name = "session_foreground_process",
@@ -424,21 +554,22 @@ pub const Owner = struct {
     pub fn deadline(self: *const Owner) ?u64 {
         var result: ?u64 = null;
         for (self.sessions[0..self.count]) |s| {
-            if (s.drained) continue;
-            if (s.exit_deadline) |time| result = if (result) |previous| @min(previous, time) else time;
+            for (s.panes[0..s.count]) |pane| {
+                if (pane.drained) continue;
+                if (pane.exit_deadline) |time| result = if (result) |previous| @min(previous, time) else time;
+            }
         }
         return result;
     }
 };
 
-fn attached(client: *Client, pane: u32) !*Session {
+fn attached(client: *Client) !*Session {
     const s = client.session orelse return error.NotAttached;
     if (s.client != client) return error.NotAttached;
-    if (pane != 1) return error.PaneNotFound;
     return s;
 }
 
-fn failInput(s: *Session) void {
+fn failInput(s: *RuntimePane) void {
     s.input_failed = true;
     s.input.clear();
     s.backend.pending_replies.clearRetainingCapacity();
@@ -446,19 +577,35 @@ fn failInput(s: *Session) void {
     s.backend.pending_resize = null;
 }
 
+fn resetRespawnDelivery(pane: *RuntimePane) void {
+    const refresh = pane.snapshot_active or pane.stream.unsent.len() > 0;
+    pane.input.clear();
+    pane.input_failed = false;
+    pane.status = null;
+    pane.exit_deadline = null;
+    pane.drained = false;
+    pane.stream.respawn();
+    // Never splice an in-flight snapshot or silently lose old unsent output.
+    // Finish the old capture, wait for prior credit, then announce resync before
+    // encoding another snapshot. An already-pending fresh capture suffices.
+    if (refresh and !pane.stream.snapshot_pending) pane.stream.stale = true;
+}
+
 fn info(a: std.mem.Allocator, s: *Session) !p.SessionInfo {
-    const panes = try a.alloc(p.PaneInfo, 1);
-    const pwd = try s.backend.vt.pwd(a);
-    panes[0] = .{
-        .id = 1,
-        .cols = s.cols,
-        .rows = s.rows,
-        .title = try s.backend.vt.title(a),
-        .cwd = if (windowsPath(pwd)) pwd else s.cwd,
-        .foreground_process = if (s.status == null) s.backend.vt.shell_command.value() else "",
-        .exit = s.status,
-        .close_on_exit = s.close_on_exit,
-    };
+    const panes = try a.alloc(p.PaneInfo, s.count);
+    for (s.panes[0..s.count], panes) |pane, *entry| {
+        const pwd = try pane.backend.vt.pwd(a);
+        entry.* = .{
+            .id = pane.id,
+            .cols = pane.cols,
+            .rows = pane.rows,
+            .title = try pane.backend.vt.title(a),
+            .cwd = if (windowsPath(pwd)) pwd else pane.cwd,
+            .foreground_process = if (pane.status == null) pane.backend.vt.shell_command.value() else "",
+            .exit = pane.status,
+            .close_on_exit = pane.close_on_exit,
+        };
+    }
     return .{ .id = &s.meta.id, .attached = s.client != null, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes };
 }
 
@@ -574,6 +721,46 @@ test "Windows exit codes never encode Unix signals" {
     try std.testing.expectEqual(std.math.maxInt(i32), wireExit(0xc0000005));
 }
 
+test "respawn resyncs discarded backlog and finishes active snapshot before refreshing" {
+    const a = std.testing.allocator;
+    var pane: RuntimePane = .{
+        .id = 1,
+        .backend = undefined,
+        .launch_arena = std.heap.ArenaAllocator.init(a),
+        .launch = .{ .shell = "powershell.exe" },
+        .cwd = undefined,
+        .cols = 80,
+        .rows = 24,
+        .close_on_exit = false,
+    };
+    defer pane.launch_arena.deinit();
+    defer pane.stream.deinit(a);
+    pane.stream.credit = p.window - 1;
+    pane.stream.appendOutput(a, "not delivered before respawn");
+    resetRespawnDelivery(&pane);
+    try std.testing.expect(pane.stream.stale);
+    try std.testing.expectEqual(@as(usize, 0), pane.stream.unsent.len());
+    try std.testing.expect(!pane.stream.requestResync());
+    pane.stream.grant(1);
+    try std.testing.expect(pane.stream.requestResync());
+    try std.testing.expect(pane.stream.startSnapshot());
+
+    pane.stream.attach();
+    _ = pane.stream.startSnapshot();
+    pane.snapshot_active = true;
+    pane.snapshot_offset = 123;
+    resetRespawnDelivery(&pane);
+    try std.testing.expect(pane.snapshot_active);
+    try std.testing.expectEqual(@as(usize, 123), pane.snapshot_offset);
+    try std.testing.expect(!pane.stream.snapshot_pending);
+    try std.testing.expect(pane.stream.stale);
+    // tickPane gates requestResync on !snapshot_active. After the old end frame,
+    // this transition emits resync before the next startSnapshot call.
+    pane.snapshot_active = false;
+    try std.testing.expect(pane.stream.requestResync());
+    try std.testing.expect(pane.stream.startSnapshot());
+}
+
 test "session capacity rejects before allocation or child creation" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     var owner = Owner.init(failing.allocator(), .{});
@@ -581,6 +768,136 @@ test "session capacity rejects before allocation or child creation" {
     try std.testing.expectError(error.ResourceExhausted, owner.create(&.{ .id = 1, .op = .create }));
     try std.testing.expect(!failing.has_induced_failure);
     try std.testing.expectEqual(max_sessions, owner.count);
+}
+
+test "global and per-session pane capacity reject before allocation or mutation" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var owner = Owner.init(failing.allocator(), .{});
+    var s: Session = .{ .meta = .{ .id = @splat('a'), .next_pane = 9, .revision = 3 } };
+    owner.pane_count = max_panes;
+    try std.testing.expectError(error.ResourceExhausted, owner.create(&.{ .id = 1, .op = .create }));
+    try std.testing.expectError(error.ResourceExhausted, owner.spawnPane(&s, .{}, true));
+    owner.pane_count = 1;
+    s.count = max_session_panes;
+    try std.testing.expectError(error.ResourceExhausted, owner.spawnPane(&s, .{}, true));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectEqual(@as(u64, 9), s.meta.next_pane);
+    try std.testing.expectEqual(@as(u64, 3), s.meta.revision);
+    try std.testing.expectEqual(@as(usize, max_session_panes), s.count);
+}
+
+test "numeric exhaustion rejects spawn and close before backend or allocation" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var owner = Owner.init(failing.allocator(), .{});
+    var s: Session = .{ .meta = .{ .id = @splat('a'), .next_pane = @as(u64, std.math.maxInt(u32)) + 1 } };
+    var pane: RuntimePane = undefined;
+    s.panes[0] = &pane;
+    s.count = 1;
+    owner.pane_count = 1;
+    try std.testing.expectError(error.ResourceExhausted, owner.spawnPane(&s, .{}, true));
+    s.meta.next_pane = 2;
+    s.meta.revision = std.math.maxInt(u64);
+    try std.testing.expectError(error.ResourceExhausted, owner.spawnPane(&s, .{}, true));
+    try std.testing.expectError(error.ResourceExhausted, owner.closePane(&s, &pane));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectEqual(@as(u64, 2), s.meta.next_pane);
+    try std.testing.expectEqual(std.math.maxInt(u64), s.meta.revision);
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    try std.testing.expectEqual(@as(usize, 1), owner.pane_count);
+    try std.testing.expect(s.panes[0] == &pane);
+}
+
+test "failed respawn preserves state and owned original launch" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var original = [_]u8{ 'e', 'x', 'i', 't', ' ', '7' };
+    const launch = try prepareLaunch(arena.allocator(), .{ .command = &original });
+    @memset(&original, 'x');
+    var pane: RuntimePane = .{
+        .id = 7,
+        .backend = undefined,
+        .launch_arena = arena,
+        .launch = launch,
+        .cols = 90,
+        .rows = 30,
+        .cwd = undefined,
+        .close_on_exit = false,
+        .status = 7,
+        .exit_deadline = 500,
+        .drained = true,
+        .input_failed = true,
+        .snapshot_active = true,
+        .snapshot_offset = 3,
+        .stream = .{ .credit = 15, .exit_sent = true },
+    };
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    var owner = Owner.init(failing.allocator(), .{});
+    try std.testing.expectError(error.OutOfMemory, owner.respawnPane(&pane));
+    try std.testing.expectEqualStrings("exit 7", pane.launch.launch_command.?.argv.?[4]);
+    try std.testing.expectEqual(@as(?i32, 7), pane.status);
+    try std.testing.expectEqual(@as(?u64, 500), pane.exit_deadline);
+    try std.testing.expectEqual(@as(u32, 7), pane.id);
+    try std.testing.expectEqual(@as(u32, 15), pane.stream.credit);
+    try std.testing.expectEqual(@as(usize, 3), pane.snapshot_offset);
+    try std.testing.expect(pane.drained and pane.input_failed and pane.snapshot_active and pane.stream.exit_sent);
+    pane.status = null;
+    try std.testing.expectError(error.PaneAlive, owner.respawnPane(&pane));
+}
+
+test "stale frames cannot reach siblings or taken-over panes" {
+    const Sink = struct {
+        fn send(_: *anyopaque, _: p.Kind, _: u32, _: []const u8) !void {}
+    };
+    var context: u8 = 0;
+    var owner = Owner.init(std.testing.allocator, .{});
+    var s: Session = .{ .meta = .{ .id = @splat('a') } };
+    var pane: RuntimePane = undefined;
+    pane.id = 2;
+    pane.stream = .{ .credit = 0 };
+    pane.input = .{};
+    pane.status = null;
+    pane.input_failed = false;
+    s.panes[0] = &pane;
+    s.count = 1;
+    var client: Client = .{ .context = &context, .send_fn = Sink.send, .session = &s };
+    s.client = &client;
+    try owner.frame(&client, .input, 1, "stale");
+    try owner.frame(&client, .credit, 1, &.{ 12, 0, 0, 0 });
+    try std.testing.expectEqual(@as(usize, 0), pane.input.len());
+    try std.testing.expectEqual(@as(u32, 0), pane.stream.credit);
+    client.session = null;
+    try owner.frame(&client, .input, 2, "taken");
+    try owner.frame(&client, .credit, 2, &.{ 12, 0, 0, 0 });
+    try std.testing.expectEqual(@as(usize, 0), pane.input.len());
+    try std.testing.expectEqual(@as(u32, 0), pane.stream.credit);
+    try std.testing.expectError(error.InvalidResize, owner.frame(&client, .resize, 1, &p.encodeResize(0, 1)));
+}
+
+test "attach validates every size and duplicate before touching VT or bindings" {
+    const Sink = struct {
+        fn send(_: *anyopaque, _: p.Kind, _: u32, _: []const u8) !void {}
+    };
+    var context: u8 = 0;
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var owner = Owner.init(failing.allocator(), .{});
+    var s: Session = .{ .meta = .{ .id = @splat('a') } };
+    var first: RuntimePane = undefined;
+    var second: RuntimePane = undefined;
+    first.id = 2;
+    second.id = 3;
+    s.panes[0] = &first;
+    s.panes[1] = &second;
+    s.count = 2;
+    var old: Client = .{ .context = &context, .send_fn = Sink.send, .session = &s };
+    var next: Client = .{ .context = &context, .send_fn = Sink.send };
+    s.client = &old;
+    const good: p.PaneSize = .{ .pane = 2, .cols = 90, .rows = 30 };
+    try std.testing.expectError(error.InvalidSize, owner.attach(&next, &s, 1, &.{ good, .{ .pane = 3, .cols = 0, .rows = 30 } }, owner.a));
+    try std.testing.expectError(error.PaneNotFound, owner.attach(&next, &s, 1, &.{ good, .{ .pane = 1, .cols = 90, .rows = 30 } }, owner.a));
+    try std.testing.expectError(error.InvalidPaneSizes, owner.attach(&next, &s, 1, &.{ good, good }, owner.a));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expect(s.client == &old and old.session == &s and next.session == null);
 }
 
 test "native interactive shell exit policy does not classify commands as shells" {
@@ -600,7 +917,10 @@ test "published create attach OOM is uncertain and retains its session identity"
         }
     };
     var owner = Owner.init(std.testing.allocator, .{});
-    var s: Session = .{ .meta = .{ .id = @splat('a') }, .backend = undefined, .cols = 80, .rows = 24, .cwd = undefined, .close_on_exit = false };
+    var s: Session = .{ .meta = .{ .id = @splat('a') } };
+    var pane: RuntimePane = undefined;
+    s.panes[0] = &pane;
+    s.count = 1;
     owner.sessions[0] = &s;
     owner.count = 1;
     var calls: usize = 0;
@@ -620,7 +940,8 @@ test "read-side query write failure preserves live process and VT output" {
     const req: p.Request = .{ .id = 1, .op = .create, .spawn = .{
         .argv = &.{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$null=[Console]::ReadLine()" },
     } };
-    const s = try owner.create(&req);
+    const session = try owner.create(&req);
+    const s = session.panes[0];
     // No queued input exists. A closed writer can still accompany a live child
     // and buffered output, including a query discovered inside the read loop.
     s.backend.pty.writer_state.mutex.lock();

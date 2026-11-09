@@ -77,7 +77,8 @@ const Fixture = struct {
                 try testing.expectEqual(if (binary) p.SnapshotFormat.binary else p.SnapshotFormat.vt, welcome.value.snapshot);
                 try testing.expect(!std.mem.eql(u8, "bootstrap", welcome.value.ghostty));
                 try testing.expect(p.hasFeature(welcome.value.features, "create-id"));
-                try testing.expect(!p.hasFeature(welcome.value.features, "respawn"));
+                try testing.expect(p.hasFeature(welcome.value.features, "respawn"));
+                try testing.expect(p.validHost(welcome.value.host));
                 return client;
             }
             Sleep(10);
@@ -399,7 +400,6 @@ test "Windows live owner retains raw root exit and layout CAS preserves current 
     defer retained.deinit();
     try testing.expectEqualStrings("kept-layout", retained.value.sessions.?[0].layout);
     try testing.expectEqual(revision + 1, retained.value.sessions.?[0].revision);
-    for ([_]p.Op{ .spawn, .close, .respawn }) |op| try client.rejected(.{ .id = 6, .op = op, .pane = 1, .spawn = .{} }, "Unsupported");
     try client.ok(.{ .id = 7, .op = .kill, .session = session_id });
     try client.empty();
 }

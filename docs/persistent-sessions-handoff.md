@@ -55,6 +55,7 @@ Commit map (current IDs, oldest first):
 | `643ae0a` | Shared attachment and bounded stream delivery state |
 | `6597ca2` | Windows owner ConPTY/headless-VT pane adapter |
 | `e5f7670` | Bounded live single-pane Windows owner |
+| `f6d92ca` | Secured, persisted Windows session host identity |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -62,7 +63,7 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: finish multi-pane Windows owner mutations, then GUI domains and WSL keepalive.
+3. Phase 3: native Windows GUI/domain integration and WSL keepalive, with owner mechanisms now implemented.
 
 Windows host identity is now persisted as 32 lowercase hexadecimal bytes at `%LOCALAPPDATA%\hollow\sessions\host-id`.
 Production loads it after singleton endpoint admission; fixture namespaces generate ephemeral owner-local identities without touching production state.
@@ -72,6 +73,21 @@ Reads reject malformed bytes, wrong owner, inherited/broad DACLs, directories, a
 Persistence failure fails owner startup rather than advertising a different ephemeral production host on every restart.
 Eighteen standalone Windows identity/pipe/protocol tests pass in Debug, ReleaseSafe, and ReleaseFast, including reload, corruption preservation, inherited ACL rejection, and concurrent creation.
 Filesystem fixtures use unique native Windows temporary directories because the WSL shared repository does not implement Windows file ACLs.
+
+Windows owner multi-pane mutations are now implemented with heap-stable per-pane process/VT/delivery state.
+Admission limits are 16 sessions, 16 panes per session, and 64 published panes across the owner, checked before child execution.
+Spawn advances pane identity and membership revision only after successful backend creation; close preflights revision before killing, retains layout, and acknowledges the final close before session-end notification.
+Respawn uses retained owned launch data, prepares a replacement before changing old state, preserves pane identity/revision/layout/VT, and leaves the old pane untouched on rejection.
+An already-running pane rejects respawn with `PaneAlive`, matching Linux wire behavior.
+Input, resize, credit, snapshots, foreground sync, and exit status route by the actual pane stream; late frames for closed/exited panes do not disconnect live siblings.
+Owner-wide rotating pane visitation with bounded per-pane work prevents a blocked pane from starving siblings.
+Respawn that drops unsent output or overlaps an immutable snapshot waits for old credit and emits resync before recapturing, rather than silently diverging or splicing snapshots.
+Attach validates every pane size and preallocates its reply before takeover; a later VT resize allocation failure preserves controller bindings but can leave earlier valid sizes applied.
+Fatal VT/read failures retain the existing session-fatal policy; per-pane input failure alone does not terminate siblings.
+Validation passes 81 owner tests each in Debug, ReleaseSafe, and ReleaseFast; the combined ReleaseSafe owner/pane/ConPTY suite executes 122 tests with no skips on the main runner.
+Five real-process multi-pane regressions cover stream routing and fairness, monotonic IDs/revisions/layout retention, takeover, successful/rejected respawn, descendant isolation, and final-close ordering.
+Numeric exhaustion/capacity preflight and respawn backlog/snapshot resync are covered by targeted runtime tests.
+Linux transport/owner/PTY suites, Windows GUI cross-build, formatting, and diff checks pass; existing user owners were not restarted.
 
 The first live Windows owner now uses `session_runtime_windows.zig` with the shared metadata, attachment, and stream helpers plus owner-side ConPTY/VT.
 It supports at most 16 single-pane sessions with 1 MiB scrollback per pane and 4 MiB pending application input per session.
@@ -172,7 +188,7 @@ The first live Windows owner now also uses this metadata; the earlier bootstrap 
 Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
 The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
 Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
-Next concrete slice: multi-pane Windows owner spawn/close/respawn and stable host identity before enabling any native Windows GUI domain.
+Next concrete slice: connect native Windows domains to the asynchronous GUI path and qualify create, multi-pane operations, detach/reattach, remembered host identity, and kill before enabling persistence.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.

@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Shared metadata, attachment, and stream state support the live single-pane Windows owner, and stable host identity is persisted; multi-pane mutations remain next.
+3. Done: shared metadata, attachment, and stream state support the bounded multi-pane Windows owner, with spawn/close/respawn and persisted stable host identity.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -641,9 +641,8 @@ All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and Release
 
 The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig session-owner-windows -Dtarget=x86_64-windows-gnu`.
 It installs `agents/windows-x86_64/hollow-agent.exe` without replacing the Linux agents or GUI executable.
-The executable supports `session serve|connect|list|kill-server`; protocol clients can now create, list, attach, detach, and kill single-pane sessions, send input/resize/credit, and replace opaque layouts with revision checks.
-The welcome negotiates the real Ghostty build identity and advertises `create-id`, but not `respawn`.
-Individual pane spawn/close/respawn requests still fail explicitly with `Unsupported`.
+The executable supports `session serve|connect|list|kill-server`; protocol clients can create, list, attach, detach, and kill sessions, spawn/close/respawn individual panes, send input/resize/credit, and replace opaque layouts with revision checks.
+The welcome negotiates the real Ghostty build identity and advertises `create-id` and `respawn`.
 Each endpoint includes the current user's SID and protocol major; an optional bounded `--namespace` suffix isolates fixtures.
 The protected DACL permits only that SID, clients validate owner and DACL, remote pipe clients are rejected, and handles are noninheritable.
 The first named-pipe instance stays open through client disconnects, preventing a second owner from replacing it.
@@ -682,7 +681,13 @@ Pending query replies retain only unsubmitted suffixes under backpressure, and o
 Replies are bounded to 4 MiB and snapshot encoding/VT fallback stream into a 64 MiB bounded sink.
 Session-owned child environments strip GUI identity/control variables and force OSC transport without changing ordinary GUI spawn behavior.
 The first live slice maps native launch requests, preserves session processes and terminal state across last-client disconnect, and delivers snapshots incrementally through the existing 1 MiB transport bound.
-The runtime limits live sessions to 16 with one pane each, 1 MiB scrollback per pane, and 4 MiB pending input per session; it leaves individual pane mutations and native Windows GUI enablement for subsequent slices.
+The runtime limits live sessions to 16, panes to 16 per session and 64 total, scrollback to 1 MiB per pane, and pending input to 4 MiB per pane; native Windows GUI enablement remains a subsequent slice.
+Shared metadata admission checks pane IDs and revisions before process side effects, committing only after a successful spawn.
+Close retains opaque layout and advances revision once, while respawn preserves pane identity, revision, layout, and authoritative VT; rejected respawn leaves the old pane untouched.
+Delivery, credit, input failure, resize, and exit are pane-local, with rotating bounded visitation for sibling fairness and stale closed-pane frames ignored.
+Discarded respawn backlog and in-flight captures trigger a credit-barrier resync before a fresh snapshot, never an unannounced second capture.
+The multi-pane owner suite passes 81 tests each in Debug, ReleaseSafe, and ReleaseFast, and the combined ReleaseSafe owner/pane/ConPTY suite passes 122 tests.
+Fixtures exercise stream fairness, membership/layout revisions, takeover, rejected respawn preservation, descendant isolation, and final-close acknowledgement ordering.
 Production Windows owners now persist a stable host identity in `%LOCALAPPDATA%\hollow\sessions\host-id` after singleton admission.
 The owner creates a protected current-user-only file through flushed, atomic no-replacement publication; malformed or insecure existing files fail startup instead of silently changing identity.
 Final-component reparse points are rejected, concurrent creation converges on the persisted winner, and private fixture namespaces never access production host state.

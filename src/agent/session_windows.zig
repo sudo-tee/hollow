@@ -256,7 +256,7 @@ const Owner = struct {
                     .snapshot = if (slot.client.binary) .binary else .vt,
                     .owner_pid = windows.GetCurrentProcessId(),
                     .host = &self.host,
-                    .features = &.{"create-id"},
+                    .features = &p.owner_features,
                 });
             },
             .request => {

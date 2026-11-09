@@ -133,7 +133,8 @@ fn hello(connection: *owner.Connection) !i64 {
     try testing.expect(!std.mem.eql(u8, "bootstrap", parsed.value.ghostty));
     try testing.expectEqual(p.SnapshotFormat.vt, parsed.value.snapshot);
     try testing.expect(p.hasFeature(parsed.value.features, "create-id"));
-    try testing.expect(!p.hasFeature(parsed.value.features, "respawn"));
+    try testing.expect(p.hasFeature(parsed.value.features, "respawn"));
+    try testing.expect(p.validHost(parsed.value.host));
     try testing.expect(parsed.value.owner_pid > 0);
     return parsed.value.owner_pid;
 }
@@ -157,14 +158,14 @@ fn expectEmpty(connection: *owner.Connection) !void {
     try testing.expectEqual(@as(usize, 0), (reply.value.sessions orelse return error.MissingSessions).len);
 }
 
-test "Windows single-pane owner rejects deferred spawn without disconnecting" {
+test "Windows owner rejects unattached spawn without disconnecting" {
     var fixture = try Fixture.init();
     defer fixture.deinit();
     try expectEmpty(&fixture.connection);
     const reply = try request(&fixture.connection, .{ .id = 2, .op = .spawn, .spawn = .{} });
     defer reply.deinit();
     try testing.expect(!reply.value.ok);
-    try testing.expectEqualStrings("Unsupported", reply.value.@"error" orelse return error.MissingError);
+    try testing.expectEqualStrings("NotAttached", reply.value.@"error" orelse return error.MissingError);
     try expectEmpty(&fixture.connection);
 }
 
@@ -444,4 +445,5 @@ test {
     testing.refAllDecls(pipe);
     _ = @import("session_windows_bridge_test.zig");
     _ = @import("session_windows_live_test.zig");
+    _ = @import("session_windows_multi_test.zig");
 }

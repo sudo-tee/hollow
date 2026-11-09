@@ -251,7 +251,7 @@ test "Windows connect CLI hello/list is protocol-only and stdin EOF leaves contr
     try testing.expectEqualStrings(@import("agent/session_vt.zig").buildIdentity(), welcome.value.ghostty);
     try testing.expectEqual(p.SnapshotFormat.vt, welcome.value.snapshot);
     try testing.expect(p.hasFeature(welcome.value.features, "create-id"));
-    try testing.expect(!p.hasFeature(welcome.value.features, "respawn"));
+    try testing.expect(p.hasFeature(welcome.value.features, "respawn"));
     try sendJson(&client, .request, p.Request{ .id = 17, .op = .list });
     const reply_bytes = try receive(&client, .reply);
     defer a.free(reply_bytes);
