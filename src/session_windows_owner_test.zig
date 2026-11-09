@@ -200,7 +200,7 @@ test "Windows session-only CLI lists fixture and rejects deferred modes" {
     try testing.expect(reply.value.ok);
     try testing.expectEqual(@as(usize, 0), (reply.value.sessions orelse return error.MissingSessions).len);
     const unsupported = try std.process.run(a, io.get(), .{
-        .argv = &.{ fixture.exe, "session", "connect", "--namespace", fixture.namespace },
+        .argv = &.{ fixture.exe, "stdio" },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromSeconds(10) } },
@@ -353,4 +353,5 @@ test "Windows healthy connection stays usable beyond partial-frame deadline" {
 test {
     // Include colocated pipe security tests in this standalone test root.
     testing.refAllDecls(pipe);
+    _ = @import("session_windows_bridge_test.zig");
 }

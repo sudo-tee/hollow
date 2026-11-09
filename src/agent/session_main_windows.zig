@@ -3,17 +3,25 @@ const std = @import("std");
 const owner = @import("session_windows.zig");
 const pipe = @import("session_pipe_windows.zig");
 const p = @import("session_protocol.zig");
+const windows = std.os.windows;
+
+extern "kernel32" fn GetStdHandle(windows.DWORD) callconv(.winapi) ?windows.HANDLE;
 
 pub fn main(init: std.process.Init) void {
-    run(init) catch |err| {
-        var buffer: [128]u8 = undefined;
-        const text = std.fmt.bufPrint(&buffer, "hollow-agent session: {s}\n", .{@errorName(err)}) catch unreachable;
-        std.Io.File.stderr().writeStreamingAll(init.io, text) catch {};
+    var bridge_admitted = false;
+    run(init, &bridge_admitted) catch |err| {
+        // Stderr may share the blocked stdout pipe. Once relaying, report
+        // failure through exit status rather than hang on a final diagnostic.
+        if (!bridge_admitted) {
+            var buffer: [128]u8 = undefined;
+            const text = std.fmt.bufPrint(&buffer, "hollow-agent session: {s}\n", .{@errorName(err)}) catch unreachable;
+            std.Io.File.stderr().writeStreamingAll(init.io, text) catch {};
+        }
         std.process.exit(1);
     };
 }
 
-fn run(init: std.process.Init) !void {
+fn run(init: std.process.Init, bridge_admitted: *bool) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
     _ = args.next();
@@ -31,6 +39,16 @@ fn run(init: std.process.Init) !void {
         if (namespace == null and err != error.OwnerExists) logFailure(init, err);
         return err;
     };
+    if (std.mem.eql(u8, command, "connect")) {
+        const input = GetStdHandle(0xfffffff6) orelse return error.InvalidStdio;
+        const output = GetStdHandle(0xfffffff5) orelse return error.InvalidStdio;
+        if (input == windows.INVALID_HANDLE_VALUE or output == windows.INVALID_HANDLE_VALUE) return error.InvalidStdio;
+        const exe = try std.process.executablePathAlloc(init.io, init.gpa);
+        defer init.gpa.free(exe);
+        const handle = try owner.connectOrStart(init.gpa, init.io, namespace, exe);
+        bridge_admitted.* = true;
+        return @import("session_bridge_windows.zig").run(handle, input, output);
+    }
     const operation: p.Op = if (std.mem.eql(u8, command, "list")) .list else if (std.mem.eql(u8, command, "kill-server")) .kill_server else return error.Unsupported;
     // Discovery and explicit cleanup never start an owner merely to query it.
     var endpoint = try pipe.Endpoint.init(init.gpa, namespace);

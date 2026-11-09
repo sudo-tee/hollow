@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 during Phase 3 secured Windows-owner bootstrap.
+Updated 2026-11-09 during Phase 3 raw Windows connect bridging.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -49,6 +49,7 @@ Commit map (current IDs, oldest first):
 | `f93d9b8` | Explicit recovery by reserved create ID |
 | `b409297` | Coalesce output frames within GUI parser reads |
 | `e2b95ee` | Windows owner-side ConPTY process-tree lifetime |
+| `6d6adca` | Secured Windows session-owner bootstrap |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -56,7 +57,7 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: connect the secured Windows owner bootstrap to shared session semantics and the connect bridge, then GUI domains and WSL keepalive.
+3. Phase 3: shared authoritative session semantics on top of the secured Windows owner and raw connect bridge, then GUI domains and WSL keepalive.
 
 Phase 3 foundation: `WindowsPty.spawnSession` creates an unnamed, noninheritable kill-on-close Job Object for each owner pane.
 The child starts suspended, joins its job before executing, and resumes only after both bounded I/O workers exist.
@@ -65,12 +66,12 @@ They can receive input before their first output.
 Owner-side destruction kills descendants too; GUI detach must never destroy this owner-side PTY.
 Session input overflow rejects admission atomically with `ResourceExhausted`, without marking the pane dead.
 The ordinary GUI pre-output input buffer is now bounded to the same 1 MiB input limit.
-Native Windows persistence remains unsupported until shared session semantics, the connect bridge, and GUI wiring land.
+Native Windows persistence remains unsupported until shared session semantics and GUI wiring land.
 This foundation does not change Linux owners or require restarting existing sessions.
 Foundation validation: real Windows ConPTY/job tests pass (11 tests each in Debug, ReleaseSafe, and ReleaseFast), Linux ReleaseSafe transport/agent-loop/PTY suites pass (138 tests), Windows borrower/App tests pass (49 tests, one optional fixture skipped), and the ReleaseFast Windows GUI cross-build passes.
 The standalone target is registered in Windows CI; final read-only review found no actionable issues.
 Windows bootstrap: `src/agent/session_main_windows.zig` builds a separate session-only `hollow-agent.exe` with no GUI/VT dependencies yet.
-Its `serve|list|kill-server` commands use the SID/version-scoped named-pipe endpoint in `session_pipe_windows.zig`; `connect` and all actual session mutations still return `Unsupported`.
+Its `serve|connect|list|kill-server` commands use the SID/version-scoped named-pipe endpoint in `session_pipe_windows.zig`; all actual session mutations still return `Unsupported`.
 `session_windows.zig` implements a bounded overlapped loop, empty discovery, explicit shutdown, and an owner-only detached launcher that never submits or replays a create/spawn request.
 The protected user-only DACL and pipe owner are checked by clients, remote clients are rejected, and the first pipe instance remains alive across disconnect/reaccept.
 Fixture-only `--namespace <token>` suffixes are bounded and cannot change the SID or escape the pipe name.
@@ -86,7 +87,18 @@ The lifecycle suite verifies singleton rejection, malformed-frame isolation, las
 Source audit caught unread-ACK loss from `DisconnectNamedPipe` during final destruction; final teardown now closes without disconnect, while slot reuse still disconnects.
 Linux transport and PTY suites pass (91 tests executed; the unchanged 47-test agent-loop result was cached), Windows ConPTY tests pass (11), and the Windows GUI cross-build passes.
 The new bootstrap target is registered alongside the ConPTY target in native Windows CI; CI itself was not run locally.
-Next concrete slice: shared session semantics, ConPTY/VT ownership, and raw connect bridging before enabling any native Windows GUI domain.
+The raw `session connect` bridge is implemented in `session_bridge_windows.zig` and opens or starts the secured owner without submitting any protocol request itself.
+It forwards arbitrary bytes unchanged with two workers, two 64 KiB buffers, and no growing queues.
+Pipe writes and blocked stdout writes have 3-second deadlines; healthy idle stdin/owner reads wait without polling.
+Either EOF or failure stops the peer direction, cancels both overlapped and synchronous I/O, and joins workers before freeing buffers or closing the owned pipe.
+Stdio handles are borrowed, never closed by the bridge; shutdown never emits a remote close or retries bytes after possible transmission.
+As with Linux `connect`, stdin EOF detaches immediately and does not promise to drain a pending response afterward.
+After relay admission, failures use exit status without a final stderr write, because stderr may share the blocked stdout pipe.
+Bridge validation passes in Debug, ReleaseSafe, and ReleaseFast: 31 tests passed and the same restrictive-job auto-start check explicitly skipped in each run.
+Six real-process regressions cover protocol-only forwarding, stdin/owner/stdout EOF cancellation, merged blocked stdout/stderr, unread-owner backpressure, and 512 KiB of exact arbitrary-byte transfer without replay or synthetic close frames.
+Windows pipe-closing codes 109, 232, and 233 are treated as normal EOF rather than transport failure.
+The Windows GUI cross-build also passes; existing user owners and sessions were not restarted.
+Next concrete slice: shared session metadata/admission, then attachment/output/snapshot semantics and ConPTY/VT ownership before enabling any native Windows GUI domain.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.

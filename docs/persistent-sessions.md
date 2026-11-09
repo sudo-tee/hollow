@@ -614,7 +614,7 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Finish Phase 3 Windows session semantics and connect bridge on the secured owner bootstrap, then GUI integration and WSL keepalive (see below).
+2. Finish Phase 3 shared session semantics on the secured Windows owner and raw connect bridge, then GUI integration and WSL keepalive (see below).
 3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
 4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
 
@@ -641,7 +641,7 @@ All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and Release
 
 The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig session-owner-windows -Dtarget=x86_64-windows-gnu`.
 It installs `agents/windows-x86_64/hollow-agent.exe` without replacing the Linux agents or GUI executable.
-Only `session serve|list|kill-server` run at this checkpoint; `session connect` and actual session mutations remain unsupported until the following integration slice.
+The executable supports `session serve|connect|list|kill-server` at this checkpoint; actual session mutations remain unsupported until shared owner semantics are integrated.
 The welcome advertises no optional features, and create/spawn/attach requests fail explicitly rather than creating nonpersistent shells.
 Each endpoint includes the current user's SID and protocol major; an optional bounded `--namespace` suffix isolates fixtures.
 The protected DACL permits only that SID, clients validate owner and DACL, remote pipe clients are rejected, and handles are noninheritable.
@@ -655,6 +655,16 @@ Detached startup does not send or replay any session request.
 Bootstrap tests pass on real Windows through WSL in Debug, ReleaseSafe, and ReleaseFast (25 passed, one explicit auto-start skip per run).
 The skipped check verifies denied breakaway leaves no endpoint before reporting its successful-launch path unqualified.
 Final teardown closes pipes without disconnecting them, preserving queued shutdown replies for clients that read after owner exit; explicit disconnect remains necessary for slot reuse.
+
+The Windows `session connect` command now relays raw stdio to the secured named pipe without parsing, generating, or retrying protocol frames.
+Two fixed 64 KiB buffers and two I/O workers bound bridge resources, while blocked writes time out after 3 seconds.
+EOF or failure cancels the peer worker and drains cancellation before joining and freeing borrowed I/O buffers.
+Stdio handles remain caller-owned, and disconnect never sends a close mutation to the owner.
+Healthy idle reads do not poll; stdin EOF immediately detaches as in the Linux connector, without a promise to drain replies after that EOF.
+Post-admission failures exit without a final stderr diagnostic that could block on the same full output pipe.
+Real-process coverage checks EOF cancellation, bounded backpressure, merged blocked stdio, and 512 KiB of byte-exact transfer without replay or synthesized mutation frames.
+The combined Windows owner/bridge suite passes 31 tests with the existing one explicit auto-start skip in Debug, ReleaseSafe, and ReleaseFast.
+The next shared-core slice extracts portable identity, opaque layout, and mutation admission from the Linux owner rather than cloning its authority in Windows code.
 
 Crash/reboot layout placeholders from the original lifecycle section also need an implementation audit; live-process recovery after owner loss remains out of scope.
 
