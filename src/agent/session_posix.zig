@@ -5,6 +5,7 @@
 //! credit.
 const std = @import("std");
 const p = @import("session_protocol.zig");
+const core = @import("session_core.zig");
 const pty = @import("pty.zig");
 const Vt = @import("session_vt.zig").Vt;
 const session_vt = @import("session_vt.zig");
@@ -183,13 +184,9 @@ fn paneCwd(arena: std.mem.Allocator, pane: *const Pane) ![]const u8 {
 }
 
 const Session = struct {
-    id: [32]u8,
+    meta: core.Metadata,
     panes: std.ArrayList(*Pane) = .empty,
-    next_pane: u32 = 1,
-    revision: u64 = 0,
-    layout: []u8 = &.{},
     client: ?*Client = null,
-    ended: bool = false,
 
     fn find(self: *Session, id: u32) ?*Pane {
         for (self.panes.items) |pane| if (pane.id == id and !pane.removed) return pane;
@@ -439,7 +436,7 @@ pub const Owner = struct {
     }
 
     fn event(self: *Owner, client: *Client, kind: p.EventKind, s: *Session, pane: ?u32) void {
-        self.sendJson(client, .event, p.Event{ .event = kind, .session = &s.id, .pane = pane });
+        self.sendJson(client, .event, p.Event{ .event = kind, .session = &s.meta.id, .pane = pane });
     }
 
     fn handleFrame(self: *Owner, client: *Client, h: p.Header, payload: []const u8) !void {
@@ -495,14 +492,16 @@ pub const Owner = struct {
         switch (req.op) {
             .list => {
                 var list: std.ArrayList(p.SessionInfo) = .empty;
-                for (self.sessions.items) |s| if (!s.ended) try list.append(arena, try self.info(arena, s));
+                for (self.sessions.items) |s| if (!s.meta.ended) try list.append(arena, try self.info(arena, s));
                 self.reply(client, .{ .id = req.id, .sessions = list.items });
             },
             .create => {
                 const s = try self.createSession(req.create_id);
                 errdefer self.endSession(s);
-                _ = try self.spawnPane(s, req.spawn orelse .{});
-                if (req.layout) |layout| s.layout = try self.a.dupe(u8, layout);
+                // Copy layout before fork: allocation failure must not launch
+                // a process whose create request is then rejected.
+                if (req.layout) |layout| try s.meta.setInitialLayout(self.a, layout);
+                _ = try self.spawnPane(s, req.spawn orelse .{}, false);
                 self.attach(client, s, req.id, &.{});
             },
             .attach => {
@@ -520,30 +519,27 @@ pub const Owner = struct {
             },
             .spawn => {
                 const s = client.session orelse return error.NotAttached;
-                const pane = try self.spawnPane(s, req.spawn orelse .{});
-                self.membershipChanged(s);
-                self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.revision });
+                const pane = try self.spawnPane(s, req.spawn orelse .{}, true);
+                self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.meta.revision });
                 self.saveState(s);
             },
             .close => {
                 const s = client.session orelse return error.NotAttached;
                 const pane = s.find(req.pane orelse return error.MissingPane) orelse return error.PaneNotFound;
+                const revision = try s.meta.prepareMembershipChange();
                 self.closePane(s, pane);
-                self.membershipChanged(s);
-                self.reply(client, .{ .id = req.id, .revision = s.revision });
+                s.meta.revision = revision;
+                self.reply(client, .{ .id = req.id, .revision = s.meta.revision });
                 if (livePanes(s) == 0) self.endSession(s) else self.saveState(s);
             },
             .layout => {
                 const s = client.session orelse return error.NotAttached;
-                if (req.revision != s.revision) {
-                    self.reply(client, .{ .id = req.id, .ok = false, .@"error" = "RevisionConflict", .revision = s.revision });
+                s.meta.replaceLayout(self.a, req.revision, req.layout orelse "") catch |err| {
+                    if (err != error.RevisionConflict) return err;
+                    self.reply(client, .{ .id = req.id, .ok = false, .@"error" = "RevisionConflict", .revision = s.meta.revision });
                     return;
-                }
-                const layout = try self.a.dupe(u8, req.layout orelse "");
-                self.a.free(s.layout);
-                s.layout = layout;
-                s.revision += 1;
-                self.reply(client, .{ .id = req.id, .revision = s.revision });
+                };
+                self.reply(client, .{ .id = req.id, .revision = s.meta.revision });
                 self.saveState(s);
             },
             .respawn => {
@@ -560,15 +556,6 @@ pub const Owner = struct {
         }
     }
 
-    /// Geometry is opaque to the owner, so membership changes keep the last
-    /// saved blob: clients reconcile it against the live panes on attach
-    /// (closed panes pruned, new panes appended). Clearing it lost all geometry
-    /// whenever a client went away between a spawn and its next layout save.
-    /// The revision still advances so an in-flight save cannot land on it.
-    fn membershipChanged(_: *Owner, s: *Session) void {
-        s.revision += 1;
-    }
-
     fn info(self: *Owner, arena: std.mem.Allocator, s: *Session) !p.SessionInfo {
         _ = self;
         var panes: std.ArrayList(p.PaneInfo) = .empty;
@@ -582,7 +569,7 @@ pub const Owner = struct {
             .exit = pane.status,
             .close_on_exit = pane.close_on_exit,
         });
-        return .{ .id = &s.id, .attached = s.client != null, .revision = s.revision, .layout = s.layout, .panes = panes.items };
+        return .{ .id = &s.meta.id, .attached = s.client != null, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items };
     }
 
     /// Attach with take-over: the reply carries the session, then each pane
@@ -675,29 +662,26 @@ pub const Owner = struct {
     // -- sessions and panes -----------------------------------------------
 
     fn findSession(self: *Owner, id: []const u8) ?*Session {
-        for (self.sessions.items) |s| if (!s.ended and std.mem.eql(u8, &s.id, id)) return s;
-        return null;
+        return core.findSession(self.sessions.items, id);
     }
 
     fn createSession(self: *Owner, reserved: ?[]const u8) !*Session {
-        const id: [32]u8 = if (reserved) |value| blk: {
-            if (!p.validCreateId(value)) return error.InvalidSessionId;
-            break :blk value[0..32].*;
-        } else blk: {
+        const id: [32]u8 = if (reserved) |value| try core.reservedId(value) else blk: {
             var random: [16]u8 = undefined;
             try fillRandom(&random);
-            break :blk std.fmt.bytesToHex(random, .lower);
+            break :blk core.randomId(random);
         };
-        // Even an ended identity cannot be reused during this owner's lifetime.
-        for (self.sessions.items) |existing| if (std.mem.eql(u8, &existing.id, &id)) return error.SessionExists;
+        // Ended entries reserve identity only until collect removes them.
+        try core.checkCollision(self.sessions.items, &id);
         const s = try self.a.create(Session);
         errdefer self.a.destroy(s);
-        s.* = .{ .id = id };
+        s.* = .{ .meta = .{ .id = id } };
         try self.sessions.append(self.a, s);
         return s;
     }
 
-    fn spawnPane(self: *Owner, s: *Session, spawn: p.Spawn) !*Pane {
+    fn spawnPane(self: *Owner, s: *Session, spawn: p.Spawn, membership_change: bool) !*Pane {
+        const prepared = try s.meta.preparePane(membership_change);
         if (spawn.cols == 0 or spawn.rows == 0) return error.InvalidSize;
         try pty.validateSpawn(spawn);
         const spawn_json = try p.stringify(self.a, spawn);
@@ -708,9 +692,9 @@ pub const Owner = struct {
         errdefer self.a.destroy(pane);
         try s.panes.ensureUnusedCapacity(self.a, 1);
         const child = try self.forkChild(spawn, spawn.cols, spawn.rows);
-        pane.* = .{ .id = s.next_pane, .pid = child.pid, .master = child.master, .launch = child.launch, .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json, .close_on_exit = @import("pty_protocol.zig").sessionCloseOnExit(spawn) };
-        s.next_pane += 1;
+        pane.* = .{ .id = prepared.id, .pid = child.pid, .master = child.master, .launch = child.launch, .vt = vt, .cols = spawn.cols, .rows = spawn.rows, .spawn = spawn_json, .close_on_exit = @import("pty_protocol.zig").sessionCloseOnExit(spawn) };
         s.panes.appendAssumeCapacity(pane);
+        prepared.commit(&s.meta);
         self.saveState(s);
         return pane;
     }
@@ -901,9 +885,11 @@ pub const Owner = struct {
     }
 
     fn endSession(self: *Owner, s: *Session) void {
-        if (s.ended) return;
+        if (s.meta.ended) return;
+        // Termination is not an admitted membership edit: shutdown and error
+        // cleanup must still kill panes even when revision space is exhausted.
         for (s.panes.items) |pane| self.closePane(s, pane);
-        s.ended = true;
+        s.meta.ended = true;
         if (s.client) |client| {
             client.session = null;
             self.event(client, .session_end, s, null);
@@ -911,7 +897,7 @@ pub const Owner = struct {
         }
         if (self.state_dir) |dir| {
             var path: [std.fs.max_path_bytes]u8 = undefined;
-            const file = std.fmt.bufPrintSentinel(&path, "{s}/{s}.json", .{ dir, &s.id }, 0) catch return;
+            const file = std.fmt.bufPrintSentinel(&path, "{s}/{s}.json", .{ dir, &s.meta.id }, 0) catch return;
             _ = c.unlink(file.ptr);
         }
     }
@@ -932,10 +918,10 @@ pub const Owner = struct {
                 _ = s.panes.orderedRemove(j);
                 self.freePane(pane);
             }
-            if (s.ended) {
+            if (s.meta.ended) {
                 _ = self.sessions.orderedRemove(i);
                 s.panes.deinit(self.a);
-                self.a.free(s.layout);
+                s.meta.deinit(self.a);
                 self.a.destroy(s);
             } else i += 1;
         }
@@ -1025,7 +1011,7 @@ pub const Owner = struct {
     /// exit. Written atomically on every structural change.
     fn saveState(self: *Owner, s: *Session) void {
         const dir = self.state_dir orelse return;
-        if (s.ended) return;
+        if (s.meta.ended) return;
         var arena_state = std.heap.ArenaAllocator.init(self.a);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
@@ -1034,9 +1020,9 @@ pub const Owner = struct {
         for (s.panes.items) |pane| if (!pane.removed) {
             panes.append(arena, .{ .id = pane.id, .spawn = pane.spawn, .title = pane.vt.title(arena) catch "", .cwd = paneCwd(arena, pane) catch "", .exit = pane.status }) catch return;
         };
-        const body = p.stringify(arena, .{ .id = &s.id, .revision = s.revision, .layout = s.layout, .panes = panes.items }) catch return;
-        const tmp = std.fmt.allocPrintSentinel(arena, "{s}/{s}.json.tmp", .{ dir, &s.id }, 0) catch return;
-        const final = std.fmt.allocPrintSentinel(arena, "{s}/{s}.json", .{ dir, &s.id }, 0) catch return;
+        const body = p.stringify(arena, .{ .id = &s.meta.id, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items }) catch return;
+        const tmp = std.fmt.allocPrintSentinel(arena, "{s}/{s}.json.tmp", .{ dir, &s.meta.id }, 0) catch return;
+        const final = std.fmt.allocPrintSentinel(arena, "{s}/{s}.json", .{ dir, &s.meta.id }, 0) catch return;
         const fd = c.open(tmp.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC | c.O_CLOEXEC, @as(c_uint, 0o600));
         if (fd < 0) return;
         var written: usize = 0;

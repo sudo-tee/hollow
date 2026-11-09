@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 during Phase 3 raw Windows connect bridging.
+Updated 2026-11-09 after raw Windows connect bridging and shared metadata/admission extraction.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -50,6 +50,7 @@ Commit map (current IDs, oldest first):
 | `b409297` | Coalesce output frames within GUI parser reads |
 | `e2b95ee` | Windows owner-side ConPTY process-tree lifetime |
 | `6d6adca` | Secured Windows session-owner bootstrap |
+| `06c923a` | Bounded raw Windows connect bridge |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -98,7 +99,21 @@ Bridge validation passes in Debug, ReleaseSafe, and ReleaseFast: 31 tests passed
 Six real-process regressions cover protocol-only forwarding, stdin/owner/stdout EOF cancellation, merged blocked stdout/stderr, unread-owner backpressure, and 512 KiB of exact arbitrary-byte transfer without replay or synthetic close frames.
 Windows pipe-closing codes 109, 232, and 233 are treated as normal EOF rather than transport failure.
 The Windows GUI cross-build also passes; existing user owners and sessions were not restarted.
-Next concrete slice: shared session metadata/admission, then attachment/output/snapshot semantics and ConPTY/VT ownership before enabling any native Windows GUI domain.
+Shared metadata/admission now lives in `src/agent/session_core.zig` and is used by the Linux owner, without introducing a second session registry or a generic full owner.
+It owns session identity, opaque layout, pane-ID cursor, revision, and ended metadata; platform code still owns process/PTY/VT resources, transports, persistence, and attachment transitions.
+Reserved/random ID construction and borrowed-array lookup/collision rules are shared; ended IDs reserve identity only until collection removes their entries, not for the owner's lifetime.
+Layout CAS preserves current bytes and revision on conflict, missing revision, OOM, oversize, or revision exhaustion.
+Initial layout copies before fork, so layout allocation rejection cannot launch a process first.
+Pane/revision admission checks happen before fork or explicit-close side effects; commit allocates nothing and cannot fail.
+The final nonzero `u32` pane ID remains usable via a wider cursor, then further admission returns `ResourceExhausted` rather than wrapping.
+Initial creation remains revision 0, ordinary spawn/close advances once, and membership changes retain geometry for reconciliation.
+Whole-session termination and owner teardown bypass revision admission so they still kill children at numeric exhaustion.
+This extraction preserves existing session/pane count policy and does not claim the Linux owner is globally bounded; explicit count/aggregate admission limits remain a separate hardening task.
+The Windows bootstrap does not yet use this metadata for live sessions and still rejects all session mutations.
+Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
+The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
+Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
+Next concrete slice: shared attachment/output/snapshot semantics and ConPTY/VT ownership before enabling any native Windows GUI domain.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
@@ -396,6 +411,7 @@ Gotchas that cost time before:
 - Windows bootstrap: `zig build --build-file build-agent.zig session-owner-windows test-session-windows-owner -Dtarget=x86_64-windows-gnu -Doptimize=Debug --summary all`.
   Its protocol fixtures use unique private namespaces; successful detached startup is separately qualified only when the enclosing Windows job permits breakaway.
   Run the same target in ReleaseSafe and ReleaseFast, and report skipped startup checks rather than treating them as passes.
+- Portable metadata/admission: `zig test src/agent/session_core.zig`; Windows: add `-target x86_64-windows-gnu -lc -OReleaseSafe`.
 - Repeat pane/snapshot/client suites with `-Doptimize=ReleaseSafe|ReleaseSmall`.
 - Windows tests through WSL interop:
   `zig build --build-file build.zig test test-session-pane test-session-snapshot test-session-client test-session-borrowers -Dagent-only=false -Dtarget=x86_64-windows-gnu -Dsession-test-wsl="$WSL_DISTRO_NAME" -Dsession-test-agent=/tmp/opencode/hollow-session-agent-next --summary all`

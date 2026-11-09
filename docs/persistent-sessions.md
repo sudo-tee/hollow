@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Share session semantics across owners: bounded queues, snapshots, output credit, take-over, layout revisions, close, and respawn without replay.
+3. Shared metadata/admission is extracted and integrated into Linux; next share attachment/output/snapshot semantics and wire ConPTY/VT without replay.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -664,7 +664,16 @@ Healthy idle reads do not poll; stdin EOF immediately detaches as in the Linux c
 Post-admission failures exit without a final stderr diagnostic that could block on the same full output pipe.
 Real-process coverage checks EOF cancellation, bounded backpressure, merged blocked stdio, and 512 KiB of byte-exact transfer without replay or synthesized mutation frames.
 The combined Windows owner/bridge suite passes 31 tests with the existing one explicit auto-start skip in Debug, ReleaseSafe, and ReleaseFast.
-The next shared-core slice extracts portable identity, opaque layout, and mutation admission from the Linux owner rather than cloning its authority in Windows code.
+The first shared-core slice extracts portable identity, opaque layout, and mutation admission from the Linux owner rather than cloning its authority in Windows code.
+`session_core.zig` now supplies this metadata and collision/lookup rules to Linux while process polling, transports, host identity/state files, VT, and attachment ownership remain per-runtime.
+Layout replacement is a revision-checked copy transaction, and pane/revision exhaustion returns `ResourceExhausted` before fork or explicit-close side effects.
+Initial layout is allocated before spawning, and initial revision remains 0; subsequent successful membership edits advance it once without clearing geometry.
+The last nonzero `u32` pane ID remains valid, and session teardown does not depend on having revision space available.
+Ended identities remain reserved only while their records are retained, not after collection; lifetime tombstones are not introduced.
+No new session/pane count policy is inferred from GUI layout limits, and the pre-existing owner-wide count/aggregate-bound gap remains explicit.
+The Windows bootstrap still lacks live session semantics; shared attachment, streaming/snapshots, and ConPTY/VT integration remain next.
+Shared metadata validation includes portable Linux/Windows tests, 53 owner-loop tests across Debug/ReleaseSafe/ReleaseSmall, and real Linux plus Windows-to-WSL detach/restore coverage.
+Windows CI also runs the standalone portable metadata tests.
 
 Crash/reboot layout placeholders from the original lifecycle section also need an implementation audit; live-process recovery after owner loss remains out of scope.
 

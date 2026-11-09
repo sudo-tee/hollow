@@ -9,6 +9,10 @@ const c = @import("posix_c");
 
 const a = std.testing.allocator;
 
+test {
+    _ = @import("session_core.zig");
+}
+
 const Frame = struct { kind: p.Kind, stream: u32, payload: []u8 };
 
 const Fake = struct {
@@ -525,6 +529,10 @@ test "layout writes are revision checked" {
     try std.testing.expect(!stale.value.ok);
     try std.testing.expectEqualStrings("RevisionConflict", stale.value.@"error".?);
     try std.testing.expectEqual(@as(?u64, 1), stale.value.revision);
+    const missing = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .layout = "missing-revision" }));
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("RevisionConflict", missing.value.@"error".?);
+    try std.testing.expectEqual(@as(?u64, 1), missing.value.revision);
     const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
     defer listed.deinit();
     try std.testing.expectEqualStrings("{\"split\":1}", listed.value.sessions.?[0].layout);
@@ -556,6 +564,40 @@ test "pane membership changes keep opaque layout and advance revision" {
     try std.testing.expectEqualStrings("two-panes", attached.value.session.?.layout);
     try std.testing.expectEqual(@as(usize, 1), attached.value.session.?.panes.len);
     try std.testing.expectEqual(@as(u64, 4), attached.value.session.?.revision);
+}
+
+test "failed spawn admission preserves metadata and process membership" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30"), .layout = "kept" }));
+    defer created.deinit();
+    const s = owner.sessions.items[0];
+    const pid = s.panes.items[0].pid;
+    const rejected = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = .{ .cols = 0 } }));
+    defer rejected.deinit();
+    try std.testing.expectEqualStrings("InvalidSize", rejected.value.@"error".?);
+    try std.testing.expectEqual(@as(u64, 2), s.meta.next_pane);
+    try std.testing.expectEqual(@as(u64, 0), s.meta.revision);
+    try std.testing.expectEqualStrings("kept", s.meta.layout);
+    try std.testing.expectEqual(@as(usize, 1), s.panes.items.len);
+    try std.testing.expectEqual(pid, s.panes.items[0].pid);
+
+    // Neither spawn nor explicit close may mutate at revision exhaustion.
+    // Owner.deinit must still terminate the process without incrementing it.
+    s.meta.revision = std.math.maxInt(u64);
+    const overflow = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = shell("exit 99") }));
+    defer overflow.deinit();
+    try std.testing.expectEqualStrings("ResourceExhausted", overflow.value.@"error".?);
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = s.panes.items[0].id }));
+    defer closed.deinit();
+    try std.testing.expectEqualStrings("ResourceExhausted", closed.value.@"error".?);
+    try std.testing.expect(!s.panes.items[0].removed);
+    try std.testing.expectEqual(@as(usize, 0), owner.doomed.items.len);
+    try std.testing.expectEqual(@as(u64, 2), s.meta.next_pane);
+    try std.testing.expectEqual(@as(usize, 1), s.panes.items.len);
+    try std.testing.expectEqualStrings("kept", s.meta.layout);
 }
 
 test "a client that stops granting credit is resynced with a snapshot" {

@@ -34,6 +34,11 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe session-owner-windows test-session-windows-owner 2>&1 | Tee-Object -FilePath session-windows-owner.log
           exit $LASTEXITCODE
+      - name: Portable session metadata and admission on Windows
+        shell: pwsh
+        run: |
+          zig test src/agent/session_core.zig -lc -OReleaseSafe 2>&1 | Tee-Object -FilePath session-core.log
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -42,6 +47,7 @@ jobs:
             fs-exec-windows-native.log
             session-windows-pty.log
             session-windows-owner.log
+            session-core.log
   docker:
     runs-on: ubuntu-latest
     steps:
