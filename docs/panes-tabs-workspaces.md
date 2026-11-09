@@ -155,7 +155,8 @@ outside Hollow, use `hollow-cli pane hide|show [--id ID|--tag TAG]` (command
 API: `pane_hide` / `pane_show`); `get_pane`/`get_panes` report `is_hidden`
 and, for edge-docked panes, `edge`.
 See [the toggleable TUI example](../examples/toggleable-tui.lua) for a
-keymap that reuses the same PTY rather than restarting the TUI.
+keymap that toggles a workspace-docked Claude Code agent, reusing the same
+PTY rather than restarting the TUI.
 
 Hidden panes stay discoverable:
 

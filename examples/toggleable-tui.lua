@@ -1,28 +1,36 @@
--- Example: a right-edge Lazygit PTY dock that survives hide/show toggles
+-- Example: a right-edge Claude Code PTY dock that survives hide/show toggles
 -- and stays on screen across tab switches.
--- Load this during config setup (requires lazygit in the current domain).
+-- Load this during config setup (requires `claude` in the current domain).
 -- This keeps the TUI alive while Hollow remains running; it is NOT
 -- detached persistence across application restarts.
+--
+-- The dock is workspace-scoped, so each workspace gets its own agent started
+-- in that workspace's directory. Use `dock = "global"` for a single agent
+-- that follows you across workspaces.
 --
 -- The pane is found by tag rather than a Lua table, so the toggle keeps
 -- working after a config reload and for docks restored from a saved
 -- workspace (tags, dock placement and hidden state are all exported).
--- Use `dock = "workspace"` for one Lazygit per workspace instead.
 local term = hollow.term
-local TAG = "lazygit-dock"
-local pending = false -- a split is in flight
+local TAG = "claude-dock"
+local pending = {} -- workspace IDs with a split in flight
 
-local function find_panel()
+local function find_panel(workspace_id)
   for _, pane in ipairs(term.docks()) do
-    for _, tag in ipairs(pane.tags or {}) do
-      if tag == TAG then return pane end
+    if pane.dock.workspace_id == workspace_id then
+      for _, tag in ipairs(pane.tags or {}) do
+        if tag == TAG then return pane end
+      end
     end
   end
   return nil
 end
 
-hollow.keymap.set("<leader>lg", function()
-  local pane = find_panel()
+hollow.keymap.set("<leader>ai", function()
+  local workspace = term.current_workspace()
+  if not workspace then return end
+
+  local pane = find_panel(workspace.id)
   if pane then
     local show = pane.is_hidden
     term.set_pane_visible(pane.id, show)
@@ -30,18 +38,19 @@ hollow.keymap.set("<leader>lg", function()
     return
   end
 
-  if pending then return end
-  pending = true
+  local workspace_id = workspace.id
+  if pending[workspace_id] then return end
+  pending[workspace_id] = true
   term.split_pane({
     edge = "right",
-    dock = "global",
-    ratio = 0.30,
-    command = "lazygit",
+    dock = "workspace",
+    ratio = 0.35,
+    command = "claude",
     command_mode = "spawn",
     close_on_exit = true,
     tag = TAG,
     on_complete = function()
-      pending = false
+      pending[workspace_id] = nil
     end,
   })
-end, { desc = "Toggle Lazygit PTY dock" })
+end, { desc = "Toggle Claude Code dock" })

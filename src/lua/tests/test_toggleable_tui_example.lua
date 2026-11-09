@@ -15,9 +15,10 @@ describe("toggleable TUI example test suite", function()
     env.flush_deferred()
     local call = recorded.split_pane
     assert.equals("right", call.edge)
-    assert.equals("global", call.dock)
+    assert.equals("workspace", call.dock)
+    assert.equals("claude", call.command)
     local id = h.term.docks()[1].id
-    assert.same({ "lazygit-dock" }, h.term.get_pane_tags(id))
+    assert.same({ "claude-dock" }, h.term.get_pane_tags(id))
     h.term.focus_pane_by_id(101)
     bound()
     assert.same({ id = id, visible = false }, recorded.set_pane_visible)
