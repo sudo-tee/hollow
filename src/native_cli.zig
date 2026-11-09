@@ -658,6 +658,44 @@ const Runner = struct {
             try self.parseIdTag(rest, &id, &tag);
             return try self.emitToMatchingPanes(.{ .data = .{ .pane_show = .{ .id = 0 } } }, id, tag);
         }
+        if (std.mem.eql(u8, sub, "dock")) {
+            if (rest.len == 0) return self.fail("usage: cli pane dock <left|right|top|bottom> [--scope global|workspace] [--ratio R] [options]", "invalid_args", 2);
+            if (!isOneOf(rest[0], &.{ "left", "right", "top", "bottom" })) return self.fail("pane dock edge must be left, right, top, or bottom", "invalid_args", 2);
+            var id: ?usize = null;
+            var tag: ?[]const u8 = null;
+            var scope: ?[]const u8 = null;
+            var ratio: ?f64 = null;
+            var passthrough: std.ArrayList([]const u8) = .empty;
+            defer passthrough.deinit(self.allocator);
+            var i: usize = 1;
+            while (i < rest.len) : (i += 1) {
+                if (std.mem.eql(u8, rest[i], "--scope") or std.mem.eql(u8, rest[i], "--ratio")) {
+                    if (i + 1 >= rest.len) return self.failFmt("missing {s} value", .{rest[i]}, "invalid_args", 2);
+                    if (std.mem.eql(u8, rest[i], "--scope")) {
+                        if (!isOneOf(rest[i + 1], &.{ "global", "workspace" })) return self.fail("pane dock scope must be global or workspace", "invalid_args", 2);
+                        scope = try self.allocator.dupe(u8, rest[i + 1]);
+                    } else {
+                        ratio = try parseFloatArg(rest[i + 1], "ratio");
+                    }
+                    i += 1;
+                    continue;
+                }
+                try passthrough.append(self.allocator, rest[i]);
+            }
+            try self.parseIdTag(passthrough.items, &id, &tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_dock = .{
+                .id = 0,
+                .edge = try self.allocator.dupe(u8, rest[0]),
+                .scope = scope,
+                .ratio = ratio,
+            } } }, id, tag);
+        }
+        if (std.mem.eql(u8, sub, "undock")) {
+            var id: ?usize = null;
+            var tag: ?[]const u8 = null;
+            try self.parseIdTag(rest, &id, &tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_undock = .{ .id = 0 } } }, id, tag);
+        }
         if (std.mem.eql(u8, sub, "move")) {
             if (rest.len == 0) return self.fail("usage: cli pane move <left|right|up|down> [options]", "invalid_args", 2);
             if (!isOneOf(rest[0], &.{ "left", "right", "up", "down" })) return self.fail("pane move direction must be left, right, up, or down", "invalid_args", 2);

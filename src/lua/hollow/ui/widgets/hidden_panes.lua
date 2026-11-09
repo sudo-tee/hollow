@@ -19,13 +19,31 @@ function M.list(panes)
   return hidden
 end
 
---- Badge for the active tab's hidden panes; absent when nothing is hidden.
---- Colored by the highest attention level among the hidden panes.
+--- Docks on screen in the current context: global ones and the workspace's own.
+---@param term table|nil
+---@return HollowPane[]
+local function context_docks(term)
+  local workspace_id = term and term.workspace and term.workspace.id
+  local result = {}
+  for _, pane in ipairs(term and term.docks or {}) do
+    local dock = pane.dock
+    if dock and (dock.scope == "global" or dock.workspace_id == workspace_id) then
+      result[#result + 1] = pane
+    end
+  end
+  return result
+end
+
+--- Badge for hidden panes of the active tab and its docks; absent when
+--- nothing is hidden. Colored by the highest attention level among them.
 ---@param ctx HollowWidgetCtx
 ---@return HollowUiBarCustomNode|false
 function M.topbar_button(ctx)
-  local tab = ctx and ctx.term and ctx.term.tab
-  local hidden = M.list(tab and tab.panes)
+  local term = ctx and ctx.term
+  local hidden = M.list(term and term.tab and term.tab.panes)
+  for _, pane in ipairs(M.list(context_docks(term))) do
+    hidden[#hidden + 1] = pane
+  end
   if #hidden == 0 then
     return false
   end

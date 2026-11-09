@@ -282,6 +282,19 @@ class HollowCli:
         p.add_argument("--tag")
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_visible", {"visible": True}, args.id, args.tag))
 
+        p = pane_sub.add_parser("dock", parents=[self.common_parser])
+        p.add_argument("edge", choices=["left", "right", "top", "bottom"])
+        p.add_argument("--scope", choices=["global", "workspace"], default="global")
+        p.add_argument("--ratio", type=float)
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("dock_pane", {"edge": args.edge, "scope": args.scope, "ratio": args.ratio}, args.id, args.tag))
+
+        p = pane_sub.add_parser("undock", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("undock_pane", {}, args.id, args.tag))
+
         p = pane_sub.add_parser("move", parents=[self.common_parser])
         p.add_argument("direction", choices=["left", "right", "up", "down"])
         p.add_argument("--id", type=int)

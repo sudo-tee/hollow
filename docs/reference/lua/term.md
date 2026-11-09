@@ -194,6 +194,7 @@ table:
 {
   direction = "horizontal" | "vertical",
   edge = "left" | "right" | "top" | "bottom", -- full tiled-layout edge
+  dock = "global" | "workspace", -- with edge: window dock across tabs
   ratio = 0.4,                  -- size of the new pane (0..1)
   domain = "UbuntuWSL",
   cwd = "/path",
@@ -234,6 +235,21 @@ transport detach/reattach and does not persist the process across app exits.
 `split_pane({ edge = "right", ratio = 0.3, command = "lazygit",
 command_mode = "spawn" })` creates an edge-docked PTY; edge placement
 cannot be combined with `floating = true`.
+
+### Window docks
+
+```lua
+hollow.term.dock_pane(pane_id, { edge = "right", scope = "global", ratio = 0.3 })
+hollow.term.undock_pane(pane_id)  -- back into the active tab as an edge split
+hollow.term.docks()               -- docked pane snapshots, global first
+```
+
+Docks keep a pane on a window edge across tab switches. `scope` is
+`"global"` (default, every workspace) or `"workspace"`; `ratio` (default
+0.3) is the dock's share of the window content. One pane per edge per
+scope; a tab's last pane and occupied slots are refused. Docked snapshots
+carry `dock = { edge, scope, workspace_id?, ratio }`. See
+[Window docks](../../panes-tabs-workspaces.md#window-docks).
 
 ### Floating and maximized
 

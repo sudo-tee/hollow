@@ -1,17 +1,19 @@
--- Example: a right-edge Lazygit PTY that survives hide/show toggles.
+-- Example: a right-edge Lazygit PTY dock that survives hide/show toggles
+-- and stays on screen across tab switches.
 -- Load this during config setup (requires lazygit in the current domain).
 -- This keeps the TUI alive while Hollow remains running; it is NOT
 -- detached persistence across application restarts.
 --
 -- The pane is found by tag rather than a Lua table, so the toggle keeps
--- working after a config reload and for panes restored from a saved
--- workspace (tags, edge placement and hidden state are all exported).
+-- working after a config reload and for docks restored from a saved
+-- workspace (tags, dock placement and hidden state are all exported).
+-- Use `dock = "workspace"` for one Lazygit per workspace instead.
 local term = hollow.term
-local TAG = "lazygit-sidebar"
-local pending = {} -- tab IDs with a split in flight
+local TAG = "lazygit-dock"
+local pending = false -- a split is in flight
 
-local function find_panel(tab)
-  for _, pane in ipairs(tab.panes or {}) do
+local function find_panel()
+  for _, pane in ipairs(term.docks()) do
     for _, tag in ipairs(pane.tags or {}) do
       if tag == TAG then return pane end
     end
@@ -20,10 +22,7 @@ local function find_panel(tab)
 end
 
 hollow.keymap.set("<leader>lg", function()
-  local tab = term.current_tab()
-  if not tab then return end
-
-  local pane = find_panel(tab)
+  local pane = find_panel()
   if pane then
     local show = pane.is_hidden
     term.set_pane_visible(pane.id, show)
@@ -31,18 +30,18 @@ hollow.keymap.set("<leader>lg", function()
     return
   end
 
-  local tab_id = tab.id
-  if pending[tab_id] then return end
-  pending[tab_id] = true
+  if pending then return end
+  pending = true
   term.split_pane({
     edge = "right",
+    dock = "global",
     ratio = 0.30,
     command = "lazygit",
     command_mode = "spawn",
     close_on_exit = true,
     tag = TAG,
     on_complete = function()
-      pending[tab_id] = nil
+      pending = false
     end,
   })
-end, { desc = "Toggle Lazygit PTY sidebar" })
+end, { desc = "Toggle Lazygit PTY dock" })

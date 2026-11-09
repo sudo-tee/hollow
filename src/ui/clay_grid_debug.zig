@@ -256,6 +256,17 @@ pub const GridDebug = struct {
         const sidebar_right = if (sidebar) |s| s.side == .right else false;
         const reserved = if (sidebar) |s| s.reserve and s.width_cols > 0 else false;
         if (reserved and !sidebar_right) _ = self.push(body, label("sidebar"), 0, 0, top_h, sidebar_w, body_h);
+        if (app.mux) |*m| {
+            var dock_bounds = app.contentBounds();
+            var dock_buf: [8]mux.LayoutLeaf = undefined;
+            var written: usize = 0;
+            m.layoutDocks(&dock_bounds, &dock_buf, &written, app.cell_width_px, app.cell_height_px);
+            for (dock_buf[0..written]) |leaf| {
+                const location = m.paneDock(leaf.pane).?;
+                const index = self.pushBounds(body, self.string("dock:{s}:{s}", .{ @tagName(location.scope), @tagName(location.edge) }), 0, leaf.bounds) orelse continue;
+                self.rects[index].detail = self.string("pane:{d} {d}x{d}{s}", .{ leaf.pane.id, leaf.pane.cols, leaf.pane.rows, if (m.focusedDockPane() == leaf.pane) " active" else "" });
+            }
+        }
         const bounds = app.activeLayoutBounds();
         if (self.pushBounds(body, label("tab"), 0, bounds)) |tab_index| {
             if (app.mux) |*m| if (m.activeTab()) |tab| {

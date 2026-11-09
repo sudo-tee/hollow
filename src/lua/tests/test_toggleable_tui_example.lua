@@ -1,7 +1,7 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 describe("toggleable TUI example test suite", function()
-  it("tags the split and toggles it by tag", function()
+  it("docks the split and toggles it by tag", function()
     local env = harness.boot()
     local h, recorded = env.hollow, env.recorded
     local bound
@@ -15,8 +15,9 @@ describe("toggleable TUI example test suite", function()
     env.flush_deferred()
     local call = recorded.split_pane
     assert.equals("right", call.edge)
-    local id = h.term.current_pane().id
-    assert.same({ "lazygit-sidebar" }, h.term.get_pane_tags(id))
+    assert.equals("global", call.dock)
+    local id = h.term.docks()[1].id
+    assert.same({ "lazygit-dock" }, h.term.get_pane_tags(id))
     h.term.focus_pane_by_id(101)
     bound()
     assert.same({ id = id, visible = false }, recorded.set_pane_visible)

@@ -308,6 +308,11 @@ fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.
         .pane_tile => |args| return enqueuePaneFloatingCommand(self, args, false),
         .pane_hide => |args| return enqueuePaneVisibleCommand(self, args, false),
         .pane_show => |args| return enqueuePaneVisibleCommand(self, args, true),
+        .pane_dock => |args| return enqueuePaneDockCommand(self, args),
+        .pane_undock => |args| {
+            if (!self.enqueueMouse(.{ .undock_pane = args.id })) return command_mod.Response.fail("error", "command queue full");
+            return okNull();
+        },
         .pane_move => |args| return enqueuePaneMoveCommand(self, args),
         .pane_resize => |args| return enqueuePaneResizeCommand(self, args),
         .pane_send_text, .pane_bell, .send_keys => return enqueueCommandRequest(self, request),
@@ -489,6 +494,22 @@ fn enqueuePaneVisibleCommand(self: *App, request: command_mod.RequiredId, visibl
     return okNull();
 }
 
+const DockArgs = struct { edge: mux_mod.PaneEdge, scope: mux_mod.DockScope, ratio: f32 };
+
+fn parseDockArgs(request: command_mod.PaneDock) ?DockArgs {
+    const edge = std.meta.stringToEnum(mux_mod.PaneEdge, request.edge) orelse return null;
+    const scope = if (request.scope) |value| std.meta.stringToEnum(mux_mod.DockScope, value) orelse return null else .global;
+    const ratio = request.ratio orelse 0.3;
+    if (!(ratio > 0 and ratio < 1)) return null;
+    return .{ .edge = edge, .scope = scope, .ratio = @floatCast(ratio) };
+}
+
+fn enqueuePaneDockCommand(self: *App, request: command_mod.PaneDock) command_mod.Response {
+    const args = parseDockArgs(request) orelse return command_mod.Response.fail("invalid_args", "dock needs edge left|right|top|bottom, scope global|workspace, ratio in (0, 1)");
+    if (!self.enqueueMouse(.{ .dock_pane = .{ .pane_id = request.id, .edge = args.edge, .scope = args.scope, .ratio = args.ratio } })) return command_mod.Response.fail("error", "command queue full");
+    return okNull();
+}
+
 fn enqueuePaneMoveCommand(self: *App, request: command_mod.PaneMove) command_mod.Response {
     const pane_id = request.id;
     const direction = request.direction;
@@ -659,6 +680,11 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .pane_tile => |args| execPaneFloating(self, args, false),
         .pane_hide => |args| execPaneVisible(self, args, false),
         .pane_show => |args| execPaneVisible(self, args, true),
+        .pane_dock => |args| execPaneDock(self, args),
+        .pane_undock => |args| blk: {
+            mux_ops.undockPaneById(self, args.id);
+            break :blk okNull();
+        },
         .pane_move => |args| execPaneMove(self, args),
         .pane_resize => |args| execPaneResize(self, args),
         .pane_send_text, .send_keys => |args| execPaneSendText(self, args),
@@ -874,6 +900,7 @@ fn execPaneSplit(self: *App, request: command_mod.Split) command_mod.Response {
         null,
         LUA_NOREF,
         null,
+        null,
     );
     return okNull();
 }
@@ -897,6 +924,7 @@ fn execPanePopup(self: *App, request: command_mod.PanePopup) command_mod.Respons
         if (request.height) |value| @floatCast(value) else null,
         LUA_NOREF,
         null,
+        null,
     );
     return okNull();
 }
@@ -915,6 +943,12 @@ fn execPaneFloating(self: *App, request: command_mod.RequiredId, floating: bool)
 
 fn execPaneVisible(self: *App, request: command_mod.RequiredId, visible: bool) command_mod.Response {
     mux_ops.setPaneVisibleById(self, request.id, visible);
+    return okNull();
+}
+
+fn execPaneDock(self: *App, request: command_mod.PaneDock) command_mod.Response {
+    const args = parseDockArgs(request) orelse return command_mod.Response.fail("invalid_args", "dock needs edge left|right|top|bottom, scope global|workspace, ratio in (0, 1)");
+    mux_ops.dockPaneById(self, request.id, args.edge, args.scope, args.ratio);
     return okNull();
 }
 

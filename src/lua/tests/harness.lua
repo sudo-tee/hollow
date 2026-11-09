@@ -368,7 +368,64 @@ local function make_host_api()
 
   function host_api.get_pane_content(pane_id)
     local pane = panes[pane_id]
-    return pane and { kind = "terminal", is_hidden = pane.is_hidden == true } or nil
+    return pane and { kind = "terminal", is_hidden = pane.is_hidden == true, dock = pane.dock }
+      or nil
+  end
+
+  local dock_order = {}
+
+  function host_api.dock_pane(pane_id, edge, scope, ratio)
+    recorded.dock_pane = { id = pane_id, edge = edge, scope = scope, ratio = ratio }
+    local pane = panes[pane_id]
+    if pane == nil then
+      return
+    end
+    if pane.dock == nil then
+      dock_order[#dock_order + 1] = pane_id
+      -- Like the native mux, a docked pane leaves its tab.
+      for _, tab in ipairs(tabs) do
+        for index, id in ipairs(tab.pane_ids) do
+          if id == pane_id then
+            table.remove(tab.pane_ids, index)
+            break
+          end
+        end
+      end
+    end
+    pane.dock = {
+      edge = edge,
+      scope = scope,
+      workspace_id = scope == "workspace" and workspaces[1].id or nil,
+      ratio = ratio,
+    }
+  end
+
+  function host_api.undock_pane(pane_id)
+    recorded.undock_pane = pane_id
+    if panes[pane_id] == nil or panes[pane_id].dock == nil then
+      return
+    end
+    panes[pane_id].dock = nil
+    local current = host_api.current_tab_id()
+    for _, tab in ipairs(tabs) do
+      if tab.id == current then
+        tab.pane_ids[#tab.pane_ids + 1] = pane_id
+      end
+    end
+    for index, id in ipairs(dock_order) do
+      if id == pane_id then
+        table.remove(dock_order, index)
+        break
+      end
+    end
+  end
+
+  function host_api.get_dock_pane_count()
+    return #dock_order
+  end
+
+  function host_api.get_dock_pane_id_at(index)
+    return dock_order[index + 1]
   end
 
   function host_api.set_pane_visible(pane_id, visible)
@@ -612,6 +669,9 @@ local function make_host_api()
       panes[active_pane_id].is_focused = false
     end
     panes[pane_id].is_focused = true
+    if _opts.dock ~= nil then
+      host_api.dock_pane(pane_id, _opts.edge, _opts.dock, _opts.ratio or 0.5)
+    end
 
     if type(_opts.on_complete) == "function" then
       _opts.on_complete({ success = true, pane_id = pane_id })

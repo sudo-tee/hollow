@@ -97,7 +97,7 @@ function M.dock(opts)
   local size = current and current.size or {}
   local window_width = shared.window_size_snapshot().width
   local width = math.max(1, math.floor(tonumber(widget.width) or 24))
-  -- Edge panes split the whole layout, so size them against the window.
+  -- Docks are carved from the window content, so size them against the window.
   local ratio = opts.ratio
   if not ratio then
     local cell_w = (size.cols or 0) > 0 and (size.width or 0) / size.cols or 0
@@ -108,6 +108,8 @@ function M.dock(opts)
   local pane = ui.pane.split({
     module = MODULE,
     edge = opts.edge or (widget.side == "right" and "right" or "left"),
+    -- A window dock keeps the sidebar visible across tab switches.
+    dock = opts.scope or "global",
     ratio = ratio,
     on_complete = function(result)
       if not result.success then

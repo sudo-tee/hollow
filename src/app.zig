@@ -609,6 +609,15 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_hidden"), .{ .bool = pane.is_hidden });
         if (self.mux) |*mux| if (mux.paneEdge(pane)) |edge| try putJsonField(self.allocator, &object, "edge", .{ .string = try self.allocator.dupe(u8, @tagName(edge)) });
+        if (self.mux) |*mux| if (mux.paneDock(pane)) |location| {
+            var dock = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
+            errdefer deinitJsonValue(self.allocator, .{ .object = dock });
+            try putJsonField(self.allocator, &dock, "edge", .{ .string = try self.allocator.dupe(u8, @tagName(location.edge)) });
+            try putJsonField(self.allocator, &dock, "scope", .{ .string = try self.allocator.dupe(u8, @tagName(location.scope)) });
+            if (location.workspace) |ws| try putJsonField(self.allocator, &dock, "workspace_id", .{ .integer = @intCast(ws.id) });
+            try putJsonField(self.allocator, &dock, "ratio", .{ .float = location.ratio });
+            try putJsonField(self.allocator, &object, "dock", .{ .object = dock });
+        };
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
         try object.put(self.allocator, try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
@@ -1152,6 +1161,10 @@ pub const App = struct {
             .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
             .set_pane_visible = lua_callbacks.luaSetPaneVisibleCallback,
+            .dock_pane = lua_callbacks.luaDockPaneCallback,
+            .undock_pane = lua_callbacks.luaUndockPaneCallback,
+            .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
+            .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1603,7 +1616,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    if (!mux.activeTabContainsPane(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
+                    if (!mux.activeTabContainsPane(pane) and !mux.dockIsShown(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
                 }
             }
         }
@@ -1923,6 +1936,7 @@ pub const App = struct {
             if (hit.pane.is_floating) return null;
         }
         const mux = if (self.mux) |*m| m else return null;
+        if (mux.hitTestDockDivider(self.contentBounds(), x, y, radius, self.cell_width_px, self.cell_height_px)) |hit| return hit;
         const tab = mux.activeTab() orelse return null;
         const root = tab.root_split orelse return null;
         const bounds = self.activeLayoutBounds();
@@ -1935,6 +1949,7 @@ pub const App = struct {
     /// by tree mutations (pane close, tab switch, etc.).
     pub fn isSplitNodeValid(self: *App, node: *const SplitNode) bool {
         const mux = if (self.mux) |*m| m else return false;
+        if (mux.dockContainsNode(node)) return true;
         const tab = mux.activeTab() orelse return false;
         const root = tab.root_split orelse return false;
         return nodeIsInTree(root, node);
@@ -2110,19 +2125,41 @@ pub const App = struct {
         self.config_watcher = watcher;
     }
 
+    /// Dock leaves first, then the active tab's leaves.
     pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
-        const bounds = self.activeLayoutBounds();
-        if (self.mux) |*mux| {
-            const tab = mux.activeTab() orelse return out[0..0];
-            return tab.computeLayoutInBounds(bounds, out, self.cell_width_px, self.cell_height_px);
-        }
-        return out[0..0];
+        return self.layoutContent(self.contentBounds(), out);
     }
 
+    pub fn layoutContent(self: *App, content: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
+        const mux = if (self.mux) |*m| m else return out[0..0];
+        var bounds = content;
+        var written: usize = 0;
+        mux.layoutDocks(&bounds, out, &written, self.cell_width_px, self.cell_height_px);
+        const tab = mux.activeTab() orelse return out[0..written];
+        const tab_leaves = tab.computeLayoutInBounds(bounds, out[written..], self.cell_width_px, self.cell_height_px);
+        return out[0 .. written + tab_leaves.len];
+    }
+
+    /// The active tab's region: the content area minus the visible docks.
     pub fn activeLayoutBounds(self: *App) PaneBounds {
+        var bounds = self.contentBounds();
+        if (self.mux) |*mux| {
+            var scratch: [8]LayoutLeaf = undefined;
+            var written: usize = 0;
+            mux.layoutDocks(&bounds, &scratch, &written, self.cell_width_px, self.cell_height_px);
+        }
+        return bounds;
+    }
+
+    /// Window area below the bars and outside the reserved sidebar.
+    pub fn contentBounds(self: *App) PaneBounds {
+        return self.contentBoundsFor(self.config.window_width, self.config.window_height);
+    }
+
+    fn contentBoundsFor(self: *App, window_width: u32, window_height: u32) PaneBounds {
         const tbh = self.tabBarHeight();
         const bbh = self.bottomBarHeight();
-        const height = if (self.config.window_height > tbh + bbh) self.config.window_height - tbh - bbh else 1;
+        const height = if (window_height > tbh + bbh) window_height - tbh - bbh else 1;
         const sidebar = self.sidebarLayout();
         const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
             self.sidebarReservedWidthPx(sidebar.?)
@@ -2132,8 +2169,8 @@ pub const App = struct {
             self.sidebarReservedWidthPx(sidebar.?)
         else
             0;
-        const width = if (self.config.window_width > left_inset + right_inset)
-            self.config.window_width - left_inset - right_inset
+        const width = if (window_width > left_inset + right_inset)
+            window_width - left_inset - right_inset
         else
             1;
         return .{
@@ -2833,13 +2870,7 @@ pub const App = struct {
         // activity arrives when the tab becomes active again.
         const tab = active_tab orelse return;
         {
-            const bounds = PaneBounds{
-                .x = left_inset,
-                .y = tbh,
-                .width = layout_width,
-                .height = pane_h,
-            };
-            const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, self.cell_width_px, self.cell_height_px);
+            const leaves = self.layoutContent(self.contentBoundsFor(pixel_width, pixel_height), &layout_buf);
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     // Skip panes with zero-size bounds — can happen when the window

@@ -174,6 +174,7 @@ function M.setup(hollow, host_api)
       floating_bounds = content.floating_bounds,
       is_hidden = content.is_hidden == true,
       edge = content.edge,
+      dock = content.dock,
       pid = pid,
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
       direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id)
@@ -311,12 +312,21 @@ function M.setup(hollow, host_api)
     return workspaces
   end
 
+  --- Workspaces with their tabs and workspace-scoped `docks`; global docks
+  --- are listed by `hollow.term.docks()`.
   function hollow.term.mux_tree()
     local workspaces = {}
+    local docks = hollow.term.docks()
     local workspace_count = host_api.get_workspace_count()
     for workspace_index = 0, workspace_count - 1 do
       local workspace = workspace_snapshot(workspace_index)
       workspace.tabs = {}
+      workspace.docks = {}
+      for _, pane in ipairs(docks) do
+        if pane.dock.scope == "workspace" and pane.dock.workspace_id == workspace.id then
+          workspace.docks[#workspace.docks + 1] = pane
+        end
+      end
       local tab_count = host_api.get_workspace_tab_count(workspace_index)
       for tab_index = 0, tab_count - 1 do
         local tab_id = host_api.get_workspace_tab_id_at(workspace_index, tab_index)
@@ -536,6 +546,7 @@ function M.setup(hollow, host_api)
       cwd = "string",
       command_mode = "string",
       edge = "string",
+      dock = "string",
       close_on_exit = "boolean",
       floating = "boolean",
       fullscreen = "boolean",
@@ -567,6 +578,13 @@ function M.setup(hollow, host_api)
           opts.floating ~= true,
           "hollow.term.split_pane: edge and floating are mutually exclusive"
         )
+      end
+      if opts.dock ~= nil then
+        assert(
+          opts.dock == "global" or opts.dock == "workspace",
+          'hollow.term.split_pane: opts.dock must be "global" or "workspace"'
+        )
+        assert(opts.edge ~= nil, "hollow.term.split_pane: opts.dock requires opts.edge")
       end
       payload.on_complete = opts.on_complete
       local tags = opts.tags
@@ -1065,6 +1083,58 @@ function M.setup(hollow, host_api)
       )
     end
     host_api.set_pane_visible(pane_id, visible)
+  end
+
+  local function check_pane_id(pane_id, name)
+    if
+      type(pane_id) ~= "number"
+      or pane_id ~= pane_id
+      or pane_id < 1
+      or pane_id > 9007199254740991
+      or pane_id % 1 ~= 0
+    then
+      error(("hollow.term.%s expects a positive integer pane id"):format(name))
+    end
+  end
+
+  --- Move a pane into a window-edge dock that stays visible across tab switches.
+  --- opts.edge is required; opts.scope is "global" (default) or "workspace";
+  --- opts.ratio is the dock's share of the window (default 0.3).
+  function hollow.term.dock_pane(pane_id, opts)
+    check_pane_id(pane_id, "dock_pane(pane_id, opts)")
+    if type(opts) ~= "table" then
+      error("hollow.term.dock_pane(pane_id, opts) expects an opts table")
+    end
+    local edge, scope, ratio = opts.edge, opts.scope or "global", opts.ratio or 0.3
+    if edge ~= "left" and edge ~= "right" and edge ~= "top" and edge ~= "bottom" then
+      error("hollow.term.dock_pane: opts.edge must be left, right, top, or bottom")
+    end
+    if scope ~= "global" and scope ~= "workspace" then
+      error('hollow.term.dock_pane: opts.scope must be "global" or "workspace"')
+    end
+    if type(ratio) ~= "number" or ratio <= 0 or ratio >= 1 then
+      error("hollow.term.dock_pane: opts.ratio must be in (0, 1)")
+    end
+    host_api.dock_pane(pane_id, edge, scope, ratio)
+  end
+
+  --- Return a docked pane to the active tab as an edge split of the same size.
+  function hollow.term.undock_pane(pane_id)
+    check_pane_id(pane_id, "undock_pane(pane_id)")
+    host_api.undock_pane(pane_id)
+  end
+
+  --- Snapshots of every docked pane (global docks first); each has a `dock` field.
+  function hollow.term.docks()
+    local result = {}
+    local count = host_api.get_dock_pane_count and host_api.get_dock_pane_count() or 0
+    for index = 0, count - 1 do
+      local snapshot = pane_snapshot(host_api.get_dock_pane_id_at(index))
+      if snapshot ~= nil then
+        result[#result + 1] = snapshot
+      end
+    end
+    return result
   end
 
   function hollow.term.set_pane_floating(pane_id, floating)

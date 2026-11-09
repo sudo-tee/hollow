@@ -23,9 +23,10 @@ pub fn luaJobRequestCallback(app_ptr: *anyopaque, request: @import("../command.z
     return queued;
 }
 
-pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int, edge: ?[]const u8) bool {
+pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int, edge: ?[]const u8, dock: ?[]const u8) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const edge_value = if (edge) |value| std.meta.stringToEnum(mux_mod.PaneEdge, value) else null;
+    const dock_value = if (dock) |value| std.meta.stringToEnum(mux_mod.DockScope, value) else null;
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     const mode: SplitCommandMode = if (std.mem.eql(u8, command_mode, "spawn")) .spawn else .send;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
@@ -34,6 +35,7 @@ pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f
     var event: input.PendingInputEvent = .{ .split_pane = .{
         .direction = dir,
         .edge = edge_value,
+        .dock = dock_value,
         .ratio = ratio,
         .domain_name = owned_domain,
         .cwd = owned_cwd,
@@ -61,6 +63,38 @@ pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_
 pub fn luaSetPaneVisibleCallback(app_ptr: *anyopaque, pane_id: usize, visible: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.{ .set_pane_visible = .{ .pane_id = pane_id, .visible = visible } });
+}
+
+pub fn luaDockPaneCallback(app_ptr: *anyopaque, pane_id: usize, edge: []const u8, scope: []const u8, ratio: f32) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const edge_value = std.meta.stringToEnum(mux_mod.PaneEdge, edge) orelse return;
+    const scope_value = std.meta.stringToEnum(mux_mod.DockScope, scope) orelse return;
+    _ = app.enqueueMouse(.{ .dock_pane = .{ .pane_id = pane_id, .edge = edge_value, .scope = scope_value, .ratio = ratio } });
+}
+
+pub fn luaUndockPaneCallback(app_ptr: *anyopaque, pane_id: usize) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .undock_pane = pane_id });
+}
+
+pub fn luaGetDockPaneCountCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*m| m else return 0;
+    var count: usize = 0;
+    var panes = mux.dockPaneIterator();
+    while (panes.next()) |_| count += 1;
+    return count;
+}
+
+pub fn luaGetDockPaneIdAtCallback(app_ptr: *anyopaque, index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*m| m else return 0;
+    var panes = mux.dockPaneIterator();
+    var current: usize = 0;
+    while (panes.next()) |pane| : (current += 1) {
+        if (current == index) return pane.id;
+    }
+    return 0;
 }
 
 pub fn luaSetPaneFloatingCallback(app_ptr: *anyopaque, pane_id: usize, floating: bool) void {

@@ -169,6 +169,55 @@ Hidden panes stay discoverable:
   Activating a hidden pane shows and focuses it; `v` toggles the selected
   pane's visibility without closing the navigator.
 
+### Window docks
+
+An edge split belongs to one tab. A **dock** is a window-edge slot that
+stays on screen across tab switches, so a TUI like Lazygit or the docked
+sidebar does not vanish when you change tabs:
+
+```lua
+-- Create a terminal straight into a dock...
+hollow.term.split_pane({
+  edge = "right",
+  dock = "global",   -- or "workspace"
+  ratio = 0.30,      -- share of the window content
+  command = "lazygit",
+  command_mode = "spawn",
+})
+
+-- ...or move an existing pane into one, and back.
+hollow.term.dock_pane(pane_id, { edge = "bottom", scope = "workspace", ratio = 0.25 })
+hollow.term.undock_pane(pane_id)
+```
+
+- **Global** docks show in every workspace; **workspace** docks only while
+  their workspace is active. Global docks sit outermost.
+- Each scope has one slot per edge. Docking into an occupied slot, or
+  docking a tab's last pane, is refused. Docking an already docked pane
+  moves it to the new slot.
+- Docked panes are in no tab. `get_pane` reports
+  `dock = { edge, scope, workspace_id?, ratio }`; `hollow.term.docks()`
+  lists every docked pane (global first) and `mux_tree()` gives each
+  workspace its `docks`.
+- Docks take part in directional focus: moving toward a dock from the tab's
+  edge enters it, and moving toward the centre returns to the tab. Drag the
+  seam to resize; `resize_pane` resizes a focused dock along its axis.
+- `set_pane_visible` hides and shows docks like any pane; hidden docks give
+  their space back. The hidden-pane badge and the mux navigator include
+  docks (navigator groups them under **Docks** and **Global docks**).
+- `undock_pane` returns the pane to the active tab as an edge split of the
+  same size. Closing a workspace closes its docks.
+- Saved workspaces keep docks: `export_current()` writes workspace docks to
+  `docks` and global docks to `global_docks` (each entry carries `edge` and
+  `size`). Bootstrapping restores them and skips a global dock whose edge is
+  already docked.
+- `ui.sidebar.dock()` docks the sidebar globally (`scope` option to change),
+  and `ui.pane.split({ edge = ..., dock = ... })` docks a Lua pane.
+
+From outside Hollow: `hollow-cli pane dock <edge> [--scope global|workspace]
+[--ratio N] [--id ID|--tag TAG]` and `hollow-cli pane undock` (command API:
+`pane_dock` / `pane_undock`).
+
 ### Move and resize
 
 ```lua

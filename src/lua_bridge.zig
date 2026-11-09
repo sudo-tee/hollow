@@ -147,6 +147,12 @@ pub const PaneContentInfo = struct {
     hidden: bool = false,
     /// "left"/"right"/"top"/"bottom" while the pane is docked to that edge.
     edge: ?[]const u8 = null,
+    /// Window-edge dock slot ("left"/...) and scope ("global"/"workspace").
+    dock_edge: ?[]const u8 = null,
+    dock_scope: ?[]const u8 = null,
+    /// Owning workspace id for workspace-scoped docks.
+    dock_workspace_id: usize = 0,
+    dock_ratio: f32 = 0,
     x: f32 = 0,
     y: f32 = 0,
     width: f32 = 0,
@@ -161,9 +167,13 @@ pub const AppCallbacks = struct {
     title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int, edge: ?[]const u8) bool,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int, edge: ?[]const u8, dock: ?[]const u8) bool,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_visible: *const fn (app: *anyopaque, pane_id: usize, visible: bool) void,
+    dock_pane: ?*const fn (app: *anyopaque, pane_id: usize, edge: []const u8, scope: []const u8, ratio: f32) void = null,
+    undock_pane: ?*const fn (app: *anyopaque, pane_id: usize) void = null,
+    get_dock_pane_count: ?*const fn (app: *anyopaque) usize = null,
+    get_dock_pane_id_at: ?*const fn (app: *anyopaque, index: usize) usize = null,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
@@ -2290,6 +2300,11 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_visible, 1);
         api.set_field(self.state, -2, "set_pane_visible");
+        inline for (.{ .{ l_dock_pane, "dock_pane" }, .{ l_undock_pane, "undock_pane" }, .{ l_get_dock_pane_count, "get_dock_pane_count" }, .{ l_get_dock_pane_id_at, "get_dock_pane_id_at" } }) |entry| {
+            api.push_light_userdata(self.state, self.context);
+            api.push_cclosure(self.state, entry[0], 1);
+            api.set_field(self.state, -2, entry[1]);
+        }
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_floating, 1);
         api.set_field(self.state, -2, "set_pane_floating");
@@ -5764,6 +5779,21 @@ fn pushPaneContent(allocator: std.mem.Allocator, api: Api, state: *State, info: 
         api.push_lstring(state, edge.ptr, edge.len);
         api.set_field(state, -2, "edge");
     }
+    if (info.dock_edge) |edge| {
+        api.create_table(state, 0, 3);
+        api.push_lstring(state, edge.ptr, edge.len);
+        api.set_field(state, -2, "edge");
+        const scope = info.dock_scope orelse "global";
+        api.push_lstring(state, scope.ptr, scope.len);
+        api.set_field(state, -2, "scope");
+        if (info.dock_workspace_id != 0) {
+            api.push_number(state, @floatFromInt(info.dock_workspace_id));
+            api.set_field(state, -2, "workspace_id");
+        }
+        api.push_number(state, info.dock_ratio);
+        api.set_field(state, -2, "ratio");
+        api.set_field(state, -2, "dock");
+    }
     if (info.floating and info.kind == .lua) {
         api.create_table(state, 0, 4);
         inline for (.{ "x", "y", "width", "height" }) |field| {
@@ -5822,6 +5852,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     var command: ?[]const u8 = null;
     var command_mode: []const u8 = "send";
     var edge: ?[]const u8 = null;
+    var dock: ?[]const u8 = null;
     var close_on_exit = false;
     var floating = false;
     var fullscreen = false;
@@ -5840,6 +5871,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         cwd = luaStringField(api, state, opts_idx, "cwd");
         command = luaStringField(api, state, opts_idx, "command");
         edge = luaStringField(api, state, opts_idx, "edge");
+        dock = luaStringField(api, state, opts_idx, "dock");
         if (luaStringField(api, state, opts_idx, "command_mode")) |mode| command_mode = mode;
         api.get_field(state, opts_idx, "close_on_exit");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .boolean) {
@@ -5892,7 +5924,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
     }
 
-    if (!cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds, callback_ref, edge) and callback_ref != LUA_NOREF) {
+    if (!cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds, callback_ref, edge, dock) and callback_ref != LUA_NOREF) {
         api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     }
     return 0;
@@ -5924,6 +5956,65 @@ fn l_set_pane_visible(state: *State) callconv(.c) c_int {
     const visible = api.to_boolean(state, 2) != 0;
     cbs.set_pane_visible(cbs.app, pane_id, visible);
     return 0;
+}
+
+fn l_dock_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const callback = cbs.dock_pane orelse return 0;
+    const pane_id = luaPaneIdArg(api, state, 1) orelse return 0;
+    var edge_len: usize = 0;
+    var scope_len: usize = 0;
+    if (api.value_type(state, 2) != @backingInt(LuaType.string) or api.value_type(state, 3) != @backingInt(LuaType.string)) return 0;
+    const edge = (api.to_lstring(state, 2, &edge_len) orelse return 0)[0..edge_len];
+    const scope = (api.to_lstring(state, 3, &scope_len) orelse return 0)[0..scope_len];
+    const ratio: f32 = if (api.value_type(state, 4) == @backingInt(LuaType.number)) @floatCast(api.to_number(state, 4)) else 0.3;
+    callback(cbs.app, pane_id, edge, scope, ratio);
+    return 0;
+}
+
+fn l_undock_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const callback = cbs.undock_pane orelse return 0;
+    const pane_id = luaPaneIdArg(api, state, 1) orelse return 0;
+    callback(cbs.app, pane_id);
+    return 0;
+}
+
+fn l_get_dock_pane_count(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const count = if (ctx.app_callbacks) |cbs| if (cbs.get_dock_pane_count) |callback| callback(cbs.app) else 0 else 0;
+    api.push_number(state, @floatFromInt(count));
+    return 1;
+}
+
+fn l_get_dock_pane_id_at(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const callback = cbs.get_dock_pane_id_at orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    if (api.value_type(state, 1) != @backingInt(LuaType.number)) {
+        api.push_nil(state);
+        return 1;
+    }
+    const raw = api.to_number(state, 1);
+    if (!(raw >= 0) or raw > 1e9) {
+        api.push_nil(state);
+        return 1;
+    }
+    const id = callback(cbs.app, @intFromFloat(raw));
+    if (id == 0) api.push_nil(state) else api.push_number(state, @floatFromInt(id));
+    return 1;
 }
 
 fn l_set_pane_floating(state: *State) callconv(.c) c_int {
@@ -7918,6 +8009,12 @@ test "pane host API callbacks retain Lua bridge context" {
     defer runtime.deinit();
     try runtime.runString(
         \\assert(type(host_api.set_pane_visible) == "function")
+        \\assert(type(host_api.dock_pane) == "function")
+        \\assert(type(host_api.undock_pane) == "function")
+        \\assert(host_api.get_dock_pane_count() == 0)
+        \\assert(host_api.get_dock_pane_id_at(0) == nil)
+        \\host_api.dock_pane(1, "right", "global", 0.3)
+        \\host_api.undock_pane(1)
         \\assert(type(host_api.set_pane_floating) == "function")
         \\host_api.set_pane_visible(1, false)
         \\host_api.set_pane_floating(1, true)

@@ -190,6 +190,49 @@ describe("term test suite", function()
     end)
   end)
 
+  describe("pane docks", function()
+    it("docks, lists, and undocks panes", function()
+      hollow.term.dock_pane(101, { edge = "right" })
+      harness.assert_equal(recorded.dock_pane.id, 101, "dock targets the pane")
+      harness.assert_equal(recorded.dock_pane.edge, "right", "dock forwards the edge")
+      harness.assert_equal(recorded.dock_pane.scope, "global", "scope defaults to global")
+      harness.assert_equal(recorded.dock_pane.ratio, 0.3, "ratio defaults to 0.3")
+      local docks = hollow.term.docks()
+      harness.assert_equal(#docks, 1, "docks lists the docked pane")
+      harness.assert_equal(docks[1].id, 101, "docks returns pane snapshots")
+      harness.assert_equal(docks[1].dock.edge, "right", "snapshot reports the dock edge")
+      harness.assert_equal(
+        hollow.term.pane_by_id(101).dock.scope,
+        "global",
+        "get_pane reports dock"
+      )
+      hollow.term.undock_pane(101)
+      harness.assert_equal(recorded.undock_pane, 101, "undock targets the pane")
+      harness.assert_equal(#hollow.term.docks(), 0, "undocked panes leave the dock list")
+      harness.assert_equal(hollow.term.pane_by_id(101).dock, nil, "undocked panes have no dock")
+    end)
+
+    it("forwards scope and ratio and rejects bad arguments", function()
+      hollow.term.dock_pane(101, { edge = "top", scope = "workspace", ratio = 0.4 })
+      harness.assert_equal(recorded.dock_pane.scope, "workspace", "scope is forwarded")
+      harness.assert_equal(recorded.dock_pane.ratio, 0.4, "ratio is forwarded")
+      hollow.term.undock_pane(101)
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "diagonal" }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "left", scope = "tab" }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "left", ratio = 1 }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, "101", { edge = "left" }))
+      harness.assert_true(not pcall(hollow.term.undock_pane, -1))
+    end)
+
+    it("split_pane forwards dock with an edge", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "workspace", command = "htop" })
+      harness.assert_equal(recorded.split_pane.dock, "workspace", "dock should be forwarded")
+      harness.assert_true(not pcall(hollow.term.split_pane, { dock = "global" }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { edge = "left", dock = "tab" }))
+    end)
+  end)
+
   describe("split_pane", function()
     local split_result = nil
 

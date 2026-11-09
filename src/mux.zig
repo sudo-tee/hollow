@@ -5,6 +5,7 @@ const layout = @import("mux/layout.zig");
 const tab_mod = @import("mux/tab.zig");
 const workspace_mod = @import("mux/workspace.zig");
 const mux_mod = @import("mux/mux.zig");
+const dock_mod = @import("mux/dock.zig");
 
 // Pull test definitions into the build's test discovery graph.
 pub const tests = @import("mux/tests.zig");
@@ -24,6 +25,8 @@ pub const SplitNode = types.SplitNode;
 pub const Tab = tab_mod.Tab;
 pub const Workspace = workspace_mod.Workspace;
 pub const Mux = mux_mod.Mux;
+pub const Docks = dock_mod.Docks;
+pub const DockScope = dock_mod.DockScope;
 
 pub const layoutSplitTree = layout.layoutSplitTree;
 pub const splitChildBounds = layout.splitChildBounds;

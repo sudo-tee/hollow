@@ -89,6 +89,53 @@ local function resolve_filter(id)
   return "all", FILTERS.all
 end
 
+-- Docks render as a pseudo tab per workspace, plus a pseudo workspace for
+-- global docks, so they share search, filters, and activation with tabs.
+local function with_docks(tree, global_docks)
+  local result = {}
+  if #global_docks > 0 then
+    result[1] = {
+      id = "global-docks",
+      name = "Global docks",
+      index = 0,
+      is_dock = true,
+      tabs = {
+        { id = "dock:global", title = "", index = 0, is_dock = true, panes = global_docks },
+      },
+    }
+  end
+  for _, workspace in ipairs(tree) do
+    if workspace.docks and #workspace.docks > 0 then
+      local tabs = {}
+      for _, tab in ipairs(workspace.tabs) do
+        tabs[#tabs + 1] = tab
+      end
+      tabs[#tabs + 1] = {
+        id = "dock:" .. tostring(workspace.id),
+        title = "",
+        index = #workspace.tabs + 1,
+        is_dock = true,
+        panes = workspace.docks,
+      }
+      local copy = setmetatable({ tabs = tabs }, { __index = workspace })
+      result[#result + 1] = copy
+    else
+      result[#result + 1] = workspace
+    end
+  end
+  return result
+end
+
+local function global_docks()
+  local docks = {}
+  for _, pane in ipairs(util.safe_call(hollow.term.docks, {}) or {}) do
+    if pane.dock and pane.dock.scope == "global" then
+      docks[#docks + 1] = pane
+    end
+  end
+  return docks
+end
+
 local function flatten_tree(tree, collapsed, query, pane_filter)
   local rows = {}
   local searching = query ~= ""
@@ -100,7 +147,8 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
     local workspace_panes = {}
 
     for _, tab in ipairs(workspace.tabs) do
-      local tab_searchable = util.words(tab.title, tab.index, "tab", workspace_searchable)
+      local tab_searchable =
+        util.words(tab.title, tab.index, tab.is_dock and "dock" or "tab", workspace_searchable)
       local tab_matches = workspace_matches or matches(query, tab_searchable)
       local visible_panes = {}
 
@@ -113,6 +161,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
           pane.domain,
           program_status.pane_has_attention(pane) and "bell" or nil,
           pane.is_hidden == true and "hidden" or nil,
+          pane.dock and ("dock " .. pane.dock.edge) or nil,
           "pane",
           tab_searchable
         )
@@ -226,7 +275,7 @@ function ui.mux_navigator.open(opts)
   opts = opts or {}
   local theme = resolve_theme(opts)
   local clay_budget, reveal_start = math.min(20, row_budget(opts)), false
-  local tree = hollow.term.mux_tree()
+  local tree = with_docks(hollow.term.mux_tree(), global_docks())
   local filter_id, pane_filter = resolve_filter(opts.filter)
   local collapsed = {}
   local nav
@@ -274,7 +323,7 @@ function ui.mux_navigator.open(opts)
     end
     modal.close()
     if row.kind == "workspace" then
-      local target = filter_id ~= "all" and row.panes[1] or nil
+      local target = (filter_id ~= "all" or row.item.is_dock) and row.panes[1] or nil
       target = target and (target.pane or target) or nil
       if target then
         focus_pane(target)
@@ -282,7 +331,7 @@ function ui.mux_navigator.open(opts)
         hollow.term.switch_workspace(row.item.index)
       end
     elseif row.kind == "tab" then
-      local target = filter_id ~= "all" and row.panes[1] or row.item.pane
+      local target = (filter_id ~= "all" or row.item.is_dock) and row.panes[1] or row.item.pane
       target = target and (target.pane or target) or nil
       if target then
         focus_pane(target)
@@ -356,7 +405,8 @@ function ui.mux_navigator.open(opts)
         and (pane_attention and icons.bell or pane_hidden and icons.pane_hidden or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
       or ""
     local label = row.kind == "workspace" and (row.item.name or ("Workspace " .. row.item.index))
-      or row.kind == "tab" and ("Tab " .. row.item.index)
+      or row.kind == "tab" and (row.item.is_dock and "Docks" or ("Tab " .. row.item.index))
+      or row.item.dock and ("Dock " .. row.item.dock.edge)
       or ("Pane " .. row.index)
     local value = row.kind == "workspace" and nil
       or row.kind == "tab" and (row.item.title ~= "" and row.item.title or nil)
@@ -496,7 +546,7 @@ function ui.mux_navigator.open(opts)
     end,
     render = function(render_theme, state, ctx)
       local c = ui.components
-      tree = hollow.term.mux_tree()
+      tree = with_docks(hollow.term.mux_tree(), global_docks())
       local rows = current_rows()
       refresh_after = nil
       for _, row in ipairs(rows) do

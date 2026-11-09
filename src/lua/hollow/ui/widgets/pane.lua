@@ -206,6 +206,9 @@ local function new_instance(opts, floating, placement, name)
     edge == nil or edge == "left" or edge == "right" or edge == "top" or edge == "bottom",
     "invalid pane edge"
   )
+  local dock = opts.dock
+  assert(dock == nil or dock == "global" or dock == "workspace", "invalid pane dock scope")
+  assert(dock == nil or (edge ~= nil and not floating), "pane dock requires an edge split")
   local ratio = opts.ratio or 0.5
   assert(type(ratio) == "number" and ratio > 0 and ratio < 1, "pane ratio must be in (0, 1)")
   assert(type(host.create_lua_pane) == "function", "Lua panes require GUI host")
@@ -226,6 +229,7 @@ local function new_instance(opts, floating, placement, name)
       title = owned.title,
       placement = placement or "split",
       edge = owned.edge,
+      dock = owned.dock,
       name = name,
       floating = floating,
       x = owned.x,
@@ -349,6 +353,7 @@ function M._restore(id, descriptor)
     args = descriptor.args,
     title = descriptor.title,
     edge = descriptor.edge,
+    dock = descriptor.dock,
   })
   local self, owner = new_instance(opts, false)
   self.id, instances[id] = id, self

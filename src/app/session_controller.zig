@@ -17,6 +17,7 @@ const Workspace = @import("../mux.zig").Workspace;
 const Tab = @import("../mux.zig").Tab;
 const SplitDirection = @import("../mux.zig").SplitDirection;
 const PaneEdge = @import("../mux.zig").PaneEdge;
+const DockScope = @import("../mux.zig").DockScope;
 const FocusDirection = @import("../mux.zig").FocusDirection;
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const PaneBounds = @import("../mux.zig").PaneBounds;
@@ -469,9 +470,17 @@ pub fn switchWorkspace(self: *App, index: usize) void {
 // Split/resize operations
 // ============================================================
 
-pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge) void {
+pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge, dock: ?DockScope) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
+    if (dock) |scope| {
+        const occupied = if (edge) |side| mux.dockOccupant(scope, side) != null else true;
+        if (occupied or floating) {
+            std.log.warn("app: splitPane dock={s} needs a free edge slot", .{@tagName(scope)});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+            return;
+        }
+    }
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
@@ -521,6 +530,12 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
                 self.debug_split_trace_frames = 4;
             }
         }
+    }
+    if (dock) |scope| {
+        // The edge split gave the pane its domain/cwd; now hand it to the dock.
+        mux.dockPane(pane, edge.?, scope, std.math.clamp(ratio, 0.05, 0.95)) catch |err| {
+            std.log.warn("app: splitPane dock failed: {s}", .{@errorName(err)});
+        };
     }
     if (floating) {
         if (x != null or y != null or width != null or height != null) {
@@ -604,6 +619,40 @@ pub fn setPaneVisibleById(self: *App, pane_id: usize, visible: bool) void {
         if (visible) pane.invalidate();
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Move a pane into a window-edge dock; it then survives tab switches.
+pub fn dockPaneById(self: *App, pane_id: usize, edge: PaneEdge, scope: DockScope, ratio: f32) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        mux.dockPane(pane, edge, scope, ratio) catch |err| {
+            std.log.warn("app: dockPane failed: {s} pane={d} edge={s} scope={s}", .{ @errorName(err), pane_id, @tagName(edge), @tagName(scope) });
+            return;
+        };
+        pane.invalidate();
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
+        if (mux.activePane() == pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Return a docked pane to the active tab as an edge split.
+pub fn undockPaneById(self: *App, pane_id: usize) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        mux.undockPane(pane) catch |err| {
+            std.log.warn("app: undockPane failed: {s} pane={d}", .{ @errorName(err), pane_id });
+            return;
+        };
+        pane.invalidate();
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
+        self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
         self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
     }
 }

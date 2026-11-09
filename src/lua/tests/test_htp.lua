@@ -103,6 +103,20 @@ describe("HTP test suite", function()
       harness.assert_equal(recorded.set_pane_visible.visible, true, "visible defaults to true")
     end)
 
+    it("dispatches dock_pane and undock_pane", function()
+      harness.assert_true(
+        hollow.htp._handle_emit("dock_pane", { id = 101, edge = "left", scope = "workspace" }, 101),
+        "HTP dock_pane should succeed"
+      )
+      harness.assert_equal(recorded.dock_pane.edge, "left", "HTP dock_pane forwards the edge")
+      harness.assert_equal(recorded.dock_pane.scope, "workspace", "HTP dock_pane forwards scope")
+      harness.assert_true(
+        hollow.htp._handle_emit("undock_pane", { id = 101 }, 101),
+        "HTP undock_pane should succeed"
+      )
+      harness.assert_equal(recorded.undock_pane, 101, "HTP undock_pane targets pane ids")
+    end)
+
     it("dispatches close_pane", function()
       local ok_close_pane = hollow.htp._handle_emit("close_pane", { id = 101 }, 101)
       harness.assert_true(ok_close_pane, "HTP close_pane should succeed")

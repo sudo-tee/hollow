@@ -109,6 +109,7 @@ pub const PendingInputEvent = union(enum) {
     split_pane: struct {
         direction: SplitDirection,
         edge: ?@import("../mux/types.zig").PaneEdge = null,
+        dock: ?@import("../mux.zig").DockScope = null,
         ratio: f32,
         domain_name: ?[]const u8,
         cwd: ?[]const u8,
@@ -128,6 +129,8 @@ pub const PendingInputEvent = union(enum) {
         show_background: bool,
     },
     set_pane_visible: struct { pane_id: usize, visible: bool },
+    dock_pane: struct { pane_id: usize, edge: @import("../mux/types.zig").PaneEdge, scope: @import("../mux.zig").DockScope, ratio: f32 },
+    undock_pane: usize,
     set_pane_floating: struct {
         pane_id: usize,
         floating: bool,
@@ -443,7 +446,7 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.setWorkspaceDefaultCwd(self, cwd);
             },
             .split_pane => |split| {
-                mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref, split.edge);
+                mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref, split.edge, split.dock);
             },
             .toggle_pane_maximized => |maximize| {
                 mux_ops.togglePaneMaximizedById(self, maximize.pane_id, maximize.show_background);
@@ -451,6 +454,8 @@ pub fn processInputQueue(self: *App) void {
             .set_pane_visible => |visibility| {
                 mux_ops.setPaneVisibleById(self, visibility.pane_id, visibility.visible);
             },
+            .dock_pane => |dock| mux_ops.dockPaneById(self, dock.pane_id, dock.edge, dock.scope, dock.ratio),
+            .undock_pane => |pane_id| mux_ops.undockPaneById(self, pane_id),
             .set_pane_floating => |floating| {
                 mux_ops.setPaneFloatingById(self, floating.pane_id, floating.floating);
             },

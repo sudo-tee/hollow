@@ -161,6 +161,8 @@ pub fn description(kind: Kind) []const u8 {
         .pane_tile => "Queue tiling a pane by id.",
         .pane_hide => "Queue hiding a pane by id without closing it; its PTY keeps running. The last visible pane in a tab cannot be hidden.",
         .pane_show => "Queue showing a hidden pane by id; focus is unchanged.",
+        .pane_dock => "Queue moving a pane into a window-edge dock that stays visible across tab switches; scope is global (default) or workspace, ratio is the dock's share (default 0.3). A tab's last pane and occupied slots are refused.",
+        .pane_undock => "Queue returning a docked pane to the active tab as an edge split of the same size.",
         .pane_move => "Queue moving a pane by id; amount is normalized (default 0.08).",
         .pane_resize => "Queue resizing the active pane; amount is normalized; id is currently ignored.",
         .pane_send_text => "Queue sending literal text to a pane by id; Lua panes receive it as key events.",

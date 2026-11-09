@@ -864,3 +864,154 @@ test "hidden floating panes are excluded from hit testing without closing" {
     try std.testing.expect(mux.setPaneVisible(floating, true));
     try std.testing.expectEqual(@as(usize, 2), mux.computeActiveLayout(800, 600, &buffer).len);
 }
+
+const DockFixture = struct {
+    runtime: ghostty.Runtime = undefined,
+    mux: Mux,
+
+    fn init(allocator: std.mem.Allocator) !DockFixture {
+        var fixture: DockFixture = .{ .mux = Mux.init(allocator) };
+        const first = try fixture.mux.createLuaPane();
+        try fixture.mux.newWorkspaceWithPane(&fixture.runtime, first, null);
+        return fixture;
+    }
+
+    fn deinit(self: *DockFixture) void {
+        self.mux.deinit(&self.runtime);
+    }
+
+    fn split(self: *DockFixture) !*Pane {
+        const pane = try self.mux.createLuaPane();
+        try self.mux.splitActivePaneWith(pane, .vertical, 0.5, false);
+        return pane;
+    }
+};
+
+test "docks carve the content area with global docks outermost" {
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const tab_pane = mux.activePane().?;
+    const global_left = try fixture.split();
+    const ws_left = try fixture.split();
+    const ws_bottom = try fixture.split();
+
+    try std.testing.expectError(error.LastPaneInTab, blk: {
+        const other = try mux.createLuaPane();
+        try mux.newTabWithPane(&fixture.runtime, other);
+        defer mux.switchTab(0);
+        break :blk mux.dockPane(other, .left, .global, 0.2);
+    });
+    try mux.dockPane(global_left, .left, .global, 0.2);
+    try mux.dockPane(ws_left, .left, .workspace, 0.25);
+    try std.testing.expectError(error.DockOccupied, mux.dockPane(ws_bottom, .left, .workspace, 0.3));
+    try mux.dockPane(ws_bottom, .bottom, .workspace, 0.5);
+    try std.testing.expectEqual(ws_bottom, mux.activePane().?);
+    try std.testing.expectEqual(@as(usize, 1), mux.activeTab().?.panes.items.len);
+
+    var bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 400 };
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    var written: usize = 0;
+    mux.layoutDocks(&bounds, &layout_buf, &written, 0, 0);
+    try std.testing.expectEqual(@as(usize, 3), written);
+    try std.testing.expectEqual(global_left, layout_buf[0].pane);
+    try std.testing.expectEqual(@as(u32, 0), layout_buf[0].bounds.x);
+    try std.testing.expectEqual(@as(u32, 400), layout_buf[0].bounds.height);
+    try std.testing.expectEqual(ws_left, layout_buf[1].pane);
+    try std.testing.expect(layout_buf[1].bounds.x > layout_buf[0].bounds.x + layout_buf[0].bounds.width - 1);
+    try std.testing.expectEqual(ws_bottom, layout_buf[2].pane);
+    try std.testing.expectEqual(bounds.x, layout_buf[2].bounds.x);
+    try std.testing.expectEqual(@as(u32, 400), layout_buf[2].bounds.y + layout_buf[2].bounds.height);
+    try std.testing.expectEqual(@as(u32, 1000), bounds.x + bounds.width);
+    try std.testing.expect(bounds.height < 400);
+
+    // Hidden docks give their space back to the tab.
+    try std.testing.expect(mux.setPaneVisible(global_left, false));
+    var after = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 400 };
+    written = 0;
+    mux.layoutDocks(&after, &layout_buf, &written, 0, 0);
+    try std.testing.expectEqual(@as(usize, 2), written);
+    try std.testing.expect(after.x < bounds.x);
+
+    // The dock seam is hittable and its ratio node is a valid drag target.
+    const seam_x: f32 = @floatFromInt(layout_buf[0].bounds.x + layout_buf[0].bounds.width);
+    const hit = mux.hitTestDockDivider(.{ .x = 0, .y = 0, .width = 1000, .height = 400 }, seam_x, 10, 3, 0, 0).?;
+    try std.testing.expect(mux.dockContainsNode(hit.node));
+    _ = tab_pane;
+}
+
+test "dock focus survives tab switches and moves by direction" {
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const tab_pane = mux.activePane().?;
+    const docked = try fixture.split();
+    try mux.dockPane(docked, .right, .global, 0.3);
+    try std.testing.expectEqual(docked, mux.activePane().?);
+
+    mux.focusPaneInDirection(.left, 800, 600);
+    try std.testing.expectEqual(tab_pane, mux.activePane().?);
+    mux.focusPaneInDirection(.right, 800, 600);
+    try std.testing.expectEqual(docked, mux.activePane().?);
+
+    const second_tab_pane = try mux.createLuaPane();
+    try mux.newTabWithPane(&fixture.runtime, second_tab_pane);
+    try std.testing.expectEqual(second_tab_pane, mux.activePane().?);
+    try std.testing.expect(mux.focusPaneById(docked.id));
+    try std.testing.expectEqual(docked, mux.activePane().?);
+
+    // Workspace docks disappear with their workspace; global docks do not.
+    const other_ws_pane = try mux.createLuaPane();
+    try mux.newWorkspaceWithPane(&fixture.runtime, other_ws_pane, null);
+    try std.testing.expect(mux.dockIsShown(docked));
+    const ws_dock = try fixture.split();
+    try mux.dockPane(ws_dock, .left, .workspace, 0.3);
+    mux.switchWorkspace(0);
+    try std.testing.expect(!mux.dockIsShown(ws_dock));
+    mux.focused_dock = ws_dock;
+    try std.testing.expect(mux.activePane() != ws_dock);
+
+    // Hiding a focused dock returns focus to the tab.
+    try std.testing.expect(mux.focusPaneById(docked.id));
+    try std.testing.expect(mux.setPaneVisible(docked, false));
+    try std.testing.expect(mux.activePane() != docked);
+    try std.testing.expect(!mux.focusPaneById(docked.id));
+}
+
+test "dock panes iterate, close, and undock back into the active tab" {
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const docked = try fixture.split();
+    const closing = try fixture.split();
+    try mux.dockPane(docked, .left, .workspace, 0.25);
+    try mux.dockPane(closing, .top, .global, 0.4);
+
+    var count: usize = 0;
+    var seen_docked = false;
+    var panes = mux.paneIterator();
+    while (panes.next()) |pane| {
+        count += 1;
+        if (pane == docked) seen_docked = true;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+    try std.testing.expect(seen_docked);
+
+    const closing_id = closing.id;
+    try std.testing.expect(!mux.closePaneById(&fixture.runtime, closing_id));
+    try std.testing.expect(mux.paneDock(docked) != null);
+    try std.testing.expect(!mux.focusPaneById(closing_id));
+
+    try mux.undockPane(docked);
+    try std.testing.expect(mux.paneDock(docked) == null);
+    const tab = mux.activeTab().?;
+    try std.testing.expectEqual(docked, tab.active_pane.?);
+    try std.testing.expectEqual(@as(?types.PaneEdge, .left), tab.paneEdge(docked));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), tab.splitInfoForPane(docked).?.size, 1e-6);
+
+    // Closing the focused dock pane goes through closeActivePane.
+    const again = try fixture.split();
+    try mux.dockPane(again, .bottom, .global, 0.3);
+    try std.testing.expect(!mux.closeActivePane(&fixture.runtime));
+    try std.testing.expect(mux.global_docks.isEmpty());
+}

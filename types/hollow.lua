@@ -562,6 +562,7 @@
 ---@field is_floating boolean
 ---@field is_hidden boolean True when excluded from layout and focus; PTY continues running.
 ---@field edge? "left"|"right"|"top"|"bottom" Window edge the pane is still docked to, when created with `split_pane({ edge = ... })`.
+---@field dock? HollowPaneDock Window dock holding the pane; docked panes are in no tab.
 ---@field is_maximized boolean
 ---@field has_bell boolean
 ---@field busy boolean True while shell integration reports a running command.
@@ -601,6 +602,7 @@
 
 ---@class HollowMuxWorkspace: HollowWorkspace
 ---@field tabs HollowTab[]
+---@field docks HollowPane[] This workspace's docks; global docks come from `term.docks()`.
 
 ---@alias HollowPaneSnapshot HollowPane
 ---@alias HollowTabSnapshot HollowTab
@@ -619,8 +621,20 @@
 ---@field insert_at_end? boolean
 ---@field on_complete? fun(result: { success: boolean, tab_id?: integer })
 
+---@class HollowPaneDock
+---@field edge "left"|"right"|"top"|"bottom"
+---@field scope "global"|"workspace" Global docks show in every workspace; workspace docks only in their own.
+---@field workspace_id? integer Owning workspace for workspace docks.
+---@field ratio number The dock's share of the window content.
+
+---@class HollowDockPaneOpts
+---@field edge "left"|"right"|"top"|"bottom"
+---@field scope? "global"|"workspace" Default "global".
+---@field ratio? number Share of the window content, strictly between 0 and 1; default 0.3.
+
 ---@class HollowSplitPaneOpts
 ---@field edge? "left"|"right"|"top"|"bottom" Dock a terminal pane along the full edge of the tiled layout (not floating).
+---@field dock? "global"|"workspace" With `edge`, create the pane in a window dock that survives tab switches.
 ---@field direction? "horizontal"|"vertical"
 ---@field tag? string
 ---@field tags? string[]
@@ -691,6 +705,8 @@
 ---@class HollowWorkspaceBootstrapSpec
 ---@field name? string
 ---@field tabs HollowWorkspaceBootstrapTab[]
+---@field docks? HollowWorkspaceBootstrapPane[] Workspace docks; each needs `edge`, `size` is the dock ratio.
+---@field global_docks? HollowWorkspaceBootstrapPane[] Window docks; skipped when the edge is already docked.
 
 ---@class HollowPaneMaximizeOpts
 ---@field show_background? boolean
@@ -1740,6 +1756,20 @@ function term.set_pane_floating(pane_id, floating) end
 ---@param visible boolean
 function term.set_pane_visible(pane_id, visible) end
 
+---Move a pane into a window-edge dock that stays visible across tab switches.
+---A tab's last pane and occupied dock slots are refused; docked panes may be re-docked.
+---@param pane_id integer
+---@param opts HollowDockPaneOpts
+function term.dock_pane(pane_id, opts) end
+
+---Return a docked pane to the active tab as an edge split of the same size.
+---@param pane_id integer
+function term.undock_pane(pane_id) end
+
+---Snapshots of every docked pane, global docks first.
+---@return HollowPane[]
+function term.docks() end
+
 ---@param pane_id integer
 ---@param opts HollowFloatingPaneBounds
 function term.set_floating_pane_bounds(pane_id, opts) end
@@ -2013,7 +2043,8 @@ function sidebar.unmount() end
 function sidebar.toggle() end
 
 ---Toggle between the window-edge overlay and a split Lua pane; nil when undocking or unavailable.
----@param opts? { edge?: "left"|"right"|"top"|"bottom", ratio?: number, focus?: boolean }
+---The docked sidebar lives in a window dock (`scope`, default "global") so it survives tab switches.
+---@param opts? { edge?: "left"|"right"|"top"|"bottom", ratio?: number, focus?: boolean, scope?: "global"|"workspace" }
 ---@return HollowUiPane|nil
 function sidebar.dock(opts) end
 
@@ -2640,6 +2671,7 @@ local workspace = {}
 ---@field direction? "horizontal"|"vertical" Default vertical.
 ---@field ratio? number New split fraction, strictly between 0 and 1; default 0.5.
 ---@field edge? "left"|"right"|"top"|"bottom" Split the whole tiled layout and place the pane on this window edge, instead of beside the active pane; overrides direction.
+---@field dock? "global"|"workspace" With `edge`, place the pane in a window dock that survives tab switches.
 ---@field fullscreen? boolean Maximize after insertion.
 ---@field x? number Normalized floating x coordinate, 0–1.
 ---@field y? number Normalized floating y coordinate, 0–1.

@@ -240,6 +240,52 @@ local function create_lua_leaf(pane, tab_layout, placement, name, resolve)
   end
 end
 
+-- Restore one dock leaf; an occupied slot (e.g. a global dock that an earlier
+-- workspace already restored) is skipped rather than failing the bootstrap.
+local function bootstrap_dock(leaf, base_dir, scope)
+  if type(leaf) ~= "table" or leaf.edge == nil then
+    return nil
+  end
+  local workspace = hollow.term.current_workspace()
+  for _, docked in ipairs(hollow.term.docks()) do
+    local dock = docked.dock
+    if
+      dock.edge == leaf.edge
+      and dock.scope == scope
+      and (scope == "global" or dock.workspace_id == (workspace and workspace.id))
+    then
+      return nil
+    end
+  end
+  local pane = clone_with_resolved_paths(base_dir, leaf)
+  local result = async.await(function(resolve)
+    if lua_module(pane) then
+      local opts = pane_opts(pane, nil)
+      opts.module, opts.args, opts.title = lua_module(pane), pane.args, pane.title
+      opts.direction, opts.dock, opts.on_complete = nil, scope, resolve
+      if not hollow.ui.pane._create(opts, "split", nil) then
+        resolve({ success = false })
+      end
+    else
+      local opts = pane_opts(pane, nil)
+      opts.dock, opts.on_complete = scope, resolve
+      hollow.term.split_pane(opts)
+    end
+  end)
+  if result == nil or result.success ~= true then
+    hollow.log("workspace bootstrap dock failed edge=", leaf.edge, "scope=", scope)
+    return nil
+  end
+  if pane.tags ~= nil then
+    hollow.term.set_pane_tags(pane.tags, result.pane_id)
+  end
+  if pane.hidden == true then
+    hollow.term.set_pane_visible(result.pane_id, false)
+  end
+  async.next_tick()
+  return select_main_pane(nil, result.pane_id, pane)
+end
+
 ---@param tab HollowWorkspaceBootstrapTab
 ---@param base_dir string|nil
 ---@param is_first_tab boolean
@@ -401,6 +447,17 @@ local function validate_spec(spec)
   if spec.tabs ~= nil and type(spec.tabs) ~= "table" then
     error("workspace spec tabs must be a table")
   end
+  for _, key in ipairs({ "docks", "global_docks" }) do
+    if spec[key] ~= nil and type(spec[key]) ~= "table" then
+      error("workspace spec " .. key .. " must be a table")
+    end
+    for _, leaf in ipairs(spec[key] or {}) do
+      local edge = type(leaf) == "table" and leaf.edge or nil
+      if edge ~= "left" and edge ~= "right" and edge ~= "top" and edge ~= "bottom" then
+        error("workspace spec " .. key .. " entries need edge left|right|top|bottom")
+      end
+    end
+  end
   for _, tab in ipairs(spec.tabs or {}) do
     for _, pane in ipairs(type(tab) == "table" and type(tab.panes) == "table" and tab.panes or {}) do
       if type(pane) == "table" and (pane.lua ~= nil or pane.kind == "lua") then
@@ -461,6 +518,24 @@ function M.bootstrap(spec, opts)
         end
         main_pane_id = tab_main_pane_id
       end
+    end
+    local tab_pane = hollow.term.current_pane()
+    local docked = false
+    for _, entry in ipairs({ { spec.docks, "workspace" }, { spec.global_docks, "global" } }) do
+      for _, leaf in ipairs(entry[1] or {}) do
+        docked = true
+        local dock_main = bootstrap_dock(leaf, base_dir, entry[2])
+        if dock_main ~= nil then
+          if main_pane_id ~= nil then
+            error("workspace spec may only mark one pane as main/default")
+          end
+          main_pane_id = dock_main
+        end
+      end
+    end
+    -- New docks take focus; keep it on the tab unless a dock is the main pane.
+    if docked and main_pane_id == nil and tab_pane ~= nil then
+      main_pane_id = tab_pane.id
     end
     if main_pane_id ~= nil then
       hollow.term.focus_pane_by_id(main_pane_id)
@@ -609,6 +684,53 @@ function M.load_and_bootstrap(path, opts)
   return M.bootstrap(spec, opts)
 end
 
+local function export_leaf(pane)
+  if pane.kind == "lua" then
+    if not pane.module then
+      return nil
+    end
+    local leaf = {
+      lua = pane.module,
+      args = util.clone_value(pane.args or {}),
+      title = pane.title,
+      tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+      direction = pane.direction,
+      size = pane.split_ratio,
+      main = pane.is_focused == true or nil,
+      floating = pane.is_floating == true or nil,
+      fullscreen = pane.is_maximized == true or nil,
+      hidden = pane.is_hidden == true or nil,
+    }
+    for key, value in pairs(pane.floating_bounds or {}) do
+      leaf[key] = value
+    end
+    return leaf
+  end
+  return {
+    cwd = pane.cwd ~= "" and pane.cwd or nil,
+    domain = pane.domain,
+    command = normalize_command(strip_cwd_prefix(pane.foreground_process, pane.cwd)),
+    tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+    direction = pane.direction,
+    size = pane.split_ratio,
+    edge = pane.edge,
+    main = pane.is_focused == true or nil,
+    hidden = pane.is_hidden == true or nil,
+  }
+end
+
+local function export_dock(pane)
+  local leaf = export_leaf(pane)
+  if leaf == nil then
+    return nil
+  end
+  leaf.direction, leaf.floating, leaf.fullscreen = nil, nil, nil
+  leaf.edge, leaf.size = pane.dock.edge, pane.dock.ratio
+  return leaf
+end
+
+--- Workspace docks export under `docks`; global docks, which belong to the
+--- window rather than the workspace, under `global_docks`.
 ---@return HollowWorkspaceBootstrapSpec
 function M.export_current()
   local workspace = hollow.term.current_workspace()
@@ -616,46 +738,26 @@ function M.export_current()
   for _, tab in ipairs(hollow.term.tabs()) do
     local panes = {}
     for _, pane in ipairs(tab.panes or {}) do
-      if pane.kind == "lua" then
-        if pane.module then
-          local leaf = {
-            lua = pane.module,
-            args = util.clone_value(pane.args or {}),
-            title = pane.title,
-            tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
-            direction = pane.direction,
-            size = pane.split_ratio,
-            main = pane.is_focused == true or nil,
-            floating = pane.is_floating == true or nil,
-            fullscreen = pane.is_maximized == true or nil,
-            hidden = pane.is_hidden == true or nil,
-          }
-          for key, value in pairs(pane.floating_bounds or {}) do
-            leaf[key] = value
-          end
-          panes[#panes + 1] = leaf
-        end
-      else
-        panes[#panes + 1] = {
-          cwd = pane.cwd ~= "" and pane.cwd or nil,
-          domain = pane.domain,
-          command = normalize_command(strip_cwd_prefix(pane.foreground_process, pane.cwd)),
-          tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
-          direction = pane.direction,
-          size = pane.split_ratio,
-          edge = pane.edge,
-          main = pane.is_focused == true or nil,
-          hidden = pane.is_hidden == true or nil,
-        }
-      end
+      panes[#panes + 1] = export_leaf(pane)
     end
     if #panes > 0 then
       tabs[#tabs + 1] = { name = tab.title, panes = panes }
     end
   end
+  local docks, global_docks = {}, {}
+  for _, pane in ipairs(hollow.term.docks()) do
+    local scope = pane.dock.scope
+    if scope == "global" then
+      global_docks[#global_docks + 1] = export_dock(pane)
+    elseif workspace and pane.dock.workspace_id == workspace.id then
+      docks[#docks + 1] = export_dock(pane)
+    end
+  end
   return {
     name = workspace and workspace.name or nil,
     tabs = tabs,
+    docks = #docks > 0 and docks or nil,
+    global_docks = #global_docks > 0 and global_docks or nil,
   }
 end
 

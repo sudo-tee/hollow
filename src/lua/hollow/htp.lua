@@ -412,6 +412,26 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     hollow.term.set_pane_visible(pane_id, payload.visible ~= false)
   end)
 
+  hollow.htp.on_emit("dock_pane", function(ctx)
+    local payload = event_payload(ctx)
+    local pane_id = target_pane_id(ctx, payload)
+    if type(pane_id) ~= "number" then
+      error("dock_pane requires a pane id")
+    end
+    hollow.term.dock_pane(
+      pane_id,
+      { edge = payload.edge, scope = payload.scope, ratio = payload.ratio }
+    )
+  end)
+
+  hollow.htp.on_emit("undock_pane", function(ctx)
+    local pane_id = target_pane_id(ctx, event_payload(ctx))
+    if type(pane_id) ~= "number" then
+      error("undock_pane requires a pane id")
+    end
+    hollow.term.undock_pane(pane_id)
+  end)
+
   hollow.htp.on_emit("set_floating_pane_bounds", function(ctx)
     local payload = event_payload(ctx)
     local pane_id = target_pane_id(ctx, payload)
