@@ -625,7 +625,7 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
-3. Shared metadata, attachment, and stream state now support the first bounded single-pane Windows owner integration; multi-pane mutations and stable Windows host identity remain next.
+3. Shared metadata, attachment, and stream state support the live single-pane Windows owner, and stable host identity is persisted; multi-pane mutations remain next.
 4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
@@ -682,7 +682,10 @@ Pending query replies retain only unsubmitted suffixes under backpressure, and o
 Replies are bounded to 4 MiB and snapshot encoding/VT fallback stream into a 64 MiB bounded sink.
 Session-owned child environments strip GUI identity/control variables and force OSC transport without changing ordinary GUI spawn behavior.
 The first live slice maps native launch requests, preserves session processes and terminal state across last-client disconnect, and delivers snapshots incrementally through the existing 1 MiB transport bound.
-The runtime limits live sessions to 16 with one pane each, 1 MiB scrollback per pane, and 4 MiB pending input per session; it leaves individual pane mutations, persisted Windows host identity, and native Windows GUI enablement for subsequent slices.
+The runtime limits live sessions to 16 with one pane each, 1 MiB scrollback per pane, and 4 MiB pending input per session; it leaves individual pane mutations and native Windows GUI enablement for subsequent slices.
+Production Windows owners now persist a stable host identity in `%LOCALAPPDATA%\hollow\sessions\host-id` after singleton admission.
+The owner creates a protected current-user-only file through flushed, atomic no-replacement publication; malformed or insecure existing files fail startup instead of silently changing identity.
+Final-component reparse points are rejected, concurrent creation converges on the persisted winner, and private fixture namespaces never access production host state.
 Owner-side process/output events wake the overlapped transport loop without idle polling.
 Published creates that cannot allocate an attachment reply become uncertain disconnections, not definitive rejections, and remain discoverable by reserved identity.
 Input-channel failure preserves process liveness and output draining; the signed exit wire saturates high-bit Windows codes instead of encoding false Unix signals.

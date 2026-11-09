@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 during the first live Windows owner integration.
+Updated 2026-11-09 during Windows host identity and multi-pane qualification.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -54,6 +54,7 @@ Commit map (current IDs, oldest first):
 | `13b1b46` | Shared owner metadata and mutation admission |
 | `643ae0a` | Shared attachment and bounded stream delivery state |
 | `6597ca2` | Windows owner ConPTY/headless-VT pane adapter |
+| `e5f7670` | Bounded live single-pane Windows owner |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -61,7 +62,16 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: finish multi-pane Windows owner mutations and stable host identity, then GUI domains and WSL keepalive.
+3. Phase 3: finish multi-pane Windows owner mutations, then GUI domains and WSL keepalive.
+
+Windows host identity is now persisted as 32 lowercase hexadecimal bytes at `%LOCALAPPDATA%\hollow\sessions\host-id`.
+Production loads it after singleton endpoint admission; fixture namespaces generate ephemeral owner-local identities without touching production state.
+Creation uses a current-SID-only protected file DACL, an exclusive random temporary file, flush, and atomic no-replacement publication.
+Concurrent creators accept only a validated persisted winner, never an unpublished candidate.
+Reads reject malformed bytes, wrong owner, inherited/broad DACLs, directories, and final-component reparse points; existing invalid identity files are not silently replaced.
+Persistence failure fails owner startup rather than advertising a different ephemeral production host on every restart.
+Eighteen standalone Windows identity/pipe/protocol tests pass in Debug, ReleaseSafe, and ReleaseFast, including reload, corruption preservation, inherited ACL rejection, and concurrent creation.
+Filesystem fixtures use unique native Windows temporary directories because the WSL shared repository does not implement Windows file ACLs.
 
 The first live Windows owner now uses `session_runtime_windows.zig` with the shared metadata, attachment, and stream helpers plus owner-side ConPTY/VT.
 It supports at most 16 single-pane sessions with 1 MiB scrollback per pane and 4 MiB pending application input per session.
@@ -74,7 +84,7 @@ Post-create attachment allocation failure closes the connection as uncertain whi
 Writer failure disables input but continues output draining and does not fabricate process exit or kill an otherwise live session.
 The existing signed exit wire format saturates Windows codes above `maxInt(i32)` rather than treating their high bits as Unix signals; the pane adapter still exposes raw `u32` status.
 Native command mapping handles literal argv and PowerShell/cmd command launches, rejects unsupported command shells, and does not translate Unix argv or file-URI cwd values.
-Stable Windows host identity, multi-pane mutations, native GUI enablement, and WSL keepalive remain deferred.
+Multi-pane mutations, native GUI enablement, and WSL keepalive remain deferred at the first live-owner checkpoint; stable Windows host identity is now implemented above.
 Live-owner validation passes 70 tests in each of Debug, ReleaseSafe, and ReleaseFast on real Windows through WSL, with no skips in this main runner.
 Coverage includes last-client reconnect with identical in-process state, takeover, collision rejection, invalid launch rollback, layout CAS, credit, binary restore, snapshots larger than the transport queue, and descendant kill/kill-server ACK retention.
 Runtime regressions cover published-create OOM uncertainty, read-side query failure without process loss, capacity preflight, native shell exit policy, and high-bit exit status encoding.

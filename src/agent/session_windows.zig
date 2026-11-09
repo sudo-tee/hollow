@@ -6,6 +6,7 @@ const pipe = @import("session_pipe_windows.zig");
 const p = @import("session_protocol.zig");
 const runtime = @import("session_runtime_windows.zig");
 const vt = @import("session_vt.zig");
+const identity = @import("session_identity_windows.zig");
 
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn WaitForSingleObject(windows.HANDLE, windows.DWORD) callconv(.winapi) windows.DWORD;
@@ -199,6 +200,7 @@ const Owner = struct {
     startup_deadline: u64,
     wake_event: windows.HANDLE,
     sessions: runtime.Owner,
+    host: [32]u8,
 
     fn create(a: std.mem.Allocator, endpoint: *const pipe.Endpoint) !*Owner {
         // Slot buffers and pending OVERLAPPED values have stable heap addresses.
@@ -211,6 +213,7 @@ const Owner = struct {
             .a = a,
             .startup_deadline = nowMs() + startup_grace_ms,
             .wake_event = wake_event,
+            .host = identity.random(@import("../io.zig").get()),
             .sessions = runtime.Owner.init(a, .{ .context = self, .callback = wake }),
         };
         errdefer self.destroy();
@@ -252,6 +255,7 @@ const Owner = struct {
                     .ghostty = vt.buildIdentity(),
                     .snapshot = if (slot.client.binary) .binary else .vt,
                     .owner_pid = windows.GetCurrentProcessId(),
+                    .host = &self.host,
                     .features = &.{"create-id"},
                 });
             },
@@ -415,6 +419,8 @@ pub fn serve(a: std.mem.Allocator, _: std.Io, namespace: ?[]const u8) !void {
     defer endpoint.deinit(a);
     const owner = try Owner.create(a, &endpoint);
     defer owner.destroy();
+    // Private fixture namespaces never read or mutate production host state.
+    if (namespace == null) owner.host = try identity.loadDefault(a, @import("../io.zig").get(), @import("../io.zig").environ(), &endpoint);
     try owner.run();
 }
 

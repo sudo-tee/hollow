@@ -139,15 +139,21 @@ pub const Endpoint = struct {
             return failure(code);
         }
         errdefer close(pipe);
+        try self.validateSecurity(pipe, 6);
+        return pipe;
+    }
+
+    /// Validate the same protected current-user-only security on a pipe or an
+    /// owner state file. `object_type` is SE_KERNEL_OBJECT or SE_FILE_OBJECT.
+    pub fn validateSecurity(self: *const Endpoint, handle: HANDLE, object_type: u32) !void {
         var owner: ?*anyopaque = null;
         var dacl: ?*Acl = null;
         var descriptor: ?*anyopaque = null;
-        const status = GetSecurityInfo(pipe, 6, 0x5, &owner, null, &dacl, null, &descriptor);
+        const status = GetSecurityInfo(handle, object_type, 0x5, &owner, null, &dacl, null, &descriptor);
         if (status != 0) return failure(status);
         defer _ = LocalFree(descriptor);
         if (owner == null or EqualSid(owner.?, self.sid) == 0) return error.InvalidPipeOwner;
         try self.validateDacl(descriptor.?);
-        return pipe;
     }
 
     fn validateDacl(self: *const Endpoint, descriptor: *anyopaque) !void {
