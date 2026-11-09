@@ -27,4 +27,10 @@ return sheet.define("topbar", {
     hover = { bg = "tab_hover_bg" },
   },
   attention = { fg = "muted", bold = false, variants = levels },
+  hidden_panes_button = {
+    padding = { left = 6, right = 6 },
+    margin = { right = 6 },
+    radius = 4,
+    hover = { bg = "tab_hover_bg" },
+  },
 })

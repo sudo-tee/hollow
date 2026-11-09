@@ -272,6 +272,16 @@ class HollowCli:
         p.add_argument("--tag")
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_floating", {"floating": False}, args.id, args.tag))
 
+        p = pane_sub.add_parser("hide", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_visible", {"visible": False}, args.id, args.tag))
+
+        p = pane_sub.add_parser("show", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_visible", {"visible": True}, args.id, args.tag))
+
         p = pane_sub.add_parser("move", parents=[self.common_parser])
         p.add_argument("direction", choices=["left", "right", "up", "down"])
         p.add_argument("--id", type=int)

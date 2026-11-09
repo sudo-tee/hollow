@@ -108,6 +108,7 @@ pub const PendingInputEvent = union(enum) {
     set_workspace_default_cwd: []const u8,
     split_pane: struct {
         direction: SplitDirection,
+        edge: ?@import("../mux/types.zig").PaneEdge = null,
         ratio: f32,
         domain_name: ?[]const u8,
         cwd: ?[]const u8,
@@ -126,6 +127,7 @@ pub const PendingInputEvent = union(enum) {
         pane_id: usize,
         show_background: bool,
     },
+    set_pane_visible: struct { pane_id: usize, visible: bool },
     set_pane_floating: struct {
         pane_id: usize,
         floating: bool,
@@ -441,10 +443,13 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.setWorkspaceDefaultCwd(self, cwd);
             },
             .split_pane => |split| {
-                mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref);
+                mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref, split.edge);
             },
             .toggle_pane_maximized => |maximize| {
                 mux_ops.togglePaneMaximizedById(self, maximize.pane_id, maximize.show_background);
+            },
+            .set_pane_visible => |visibility| {
+                mux_ops.setPaneVisibleById(self, visibility.pane_id, visibility.visible);
             },
             .set_pane_floating => |floating| {
                 mux_ops.setPaneFloatingById(self, floating.pane_id, floating.floating);
@@ -835,6 +840,8 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
 }
 
 fn paneHasVisualDamage(pane: *const Pane) bool {
+    // Hidden PTYs still parse output, but their texture damage cannot require a frame.
+    if (pane.is_hidden) return false;
     if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) return true;
     if (pane.asTerminalConst()) |term| {
         // Synchronized output keeps terminal damage pending until the mode is
@@ -851,6 +858,9 @@ test "visual damage checks terminal hold policy without suppressing Lua damage" 
     try std.testing.expect(!paneHasVisualDamage(&pane));
     pane.content.terminal.pty_received_data = true;
     try std.testing.expect(paneHasVisualDamage(&pane));
+    pane.is_hidden = true;
+    try std.testing.expect(!paneHasVisualDamage(&pane));
+    pane.is_hidden = false;
     pane.content.terminal.synchronized_output_active = true;
     pane.render_dirty = .full;
     try std.testing.expect(!paneHasVisualDamage(&pane));

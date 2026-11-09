@@ -193,6 +193,7 @@ table:
 ```lua
 {
   direction = "horizontal" | "vertical",
+  edge = "left" | "right" | "top" | "bottom", -- full tiled-layout edge
   ratio = 0.4,                  -- size of the new pane (0..1)
   domain = "UbuntuWSL",
   cwd = "/path",
@@ -209,11 +210,30 @@ table:
 }
 ```
 
+- `tag`/`tags` are applied once the pane exists, before `on_complete`
+  runs, so the callback can already find the pane by tag. Pass one or
+  the other, not both.
 - `command_mode = "send"` (default) types the command into the shell,
   so it echoes in the pane.
 - `command_mode = "spawn"` launches the shell with the command
   directly, so it does not appear as typed input. The shell is not
   the user's default shell in this mode.
+
+### Visibility without destroying the PTY
+
+```lua
+hollow.term.set_pane_visible(pane_id, false) -- hide; keep session running
+hollow.term.set_pane_visible(pane_id, true)  -- show same session
+```
+
+Hidden panes remain in the mux and keep their terminal process, but are
+excluded from layout, input hit testing and focus navigation. Tiled layouts
+expand into the freed area. Hiding the last visible pane in a tab is ignored.
+Snapshot objects include `is_hidden`. This is independent of terminal
+transport detach/reattach and does not persist the process across app exits.
+`split_pane({ edge = "right", ratio = 0.3, command = "lazygit",
+command_mode = "spawn" })` creates an edge-docked PTY; edge placement
+cannot be combined with `floating = true`.
 
 ### Floating and maximized
 
@@ -260,7 +280,12 @@ hollow.term.get_pane_tags(pane_id?)     -- string[]
 ```
 
 Tags identify panes. They are what the
-[native CLI](../cli/native.md) targets with `--tag`.
+[native CLI](../cli/native.md) targets with `--tag`. Hollow stores them
+with the pane, not in Lua: tags set from Lua and from the CLI
+(`pane set-tag`, `pane set-tags`) are the same set, they survive config
+reloads, and they are dropped when the pane closes. `get_pane_tags`
+returns them sorted. Leading and trailing whitespace is trimmed; empty
+tags are rejected. At most 64 tags per `set_pane_tags` call are kept.
 
 ### Text and process
 

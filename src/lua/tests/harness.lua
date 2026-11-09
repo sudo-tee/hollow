@@ -306,6 +306,30 @@ local function make_host_api()
     return panes[pane_id].domain
   end
 
+  -- Mirrors App.pane_tags: insertion-ordered, owned by the host.
+  local host_tags = {}
+  recorded.host_tags = host_tags
+
+  function host_api.get_pane_tags(pane_id)
+    local copy = {}
+    for i, tag in ipairs(host_tags[pane_id] or {}) do
+      copy[i] = tag
+    end
+    return copy
+  end
+
+  function host_api.set_pane_tags(pane_id, tags)
+    if panes[pane_id] == nil then
+      return false
+    end
+    local copy = {}
+    for i, tag in ipairs(tags) do
+      copy[i] = tag
+    end
+    host_tags[pane_id] = #copy > 0 and copy or nil
+    return true
+  end
+
   function host_api.get_pane_split_direction(pane_id)
     return panes[pane_id].split_direction
   end
@@ -340,6 +364,18 @@ local function make_host_api()
 
   function host_api.pane_is_maximized(pane_id)
     return panes[pane_id].is_maximized
+  end
+
+  function host_api.get_pane_content(pane_id)
+    local pane = panes[pane_id]
+    return pane and { kind = "terminal", is_hidden = pane.is_hidden == true } or nil
+  end
+
+  function host_api.set_pane_visible(pane_id, visible)
+    recorded.set_pane_visible = { id = pane_id, visible = visible }
+    if panes[pane_id] ~= nil then
+      panes[pane_id].is_hidden = not visible
+    end
   end
 
   function host_api.pane_has_bell(pane_id)

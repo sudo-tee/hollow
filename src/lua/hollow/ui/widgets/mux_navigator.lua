@@ -18,7 +18,7 @@ ui.mux_navigator = ui.mux_navigator or {}
 
 local DEFAULT_TOTAL_ROWS = 30
 local DEFAULT_WIDTH = 100
-local FILTER_ORDER = { "all", "pane_bell" }
+local FILTER_ORDER = { "all", "pane_bell", "hidden" }
 local function row_styles(theme, row, selected, hovered, active, attention)
   local s = styles(theme, { variant = row.kind, selected = selected, hovered = hovered })
   local marker_fg
@@ -53,7 +53,15 @@ local FILTERS = {
       return program_status.pane_has_attention(pane)
     end,
   },
+  hidden = {
+    label = "Hidden panes",
+    matches = function(pane)
+      return pane.is_hidden == true
+    end,
+  },
 }
+
+local FILTER_ICONS = { pane_bell = icons.bell, hidden = icons.pane_hidden }
 
 ---@param query string
 ---@param text string
@@ -104,6 +112,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
           pane.cwd,
           pane.domain,
           program_status.pane_has_attention(pane) and "bell" or nil,
+          pane.is_hidden == true and "hidden" or nil,
           "pane",
           tab_searchable
         )
@@ -190,7 +199,26 @@ local function row_detail(row)
   if row.kind == "workspace" and row.count > 1 then
     return string.format("· %d panes", row.count)
   end
+  if row.kind == "tab" then
+    local hidden = 0
+    for _, pane in ipairs(row.item.panes or {}) do
+      if pane.is_hidden == true then
+        hidden = hidden + 1
+      end
+    end
+    if hidden > 0 then
+      return string.format("%s %d hidden", icons.pane_hidden, hidden)
+    end
+  end
   return ""
+end
+
+-- Hidden panes reject focus, so reveal them first; both requests are queued in order.
+local function focus_pane(pane)
+  if pane.is_hidden == true then
+    hollow.term.set_pane_visible(pane.id, true)
+  end
+  hollow.term.focus_pane_by_id(pane.id)
 end
 
 ---@param opts HollowUiMuxNavigatorOptions|nil
@@ -246,21 +274,31 @@ function ui.mux_navigator.open(opts)
     end
     modal.close()
     if row.kind == "workspace" then
-      local target = filter_id == "pane_bell" and row.panes[1] or nil
+      local target = filter_id ~= "all" and row.panes[1] or nil
       target = target and (target.pane or target) or nil
       if target then
-        hollow.term.focus_pane_by_id(target.id)
+        focus_pane(target)
       else
         hollow.term.switch_workspace(row.item.index)
       end
     elseif row.kind == "tab" then
-      local target = filter_id == "pane_bell" and row.panes[1] or row.item.pane
+      local target = filter_id ~= "all" and row.panes[1] or row.item.pane
       target = target and (target.pane or target) or nil
       if target then
-        hollow.term.focus_pane_by_id(target.id)
+        focus_pane(target)
       end
     else
-      hollow.term.focus_pane_by_id(row.item.id)
+      focus_pane(row.item)
+    end
+  end
+
+  -- Toggle the selected pane's visibility without leaving the navigator.
+  local function toggle_visibility()
+    local row = current_rows()[nav.index]
+    if row and row.kind == "pane" then
+      -- The row snapshot lags until the layout event re-renders; read live state.
+      local pane = hollow.term.pane_by_id(row.item.id) or row.item
+      hollow.term.set_pane_visible(pane.id, pane.is_hidden == true)
     end
   end
 
@@ -313,8 +351,9 @@ function ui.mux_navigator.open(opts)
       or (collapsed[row.key] and icons.collapsed or icons.expanded) .. " "
     local indent = string.rep("  ", row.depth)
     local pane_attention = row.kind == "pane" and program_status.pane_has_attention(row.item)
+    local pane_hidden = row.kind == "pane" and row.item.is_hidden == true
     local marker = row.kind == "pane"
-        and (pane_attention and icons.bell or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
+        and (pane_attention and icons.bell or pane_hidden and icons.pane_hidden or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
       or ""
     local label = row.kind == "workspace" and (row.item.name or ("Workspace " .. row.item.index))
       or row.kind == "tab" and ("Tab " .. row.item.index)
@@ -335,6 +374,9 @@ function ui.mux_navigator.open(opts)
       end),
       ui.when(value ~= nil, function()
         return ui.text(": " .. value, row_s.value)
+      end),
+      ui.when(pane_hidden, function()
+        return ui.text(" (hidden)", styles(theme).muted)
       end),
       ui.when(detail ~= "", function()
         return {
@@ -384,6 +426,7 @@ function ui.mux_navigator.open(opts)
       set_collapsed(false)
     end),
     space = nav_or_search(toggle_collapsed),
+    v = nav_or_search(toggle_visibility),
     f = function(key, mods)
       if search_mode then
         return filter.handlers._else(key, mods)
@@ -511,7 +554,7 @@ function ui.mux_navigator.open(opts)
           search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
           ui.spacer(),
           ui.text(
-            filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
+            FILTER_ICONS[filter_id] and (FILTER_ICONS[filter_id] .. " ") or "  ",
             filter_id == "pane_bell" and s.filter_bell or s.filter
           ),
           ui.text(pane_filter.label, s.muted),

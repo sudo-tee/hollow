@@ -646,6 +646,18 @@ const Runner = struct {
             try self.parseIdTag(rest, &id, &tag);
             return try self.emitToMatchingPanes(.{ .data = .{ .pane_tile = .{ .id = 0 } } }, id, tag);
         }
+        if (std.mem.eql(u8, sub, "hide")) {
+            var id: ?usize = null;
+            var tag: ?[]const u8 = null;
+            try self.parseIdTag(rest, &id, &tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_hide = .{ .id = 0 } } }, id, tag);
+        }
+        if (std.mem.eql(u8, sub, "show")) {
+            var id: ?usize = null;
+            var tag: ?[]const u8 = null;
+            try self.parseIdTag(rest, &id, &tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_show = .{ .id = 0 } } }, id, tag);
+        }
         if (std.mem.eql(u8, sub, "move")) {
             if (rest.len == 0) return self.fail("usage: cli pane move <left|right|up|down> [options]", "invalid_args", 2);
             if (!isOneOf(rest[0], &.{ "left", "right", "up", "down" })) return self.fail("pane move direction must be left, right, up, or down", "invalid_args", 2);

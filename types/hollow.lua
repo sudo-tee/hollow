@@ -560,6 +560,8 @@
 ---@field title string
 ---@field is_focused boolean
 ---@field is_floating boolean
+---@field is_hidden boolean True when excluded from layout and focus; PTY continues running.
+---@field edge? "left"|"right"|"top"|"bottom" Window edge the pane is still docked to, when created with `split_pane({ edge = ... })`.
 ---@field is_maximized boolean
 ---@field has_bell boolean
 ---@field busy boolean True while shell integration reports a running command.
@@ -618,6 +620,7 @@
 ---@field on_complete? fun(result: { success: boolean, tab_id?: integer })
 
 ---@class HollowSplitPaneOpts
+---@field edge? "left"|"right"|"top"|"bottom" Dock a terminal pane along the full edge of the tiled layout (not floating).
 ---@field direction? "horizontal"|"vertical"
 ---@field tag? string
 ---@field tags? string[]
@@ -669,12 +672,14 @@
 ---@field close_on_exit? boolean
 ---@field floating? boolean
 ---@field fullscreen? boolean
+---@field hidden? boolean Created normally, then hidden once the tab is built (PTY keeps running).
 ---@field x? number
 ---@field y? number
 ---@field width? number
 ---@field height? number
 ---@field size? number
 ---@field direction? "horizontal"|"vertical"
+---@field edge? "left"|"right"|"top"|"bottom" Dock a terminal split to the window edge; created after non-edge panes.
 ---@field main? boolean
 ---@field default? boolean
 
@@ -1001,6 +1006,7 @@
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions
 ---@field time? false|string|HollowUiTopbarTimeOptions
+---@field hidden_panes? false Hide the badge counting the active tab's hidden panes (shown by default).
 
 ---@class HollowUiBottombarOptions: HollowWidget
 ---@field height? integer
@@ -1729,6 +1735,11 @@ function term.toggle_pane_maximized(pane_id, opts) end
 ---@param floating? boolean
 function term.set_pane_floating(pane_id, floating) end
 
+---Hide/show a pane without destroying its terminal session. Cannot hide the last visible pane.
+---@param pane_id integer
+---@param visible boolean
+function term.set_pane_visible(pane_id, visible) end
+
 ---@param pane_id integer
 ---@param opts HollowFloatingPaneBounds
 function term.set_floating_pane_bounds(pane_id, opts) end
@@ -2130,7 +2141,7 @@ function lua_repl.dock(opts) end
 
 ---@class HollowUiMuxNavigatorOptions
 ---@field query? string
----@field filter? "all"|"pane_bell"
+---@field filter? "all"|"pane_bell"|"hidden"
 ---@field title? string
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer

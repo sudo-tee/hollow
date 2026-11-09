@@ -41,26 +41,33 @@ function M.setup(hollow, host_api)
     return trimmed
   end
 
-  local function pane_tag_set(pane_id)
-    local tags = pane_tags[pane_id]
-    if tags == nil then
-      tags = {}
-      pane_tags[pane_id] = tags
+  -- Tags live in the app when the host provides them, so they survive config
+  -- reloads and are shared with the command API (`hollow-cli --tag`).
+  local function read_tags(pane_id)
+    if host_api.get_pane_tags then
+      return host_api.get_pane_tags(pane_id) or {}
+    end
+    local tags = {}
+    for tag in pairs(pane_tags[pane_id] or {}) do
+      tags[#tags + 1] = tag
     end
     return tags
   end
 
+  local function write_tags(pane_id, tags)
+    if host_api.set_pane_tags then
+      host_api.set_pane_tags(pane_id, tags)
+      return
+    end
+    local set = {}
+    for _, tag in ipairs(tags) do
+      set[tag] = true
+    end
+    pane_tags[pane_id] = next(set) ~= nil and set or nil
+  end
+
   local function snapshot_tags(pane_id)
-    local set = pane_tags[pane_id]
-    if set == nil then
-      return {}
-    end
-    local tags = {}
-    for tag, enabled in pairs(set) do
-      if enabled == true then
-        tags[#tags + 1] = tag
-      end
-    end
+    local tags = read_tags(pane_id)
     table.sort(tags)
     return tags
   end
@@ -82,17 +89,21 @@ function M.setup(hollow, host_api)
   local function set_pane_tags(tags, pane_id)
     local target = resolve_pane_id(pane_id, "hollow.term.set_pane_tags(tags, pane_id?)")
     if tags == nil then
-      pane_tags[target] = nil
+      write_tags(target, {})
       return
     end
     if type(tags) ~= "table" then
       error("hollow.term.set_pane_tags(tags, pane_id?) expects tags to be a table or nil")
     end
-    local set = {}
+    local normalized, seen = {}, {}
     for _, tag in ipairs(tags) do
-      set[normalize_tag(tag, "hollow.term.set_pane_tags(tags, pane_id?)")] = true
+      tag = normalize_tag(tag, "hollow.term.set_pane_tags(tags, pane_id?)")
+      if not seen[tag] then
+        seen[tag] = true
+        normalized[#normalized + 1] = tag
+      end
     end
-    pane_tags[target] = next(set) ~= nil and set or nil
+    write_tags(target, normalized)
   end
 
   local function domain_snapshot(name)
@@ -161,6 +172,8 @@ function M.setup(hollow, host_api)
       module = content.module,
       args = content.args,
       floating_bounds = content.floating_bounds,
+      is_hidden = content.is_hidden == true,
+      edge = content.edge,
       pid = pid,
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
       direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id)
@@ -480,18 +493,28 @@ function M.setup(hollow, host_api)
 
   function hollow.term.add_pane_tag(tag, pane_id)
     local target = resolve_pane_id(pane_id, "hollow.term.add_pane_tag(tag, pane_id?)")
-    pane_tag_set(target)[normalize_tag(tag, "hollow.term.add_pane_tag(tag, pane_id?)")] = true
+    tag = normalize_tag(tag, "hollow.term.add_pane_tag(tag, pane_id?)")
+    local tags = read_tags(target)
+    for _, existing in ipairs(tags) do
+      if existing == tag then
+        return
+      end
+    end
+    tags[#tags + 1] = tag
+    write_tags(target, tags)
   end
 
   function hollow.term.remove_pane_tag(tag, pane_id)
     local target = resolve_pane_id(pane_id, "hollow.term.remove_pane_tag(tag, pane_id?)")
-    local set = pane_tags[target]
-    if set == nil then
-      return
+    tag = normalize_tag(tag, "hollow.term.remove_pane_tag(tag, pane_id?)")
+    local tags, kept = read_tags(target), {}
+    for _, existing in ipairs(tags) do
+      if existing ~= tag then
+        kept[#kept + 1] = existing
+      end
     end
-    set[normalize_tag(tag, "hollow.term.remove_pane_tag(tag, pane_id?)")] = nil
-    if next(set) == nil then
-      pane_tags[target] = nil
+    if #kept ~= #tags then
+      write_tags(target, kept)
     end
   end
 
@@ -512,6 +535,7 @@ function M.setup(hollow, host_api)
       domain = "string",
       cwd = "string",
       command_mode = "string",
+      edge = "string",
       close_on_exit = "boolean",
       floating = "boolean",
       fullscreen = "boolean",
@@ -534,7 +558,46 @@ function M.setup(hollow, host_api)
       if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
         error("hollow.term.split_pane: opts.on_complete must be a function")
       end
+      if opts.edge ~= nil then
+        assert(
+          opts.edge == "left" or opts.edge == "right" or opts.edge == "top" or opts.edge == "bottom",
+          "hollow.term.split_pane: invalid opts.edge"
+        )
+        assert(
+          opts.floating ~= true,
+          "hollow.term.split_pane: edge and floating are mutually exclusive"
+        )
+      end
       payload.on_complete = opts.on_complete
+      local tags = opts.tags
+      if opts.tag ~= nil then
+        if tags ~= nil then
+          error("hollow.term.split_pane: use opts.tag or opts.tags, not both")
+        end
+        tags = { opts.tag }
+      end
+      if tags ~= nil then
+        if type(tags) ~= "table" then
+          error("hollow.term.split_pane: opts.tags must be a table of strings")
+        end
+        for _, tag in ipairs(tags) do
+          normalize_tag(tag, "hollow.term.split_pane(opts.tags)")
+        end
+        -- Tag before the caller's callback so it can already find the pane by tag.
+        local on_complete = opts.on_complete
+        payload.on_complete = function(result)
+          if
+            type(result) == "table"
+            and result.success
+            and host_api.pane_exists(result.pane_id)
+          then
+            set_pane_tags(tags, result.pane_id)
+          end
+          if on_complete then
+            return on_complete(result)
+          end
+        end
+      end
     end
 
     host_api.split_pane(payload)
@@ -987,6 +1050,23 @@ function M.setup(hollow, host_api)
     host_api.toggle_pane_maximized(pane_id, show_background)
   end
 
+  --- Hide a pane while keeping its PTY and process running. Cannot hide the last visible pane.
+  function hollow.term.set_pane_visible(pane_id, visible)
+    if
+      type(pane_id) ~= "number"
+      or pane_id ~= pane_id
+      or pane_id < 1
+      or pane_id > 9007199254740991
+      or pane_id % 1 ~= 0
+      or type(visible) ~= "boolean"
+    then
+      error(
+        "hollow.term.set_pane_visible(pane_id, visible) expects a positive integer pane id and a boolean"
+      )
+    end
+    host_api.set_pane_visible(pane_id, visible)
+  end
+
   function hollow.term.set_pane_floating(pane_id, floating)
     if pane_id ~= nil and type(pane_id) == "table" then
       floating = pane_id.floating
@@ -1152,7 +1232,9 @@ function M.setup(hollow, host_api)
     forget_pane = function(pane_id)
       command_states[pane_id] = nil
       finish_run(pane_id, nil, "pane closed before command completion")
-      pane_tags[pane_id] = nil
+      -- The host also drops tags when the pane closes; this covers hosts
+      -- without the tag bridge and keeps the Lua view consistent meanwhile.
+      write_tags(pane_id, {})
     end,
   }
 end

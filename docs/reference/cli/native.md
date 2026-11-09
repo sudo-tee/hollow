@@ -182,6 +182,8 @@ Query state. All `get` commands print JSON.
 | `hollow cli pane zoom`                           | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane float`                          | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane tile`                           | `[--id ID\|--tag TAG]`                                                  |
+| `hollow cli pane hide`                           | `[--id ID\|--tag TAG]`                                                  |
+| `hollow cli pane show`                           | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane move <left\|right\|up\|down>`   | `[--id ID\|--tag TAG] [--amount N]`                                     |
 | `hollow cli pane resize <left\|right\|up\|down>` | `[--id ID\|--tag TAG] [--amount N]`                                     |
 | `hollow cli pane bell`                            | `[--id ID\|--tag TAG] [--level info\|warn\|error\|success] [--color #RRGGBB]` |

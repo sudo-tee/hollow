@@ -187,26 +187,39 @@ pub const GridDebug = struct {
         const index = self.pushBounds(parent, id, 0, bounds) orelse return;
         self.rects[index].floating = floating;
         const title = pane.title[0..@min(pane.title.len, 48)];
-        self.rects[index].detail = self.string("{d}x{d}{s}{s}{s}{s}{s}", .{
+        const edge_name = if (tab.paneEdge(pane)) |value| @tagName(value) else "";
+        self.rects[index].detail = self.string("{d}x{d}{s}{s}{s}{s}{s}{s}{s}{s}", .{
             pane.cols,
             pane.rows,
             if (same(tab.active_pane, pane)) " active" else "",
             if (pane.is_floating) " floating" else "",
             if (same(tab.maximized_pane, pane)) " maximized" else "",
+            if (pane.is_hidden) " hidden" else "",
+            if (edge_name.len > 0) " edge:" else "",
+            edge_name,
             if (title.len > 0) " | " else "",
             title,
         });
     }
 
+    /// Mirrors `layoutVisibleTree`: hidden panes are skipped and a split whose
+    /// branch has no visible tiled pane collapses into the other branch.
     fn pushTree(self: *GridDebug, parent: usize, tab: *mux.Tab, node: *mux.SplitNode, bounds: mux.PaneBounds, cell_w: u32, cell_h: u32) void {
         switch (node.kind) {
             .pane => {
                 const pane = node.pane orelse return;
-                if (!pane.is_floating) self.pushPane(parent, tab, pane, bounds, false);
+                if (!pane.is_floating and !pane.is_hidden) self.pushPane(parent, tab, pane, bounds, false);
             },
             .split => {
                 const first = node.first orelse return;
                 const second = node.second orelse return;
+                const first_visible = mux.hasVisibleTiledPane(first, null);
+                const second_visible = mux.hasVisibleTiledPane(second, null);
+                if (!first_visible or !second_visible) {
+                    if (first_visible) self.pushTree(parent, tab, first, bounds, cell_w, cell_h);
+                    if (second_visible) self.pushTree(parent, tab, second, bounds, cell_w, cell_h);
+                    return;
+                }
                 const id = label(if (node.direction == .vertical) "split.vertical" else "split.horizontal");
                 self.split_index += 1;
                 const index = self.pushBounds(parent, id, self.split_index, bounds) orelse return;
@@ -214,6 +227,15 @@ pub const GridDebug = struct {
                 self.pushTree(index, tab, first, first_bounds, cell_w, cell_h);
                 self.pushTree(index, tab, second, second_bounds, cell_w, cell_h);
             },
+        }
+    }
+
+    /// Hidden panes have no geometry; list them as empty rects at the tab
+    /// origin so the inspector tree still shows them.
+    fn pushHidden(self: *GridDebug, parent: usize, tab: *mux.Tab, bounds: mux.PaneBounds) void {
+        for (tab.panes.items) |pane| {
+            if (!pane.is_hidden) continue;
+            self.pushPane(parent, tab, pane, .{ .x = bounds.x, .y = bounds.y, .width = 0, .height = 0 }, pane.is_floating);
         }
     }
 
@@ -244,9 +266,10 @@ pub const GridDebug = struct {
                     self.pushPane(tab_index, tab, pane, bounds, tab.maximized_show_background);
                 } else if (tab.root_split) |node| self.pushTree(tab_index, tab, node, bounds, cell_w_px, cell_h_px);
                 for (tab.panes.items) |pane| {
-                    if (!pane.is_floating or same(tab.maximized_pane, pane)) continue;
+                    if (!pane.is_floating or pane.is_hidden or same(tab.maximized_pane, pane)) continue;
                     self.pushPane(tab_index, tab, pane, mux.floatingPaneBounds(bounds, pane), true);
                 }
+                self.pushHidden(tab_index, tab, bounds);
             };
         }
         if (reserved and sidebar_right) _ = self.push(body, label("sidebar"), 0, width - sidebar_w, top_h, sidebar_w, body_h);

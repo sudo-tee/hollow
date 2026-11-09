@@ -607,6 +607,8 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
         try object.put(self.allocator, try self.allocator.dupe(u8, "tags"), try cmd_ipc.getPaneTags(self, pane_id));
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_hidden"), .{ .bool = pane.is_hidden });
+        if (self.mux) |*mux| if (mux.paneEdge(pane)) |edge| try putJsonField(self.allocator, &object, "edge", .{ .string = try self.allocator.dupe(u8, @tagName(edge)) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
         try object.put(self.allocator, try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
@@ -1149,6 +1151,7 @@ pub const App = struct {
             .invalidate_lua_pane = @import("app/lua_panes.zig").invalidate,
             .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
+            .set_pane_visible = lua_callbacks.luaSetPaneVisibleCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1217,6 +1220,9 @@ pub const App = struct {
             .send_text_to_pane = lua_callbacks.luaSendTextToPaneCallback,
             .send_key_to_pane = lua_callbacks.luaSendKeyToPaneCallback,
             .get_pane_domain = lua_callbacks.luaGetPaneDomainCallback,
+            .get_pane_tag_count = lua_callbacks.luaGetPaneTagCountCallback,
+            .get_pane_tag_at = lua_callbacks.luaGetPaneTagAtCallback,
+            .set_pane_tags = lua_callbacks.luaSetPaneTagsCallback,
             .get_pane_split_direction = lua_callbacks.luaGetPaneSplitDirectionCallback,
             .get_pane_split_ratio = lua_callbacks.luaGetPaneSplitRatioCallback,
             .get_pane_active_screen = lua_callbacks.luaGetPaneActiveScreenCallback,
@@ -3275,6 +3281,51 @@ test "factory pane metadata and reload retain native identity while rebuilding L
     @import("app/lua_panes.zig").restoreAll(app);
     try std.testing.expect(pane.asLua().?.ref >= 0);
     try std.testing.expectEqual(@as(c_int, 0), app.lua.?.context.api.get_top(app.lua.?.state));
+}
+
+test "Lua pane tags share the command store and survive Lua reloads" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try mux.createLuaPane();
+    try tab.appendPane(pane);
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    var buf: [256]u8 = undefined;
+    try app.lua.?.runString(try std.fmt.bufPrint(&buf,
+        \\hollow.term.set_pane_tags({{ 'sidebar', ' git ' }}, {d})
+        \\hollow.term.add_pane_tag('extra', {d})
+        \\hollow.term.remove_pane_tag('extra', {d})
+    , .{ pane.id, pane.id, pane.id }));
+
+    const entry = cmd_ipc.findPaneTagEntry(app, pane.id).?;
+    try std.testing.expect(entry.tags.contains("sidebar") and entry.tags.contains("git"));
+    try std.testing.expectEqual(@as(usize, 2), entry.tags.count());
+    const tagged = try app.panesValue("sidebar");
+    defer deinitJsonValue(a, tagged);
+    try std.testing.expectEqual(@as(usize, 1), tagged.array.items.len);
+
+    try cmd_ipc.addPaneTag(app, pane.id, "from-cli");
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(try std.fmt.bufPrint(&buf,
+        \\local tags = table.concat(hollow.term.get_pane_tags({d}), ',')
+        \\assert(tags == 'from-cli,git,sidebar', tags)
+    , .{pane.id}));
 }
 
 test "Lua panes survive app ticks and terminal-only input without terminal handles" {

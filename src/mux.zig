@@ -14,6 +14,7 @@ comptime {
 
 pub const FocusDirection = types.FocusDirection;
 pub const SplitDirection = types.SplitDirection;
+pub const PaneEdge = types.PaneEdge;
 pub const PaneBounds = types.PaneBounds;
 pub const LayoutLeaf = types.LayoutLeaf;
 pub const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
@@ -27,6 +28,7 @@ pub const Mux = mux_mod.Mux;
 pub const layoutSplitTree = layout.layoutSplitTree;
 pub const splitChildBounds = layout.splitChildBounds;
 pub const floatingPaneBounds = layout.floatingPaneBounds;
+pub const hasVisibleTiledPane = layout.hasVisibleTiledPane;
 pub const hitTestDivider = layout.hitTestDivider;
 pub const boundsForNode = layout.boundsForNode;
 pub const nodeIsInTree = layout.nodeIsInTree;

@@ -306,6 +306,8 @@ fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.
         .pane_zoom => |args| return enqueuePaneZoomCommand(self, args),
         .pane_float => |args| return enqueuePaneFloatingCommand(self, args, true),
         .pane_tile => |args| return enqueuePaneFloatingCommand(self, args, false),
+        .pane_hide => |args| return enqueuePaneVisibleCommand(self, args, false),
+        .pane_show => |args| return enqueuePaneVisibleCommand(self, args, true),
         .pane_move => |args| return enqueuePaneMoveCommand(self, args),
         .pane_resize => |args| return enqueuePaneResizeCommand(self, args),
         .pane_send_text, .pane_bell, .send_keys => return enqueueCommandRequest(self, request),
@@ -482,6 +484,11 @@ fn enqueuePaneFloatingCommand(self: *App, request: command_mod.RequiredId, float
     return okNull();
 }
 
+fn enqueuePaneVisibleCommand(self: *App, request: command_mod.RequiredId, visible: bool) command_mod.Response {
+    if (!self.enqueueMouse(.{ .set_pane_visible = .{ .pane_id = request.id, .visible = visible } })) return command_mod.Response.fail("error", "command queue full");
+    return okNull();
+}
+
 fn enqueuePaneMoveCommand(self: *App, request: command_mod.PaneMove) command_mod.Response {
     const pane_id = request.id;
     const direction = request.direction;
@@ -650,6 +657,8 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .pane_zoom => |args| execPaneZoom(self, args),
         .pane_float => |args| execPaneFloating(self, args, true),
         .pane_tile => |args| execPaneFloating(self, args, false),
+        .pane_hide => |args| execPaneVisible(self, args, false),
+        .pane_show => |args| execPaneVisible(self, args, true),
         .pane_move => |args| execPaneMove(self, args),
         .pane_resize => |args| execPaneResize(self, args),
         .pane_send_text, .send_keys => |args| execPaneSendText(self, args),
@@ -864,6 +873,7 @@ fn execPaneSplit(self: *App, request: command_mod.Split) command_mod.Response {
         null,
         null,
         LUA_NOREF,
+        null,
     );
     return okNull();
 }
@@ -886,6 +896,7 @@ fn execPanePopup(self: *App, request: command_mod.PanePopup) command_mod.Respons
         if (request.width) |value| @floatCast(value) else null,
         if (request.height) |value| @floatCast(value) else null,
         LUA_NOREF,
+        null,
     );
     return okNull();
 }
@@ -899,6 +910,11 @@ fn execPaneZoom(self: *App, request: command_mod.RequiredId) command_mod.Respons
 fn execPaneFloating(self: *App, request: command_mod.RequiredId, floating: bool) command_mod.Response {
     const pane_id = request.id;
     mux_ops.setPaneFloatingById(self, pane_id, floating);
+    return okNull();
+}
+
+fn execPaneVisible(self: *App, request: command_mod.RequiredId, visible: bool) command_mod.Response {
+    mux_ops.setPaneVisibleById(self, request.id, visible);
     return okNull();
 }
 

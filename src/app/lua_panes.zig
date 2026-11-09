@@ -9,8 +9,9 @@ const bridge = @import("../lua_bridge.zig");
 pub fn contentInfo(context: *anyopaque, id: usize) ?bridge.PaneContentInfo {
     const app: *App = @ptrCast(@alignCast(context));
     const pane = app.findPaneById(id) orelse return null;
-    const surface = pane.asLua() orelse return .{ .kind = .terminal };
-    return .{ .kind = .lua, .descriptor_json = surface.descriptor_json, .floating = pane.is_floating, .x = pane.floating_x, .y = pane.floating_y, .width = pane.floating_width, .height = pane.floating_height };
+    const edge: ?[]const u8 = if (app.mux) |*mux| if (mux.paneEdge(pane)) |value| @tagName(value) else null else null;
+    const surface = pane.asLua() orelse return .{ .kind = .terminal, .hidden = pane.is_hidden, .edge = edge };
+    return .{ .kind = .lua, .descriptor_json = surface.descriptor_json, .floating = pane.is_floating, .hidden = pane.is_hidden, .edge = edge, .x = pane.floating_x, .y = pane.floating_y, .width = pane.floating_width, .height = pane.floating_height };
 }
 
 pub const Pointer = struct {

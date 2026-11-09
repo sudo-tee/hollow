@@ -101,6 +101,11 @@ describe("UI mux navigator test suite", function()
 
     it("cycles filters on f", function()
       harness.assert_true(on_key("f", 0), "mux navigator should cycle filters")
+      harness.assert_true(
+        clay.text(hollow.ui):find("Hidden panes", 1, true) ~= nil,
+        "mux navigator filter key should select hidden panes after attention"
+      )
+      harness.assert_true(on_key("f", 0), "mux navigator should cycle filters back")
       mux_overlay = hollow.ui._overlay_state()
       local mux_filter_text = clay.text(hollow.ui)
       harness.assert_true(

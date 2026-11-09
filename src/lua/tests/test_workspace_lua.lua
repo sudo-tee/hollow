@@ -262,6 +262,99 @@ describe("workspace Lua leaves", function()
     assert.are.equal(0.35, current().split_ratio)
   end)
 
+  it("round-trips hidden panes, hiding them only once the tab is built", function()
+    local hidden_calls = {}
+    h.term.set_pane_visible = function(id, visible)
+      hidden_calls[#hidden_calls + 1] = { id = id, visible = visible, built = #requests }
+      for _, p in ipairs(tab().panes) do
+        if p.id == id then
+          p.is_hidden = not visible
+        end
+      end
+    end
+    h.workspace.bootstrap({
+      tabs = {
+        {
+          name = "UI",
+          panes = {
+            { lua = "tasks", args = { name = "A" }, hidden = true },
+            { lua = "tasks", args = { name = "B" }, main = true },
+            { lua = "tasks", args = { name = "C" }, hidden = true },
+          },
+        },
+      },
+    }, { replace_current = true })
+    env.flush_deferred()
+    assert.are.equal(2, #hidden_calls)
+    assert.same({ id = 1001, visible = false, built = 3 }, hidden_calls[1])
+    assert.same({ id = 1003, visible = false, built = 3 }, hidden_calls[2])
+
+    local exported = h.json.decode(h.json.encode(h.workspace.export_current()))
+    local panes = exported.tabs[1].panes
+    assert.is_true(panes[1].hidden)
+    assert.is_nil(panes[2].hidden)
+    assert.is_true(panes[3].hidden)
+
+    hidden_calls = {}
+    h.workspace.bootstrap(exported, { replace_current = true })
+    env.flush_deferred()
+    assert.are.equal(2, #hidden_calls)
+    assert.is_true(tab().panes[1].is_hidden)
+    assert.is_nil(tab().panes[2].is_hidden)
+    assert.is_true(tab().panes[3].is_hidden)
+  end)
+
+  it("round-trips edge placement, creating edge panes after ordinary splits", function()
+    local splits = {}
+    h.term.split_pane = function(opts)
+      splits[#splits + 1] = opts
+      next_id = next_id + 1
+      local id = next_id
+      tab().panes[#tab().panes + 1] = {
+        id = id,
+        kind = "terminal",
+        cwd = "/tmp/project",
+        tags = {},
+        direction = opts.direction,
+        split_ratio = opts.ratio,
+        edge = opts.edge,
+      }
+      tab().active_id = id
+      env.host_api.defer(function()
+        opts.on_complete({ success = true, pane_id = id })
+      end)
+    end
+    h.workspace.bootstrap({
+      tabs = {
+        {
+          panes = {
+            { cwd = "/tmp/project" },
+            { edge = "right", size = 0.3, direction = "horizontal" },
+            { direction = "horizontal", size = 0.4 },
+            { edge = "bottom", size = 0.2 },
+          },
+        },
+      },
+    })
+    env.flush_deferred()
+    assert.are.equal(3, #splits)
+    assert.are.equal("horizontal", splits[1].direction)
+    assert.is_nil(splits[1].edge)
+    assert.same({ "right", 0.3 }, { splits[2].edge, splits[2].ratio })
+    assert.is_nil(splits[2].direction)
+    assert.same({ "bottom", 0.2 }, { splits[3].edge, splits[3].ratio })
+
+    local panes = h.workspace.export_current().tabs[1].panes
+    assert.is_nil(panes[2].edge)
+    assert.are.equal("right", panes[3].edge)
+    assert.are.equal("bottom", panes[4].edge)
+  end)
+
+  it("exports hidden terminal panes", function()
+    workspace().tabs[1].panes[1].is_hidden = true
+    assert.is_true(h.workspace.export_current().tabs[1].panes[1].hidden)
+  end)
+
   it("omits anonymous Lua panes and tabs from export", function()
     h.ui.pane._create({
       render = function()

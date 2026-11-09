@@ -46,6 +46,11 @@ pub const Pane = struct {
     height_px: u32 = 0,
     cwd_dirty: bool = false,
     is_floating: bool = false,
+    /// Presentation only: hidden panes retain their PTY, mux identity, and split position.
+    is_hidden: bool = false,
+    /// Edge requested at creation. Only meaningful while the split tree still
+    /// docks the pane there; see `Tab.paneEdge`.
+    placed_edge: ?@import("mux/types.zig").PaneEdge = null,
     floating_x: f32 = 0.15,
     floating_y: f32 = 0.1,
     floating_width: f32 = 0.7,

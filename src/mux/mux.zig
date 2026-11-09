@@ -194,6 +194,7 @@ pub const Mux = struct {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
                     if (pane.id != pane_id) continue;
+                    if (pane.is_hidden) return false;
                     self.active_workspace = ws;
                     ws.active_tab = tab;
                     tab.active_pane = pane;
@@ -205,6 +206,7 @@ pub const Mux = struct {
     }
 
     pub fn setActivePane(self: *Mux, pane: *Pane) void {
+        if (pane.is_hidden) return;
         if (self.activeTab()) |tab| {
             tab.active_pane = pane;
         }
@@ -254,7 +256,13 @@ pub const Mux = struct {
         return tab.splitInfoForPane(pane);
     }
 
+    pub fn paneEdge(self: *Mux, pane: *Pane) ?types.PaneEdge {
+        const tab = self.tabContainingPane(pane) orelse return null;
+        return tab.paneEdge(pane);
+    }
+
     pub fn togglePaneMaximized(self: *Mux, pane: *Pane, show_background: bool) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         _ = tab.togglePaneMaximized(pane, show_background);
@@ -267,7 +275,14 @@ pub const Mux = struct {
         return tab.isPaneMaximized(pane);
     }
 
+    /// Does not detach or destroy the pane, PTY, or session transport.
+    pub fn setPaneVisible(self: *Mux, pane: *Pane, visible: bool) bool {
+        const tab = self.tabContainingPane(pane) orelse return false;
+        return tab.setPaneVisible(pane, visible);
+    }
+
     pub fn setPaneFloating(self: *Mux, pane: *Pane, floating: bool) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         _ = tab.setPaneFloating(pane, floating);
@@ -282,6 +297,7 @@ pub const Mux = struct {
     }
 
     pub fn movePane(self: *Mux, pane: *Pane, direction: FocusDirection, window_width: u32, window_height: u32, amount: f32) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         const moved = tab.movePane(pane, direction, window_width, window_height, amount);
@@ -574,6 +590,11 @@ pub const Mux = struct {
     }
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand) !*Pane {
+        return self.splitActivePanePlaced(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, direction, ratio, domain_name, cwd, floating, launch_command, null);
+    }
+
+    /// Edge placement reuses the terminal constructor and session ownership path.
+    pub fn splitActivePanePlaced(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand, edge: ?types.PaneEdge) !*Pane {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
         if (!floating and source_pane.is_floating) {
@@ -601,7 +622,16 @@ pub const Mux = struct {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
-        try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        if (edge) |placement| {
+            if (floating) return error.FloatingPaneCannotUseEdge;
+            const edge_direction: SplitDirection = switch (placement) {
+                .left, .right => .vertical,
+                .top, .bottom => .horizontal,
+            };
+            try self.splitEdgeWith(new_pane, edge_direction, ratio, placement == .left or placement == .top);
+        } else {
+            try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        }
         return new_pane;
     }
 
@@ -649,6 +679,7 @@ pub const Mux = struct {
     pub fn resizeActivePane(self: *Mux, direction: SplitDirection, delta: f32) void {
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
+        if (current.is_hidden or current.is_floating) return;
         const root = tab.root_split orelse return;
         if (layout.findSplitContaining(root, current, direction)) |node| {
             node.ratio = std.math.clamp(node.ratio + delta, 0.05, 0.95);
@@ -661,6 +692,7 @@ pub const Mux = struct {
     pub fn focusPaneInDirection(self: *Mux, direction: FocusDirection, window_width: u32, window_height: u32) void {
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
+        if (current.is_hidden) return;
 
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = tab.computeLayout(window_width, window_height, &layout_buf);

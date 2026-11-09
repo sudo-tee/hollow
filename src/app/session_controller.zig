@@ -16,6 +16,7 @@ const Mux = @import("../mux.zig").Mux;
 const Workspace = @import("../mux.zig").Workspace;
 const Tab = @import("../mux.zig").Tab;
 const SplitDirection = @import("../mux.zig").SplitDirection;
+const PaneEdge = @import("../mux.zig").PaneEdge;
 const FocusDirection = @import("../mux.zig").FocusDirection;
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const PaneBounds = @import("../mux.zig").PaneBounds;
@@ -468,7 +469,7 @@ pub fn switchWorkspace(self: *App, index: usize) void {
 // Split/resize operations
 // ============================================================
 
-pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int) void {
+pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
@@ -494,7 +495,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         }
         break :blk self.activeLayoutBounds();
     };
-    const snapped_ratio = snapSplitRatio(self, ratio, direction, split_bounds);
+    const snapped_ratio = if (edge != null) std.math.clamp(ratio, 0.05, 0.95) else snapSplitRatio(self, ratio, direction, split_bounds);
     std.log.info("split-trace create dir={s} requested={d:.4} snapped={d:.4} bounds={d}x{d} cell={d}x{d}", .{
         @tagName(direction),
         ratio,
@@ -504,12 +505,12 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         self.cell_width_px,
         self.cell_height_px,
     });
-    const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command) catch |err| {
+    const pane = mux.splitActivePanePlaced(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command, edge) catch |err| {
         std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
-    if (!floating) {
+    if (!floating and edge == null) {
         if (previous) |prev| {
             if (mux.splitContainingPane(prev, direction)) |node| {
                 self.pending_post_split_snap = .{
@@ -590,6 +591,19 @@ pub fn togglePaneMaximizedById(self: *App, pane_id: usize, show_background: bool
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Hide/show a pane without closing its PTY or releasing its mux session.
+pub fn setPaneVisibleById(self: *App, pane_id: usize, visible: bool) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        if (!mux.setPaneVisible(pane, visible)) return;
+        if (visible) pane.invalidate();
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
     }
 }

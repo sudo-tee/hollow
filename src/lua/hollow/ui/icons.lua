@@ -5,6 +5,7 @@ return {
   collapsed = "▶",
   expanded = "▼",
   pane_active = "●",
+  pane_hidden = "󰈉",
   pane_inactive = "○",
   search = "󰍉",
   workspace_active = "•",

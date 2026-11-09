@@ -403,6 +403,15 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     hollow.term.set_pane_floating(target_pane_id(ctx, payload), payload.floating ~= false)
   end)
 
+  hollow.htp.on_emit("set_pane_visible", function(ctx)
+    local payload = event_payload(ctx)
+    local pane_id = target_pane_id(ctx, payload)
+    if type(pane_id) ~= "number" then
+      error("set_pane_visible requires a pane id")
+    end
+    hollow.term.set_pane_visible(pane_id, payload.visible ~= false)
+  end)
+
   hollow.htp.on_emit("set_floating_pane_bounds", function(ctx)
     local payload = event_payload(ctx)
     local pane_id = target_pane_id(ctx, payload)

@@ -198,13 +198,40 @@ local function pane_opts(pane, tab_layout)
   if pane.size ~= nil and opts.ratio == nil then
     opts.ratio = pane.size
   end
-  opts.direction = pane.direction or tab_layout
+  if pane.edge ~= nil then
+    opts.edge = pane.edge
+  else
+    opts.direction = pane.direction or tab_layout
+  end
   return opts
+end
+
+-- Edge panes wrap the whole split tree, so create them after every ordinary
+-- pane (keeping relative order, innermost edge first) to rebuild the layout.
+-- Only terminal splits support edges.
+local function is_edge_pane(pane)
+  return type(pane) == "table" and pane.edge ~= nil and not lua_module(pane)
+end
+
+local function edge_panes_last(panes)
+  local ordered = {}
+  for _, pane in ipairs(panes) do
+    if not is_edge_pane(pane) then
+      ordered[#ordered + 1] = pane
+    end
+  end
+  for _, pane in ipairs(panes) do
+    if is_edge_pane(pane) then
+      ordered[#ordered + 1] = pane
+    end
+  end
+  return ordered
 end
 
 local function create_lua_leaf(pane, tab_layout, placement, name, resolve)
   local opts = pane_opts(pane, tab_layout)
   opts.module, opts.args, opts.title = lua_module(pane), pane.args, pane.title
+  opts.edge, opts.direction = nil, pane.direction or tab_layout
   opts.ratio = pane.ratio or opts.ratio
   opts.on_complete = resolve
   local instance = hollow.ui.pane._create(opts, placement, name)
@@ -219,7 +246,7 @@ end
 ---@param reuse_existing boolean
 ---@return integer|nil
 local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, workspace_name)
-  local panes = type(tab.panes) == "table" and tab.panes or {}
+  local panes = edge_panes_last(type(tab.panes) == "table" and tab.panes or {})
   if #panes == 0 then
     return nil
   end
@@ -228,6 +255,7 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, worksp
 
   local first = clone_with_resolved_paths(base_dir, panes[1])
   local main_pane_id = nil
+  local first_pane_id = nil
   local reuse_first_pane = is_first_tab and reuse_existing == true and can_reuse_current_pane(first)
   if lua_module(first) then
     local result = async.await(function(resolve)
@@ -242,14 +270,16 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, worksp
     if not result or not result.success then
       error("workspace bootstrap Lua pane failed")
     end
-    main_pane_id = select_main_pane(main_pane_id, result.pane_id, first)
+    first_pane_id = result.pane_id
+    main_pane_id = select_main_pane(main_pane_id, first_pane_id, first)
     async.next_tick()
   elseif reuse_first_pane then
     if first.cwd ~= nil then
       hollow.term.set_workspace_default_cwd(first.cwd)
     end
     local current_pane = hollow.term.current_pane()
-    main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
+    first_pane_id = current_pane and current_pane.id or nil
+    main_pane_id = select_main_pane(main_pane_id, first_pane_id, first)
     async.next_tick()
   else
     local create_start_ms = host_api.now_ms and host_api.now_ms() or nil
@@ -276,7 +306,8 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, worksp
       error("workspace bootstrap " .. (is_first_tab and "new_workspace" or "new_tab") .. " failed")
     end
     local current_pane = hollow.term.current_pane()
-    main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
+    first_pane_id = current_pane and current_pane.id or nil
+    main_pane_id = select_main_pane(main_pane_id, first_pane_id, first)
     async.next_tick()
   end
 
@@ -290,6 +321,13 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, worksp
 
   if not is_first_tab and trim_string(tab.name) ~= "" then
     hollow.term.set_title(tab.name)
+  end
+
+  -- Hide only after the whole tab exists: later splits target the active pane,
+  -- and hiding a pane moves focus away from it.
+  local hidden_pane_ids = {}
+  if first.hidden == true and first_pane_id ~= nil then
+    hidden_pane_ids[#hidden_pane_ids + 1] = first_pane_id
   end
 
   for index = 2, #panes do
@@ -322,8 +360,15 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing, worksp
     if pane.tags ~= nil then
       hollow.term.set_pane_tags(pane.tags, result.pane_id)
     end
+    if pane.hidden == true then
+      hidden_pane_ids[#hidden_pane_ids + 1] = result.pane_id
+    end
     main_pane_id = select_main_pane(main_pane_id, result.pane_id, pane)
     async.next_tick()
+  end
+
+  for _, pane_id in ipairs(hidden_pane_ids) do
+    hollow.term.set_pane_visible(pane_id, false)
   end
 
   local tab_end_ms = host_api.now_ms and host_api.now_ms() or nil
@@ -583,6 +628,7 @@ function M.export_current()
             main = pane.is_focused == true or nil,
             floating = pane.is_floating == true or nil,
             fullscreen = pane.is_maximized == true or nil,
+            hidden = pane.is_hidden == true or nil,
           }
           for key, value in pairs(pane.floating_bounds or {}) do
             leaf[key] = value
@@ -597,7 +643,9 @@ function M.export_current()
           tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
           direction = pane.direction,
           size = pane.split_ratio,
+          edge = pane.edge,
           main = pane.is_focused == true or nil,
+          hidden = pane.is_hidden == true or nil,
         }
       end
     end
