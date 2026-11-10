@@ -111,7 +111,7 @@ function M.text_input(opts)
         end
         return true
       end
-      return false
+      return shared.has_key_text()
     end,
   }
 

@@ -24,6 +24,13 @@ describe("keymap test suite", function()
       harness.assert_true(on_key(key, mods), "registered key bindings should consume mapped keys")
     end)
 
+    it("leaves keyless text (compose tools) to the focused terminal", function()
+      harness.assert_true(
+        not on_key("unidentified", 0, "é"),
+        "terminals should receive injected text"
+      )
+    end)
+
     it("invokes host actions for registered bindings", function()
       harness.assert_equal(
         recorded.new_tab_calls,

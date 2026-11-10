@@ -405,6 +405,10 @@ local function dispatch(self, key, mods)
     if self.opts.on_key and self.opts.on_key(key, canonical_mods, self.context) == true then
       return true
     end
+    local text = self.opts.on_text and shared.printable_char_for_key(key, canonical_mods)
+    if text and self.opts.on_text(text, self.context) == true then
+      return true
+    end
     local direction = canonical_mods == "" and ARROWS[key]
     if direction then
       return self.surface:focus_direction(direction)

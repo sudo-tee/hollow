@@ -509,6 +509,7 @@ snapshot. Use `hollow.term.pane_by_id(id)` for a snapshot.
 | `on_resize(ctx)` | Subsequent pixel/grid size changes |
 | `on_focus(ctx, focused)` | Initial focus after mount, subsequent transitions, and blur before unmount |
 | `on_key(key, mods, ctx)` | Key-down/repeat; only `true` consumes the event |
+| `on_text(text, ctx)` | Text typed by a key that `on_key` declined, using the active keyboard layout (including AltGr and dead keys); only `true` consumes |
 | `capture_keys` | `true` routes modified keys to the pane before global bindings; the leader still escapes |
 | `on_pointer(event, ctx)` | Clicks (any button) and wheel: `{ kind = "click"\|"scroll", id, button, delta }`; `true` consumes |
 | `on_complete(result)` | Queued native insertion result |
@@ -565,9 +566,11 @@ pane-local focused components, `on_key`, then Tab/spatial navigation; finally un
 global bindings when the pane declines.
 Existing copy-mode priority is unchanged. Keys are normalized (for example
 `"f6"`, `"enter"`, `"arrow_left"`); modifier strings are canonical (`""`,
-`"<C>"`, `"<S>"`, etc.). Key-handler errors log and fall through. Key-up,
-text/IME callbacks, drag widgets, selection and copy mode inside Lua panes are
-outside v1.
+`"<C>"`, `"<S>"`, etc.). Key names identify physical keys by their US
+position, whatever the keyboard layout: use `on_text` (or an `input` component)
+for typed text rather than deriving it from `key`. Key-handler errors log and
+fall through. Key-up, IME composition, drag widgets, selection and copy mode
+inside Lua panes are outside v1.
 
 For automation, `hollow-cli send-keys --id`, `pane send-text`, and
 `hollow.term.send_text(text, pane_id)` deliver terminal input bytes to a Lua

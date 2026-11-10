@@ -35,6 +35,7 @@ pub fn isLayoutTextKey(key: ghostty.Key) bool {
         .comma,
         .period,
         .slash,
+        .intl_backslash,
         => true,
         else => false,
     };
@@ -294,5 +295,6 @@ test "AltGr preserves printable text while consuming Ctrl+Alt" {
     try std.testing.expect(!shouldForwardChar(altgr, 0x01, true));
     try std.testing.expect(!shouldForwardChar(ghostty.Mods.alt, '@', true));
     try std.testing.expect(isLayoutTextKey(.digit_2));
+    try std.testing.expect(isLayoutTextKey(.intl_backslash));
     try std.testing.expect(!isLayoutTextKey(.arrow_left));
 }

@@ -965,10 +965,35 @@ end
 -- Key input
 -- ---------------------------------------------------------------------------
 
+-- Layout text paired with the key being dispatched; nil when unknown.
+local key_text
+
+---Set the layout text for the key being dispatched. Returns the previous value.
+---@param text string|nil
+---@return string|nil
+function M.set_key_text(text)
+  local previous = key_text
+  key_text = type(text) == "string" and text or nil
+  return previous
+end
+
+---True while dispatching a key the host reported layout text for, even
+---empty text (a dead key), so text inputs can consume it.
+---@return boolean
+function M.has_key_text()
+  return key_text ~= nil
+end
+
+---Text a key types: the layout's text when the host supplied it (so non-US
+---layouts, dead keys and AltGr work), otherwise derived from the US key name.
 ---@param key any
 ---@param mods string|nil
 ---@return string|nil
 function M.printable_char_for_key(key, mods)
+  if key_text ~= nil then
+    return key_text ~= "" and key_text or nil
+  end
+
   local shifted = mods == "<S>"
   if mods ~= nil and mods ~= "" and not shifted then
     return nil

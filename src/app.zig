@@ -2931,9 +2931,9 @@ pub const App = struct {
         }
     }
     /// Fire the Lua on_key handler. Returns true if the key was consumed.
-    pub fn fireOnKey(self: *App, key: []const u8, mods: u32) bool {
+    pub fn fireOnKey(self: *App, key: []const u8, mods: u32, text: ?[]const u8) bool {
         if (self.lua) |*lua| {
-            const consumed = lua.fireOnKey(key, mods);
+            const consumed = lua.fireOnKey(key, mods, text);
             if (!consumed) self.emitLuaBuiltInEvent("key:unhandled", .{ .key_unhandled = .{ .key = key, .mods = mods } });
             return consumed;
         }

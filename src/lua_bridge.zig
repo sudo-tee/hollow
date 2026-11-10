@@ -1153,8 +1153,9 @@ pub const Runtime = struct {
     }
 
     /// Fire the Lua on_key handler (if registered).
+    /// `text` is the layout text the key typed ("" for none); null when unknown.
     /// Returns true if the key was consumed by Lua (handler returned true).
-    pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32) bool {
+    pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32, text: ?[]const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         const ctx = self.context;
@@ -1173,7 +1174,8 @@ pub const Runtime = struct {
             defer std.heap.page_allocator.free(zkey);
             api.push_string(self.state, zkey);
             api.push_number(self.state, @floatFromInt(mods));
-            const rc = api.pcall(self.state, 2, 1, 0);
+            if (text) |bytes| api.push_lstring(self.state, bytes.ptr, bytes.len) else api.push_nil(self.state);
+            const rc = api.pcall(self.state, 3, 1, 0);
             if (rc != 0) {
                 var err_len: usize = 0;
                 const err_ptr = api.to_lstring(self.state, -1, &err_len);

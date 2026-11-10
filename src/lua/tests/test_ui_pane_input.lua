@@ -472,6 +472,42 @@ describe("Lua pane keys and focus", function()
     assert.equals("field", instance.surface:focused_id())
   end)
 
+  it("types the keyboard layout's text into focused inputs", function()
+    local instance, owner, input = spatial_pane()
+    owner:pointer("click", instance.surface.namespace .. "field", "left")
+    -- AZERTY: the physical Q key types "a"; AltGr (Ctrl+Alt) + 2 types "@".
+    assert.is_true(on_key("q", 0, "a"))
+    assert.is_true(on_key("digit_2", 6, "@"))
+    -- A dead key types nothing until the next key composes it.
+    assert.is_true(on_key("bracket_left", 0, ""))
+    assert.is_true(on_key("e", 0, "ê"))
+    assert.equals("texta@ê", input.value)
+    -- Without host text, the US key name still applies.
+    assert.is_true(on_key("x", 0))
+    assert.equals("texta@êx", input.value)
+  end)
+
+  it("sends layout text for keys on_key declines to on_text", function()
+    local typed, seen = {}, {}
+    pane({
+      on_key = function(key)
+        seen[#seen + 1] = key
+        return key == "j"
+      end,
+      on_text = function(text, context)
+        assert.is_true(context.focused)
+        typed[#typed + 1] = text
+        return true
+      end,
+    })
+    assert.is_true(on_key("j", 0, "j"))
+    assert.is_true(on_key("q", 0, "a"))
+    assert.is_true(on_key("digit_2", 6, "@"))
+    assert.is_true(on_key("y", 1))
+    assert.are.same({ "a", "@", "Y" }, typed)
+    assert.are.same({ "j", "q", "digit_2", "y" }, seen)
+  end)
+
   it("reveals offscreen spatial targets in their scroll viewport", function()
     local c = h.ui.components
     local instance, owner = pane({

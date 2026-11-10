@@ -164,6 +164,24 @@ describe("Clay Lua REPL", function()
     assert.equals("> 456 ", input_text())
   end)
 
+  it("types the keyboard layout's text, not the US key name", function()
+    ui.lua_repl.open()
+    local on_key = env.get_key_handler()
+    -- AZERTY: physical Q types "a", Shift+digit_1 types "1"; AltGr (Ctrl+Alt) + 2 types "@".
+    assert.is_true(on_key("q", 0, "a"))
+    assert.is_true(on_key("digit_1", 1, "1"))
+    assert.is_true(on_key("digit_2", 6, "@"))
+    -- A dead key types nothing; the next key carries the composed text.
+    assert.is_true(on_key("bracket_left", 0, ""))
+    assert.is_true(on_key("e", 0, "ê"))
+    -- Compose tools (WinCompose) inject text without a known key.
+    assert.is_true(on_key("unidentified", 0, "é"))
+    assert.equals("> a1@êé ", input_text())
+    -- Layout text applies only to its own key.
+    assert.is_true(on_key("x", 0))
+    assert.equals("> a1@êéx ", input_text())
+  end)
+
   it("saves history and restores it after a restart", function()
     ui.lua_repl.open()
     paste("1 + 1")
@@ -535,6 +553,11 @@ describe("Clay Lua REPL", function()
     end
     assert.is_true(on_key("enter", 0))
     assert.matches("42", pane_text(), 1, true)
+    -- AltGr text (Ctrl+Alt) is typed rather than released to global bindings.
+    assert.is_true(on_key("digit_2", 6, "@"))
+    assert.matches("@", pane_text(), 1, true)
+    assert.is_true(on_key("unidentified", 0, "é"))
+    assert.matches("@é", pane_text(), 1, true)
     assert.is_true(owner:pointer("scroll", nil, 1))
     local focused, closed = 0, 0
     env.hollow.keymap.set("<C-S-arrow_left>", function()

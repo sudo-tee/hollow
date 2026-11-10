@@ -2639,6 +2639,7 @@ local workspace = {}
 ---@field on_resize? fun(ctx: HollowUiPaneContext) Subsequent content size changes.
 ---@field on_focus? fun(ctx: HollowUiPaneContext, focused: boolean) Initial focus after mount, transitions and blur before unmount.
 ---@field on_key? fun(key: string, mods: HollowKeyMods, ctx: HollowUiPaneContext): boolean|nil Only true consumes; normalized key-down/repeat events.
+---@field on_text? fun(text: string, ctx: HollowUiPaneContext): boolean|nil Text typed by a key `on_key` declined, using the keyboard layout (including AltGr); only true consumes.
 ---@field capture_keys? boolean Route modified keys to the pane before global bindings; the leader still escapes.
 ---@field on_pointer? fun(event: HollowUiPanePointerEvent, ctx: HollowUiPaneContext): boolean|nil Clicks and wheel; only true consumes.
 ---@field on_complete? fun(result: { success: boolean, pane_id?: integer }) Queued native insertion result; not called if creation immediately returns nil.
@@ -3184,7 +3185,7 @@ function plugins.sync() end
 ---@field json_encode fun(value: any): string
 
 ---@field json_decode fun(text: string): any
----@field on_key fun(handler: fun(key: string, mods: integer): boolean)
+---@field on_key fun(handler: fun(key: string, mods: integer, text?: string): boolean) `text` is the layout's typed text ("" for none); nil when unknown.
 ---@field on_file_drop fun(handler: HollowFileDropHandler|nil)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
