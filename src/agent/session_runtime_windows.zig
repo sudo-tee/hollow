@@ -673,7 +673,14 @@ fn prepareLaunch(a: std.mem.Allocator, spawn: p.Spawn) !Options {
         const command = try (LaunchCommand{ .argv = spawn.argv }).userShellCommand(a, true);
         try args.appendSlice(a, &.{ default_shell, "-Command", command });
     } else if (spawn.argv.len > 0) {
-        for (spawn.argv) |arg| try args.append(a, try a.dupe(u8, arg));
+        if (spawn.shell_integration and !spawn.one_shot and interactiveNativeShell(spawn.argv) and
+            isPowershell(std.fs.path.basenameWindows(spawn.argv[0])))
+        {
+            const integrated = try @import("../pty/pty_windows.zig").sessionInteractiveArgv(a, spawn.argv);
+            try args.appendSlice(a, integrated);
+        } else {
+            for (spawn.argv) |arg| try args.append(a, try a.dupe(u8, arg));
+        }
     } else {
         if (spawn.one_shot) return error.InvalidCommand;
         if (!spawn.shell_integration) return .{
@@ -701,12 +708,16 @@ fn isPowershell(name: []const u8) bool {
 
 fn closeOnExit(spawn: p.Spawn) bool {
     if (spawn.close_on_exit) return true;
-    if (spawn.command != null or spawn.one_shot) return false;
-    if (spawn.argv.len == 0) return true;
-    const name = std.fs.path.basenameWindows(spawn.argv[0]);
+    if (spawn.command != null or spawn.one_shot or spawn.user_shell) return false;
+    return interactiveNativeShell(spawn.argv);
+}
+
+fn interactiveNativeShell(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    const name = std.fs.path.basenameWindows(args[0]);
     const cmd = std.ascii.eqlIgnoreCase(name, "cmd.exe") or std.ascii.eqlIgnoreCase(name, "cmd");
     if (!cmd and !isPowershell(name)) return false;
-    for (spawn.argv[1..]) |arg| {
+    for (args[1..]) |arg| {
         const interactive_flag = if (cmd)
             std.ascii.eqlIgnoreCase(arg, "/D") or std.ascii.eqlIgnoreCase(arg, "/Q")
         else
@@ -976,4 +987,76 @@ test "native launch mapping keeps literal argv and uses Windows shell commands" 
     try std.testing.expectError(error.UnsupportedBackgroundShell, prepareLaunch(a, .{ .argv = &.{ "/bin/bash", "-l" }, .command = "exit 7" }));
     try std.testing.expectError(error.InvalidEnv, validateSpawn(.{ .env = &.{.{ .key = "bad=key", .value = "x" }} }));
     try std.testing.expectError(error.InvalidSize, validateSpawn(.{ .cols = 32768 }));
+}
+
+test "interactive PowerShell session argv receives the native integration wrapper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const configured: []const []const u8 = &.{ "C:\\Program Files\\PowerShell\\7\\PWSH.EXE", "-NoProfile" };
+    // Explicit exit policy must not be used to infer whether argv is a shell.
+    const launch = try prepareLaunch(a, .{ .argv = configured, .close_on_exit = true });
+    const args = launch.launch_command.?.argv.?;
+    for (configured, args[0..configured.len]) |original, copied| {
+        try std.testing.expectEqualStrings(original, copied);
+        try std.testing.expect(original.ptr != copied.ptr);
+    }
+    try std.testing.expectEqualStrings("-Command", args[args.len - 2]);
+    const wrapper = args[args.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, wrapper, ". '"));
+    try std.testing.expect(std.mem.endsWith(u8, wrapper, "\\powershell.ps1'"));
+    const pid_dir = try std.fmt.allocPrint(a, "\\hollow-{d}\\", .{std.os.windows.GetCurrentProcessId()});
+    try std.testing.expect(std.mem.indexOf(u8, wrapper, pid_dir) != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapper, "HOLLOW_PANE_ID") == null);
+    const disabled = try prepareLaunch(a, .{ .argv = configured, .shell_integration = false });
+    try std.testing.expectEqual(configured.len, disabled.launch_command.?.argv.?.len);
+    for (configured, disabled.launch_command.?.argv.?) |original, copied|
+        try std.testing.expectEqualStrings(original, copied);
+}
+
+test "PowerShell commands and explicit apps never receive interactive hooks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const variants = [_][]const []const u8{
+        &.{ "powershell.exe", "-Command", "$HOME; & 'literal app.exe'" },
+        &.{ "pwsh.exe", "-File", "C:\\script with spaces.ps1" },
+        &.{ "pwsh.exe", "script.ps1" },
+        &.{ "cmd.exe", "/D", "/Q" },
+        &.{ "demo.exe", "$HOME; &", "" },
+    };
+    for (variants) |configured| {
+        const launch = try prepareLaunch(a, .{ .argv = configured, .close_on_exit = true });
+        const args = launch.launch_command.?.argv.?;
+        try std.testing.expectEqual(configured.len, args.len);
+        for (configured, args) |original, copied| try std.testing.expectEqualStrings(original, copied);
+    }
+    const one_shot = try prepareLaunch(a, .{ .argv = &.{ "pwsh.exe", "-NoProfile" }, .one_shot = true });
+    try std.testing.expectEqual(@as(usize, 2), one_shot.launch_command.?.argv.?.len);
+    const command = try prepareLaunch(a, .{ .argv = &.{"pwsh.exe"}, .command = "literal command" });
+    try std.testing.expectEqualStrings("literal command", command.launch_command.?.argv.?[4]);
+    try std.testing.expect(!interactiveNativeShell(&.{ "pwsh.exe", "-Command", "exit 0" }));
+    try std.testing.expect(!closeOnExit(.{ .argv = &.{"pwsh.exe"}, .user_shell = true }));
+}
+
+test "configured native PowerShell reports cwd without GUI pane identity" {
+    const Wait = struct {
+        extern "kernel32" fn Sleep(std.os.windows.DWORD) callconv(.winapi) void;
+    };
+    var owner = Owner.init(std.testing.allocator, .{});
+    defer owner.deinit();
+    const session = try owner.create(&.{ .id = 1, .op = .create, .spawn = .{
+        .argv = &.{ "powershell.exe", "-NoProfile" },
+    } });
+    const pane = session.panes[0];
+    for (0..1000) |turn| {
+        _ = owner.tick(@intCast(turn * 10));
+        try std.testing.expectEqual(@as(usize, 1), owner.count);
+        const pwd = try pane.backend.vt.pwd(owner.a);
+        defer owner.a.free(pwd);
+        if (windowsPath(pwd)) return;
+        try std.testing.expect(pane.status == null);
+        Wait.Sleep(10);
+    }
+    return error.TestUnexpectedResult;
 }

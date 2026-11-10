@@ -911,7 +911,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
             try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
             try argv.append(allocator, try allocator.dupe(u8, "-Command"));
-            const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'; {s}", .{ profile_path, trimmed });
+            const wrapped = try powershellProfileCommand(allocator, profile_path, trimmed);
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
             if (shell_wraps_ssh) {
@@ -954,15 +954,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, wrapped);
         }
     } else if (isPowershell(shell_name)) {
-        const profile_path = try writePowershellProfile(allocator);
-        defer allocator.free(profile_path);
-        try argv.append(allocator, try allocator.dupe(u8, "-NoLogo"));
-        try argv.append(allocator, try allocator.dupe(u8, "-NoExit"));
-        try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
-        try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
-        try argv.append(allocator, try allocator.dupe(u8, "-Command"));
-        const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'", .{profile_path});
-        try argv.append(allocator, wrapped);
+        try appendPowershellIntegration(allocator, &argv);
     } else if ((std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))) {
         try argv.append(allocator, try allocator.dupe(u8, "/Q"));
         try argv.append(allocator, try allocator.dupe(u8, "/K"));
@@ -973,6 +965,46 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     }
 
     return try argv.toOwnedSlice(allocator);
+}
+
+/// Session-only interactive launch preparation. Configured argv stays literal;
+/// callers classify interactive PowerShell before requesting this wrapper.
+/// Every returned string and the slice are owned by the caller.
+pub fn sessionInteractiveArgv(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        freeArgvOwnedStrings(allocator, argv.items);
+        argv.deinit(allocator);
+    }
+    try argv.ensureUnusedCapacity(allocator, args.len);
+    for (args) |arg| argv.appendAssumeCapacity(try allocator.dupe(u8, arg));
+    try appendPowershellIntegration(allocator, &argv);
+    return argv.toOwnedSlice(allocator);
+}
+
+fn appendPowershellIntegration(allocator: std.mem.Allocator, argv: *std.ArrayList([]const u8)) !void {
+    const profile_path = try writePowershellProfile(allocator);
+    defer allocator.free(profile_path);
+    try argv.ensureUnusedCapacity(allocator, 6);
+    inline for (.{ "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command" }) |arg|
+        argv.appendAssumeCapacity(try allocator.dupe(u8, arg));
+    argv.appendAssumeCapacity(try powershellProfileCommand(allocator, profile_path, null));
+}
+
+fn powershellProfileCommand(allocator: std.mem.Allocator, path: []const u8, command: ?[]const u8) ![]u8 {
+    const quoted = try std.mem.replaceOwned(u8, allocator, path, "'", "''");
+    defer allocator.free(quoted);
+    return if (command) |text|
+        std.fmt.allocPrint(allocator, ". '{s}'; {s}", .{ quoted, text })
+    else
+        std.fmt.allocPrint(allocator, ". '{s}'", .{quoted});
+}
+
+test "PowerShell profile paths with apostrophes stay literal" {
+    const a = std.testing.allocator;
+    const command = try powershellProfileCommand(a, "C:\\Users\\O'Connor\\powershell.ps1", null);
+    defer a.free(command);
+    try std.testing.expectEqualStrings(". 'C:\\Users\\O''Connor\\powershell.ps1'", command);
 }
 
 fn isPowershell(shell_name: []const u8) bool {
