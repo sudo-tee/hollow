@@ -53,14 +53,7 @@ pub const Server = struct {
         const configured_addr = io.getEnvVarOwned(self.allocator, EnvVar) catch null;
         defer if (configured_addr) |value| self.allocator.free(value);
 
-        const bind_address = if (configured_addr) |value|
-            try std.Io.net.IpAddress.parseLiteral(value)
-        else
-            std.Io.net.IpAddress{ .ip4 = .loopback(0) };
-
-        if (!isLoopback(bind_address)) return error.NonLoopbackCommandAddress;
-
-        var listener = try bind_address.listen(io.get(), .{ .reuse_address = true });
+        var listener = try bindListener(configured_addr);
         errdefer listener.deinit(io.get());
 
         self.listen_address = listener.socket.address;
@@ -229,6 +222,37 @@ pub const Server = struct {
         try writeFrame(stream, reply);
     }
 };
+
+/// `HOLLOW_COMMAND_ADDR` is inherited by anything launched from a Hollow pane,
+/// so it may name another live instance's endpoint (or a forwarded unix
+/// socket). Never share that port: fall back to an ephemeral loopback port, so
+/// every instance stays individually addressable.
+fn bindListener(configured: ?[]const u8) !std.Io.net.Server {
+    const ephemeral = std.Io.net.IpAddress{ .ip4 = .loopback(0) };
+    const value = configured orelse return listenExclusive(ephemeral);
+    return listenConfigured(value) catch |err| {
+        std.log.warn("command-ipc: cannot bind {s} ({s}); using an ephemeral port", .{ value, @errorName(err) });
+        return listenExclusive(ephemeral);
+    };
+}
+
+fn listenConfigured(value: []const u8) !std.Io.net.Server {
+    const address = try std.Io.net.IpAddress.parseLiteral(value);
+    if (!isLoopback(address)) return error.NonLoopbackCommandAddress;
+    // Zig's Windows AFD bind shares busy ports regardless of `reuse_address`,
+    // so a live listener can only be detected by connecting to it.
+    if (address.connect(io.get(), .{ .mode = .stream, .protocol = .tcp })) |probe| {
+        probe.close(io.get());
+        return error.AddressInUse;
+    } else |_| {}
+    return listenExclusive(address);
+}
+
+fn listenExclusive(address: std.Io.net.IpAddress) !std.Io.net.Server {
+    // On POSIX `reuse_address` also sets SO_REUSEPORT, which lets a second
+    // instance bind a live endpoint and split its connections.
+    return address.listen(io.get(), .{ .reuse_address = false });
+}
 
 fn addressFilePath(allocator: std.mem.Allocator) ![]u8 {
     const runtime_dir = try platform.ensureHollowRuntimeDir(allocator);
@@ -529,6 +553,19 @@ test "command transport accepts only loopback bindings" {
     try std.testing.expect(isLoopback(try std.Io.net.IpAddress.parseLiteral("[::1]:0")));
     try std.testing.expect(!isLoopback(try std.Io.net.IpAddress.parseLiteral("0.0.0.0:0")));
     try std.testing.expect(!isLoopback(try std.Io.net.IpAddress.parseLiteral("192.168.1.2:0")));
+}
+
+test "command listener never shares an inherited endpoint" {
+    var occupied = try listenExclusive(.{ .ip4 = .loopback(0) });
+    defer occupied.deinit(io.get());
+    var buf: [64]u8 = undefined;
+    const inherited = try std.fmt.bufPrint(&buf, "{f}", .{occupied.socket.address});
+    for ([_][]const u8{ inherited, "unix:/tmp/forwarded.sock", "0.0.0.0:0" }) |configured| {
+        var listener = try bindListener(configured);
+        defer listener.deinit(io.get());
+        try std.testing.expect(isLoopback(listener.socket.address));
+        try std.testing.expect(listener.socket.address.getPort() != occupied.socket.address.getPort());
+    }
 }
 
 fn testHandler(_: *anyopaque, _: command.Request) command.Response {

@@ -9,6 +9,12 @@ The CLI uses `HOLLOW_COMMAND_ADDR` when available. Otherwise it discovers the
 running host through `%LOCALAPPDATA%\hollow\command-ipc-address`, so a Windows
 CLI invoked from an unrelated shell or from WSL works without inherited state.
 
+At startup the host binds `HOLLOW_COMMAND_ADDR` when it names a free loopback
+address, and otherwise an ephemeral loopback port. Because the variable is
+inherited by anything launched from a Hollow pane, the host never shares a port
+another instance is already listening on, so every instance stays individually
+addressable: point `HOLLOW_COMMAND_ADDR` at an instance's port to drive it.
+
 The command server binds only to loopback addresses. It handles up to eight
 connections concurrently, while application mutations remain serialized on the
 frame thread. Incomplete frames are disconnected after a total five-second
