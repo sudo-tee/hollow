@@ -153,6 +153,8 @@ const Runner = struct {
     options: CommonOptions = .{},
     request_counter: u64 = 0,
     last_error: ?CliError = null,
+    /// `--scope`/`--workspace`/`--tab` narrowing for pane listing and `--tag` targets.
+    pane_filter: command.PaneQuery = .{},
 
     fn init(allocator: std.mem.Allocator, argv: []const []const u8) Runner {
         return .{ .allocator = allocator, .argv = argv };
@@ -445,7 +447,7 @@ const Runner = struct {
         if (std.mem.eql(u8, sub, "panes")) {
             var tag: ?[]const u8 = null;
             try self.parseOnlyTag(rest, &tag);
-            return try self.printQuery(.{ .data = .{ .get_panes = .{ .tag = tag } } });
+            return try self.printQuery(.{ .data = .{ .get_panes = try self.paneQuery(tag) } });
         }
         if (std.mem.eql(u8, sub, "workspace")) {
             var id: ?usize = null;
@@ -1057,6 +1059,8 @@ const Runner = struct {
 
     fn resolveTargetPaneIds(self: *Runner, ident: ?usize, tag: ?[]const u8) !?[]usize {
         if (ident != null and tag != null) return self.fail("use either --id or --tag, not both", "invalid_args", 2);
+        const filtered = self.pane_filter.scope != null or self.pane_filter.workspace != null or self.pane_filter.tab != null;
+        if (filtered and tag == null) return self.fail("--scope, --workspace, and --tab require --tag", "invalid_args", 2);
         if (ident) |id| {
             const ids = try self.allocator.alloc(usize, 1);
             ids[0] = id;
@@ -1064,8 +1068,9 @@ const Runner = struct {
         }
         if (tag == null) return null;
 
-        var reply = try self.sendRequest(.{ .data = .{ .get_panes = .{ .tag = tag } } });
+        var reply = try self.sendRequest(.{ .data = .{ .get_panes = try self.paneQuery(tag) } });
         defer reply.deinit(self.allocator);
+        if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "command failed" }, reply.status, 1);
         const payload = reply.payload orelse return self.fail("command did not return a pane list", "invalid_response", 1);
         const items = switch (payload) {
             .array => |arr| arr.items,
@@ -1154,10 +1159,40 @@ const Runner = struct {
         }
     }
 
+    fn paneQuery(self: *Runner, tag: ?[]const u8) !command.PaneQuery {
+        var query = self.pane_filter;
+        query.tag = tag;
+        command.validate(.{ .get_panes = query }) catch return self.fail("invalid pane scope: use --scope all|workspace|tab; --workspace and --tab are exclusive and need a matching scope", "invalid_args", 2);
+        return query;
+    }
+
+    /// Consume a `--scope`/`--workspace`/`--tab` flag at `args[i.*]`, if present.
+    fn parsePaneFilterFlag(self: *Runner, args: []const []const u8, i: *usize) !bool {
+        const arg = args[i.*];
+        const is_scope = std.mem.eql(u8, arg, "--scope");
+        const is_workspace = std.mem.eql(u8, arg, "--workspace");
+        const is_tab = std.mem.eql(u8, arg, "--tab");
+        if (!is_scope and !is_workspace and !is_tab) return false;
+        i.* += 1;
+        if (i.* >= args.len) return self.failFmt("missing {s} value", .{arg}, "invalid_args", 2);
+        const value = args[i.*];
+        if (is_scope) {
+            if (self.pane_filter.scope != null) return self.fail("duplicate --scope", "invalid_args", 2);
+            if (!isOneOf(value, &.{ "all", "workspace", "tab" })) return self.fail("--scope must be all, workspace, or tab", "invalid_args", 2);
+            self.pane_filter.scope = value;
+        } else {
+            const field = if (is_workspace) &self.pane_filter.workspace else &self.pane_filter.tab;
+            if (field.* != null) return self.failFmt("duplicate {s}", .{arg}, "invalid_args", 2);
+            field.* = try parseUnsignedArg(value, arg[2..]);
+        }
+        return true;
+    }
+
     fn parseIdTag(self: *Runner, args: []const []const u8, id: *?usize, tag: *?[]const u8) !void {
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
+            if (try self.parsePaneFilterFlag(args, &i)) continue;
             if (std.mem.eql(u8, arg, "--id")) {
                 i += 1;
                 if (i >= args.len) return self.fail("missing id value", "invalid_args", 2);
@@ -1187,6 +1222,7 @@ const Runner = struct {
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
+            if (try self.parsePaneFilterFlag(args, &i)) continue;
             if (std.mem.eql(u8, arg, "--id")) {
                 i += 1;
                 if (i >= args.len) return self.fail("missing id value", "invalid_args", 2);
@@ -1219,6 +1255,7 @@ const Runner = struct {
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
+            if (try self.parsePaneFilterFlag(args, &i)) continue;
             if (std.mem.eql(u8, arg, "--id")) {
                 i += 1;
                 if (i >= args.len) return self.fail("missing id value", "invalid_args", 2);
@@ -1501,6 +1538,8 @@ fn helpText() []const u8 {
         "commands: api, capabilities, events, job, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
         "get activities [--view inbox|history|running] [--pane ID] [--workspace NAME] [--kind notification|bell|program] [--severity info|warn|error|success]\n" ++
+        "get panes [--tag TAG] [--scope all|workspace|tab] [--workspace ID | --tab ID]\n" ++
+        "pane <cmd> --tag TAG [--scope all|workspace|tab] [--workspace ID | --tab ID]  (pane dock: --workspace/--tab only)\n" ++
         "events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]\n" ++
         "job spawn [--user-shell] [--wait [--auto-close]] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND\n" ++
         "job get|output|wait|cleanup --id ID --token TOKEN\n" ++
@@ -1997,6 +2036,44 @@ test "pane bell accepts level and custom color flags" {
     try std.testing.expectEqualStrings("build", tag.?);
     try std.testing.expectEqualStrings("error", level.?);
     try std.testing.expectEqualStrings("#ff00aa", color.?);
+}
+
+test "pane target flags parse scope filters and reject invalid combinations" {
+    {
+        var runner = Runner.init(std.testing.allocator, &.{});
+        defer runner.deinit();
+        var id: ?usize = null;
+        var tag: ?[]const u8 = null;
+        try runner.parseIdTag(&.{ "--tag", "scratch", "--scope", "tab", "--workspace", "3" }, &id, &tag);
+        const query = try runner.paneQuery(tag);
+        try std.testing.expectEqualStrings("scratch", query.tag.?);
+        try std.testing.expectEqualStrings("tab", query.scope.?);
+        try std.testing.expectEqual(@as(?usize, 3), query.workspace);
+    }
+    inline for (.{
+        &.{ "--scope", "everything" },
+        &.{ "--scope", "all", "--scope", "tab" },
+        &.{"--workspace"},
+    }) |args| {
+        var runner = Runner.init(std.testing.allocator, &.{});
+        defer runner.deinit();
+        var id: ?usize = null;
+        var tag: ?[]const u8 = null;
+        try std.testing.expectError(error.CliFailed, runner.parseIdTag(args, &id, &tag));
+    }
+    inline for (.{
+        &.{ "--tab", "0" },
+        &.{ "--workspace", "1", "--tab", "2" },
+        &.{ "--scope", "all", "--workspace", "1" },
+        &.{ "--scope", "workspace", "--tab", "2" },
+    }) |args| {
+        var runner = Runner.init(std.testing.allocator, &.{});
+        defer runner.deinit();
+        var id: ?usize = null;
+        var tag: ?[]const u8 = null;
+        try runner.parseIdTag(args, &id, &tag);
+        try std.testing.expectError(error.CliFailed, runner.paneQuery("scratch"));
+    }
 }
 
 test "decodeKeySequence handles modifiers and escapes" {

@@ -8,6 +8,7 @@ pub const version = 1;
 pub fn choices(kind: Kind, field: []const u8) ?[]const []const u8 {
     if (kind == .get_activities and std.mem.eql(u8, field, "view")) return &.{ "inbox", "history", "running" };
     if (kind == .get_activities and std.mem.eql(u8, field, "activity_kind")) return &.{ "notification", "bell", "program" };
+    if (kind == .get_panes and std.mem.eql(u8, field, "scope")) return &.{ "all", "workspace", "tab" };
     if (std.mem.eql(u8, field, "direction")) return switch (kind) {
         .pane_split => &.{ "vertical", "horizontal" },
         .pane_resize => &.{ "left", "right", "up", "down", "vertical", "horizontal" },
@@ -65,6 +66,14 @@ pub fn validate(data: command.Command) !void {
             if (std.mem.indexOfScalar(u8, text, 0) != null) return error.InvalidArgumentValue;
         };
     }
+    if (data == .get_panes) {
+        const args = data.get_panes;
+        if (args.workspace != null and args.tab != null) return error.InvalidArgumentValue;
+        if (args.scope) |scope| {
+            if (std.mem.eql(u8, scope, "all") and (args.workspace != null or args.tab != null)) return error.InvalidArgumentValue;
+            if (std.mem.eql(u8, scope, "workspace") and args.tab != null) return error.InvalidArgumentValue;
+        }
+    }
     if (data == .job_get or data == .job_output or data == .job_cleanup) {
         const token = switch (data) {
             .job_get, .job_output, .job_cleanup => |args| args.token,
@@ -94,7 +103,7 @@ fn validateField(kind: Kind, comptime name: []const u8, value: anytype) !void {
     switch (@typeInfo(T)) {
         .int => {
             if (@as(u64, value) > std.math.maxInt(i64)) return error.InvalidArgumentValue;
-            if ((std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "index")) and value == 0) return error.InvalidArgumentValue;
+            if ((std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "index") or (kind == .get_panes and (std.mem.eql(u8, name, "workspace") or std.mem.eql(u8, name, "tab")))) and value == 0) return error.InvalidArgumentValue;
         },
         .float => {
             if (!std.math.isFinite(value) or @abs(value) > std.math.floatMax(f32)) return error.InvalidArgumentValue;
@@ -133,7 +142,7 @@ pub fn description(kind: Kind) []const u8 {
         .get_tab => "Read a tab snapshot; defaults to the active tab.",
         .get_current_tab => "Read the active tab.",
         .get_tabs => "List tabs in the active workspace.",
-        .get_panes => "List panes, optionally filtered by tag.",
+        .get_panes => "List panes, optionally filtered by tag and scope (all, workspace, tab); narrowed scopes include the docks shown there.",
         .get_activities => "List session Inbox (default), History, or Running activity without acknowledgement; optional filters use exact matches.",
         .get_workspace => "Read a workspace snapshot; defaults to the active workspace.",
         .get_current_workspace => "Read the active workspace.",

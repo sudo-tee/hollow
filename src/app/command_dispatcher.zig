@@ -644,7 +644,11 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .get_tab => |args| .ok(try self.snapshotTabValue(args.id)),
         .get_current_tab => .ok(try self.currentTabValue()),
         .get_tabs => .ok(try self.tabsValue()),
-        .get_panes => |args| .ok(try self.panesValue(args.tag)),
+        .get_panes => |args| if (self.panesValue(args)) |value| .ok(value) else |err| switch (err) {
+            error.WorkspaceNotFound => .fail("not_found", "workspace not found"),
+            error.TabNotFound => .fail("not_found", "tab not found"),
+            else => |e| return e,
+        },
         .get_activities => |args| if (self.lua) |*lua|
             .ok(try lua.queryActivities(.{
                 .view = args.view,

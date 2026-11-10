@@ -872,22 +872,67 @@ pub const App = struct {
         return .{ .array = array };
     }
 
-    pub fn panesValue(self: *App, wanted_tag: ?[]const u8) !std.json.Value {
+    /// Narrowed scopes add the docks shown there: global docks and the
+    /// owning workspace's docks.
+    pub fn panesValue(self: *App, query: command_mod.Args(.get_panes)) !std.json.Value {
         var array = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = array });
-        if (self.mux) |*mux| {
+        const mux = if (self.mux) |*m| m else return .{ .array = array };
+
+        const Scope = enum { all, workspace, tab };
+        const scope: Scope = if (query.tab != null)
+            .tab
+        else if (query.scope) |name|
+            std.meta.stringToEnum(Scope, name) orelse .all
+        else if (query.workspace != null)
+            .workspace
+        else
+            .all;
+
+        if (scope == .all) {
             var panes = mux.paneIterator();
-            while (panes.next()) |pane| {
-                const pane_id = pane.id;
-                if (wanted_tag) |tag| {
-                    const entry = cmd_ipc.findPaneTagEntry(self, pane_id) orelse continue;
-                    if (!entry.tags.contains(tag)) continue;
-                }
-                const pane_value = try self.snapshotPane(pane_id);
-                if (pane_value) |value| try array.append(value);
-            }
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+            return .{ .array = array };
         }
+
+        var workspace: *Workspace = undefined;
+        var tab: ?*Tab = null;
+        if (query.tab) |tab_id| {
+            tab = for (mux.workspaces.items) |ws| {
+                if (for (ws.tabs.items) |candidate| {
+                    if (candidate.id == tab_id) break candidate;
+                } else null) |found| {
+                    workspace = ws;
+                    break found;
+                }
+            } else return error.TabNotFound;
+        } else {
+            workspace = if (query.workspace) |ws_id| for (mux.workspaces.items) |ws| {
+                if (ws.id == ws_id) break ws;
+            } else return error.WorkspaceNotFound else mux.activeWorkspace() orelse return .{ .array = array };
+            if (scope == .tab) tab = workspace.activeTab() orelse return .{ .array = array };
+        }
+
+        if (tab) |t| {
+            var panes = t.paneIterator();
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+            var docks = workspace.docks.iterator();
+            while (docks.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+        } else {
+            var panes = workspace.paneIterator();
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+        }
+        var global = mux.global_docks.iterator();
+        while (global.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
         return .{ .array = array };
+    }
+
+    fn appendTaggedPane(self: *App, array: *std.json.Array, pane: *Pane, wanted_tag: ?[]const u8) !void {
+        if (wanted_tag) |tag| {
+            const entry = cmd_ipc.findPaneTagEntry(self, pane.id) orelse return;
+            if (!entry.tags.contains(tag)) return;
+        }
+        if (try self.snapshotPane(pane.id)) |value| try array.append(value);
     }
 
     pub fn snapshotWorkspace(self: *App, workspace: *Workspace, index: usize) !std.json.Value {
@@ -3343,7 +3388,7 @@ test "Lua pane tags share the command store and survive Lua reloads" {
     const entry = cmd_ipc.findPaneTagEntry(app, pane.id).?;
     try std.testing.expect(entry.tags.contains("sidebar") and entry.tags.contains("git"));
     try std.testing.expectEqual(@as(usize, 2), entry.tags.count());
-    const tagged = try app.panesValue("sidebar");
+    const tagged = try app.panesValue(.{ .tag = "sidebar" });
     defer deinitJsonValue(a, tagged);
     try std.testing.expectEqual(@as(usize, 1), tagged.array.items.len);
 
@@ -3357,6 +3402,57 @@ test "Lua pane tags share the command store and survive Lua reloads" {
         \\local tags = table.concat(hollow.term.get_pane_tags({d}), ',')
         \\assert(tags == 'from-cli,git,sidebar', tags)
     , .{pane.id}));
+}
+
+test "pane queries scope to workspaces and tabs with their visible docks" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    var workspaces: [2]*Workspace = undefined;
+    for (&workspaces, 1..) |*slot, id| {
+        slot.* = try a.create(Workspace);
+        slot.*.* = Workspace.init(a, id);
+        try mux.workspaces.append(a, slot.*);
+    }
+    mux.active_workspace = workspaces[0];
+    // ws1: tab 10 = {p0, p1}, tab 11 = {p2} (active); ws2: tab 20 = {p3} + workspace dock p4; global dock p5.
+    var panes: [6]*Pane = undefined;
+    for (&panes) |*slot| {
+        slot.* = try mux.createLuaPane();
+        try cmd_ipc.addPaneTag(app, slot.*.id, "t");
+    }
+    const tab10 = try workspaces[0].newTab(10, true);
+    try tab10.appendPane(panes[0]);
+    try tab10.appendPane(panes[1]);
+    try (try workspaces[0].newTab(11, true)).appendPane(panes[2]);
+    try (try workspaces[1].newTab(20, true)).appendPane(panes[3]);
+    try workspaces[1].docks.place(.bottom, panes[4], 0.25);
+    try mux.global_docks.place(.right, panes[5], 0.3);
+
+    const Case = struct { query: command_mod.PaneQuery, expected: []const usize };
+    const cases = [_]Case{
+        .{ .query = .{ .tag = "t" }, .expected = &.{ 0, 1, 2, 3, 4, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "workspace" }, .expected = &.{ 0, 1, 2, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "tab" }, .expected = &.{ 2, 5 } },
+        .{ .query = .{ .tag = "t", .workspace = 2 }, .expected = &.{ 3, 4, 5 } },
+        .{ .query = .{ .tag = "t", .tab = 10 }, .expected = &.{ 0, 1, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "tab", .workspace = 2 }, .expected = &.{ 3, 4, 5 } },
+    };
+    for (cases) |case| {
+        const value = try app.panesValue(case.query);
+        defer deinitJsonValue(a, value);
+        try std.testing.expectEqual(case.expected.len, value.array.items.len);
+        for (case.expected, value.array.items) |index, item| {
+            try std.testing.expectEqual(@as(i64, @intCast(panes[index].id)), item.object.get("id").?.integer);
+        }
+    }
+    try std.testing.expectError(error.WorkspaceNotFound, app.panesValue(.{ .workspace = 99 }));
+    try std.testing.expectError(error.TabNotFound, app.panesValue(.{ .tab = 99 }));
 }
 
 test "Lua panes survive app ticks and terminal-only input without terminal handles" {
