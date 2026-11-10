@@ -613,7 +613,7 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Finish Phase 3 shared session semantics on the secured Windows owner and raw connect bridge, then GUI integration and WSL keepalive (see below).
+2. Finish Phase 3 WSL keepalive admission and Windows-owner lifetime management; native multi-pane semantics and GUI integration are implemented (see below).
 3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
 4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
 
@@ -627,8 +627,20 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
 3. Done: shared metadata, attachment, and stream state support the bounded multi-pane Windows owner, with spawn/close/respawn and persisted stable host identity.
 4. Done: native Windows local domains use the asynchronous GUI path, qualified by headless App/controller create, multi-pane layout, detach, and reattach fixtures; live-window smoke remains manual.
-5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
+5. In progress: the read-only Linux `session wait` lifetime watcher is implemented and tested; next hold bounded per-distro WSL keepalives in the Windows owner, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
+
+WSL keepalive guest foundation (`src/agent/session_wait.zig`):
+
+- Linux `hollow-agent session wait` uses existing v1 hello/list requests only, without starting an owner, taking over a session, or changing pane state.
+- It allows a 30-second startup grace for an initial owner/session, then observes session membership once per second until the list becomes empty; protocol exchanges have their own bounded deadlines.
+- A nonempty list at the startup deadline wins over expiration; after observing sessions, GUI detach and the startup deadline do not end the watcher.
+- Nonblocking socket I/O has absolute 5-second handshake/query deadlines, bounded control buffering, and a fixed outbound frame buffer.
+- Missing owners during startup are retried without launching them; established-connection failures terminate unsuccessfully without reconnect or mutation replay.
+- Normal empty-list completion is distinct from protocol/transport failure; a future Windows holder must not interpret a failed watcher as proof that guest sessions ended.
+- This is a guest mechanism only: no automatic Windows-owner registration, hidden WSL process, or WSL idle-survival guarantee is wired yet.
+- Isolated tests cover a real owner and shell through create, view detach, and explicit kill, plus startup boundaries, malformed frames, deadlines, EOF, SIGPIPE avoidance, identity exhaustion, and allocation failures.
+- Validation passes 164 Linux Debug transport/owner-loop/PTY tests and 73 owner-loop tests each in ReleaseSafe and ReleaseSmall, with no skips; a separate actual-CLI fixture confirms silent completion after explicit kill and continued observation after view detach.
 
 The first slice adds `WindowsPty.spawnSession`, not a user-facing Windows persistence switch.
 Its child starts suspended and is assigned to an unnamed, noninheritable kill-on-close Job Object before either shell or application code executes.

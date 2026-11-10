@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-10 during native Windows GUI/domain integration qualification.
+Updated 2026-11-10 after the WSL guest lifetime-watcher foundation.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -57,6 +57,8 @@ Commit map (current IDs, oldest first):
 | `e5f7670` | Bounded live single-pane Windows owner |
 | `f6d92ca` | Secured, persisted Windows session host identity |
 | `764b10a` | Bounded Windows multi-pane spawn/close/respawn |
+| `8c359c2` | Preserve PowerShell integration in owner shells |
+| `62c9013` | Native Windows persistent domain/App integration |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -64,7 +66,23 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: live-window native Windows smoke and WSL keepalive, with native domain/App integration now implemented.
+3. Phase 3: live-window native Windows smoke and Windows-owner WSL keepalive admission/lifetime management; the guest watcher foundation is implemented below.
+
+WSL keepalive guest foundation:
+
+- `src/agent/session_wait.zig` implements Linux `hollow-agent session wait` using only existing hello/list requests; no Linux wire change or owner restart is needed.
+- Startup tolerates a missing owner or empty list for 30 seconds without starting an owner; observing sessions removes that startup limit, and the first subsequent empty list ends the watcher successfully.
+- Queries run once per second, with nonblocking I/O, absolute 5-second exchange deadlines, bounded control buffering, and a fixed 512-byte outbound frame buffer.
+- It never attaches, takes over, starts processes, or replays mutations; GUI detach does not stop it.
+- Established-owner EOF, protocol errors, and timeouts fail rather than reconnect; these failures are not evidence that sessions ended.
+- Real-owner regression coverage creates a shell, checks the original client still owns its attachment and unchanged membership revision, destroys that client, observes the retained session past startup expiry, then explicitly kills it and observes completion.
+- Additional tests cover missing endpoints, startup boundary races, oversized and foreign frames, malformed replies, absolute deadlines, EOF, SIGPIPE avoidance, query-ID exhaustion, and allocation cleanup.
+- Next: add bounded Windows-owner-held WSL process admission keyed by explicit host identity, integrate it before uncertain create/attach can escape GUI lifetime, and qualify real WSL idle survival in an isolated distro/fixture.
+- The current GUI and Windows owner do not invoke the watcher; automatic WSL keepalive is still outstanding.
+- Validation: 164 Linux Debug transport/owner-loop/PTY tests and 73 owner-loop tests each in ReleaseSafe and ReleaseSmall pass without skips; formatting and diff checks pass.
+- A separate private actual-CLI smoke fixture confirms view-detach survival, no takeover, silent successful completion after explicit kill, normal private-owner exit, and extra-argument rejection.
+- Logs: `/tmp/opencode/session-wait-{debug,safe,small,cli-smoke}-20261110.log`.
+- No Windows code or wire protocol changed, so Windows GUI/owner suites were not rerun for this guest-only slice; no GUI or production owner was restarted.
 
 Native-local Windows admission now resolves the existing explicit local host descriptor and Windows-native agent paths, never implicit/fallback hosts or WSL launchers under the native owner.
 `persist` remains false by default, and Linux-local/WSL/SSH deployment and ordinary nonpersistent PTY paths are unchanged.

@@ -10,6 +10,7 @@ const c = @import("posix_c");
 const a = std.testing.allocator;
 
 test {
+    _ = @import("session_wait.zig");
     _ = @import("session_core.zig");
     _ = @import("session_stream.zig");
     _ = @import("session_attachment.zig");
@@ -163,6 +164,61 @@ fn shell(comptime script: []const u8) p.Spawn {
 fn sessionId(buf: *[32]u8, reply: p.Reply) []const u8 {
     @memcpy(buf, reply.session.?.id[0..32]);
     return buf;
+}
+
+test "session wait observes real owner lifetime without taking over or mutating panes" {
+    const Monitor = @import("session_wait.zig").Monitor;
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    var pair: [2]c_int = undefined;
+    if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM | c.SOCK_CLOEXEC | c.SOCK_NONBLOCK, 0, &pair) != 0) return error.SocketFailed;
+    defer _ = c.close(pair[1]);
+    _ = try owner.addClient(pair[0]);
+    var monitor = try Monitor.init(a, pair[1], 0, 30_000);
+    defer monitor.deinit();
+    try driveMonitor(&owner, &monitor, 0);
+    try std.testing.expect(!monitor.seen_sessions);
+
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'watcher-kept\\n'; read x; sleep 30") }));
+    defer created.deinit();
+    try std.testing.expect(created.value.ok);
+    const info = created.value.session.?;
+    try client.waitOutput(&owner, info.panes[0].id, "watcher-kept");
+    try std.testing.expect(!try monitor.step(1000));
+    try driveMonitor(&owner, &monitor, 1000);
+    try std.testing.expect(monitor.seen_sessions);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), listed.value.sessions.?.len);
+    try std.testing.expect(listed.value.sessions.?[0].attached);
+    try std.testing.expectEqual(info.revision, listed.value.sessions.?[0].revision);
+    try std.testing.expectEqual(info.panes[0].id, listed.value.sessions.?[0].panes[0].id);
+
+    // GUI/client teardown is not a signal to stop holding the guest alive.
+    client.close();
+    try std.testing.expect(!try monitor.step(31_000));
+    try driveMonitor(&owner, &monitor, 31_000);
+    try std.testing.expectEqual(.idle, monitor.phase);
+    const killer = try Fake.open(&owner, owner.identity);
+    defer killer.deinit();
+    const killed = try killer.reply(&owner, try killer.request(.{ .id = 0, .op = .kill, .session = info.id }));
+    defer killed.deinit();
+    try std.testing.expect(killed.value.ok);
+    try std.testing.expect(!try monitor.step(32_000));
+    try driveMonitor(&owner, &monitor, 32_000);
+    try std.testing.expectEqual(.done, monitor.phase);
+}
+
+fn driveMonitor(owner: *Owner, monitor: *@import("session_wait.zig").Monitor, now: i64) !void {
+    const deadline = nowMs() + 5000;
+    while (nowMs() < deadline) {
+        _ = try monitor.step(now);
+        try owner.step(0);
+        if (monitor.phase == .idle or monitor.phase == .done) return;
+    }
+    return error.Timeout;
 }
 
 test "attach after disconnect restores the screen from a binary snapshot and takes over" {

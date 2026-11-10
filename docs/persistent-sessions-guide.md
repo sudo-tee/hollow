@@ -249,6 +249,6 @@ This is a GUI-only fix; an existing owner need not be restarted for it.
 - Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
 - Lost-create recovery is explicit list/attach, not automatic; old owners cannot provide the exact ID.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
-- WSL keepalive remains future work.
+- Automatic WSL keepalive remains future work; the Linux agent now has a read-only `session wait` lifetime-watcher foundation, but the GUI and Windows owner do not launch it yet.
 
 For implementation details, see the [architecture and implementation plan](persistent-sessions.md).

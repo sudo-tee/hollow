@@ -1,4 +1,4 @@
-//! `hollow-agent session <serve|connect|list|kill-server|debug-attach>`.
+//! `hollow-agent session <serve|connect|list|kill-server|wait|debug-attach>`.
 //! `connect` is the stdio-to-socket bridge that connectors (ssh, wsl.exe)
 //! run; it starts the owner when none is listening. `debug-attach` is a
 //! hidden raw-tty client for manual checks, not a public interface.
@@ -15,6 +15,10 @@ pub fn run(a: std.mem.Allocator, io: std.Io, args: anytype) !void {
     if (std.mem.eql(u8, command, "connect")) return connect(a);
     if (std.mem.eql(u8, command, "list")) return simple(a, .list);
     if (std.mem.eql(u8, command, "kill-server")) return simple(a, .kill_server);
+    if (std.mem.eql(u8, command, "wait")) {
+        if (args.next() != null) return error.InvalidArgument;
+        return @import("session_wait.zig").run(a);
+    }
     if (std.mem.eql(u8, command, "debug-attach")) return debugAttach(a, args.next());
     return error.InvalidArgument;
 }
