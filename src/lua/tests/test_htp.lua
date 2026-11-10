@@ -47,6 +47,16 @@ describe("HTP test suite", function()
       )
     end)
 
+    it("includes docked panes in the tagged panes query", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "global", ratio = 0.25, tag = "scratch" })
+      local docked_id = hollow.term.docks()[1].id
+      local ok, tagged = hollow.htp._handle_query("panes", { tag = "scratch" }, 101)
+      harness.assert_true(ok, "HTP tagged panes query should succeed")
+      harness.assert_equal(#tagged, 1, "docked pane should match its tag once")
+      harness.assert_equal(tagged[1].id, docked_id, "HTP panes query should include docks")
+      hollow.term.undock_pane(docked_id)
+    end)
+
     it("supports targeted tab lookups", function()
       local ok_tab_query, tab_query = hollow.htp._handle_query("tab", { id = 201 }, 101)
       harness.assert_true(ok_tab_query, "built-in HTP tab query should succeed")
