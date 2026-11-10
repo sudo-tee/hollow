@@ -37,12 +37,15 @@ pub const Host = struct {
     fallback: bool = false,
     /// Lua could not describe the host; reported in the pane.
     error_message: ?[]const u8 = null,
+    /// Explicit session-only WSL identity, never inferred from connector argv.
+    wsl: ?@import("../agent/session_protocol.zig").WslHold = null,
 
     pub fn dupe(self: Host, a: std.mem.Allocator) !Host {
         var copy = self;
         copy.connector = try self.connector.dupe(a);
         copy.agent = try self.agent.dupe(a);
         if (self.error_message) |text| copy.error_message = try a.dupe(u8, text[0..@min(text.len, 256)]);
+        if (self.wsl) |value| copy.wsl = try value.dupe(a);
         return copy;
     }
 };

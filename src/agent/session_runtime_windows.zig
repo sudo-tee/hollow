@@ -146,6 +146,7 @@ pub const Owner = struct {
         defer arena.deinit();
         const temp = arena.allocator();
         switch (req.op) {
+            .hold_wsl => return error.Unsupported, // Native transport owns WSL pins.
             .list => {
                 const infos = try temp.alloc(p.SessionInfo, self.count);
                 for (self.sessions[0..self.count], infos) |s, *entry| entry.* = try info(temp, s);

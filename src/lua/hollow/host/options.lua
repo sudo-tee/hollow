@@ -102,7 +102,11 @@ function M.session_target(kind, opts)
     error("timeout_ms must be an integer from 1 to 300000", 2)
   end
   if kind ~= "local" then
-    return M.target(kind, opts)
+    local target = M.target(kind, opts)
+    if kind == "wsl" then
+      target.wsl = { distro = opts.distro, user = opts.user, launcher = opts.wsl or "wsl.exe" }
+    end
+    return target
   end
   if type(opts) ~= "table" then
     error("local host expects an options table", 2)

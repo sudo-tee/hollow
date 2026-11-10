@@ -1,5 +1,6 @@
 //! Secured Windows owner transport. Live authority uses shared metadata,
-//! attachment and delivery state; native GUI domains remain disabled.
+//! attachment and delivery state; native domains and WSL lifetime pins share
+//! this secured endpoint without coupling either owner to GUI lifetime.
 const std = @import("std");
 const windows = std.os.windows;
 const pipe = @import("session_pipe_windows.zig");
@@ -7,6 +8,7 @@ const p = @import("session_protocol.zig");
 const runtime = @import("session_runtime_windows.zig");
 const vt = @import("session_vt.zig");
 const identity = @import("session_identity_windows.zig");
+const keepalive = @import("session_keepalive_windows.zig");
 
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn WaitForSingleObject(windows.HANDLE, windows.DWORD) callconv(.winapi) windows.DWORD;
@@ -133,6 +135,8 @@ const Slot = struct {
     sent: usize = 0,
     read_deadline: u64 = 0,
     write_deadline: u64 = 0,
+    keeper: ?*keepalive.Entry = null,
+    keeper_request: ?u64 = null,
 
     fn init(self: *Slot, a: std.mem.Allocator, endpoint: *const pipe.Endpoint, first: bool) !void {
         self.input = try pipe.Operation.init();
@@ -201,8 +205,9 @@ const Owner = struct {
     wake_event: windows.HANDLE,
     sessions: runtime.Owner,
     host: [32]u8,
+    keepers: keepalive.Registry,
 
-    fn create(a: std.mem.Allocator, endpoint: *const pipe.Endpoint) !*Owner {
+    fn create(a: std.mem.Allocator, endpoint: *const pipe.Endpoint, fixture: bool) !*Owner {
         // Slot buffers and pending OVERLAPPED values have stable heap addresses.
         const self = try a.create(Owner);
         const wake_event = CreateEventW(null, .FALSE, .FALSE, null) orelse {
@@ -215,6 +220,7 @@ const Owner = struct {
             .wake_event = wake_event,
             .host = identity.random(@import("../io.zig").get()),
             .sessions = runtime.Owner.init(a, .{ .context = self, .callback = wake }),
+            .keepers = .{ .a = a, .fixture = fixture },
         };
         errdefer self.destroy();
         for (&self.slots, 0..) |*slot, i| try slot.init(a, endpoint, i == 0);
@@ -229,6 +235,7 @@ const Owner = struct {
     fn destroy(self: *Owner) void {
         self.sessions.deinit();
         for (&self.slots) |*slot| slot.deinit(self.a);
+        self.keepers.deinit();
         pipe.close(self.wake_event);
         self.a.destroy(self);
     }
@@ -256,7 +263,7 @@ const Owner = struct {
                     .snapshot = if (slot.client.binary) .binary else .vt,
                     .owner_pid = windows.GetCurrentProcessId(),
                     .host = &self.host,
-                    .features = &p.owner_features,
+                    .features = &p.windows_owner_features,
                 });
             },
             .request => {
@@ -270,7 +277,21 @@ const Owner = struct {
                         try self.queue(slot, .reply, p.Reply{ .id = request.value.id });
                         self.stopping = true;
                         self.sessions.killAll();
+                        self.keepers.stop();
                         self.stop_deadline = nowMs() + 2000;
+                    },
+                    .hold_wsl => {
+                        if (slot.keeper != null) {
+                            try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .ok = false, .@"error" = "KeepaliveAlreadyPinned" });
+                        } else if (request.value.wsl) |spec| {
+                            const entry = self.keepers.acquire(spec, nowMs()) catch |err| {
+                                try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .ok = false, .@"error" = @errorName(err) });
+                                return;
+                            };
+                            slot.keeper = entry;
+                            slot.keeper_request = request.value.id;
+                            _ = SetEvent(self.wake_event);
+                        } else try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .ok = false, .@"error" = "InvalidArgument" });
                     },
                     else => self.sessions.request(&slot.client, &request.value),
                 }
@@ -301,6 +322,10 @@ const Owner = struct {
 
     fn reset(self: *Owner, slot: *Slot) !void {
         self.sessions.disconnect(&slot.client);
+        if (slot.keeper) |entry| self.keepers.release(entry);
+        slot.keeper = null;
+        slot.keeper_request = null;
+        _ = SetEvent(self.wake_event);
         slot.clear(self.a, true);
         if (!self.stopping) try slot.input.accept(slot.handle.?);
     }
@@ -370,19 +395,38 @@ const Owner = struct {
     fn run(self: *Owner) !void {
         while (true) {
             const now = nowMs();
+            if (!self.stopping) {
+                self.keepers.tick(now);
+                for (&self.slots) |*slot| if (slot.keeper_request) |id| {
+                    const entry = slot.keeper.?;
+                    if (entry.ready() or entry.failed) {
+                        self.queue(slot, .reply, p.Reply{ .id = id, .ok = !entry.failed, .@"error" = if (entry.failed) "KeepaliveFailed" else null }) catch {
+                            try self.reset(slot);
+                            continue;
+                        };
+                        slot.keeper_request = null;
+                    }
+                };
+            }
             var more = if (self.stopping) false else self.sessions.tick(now);
             for (&self.slots) |*slot| more = (self.pump(slot, now) catch blk: {
                 try self.reset(slot);
                 break :blk false;
             }) or more;
+            if (!self.stopping) self.keepers.tick(nowMs());
+            for (&self.slots) |*slot| if (slot.keeper_request != null and (slot.keeper.?.ready() or slot.keeper.?.failed)) {
+                more = true;
+            };
             var active: usize = 0;
             var writes: usize = 0;
-            var events: [pipe.max_clients * 2 + 1]windows.HANDLE = undefined;
+            var events: [pipe.max_clients * 2 + 1 + keepalive.max_hosts * 3]windows.HANDLE = undefined;
             events[0] = self.wake_event;
             var count: usize = 1;
             var deadline = if (self.stopping) self.stop_deadline else if (!self.connected_once) self.startup_deadline else std.math.maxInt(u64);
             if (!self.stopping) {
                 if (self.sessions.deadline()) |next| deadline = @min(deadline, next);
+                if (self.keepers.deadline()) |next| deadline = @min(deadline, next);
+                count += self.keepers.events(events[count..]);
             }
             for (&self.slots) |*slot| {
                 if (slot.client.dead) try self.reset(slot);
@@ -404,7 +448,7 @@ const Owner = struct {
                 }
             }
             if (self.stopping and (writes == 0 or now >= self.stop_deadline)) return;
-            if (!self.stopping and !self.sessions.hasSessions() and
+            if (!self.stopping and !self.sessions.hasSessions() and !self.keepers.hasEntries() and
                 ((self.connected_once and active == 0) or (!self.connected_once and now >= self.startup_deadline))) return;
             if (more) continue;
             const wait_ms: u32 = @intCast(@min(deadline -| nowMs(), std.math.maxInt(u32)));
@@ -417,7 +461,7 @@ const Owner = struct {
 pub fn serve(a: std.mem.Allocator, _: std.Io, namespace: ?[]const u8) !void {
     var endpoint = try pipe.Endpoint.init(a, namespace);
     defer endpoint.deinit(a);
-    const owner = try Owner.create(a, &endpoint);
+    const owner = try Owner.create(a, &endpoint, namespace != null);
     defer owner.destroy();
     // Private fixture namespaces never read or mutate production host state.
     if (namespace == null) owner.host = try identity.loadDefault(a, @import("../io.zig").get(), @import("../io.zig").environ(), &endpoint);

@@ -1241,6 +1241,28 @@ pub const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSessionHost,
         };
+        api.get_field(self.state, idx, "wsl");
+        const wsl_type = api.value_type(self.state, -1);
+        if (wsl_type != @backingInt(LuaType.nil_type)) {
+            if (wsl_type != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+            const wsl_idx = absoluteIndex(api, self.state, -1);
+            const distro = luaStringField(api, self.state, wsl_idx, "distro") orelse return error.InvalidSessionHost;
+            const launcher = luaStringField(api, self.state, wsl_idx, "launcher") orelse return error.InvalidSessionHost;
+            api.get_field(self.state, wsl_idx, "user");
+            const user_type = api.value_type(self.state, -1);
+            if (user_type != @backingInt(LuaType.nil_type) and user_type != @backingInt(LuaType.string)) return error.InvalidSessionHost;
+            pop(api, self.state, 1);
+            const value: @import("agent/session_protocol.zig").WslHold = .{
+                .distro = distro,
+                .launcher = launcher,
+                .user = luaStringField(api, self.state, wsl_idx, "user"),
+                .agent = "/pending-deploy",
+            };
+            value.validate(false) catch return error.InvalidSessionHost;
+            if (!value.matchesConnector(host.connector.argv, host.connector.remote_shell)) return error.InvalidSessionHost;
+            host.wsl = try value.dupe(arena);
+        }
+        pop(api, self.state, 1);
         const native_windows = @import("builtin").os.tag == .windows and host.connector.argv.len == 0;
         if (native_windows and @import("pty/spawn_spec.zig").isWsl(shell)) return error.InvalidSessionHost;
         if (host.agent.path) |path| {
@@ -8346,6 +8368,31 @@ test "session borrowers host resolution is strict and preserves the Lua stack" {
     try std.testing.expectEqual(@as(u32, 5000), host.agent.timeout_ms);
     try runtime.runString("hollow = nil");
     try std.testing.expectEqualStrings("/opt/agent", host.agent.path.?);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
+test "session borrowers WSL host identity is copied and cannot disagree with its connector" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\hollow = {_session_host = function() return {
+        \\mode='explicit',path_style='wsl',
+        \\connector={argv={'wsl.exe','--distribution','Guest Distro','--user','alice','--cd','/','--exec'}},
+        \\wsl={distro='Guest Distro',user='alice',launcher='wsl.exe'}} end}
+    ;
+    try runtime.runString(source);
+    const top = runtime.context.api.get_top(runtime.state);
+    const host = try runtime.sessionHost(arena.allocator(), null, "/bin/sh");
+    try std.testing.expectEqualStrings("Guest Distro", host.wsl.?.distro);
+    try std.testing.expectEqualStrings("alice", host.wsl.?.user.?);
+    try runtime.runString("hollow._session_host=function() return {mode='explicit',path_style='wsl',connector={argv={'ssh','box'}},wsl={distro='Guest Distro',launcher='wsl.exe'}} end");
+    try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "/bin/sh"));
+    try runtime.runString("hollow=nil;collectgarbage('collect')");
+    try std.testing.expectEqualStrings("Guest Distro", host.wsl.?.distro);
     try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
 }
 

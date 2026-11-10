@@ -38,6 +38,7 @@ const Fixture = struct {
     exe: []u8,
     child: std.process.Child,
     guard: owner.Connection,
+    guard_live: bool = true,
     pid: i64,
     host: [p.max_host_len]u8 = undefined,
     host_len: usize,
@@ -89,8 +90,10 @@ const Fixture = struct {
     }
 
     fn deinit(self: *Fixture) void {
-        self.guard.sendJson(.request, p.Request{ .id = 999, .op = .kill_server }) catch {};
-        self.guard.deinit();
+        if (self.guard_live) {
+            self.guard.sendJson(.request, p.Request{ .id = 999, .op = .kill_server }) catch {};
+            self.guard.deinit();
+        }
         _ = WaitForSingleObject(self.child.id.?, 10_000);
         self.child.kill(testing.io);
         a.free(self.namespace);
@@ -305,6 +308,112 @@ test "native asynchronous create detach list and attach preserves owner and proc
     try client.input(1, "inc\r");
     try client.until(1, "NATIVE-VALUE-42");
     try expectSnapshot((try client.stream(1)).snapshot.items, "NATIVE-VALUE-41");
+}
+
+test "WSL keepalive admission survives all GUI clients and retains guest process state" {
+    const guest = @import("build_options").keepalive_test_agent orelse return error.SkipZigTest;
+    const distro = @import("build_options").keepalive_test_distro orelse return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const options = try wslOptions(arena.allocator(), &fixture, guest, distro);
+    defer cleanupGuest(options);
+    var sid: [32]u8 = undefined;
+    var guest_pid: i64 = 0;
+    {
+        var captured = options;
+        const mutable_distro = try arena.allocator().dupe(u8, distro);
+        captured.connector.argv = try arena.allocator().dupe([]const u8, options.connector.argv);
+        @constCast(captured.connector.argv)[2] = mutable_distro;
+        captured.wsl.?.distro = mutable_distro;
+        var client: Client = .{ .connection = try transport.Connection.create(a, testing.io, captured) };
+        defer client.deinit();
+        @memset(mutable_distro, 'x'); // Both connector and WSL identity are owned.
+        const message = try client.next();
+        defer message.deinit();
+        try testing.expectEqual(p.Kind.welcome, message.kind);
+        const welcome = try p.parse(p.Welcome, a, message.payload);
+        defer welcome.deinit();
+        guest_pid = welcome.value.owner_pid;
+        const attached = try client.opened(.{ .id = 0, .op = .create, .spawn = .{
+            .argv = &.{ "/bin/sh", "-c", "keeper_value=40; printf 'WSL-KEEPER-READY\\n'; while read line; do keeper_value=$((keeper_value+1)); printf 'WSL-KEEPER-%s\\n' \"$keeper_value\"; done" },
+            .shell_integration = false,
+        } });
+        defer attached.deinit();
+        @memcpy(&sid, attached.reply.value.session.?.id);
+        try client.until(1, "WSL-KEEPER-READY");
+        try client.input(1, "inc\n");
+        try client.until(1, "WSL-KEEPER-41");
+        // No native guard or native workspace may mask the keeper lifetime.
+        fixture.guard.deinit();
+        fixture.guard_live = false;
+    }
+    Sleep(1500);
+    try testing.expectEqual(@as(u32, 258), WaitForSingleObject(fixture.child.id.?, 0));
+    {
+        var client: Client = .{ .connection = try transport.Connection.create(a, testing.io, options) };
+        defer client.deinit();
+        const message = try client.next();
+        defer message.deinit();
+        const welcome = try p.parse(p.Welcome, a, message.payload);
+        defer welcome.deinit();
+        try testing.expectEqual(guest_pid, welcome.value.owner_pid);
+        const attached = try client.opened(.{ .id = 0, .op = .attach, .session = &sid });
+        defer attached.deinit();
+        try client.input(1, "inc\n");
+        try client.until(1, "WSL-KEEPER-42");
+        const killed = try client.request(.{ .id = 0, .op = .kill, .session = &sid });
+        killed.deinit();
+    }
+    // Empty observation after the unpin drain grace releases the last keeper;
+    // with no native sessions/clients, the Windows owner then exits itself.
+    try testing.expectEqual(@as(u32, 0), WaitForSingleObject(fixture.child.id.?, 40_000));
+}
+
+test "WSL keeper failure rejects admission before a create can be submitted" {
+    const guest = @import("build_options").keepalive_test_agent orelse return error.SkipZigTest;
+    const distro = @import("build_options").keepalive_test_distro orelse return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var options = try wslOptions(arena.allocator(), &fixture, guest, distro);
+    options.agent.path = "/tmp/opencode/keeper-fixture-nonexistent/agent";
+    var client: Client = .{ .connection = try transport.Connection.create(a, testing.io, options) };
+    defer client.deinit();
+    const id = try client.connection.request(.{ .id = 0, .op = .create, .spawn = .{} });
+    try testing.expectError(error.KeepaliveRejected, client.ready());
+    try testing.expectEqual(transport.RequestState.not_sent, client.connection.requestState(id));
+}
+
+fn wslOptions(temp: std.mem.Allocator, fixture: *Fixture, guest: []const u8, distro: []const u8) !transport.Options {
+    return .{
+        .connector = .{ .argv = try temp.dupe([]const u8, &.{ "wsl.exe", "--distribution", distro, "--cd", "/", "--exec" }) },
+        .agent = .{ .path = guest },
+        .ghostty_identity = vt.buildIdentity(),
+        .wsl = .{ .distro = distro, .agent = "/pending-deploy", .session_dir = try std.fmt.allocPrint(temp, "/tmp/opencode/wsl dir-{s}", .{fixture.namespace}) },
+        .wsl_owner = fixture.exe,
+        .wsl_namespace = fixture.namespace,
+    };
+}
+
+fn cleanupGuest(options: transport.Options) void {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const temp = arena.allocator();
+    const directory = options.wsl.?.session_dir.?;
+    const env = std.fmt.allocPrint(temp, "HOLLOW_SESSION_DIR={s}", .{directory}) catch return;
+    const state = std.fmt.allocPrint(temp, "XDG_STATE_HOME={s}/state", .{directory}) catch return;
+    var plain = options;
+    plain.connector.argv = options.connector.command(temp, &.{ "/usr/bin/env", env, state }) catch return;
+    plain.wsl = null;
+    plain.wsl_owner = null;
+    plain.wsl_namespace = null;
+    var client: Client = .{ .connection = transport.Connection.create(a, testing.io, plain) catch return };
+    defer client.deinit();
+    const reply = client.request(.{ .id = 0, .op = .kill_server }) catch return;
+    reply.deinit();
 }
 
 test "native cached live owner survives replacement of its test-owned bundle source" {

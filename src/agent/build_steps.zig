@@ -83,9 +83,21 @@ fn addSessionVt(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner");
+    const keepalive_tests = b.step("test-session-windows-keepalive", "Run bounded Windows WSL keeper mechanism tests");
+    const wsl_keepalive_tests = b.step("test-session-wsl-keepalive", "Qualify Windows-owned keepalives against an explicitly supplied private WSL fixture");
     const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
     const native_windows_tests = b.step("test-session-native-windows", "Run native-local asynchronous Windows session transport and open tests");
     if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        const keeper_module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_keepalive_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        keeper_module.linkSystemLibrary("advapi32", .{});
+        const keeper_run = b.addRunArtifact(b.addTest(.{ .root_module = keeper_module }));
+        keeper_run.has_side_effects = true;
+        keepalive_tests.dependOn(&keeper_run.step);
         const owner_module = b.createModule(.{
             .root_source_file = b.path("src/session_owner_windows.zig"),
             .target = target,
@@ -106,6 +118,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         b.getInstallStep().dependOn(&install_owner.step);
         const options = b.addOptions();
         options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        options.addOption(?[]const u8, "keepalive_test_agent", b.option([]const u8, "keepalive-test-agent", "Absolute guest agent for isolated Windows-to-WSL keeper qualification"));
+        options.addOption(?[]const u8, "keepalive_test_distro", b.option([]const u8, "keepalive-test-distro", "Explicit distro for isolated Windows-to-WSL keeper qualification"));
         options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
         const module = b.createModule(.{
             .root_source_file = b.path("src/session_windows_owner_test.zig"),
@@ -131,9 +145,14 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         const native_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module }));
         native_run.has_side_effects = true;
         native_windows_tests.dependOn(&native_run.step);
+        const wsl_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module, .filters = &.{ "WSL keepalive admission", "WSL keeper failure" } }));
+        wsl_run.has_side_effects = true;
+        wsl_keepalive_tests.dependOn(&wsl_run.step);
     } else {
         const fail = b.addFail("Windows session owner requires -Dtarget=x86_64-windows-gnu (or native x86_64 Windows)");
         windows_owner_step.dependOn(&fail.step);
+        keepalive_tests.dependOn(&fail.step);
+        wsl_keepalive_tests.dependOn(&fail.step);
         windows_owner_tests.dependOn(&fail.step);
         native_windows_tests.dependOn(&fail.step);
     }

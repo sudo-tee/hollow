@@ -38,7 +38,7 @@ fn runAt(a: std.mem.Allocator, path: [:0]const u8, startup_deadline: i64) !void 
 
 // Blocking connectTo is unsuitable here: a full listen backlog must not hold a
 // Windows keepalive forever. AF_UNIX EAGAIN means retry with a new socket.
-fn connect(path: [:0]const u8) !?c_int {
+pub fn connect(path: [:0]const u8) !?c_int {
     var addr = std.mem.zeroes(c.struct_sockaddr_un);
     addr.sun_family = c.AF_UNIX;
     if (path.len >= addr.sun_path.len) return error.NameTooLong;

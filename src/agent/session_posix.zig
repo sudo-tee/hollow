@@ -506,6 +506,7 @@ pub const Owner = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
         switch (req.op) {
+            .hold_wsl => return error.Unsupported,
             .list => {
                 var list: std.ArrayList(p.SessionInfo) = .empty;
                 for (self.sessions.items) |s| if (!s.meta.ended) try list.append(arena, try self.info(arena, s));

@@ -46,6 +46,12 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-native-windows 2>&1 | Tee-Object -FilePath session-native-windows.log
           exit $LASTEXITCODE
+      - name: Bounded Windows WSL keeper mechanism
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-keepalive 2>&1 | Tee-Object -FilePath session-windows-keepalive.log
+          exit $LASTEXITCODE
       - name: Portable session metadata and admission on Windows
         shell: pwsh
         run: |
@@ -58,6 +64,7 @@ jobs:
           path: |
             fs-exec-windows-native.log
             session-windows-pty.log
+            session-windows-keepalive.log
             session-windows-owner.log
             session-windows-pane.log
             session-native-windows.log

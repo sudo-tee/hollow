@@ -7,6 +7,25 @@ Native Windows support is experimental and uses the same asynchronous workspace 
 Windows owner limits are 16 sessions, 16 panes per session, and 64 panes total, with 1 MiB scrollback per pane.
 Remote Windows owners are not supported.
 
+## WSL lifetime on Windows
+
+Persistent WSL domains now borrow a Windows-owner keepalive before create, attach, or discovery can reach the guest owner.
+The hidden WSL connection belongs to the Windows owner, not the GUI, and remains while guest sessions exist.
+After the last GUI pin, a 30-second drain grace and a confirmed empty guest list permit cleanup.
+Failed observation is not treated as an empty list; only read-only watcher recovery is automatic, never session creation or another mutation.
+The Windows owner supports at most eight distro/user host records shared across GUI instances.
+Use an explicit `user` in the WSL host descriptor when you need a stable user identity across changes to the distro's default user.
+
+This requires both an updated Windows owner advertising `wsl-keepalive` and an updated Linux agent supporting internal `session wait --hold`.
+Rebuild the full agent bundle, rather than only the fast GUI development target, or update your explicit `agent_path`.
+Existing Linux session owners do not need restarting.
+An older running Windows owner or missing helper fails visibly before guest create is submitted; Hollow never falls back to a disposable pane or kills an old owner to upgrade it.
+Finish its native sessions before explicitly replacing an older Windows owner.
+
+Explicit `wsl --terminate`, `wsl --shutdown`, owner crashes, and host shutdown can still end sessions.
+Do not stop the Windows owner while relying on its WSL keepalives.
+Automated private fixtures verify detach/reattach continuity and cleanup, but otherwise-idle distro survival still needs qualification in a spare distro.
+
 ## Enable a test domain
 
 Add a separate domain first, without changing your default domain:
@@ -249,6 +268,6 @@ This is a GUI-only fix; an existing owner need not be restarted for it.
 - Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
 - Lost-create recovery is explicit list/attach, not automatic; old owners cannot provide the exact ID.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
-- Automatic WSL keepalive remains future work; the Linux agent now has a read-only `session wait` lifetime-watcher foundation, but the GUI and Windows owner do not launch it yet.
+- Windows-owned WSL keepalives are implemented; otherwise-idle spare-distro survival and live-window behavior still need manual qualification.
 
 For implementation details, see the [architecture and implementation plan](persistent-sessions.md).

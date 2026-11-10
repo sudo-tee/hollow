@@ -441,6 +441,7 @@ test "Windows healthy connection stays usable beyond partial-frame deadline" {
 }
 
 test {
+    _ = @import("agent/session_keepalive_windows.zig");
     // Include colocated pipe security tests in this standalone test root.
     testing.refAllDecls(pipe);
     _ = @import("session_windows_bridge_test.zig");

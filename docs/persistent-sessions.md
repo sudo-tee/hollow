@@ -1,9 +1,9 @@
 # Persistent sessions plan
 
-Status: design approved 2026-11-04; updated 2026-11-09.
+Status: design approved 2026-11-04; updated 2026-11-10.
 Phase 0 (headless VT spike) and Phase 1 (Linux owner + `connect`) are complete.
 Phase 2 GUI integration includes owner-backed tabs/splits, layout autosave, startup restore, discovery, and switcher actions; manual GUI qualification remains open.
-Phase 3 (native Windows owner and WSL keepalive) is starting in tested sub-slices.
+Phase 3 native Windows ownership, GUI admission, and Windows-owned WSL keepalives are implemented; live-window and spare-distro idle qualification remain open.
 Phase 4 is partially delivered; its remaining promises need an explicit implementation audit.
 Historical checkpoints below retain their original dates and are superseded by later milestone notes.
 Snapshots use ghostty's binary snapshot API with VT formatter fallback.
@@ -99,10 +99,13 @@ Windows GUI connects to the named pipe directly.
 
 A WSL distro shuts down about 15 s after its last `wsl.exe` console connection
 closes (`instanceIdleTimeout`, default 15000 ms), killing background processes.
-The Windows owner holds a hidden `wsl.exe -d <distro>` keepalive per WSL host
-with live sessions and drops it when that host's session count reaches zero.
-The GUI always starts the Windows owner, even for WSL-only use. Hollow never
-edits `.wslconfig`.
+The Windows owner holds a hidden WSL watcher per explicitly resolved distro/user host with persistent sessions, bounded to eight host records.
+Each GUI transport borrows a pin before it can submit guest create/attach requests, including WSL-only persistent use.
+Pins release only after the guest connector and its I/O stop; closing the GUI does not close the Windows-owned keeper.
+After the last pin, a 30-second drain grace precedes a generation-matching empty observation and collection.
+Observation errors retain the connection, and an unexpectedly exited admitted watcher is repaired read-only without recreating sessions or replaying mutations.
+Hollow never edits `.wslconfig`; explicit distro termination, owner crashes, and host shutdown remain outside the guarantee.
+Automated fixtures qualify admission, detach/reattach continuity, and empty-session collection, not an otherwise-idle spare distro's shutdown timer.
 
 ## Terminal state and wire
 
@@ -613,7 +616,7 @@ Owner-backed tabs and splits implemented:
 
 Next implementation slices:
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Finish Phase 3 WSL keepalive admission and Windows-owner lifetime management; native multi-pane semantics and GUI integration are implemented (see below).
+2. Qualify native live windows and otherwise-idle WSL survival in a spare distro; Windows-owner WSL admission and lifetime management are implemented (see below).
 3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
 4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
 
@@ -627,10 +630,36 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
 3. Done: shared metadata, attachment, and stream state support the bounded multi-pane Windows owner, with spawn/close/respawn and persisted stable host identity.
 4. Done: native Windows local domains use the asynchronous GUI path, qualified by headless App/controller create, multi-pane layout, detach, and reattach fixtures; live-window smoke remains manual.
-5. In progress: the read-only Linux `session wait` lifetime watcher is implemented and tested; next hold bounded per-distro WSL keepalives in the Windows owner, independent of GUI connections.
-6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
+5. Done: bounded Windows-owned per-host WSL keepalives are admitted before guest create/attach, survive GUI disconnect, and collect only after a confirmed empty observation.
+6. Windows-owner and keeper-mechanism CI are registered; last-client disconnect and process-tree teardown are automated, while spare-distro idle survival and live-owner upgrade checks remain open.
 
-WSL keepalive guest foundation (`src/agent/session_wait.zig`):
+WSL keepalive integration (`session_keepalive_windows.zig`, `session_hold.zig`, and `session/transport.zig`):
+
+- Lua passes an explicit distro/user/launcher identity alongside the existing connector; strict resolution rejects disagreement rather than inferring a host from arbitrary argv.
+- A capability-gated Windows-only `hold_wsl` request pins that host through a dedicated native transport before the guest bridge starts; old native owners reject admission before any guest create can be sent.
+- The registry bounds published hosts to eight and client pins to sixteen; existing Linux hello/list and session mutations remain unchanged, and Linux owners need no restart.
+- Each keeper starts suspended, joins its own unnamed kill-on-close job before execution, and inherits only whitelisted stdin/stdout/NUL handles.
+- Overlapped parent pipes, fixed five-byte controls, coalesced pin writes, and generation-checked pin ACKs prevent blocking the owner loop, unbounded queues, or stale readiness admitting a new create.
+- Internal `session wait --hold` uses `R/P/U/F/E` controls plus a little-endian `u32` generation; it observes without starting an owner or taking over an attachment.
+- Pin loss starts a 30-second drain grace, and only an explicit current-generation empty control permits collection; exit status zero alone is not proof of emptiness.
+- Observation failures keep the guest process alive and retry only read-only observation; unexpected admitted helper exit retains the host record and repairs the watcher without replaying any mutation.
+- Keeper argv uses normal conditional Windows quoting because gratuitously quoting WSL's `--exec` tail can yield guest exit 127; real fixtures cover spaces and apostrophes in the agent path and spaces in private state paths.
+- Namespace, guest state-path, and native-helper overrides are internal fixture inputs only; production rejects guest state overrides and uses the existing immutable native-owner cache.
+- Default-domain startup, discovery, explicit attach, and workspace creation share this transport mechanism; ordinary nonpersistent PTYs, Linux-local, and SSH paths are unchanged.
+- The guide describes the required updated Windows owner and Linux helper; no GUI or production owner was restarted during qualification.
+
+Integration validation:
+
+- Windows keeper mechanism: 23 passed each in Debug, ReleaseSafe, and ReleaseFast.
+- Private Windows-to-WSL fixtures: both passed in Debug, ReleaseSafe, and ReleaseFast, including quoted paths and no-submission rejection.
+- Full native transport/Open/cache suites: 93 passed, 2 POSIX-only skips each in ReleaseSafe and ReleaseFast, including the WSL fixtures.
+- Windows owner Debug suite: 89 passed, 2 restrictive-job startup/survival skips, with fail-closed behavior checked.
+- Windows App/borrower suites: 53 passed, 1 optional guest-fixture skip each in ReleaseSafe and ReleaseFast.
+- Linux Debug transport/owner/PTY graph: 175 passed; ReleaseSafe passed 100 executed tests plus the cached 75-test owner-loop result, and ReleaseSmall owner-loop passed 75.
+- Full Lua suite: 983 passed, no failures or errors; bundled LuaJIT syntax and the Windows GUI build passed.
+- Windows CI includes the keeper target; CI itself was not run locally, and spare-distro idle-stop/live-window qualification remains open.
+
+WSL keepalive guest foundation checkpoint (`53b5317`, before Windows integration):
 
 - Linux `hollow-agent session wait` uses existing v1 hello/list requests only, without starting an owner, taking over a session, or changing pane state.
 - It allows a 30-second startup grace for an initial owner/session, then observes session membership once per second until the list becomes empty; protocol exchanges have their own bounded deadlines.
@@ -714,7 +743,7 @@ Interactive PowerShell receives the existing cwd/title profile through literal a
 Native transport/Open/cache qualification passed 85 tests with 2 POSIX-only skips in Debug, ReleaseSafe, and ReleaseFast.
 The Windows owner suite passed 85 tests in ReleaseSafe; full App/controller qualification passed 52 tests with 1 guest-fixture skip in ReleaseSafe and ReleaseFast.
 The Lua suite passed 982 tests, and launcher, Windows GUI build, and Linux transport/agent regressions passed.
-Live-window smoke and WSL keepalive remain outstanding; native Linux full borrower qualification was blocked locally by missing X11 build prerequisites.
+Live-window smoke and otherwise-idle spare-distro WSL qualification remain outstanding; native Linux full borrower qualification was blocked locally by missing X11 build prerequisites.
 The live-owner suite passes 70 tests each in Debug, ReleaseSafe, and ReleaseFast on the permissive main runner, including binary restore, a snapshot larger than the transport queue, takeover, process continuity, and descendant teardown.
 The combined ReleaseSafe owner/pane/ConPTY suite passes 111 tests.
 The production launcher test now verifies independence from a known kill-on-close launcher job and reachability at the same owner PID after that job closes; restrictive runners retain explicit fail-closed skips.
@@ -741,7 +770,7 @@ Producer/DSR timings still measure the owner parser rather than GUI completion.
 On 2026-11-06, the user visually confirmed repaint now feels on par with non-persistent panes; this is not a measured GUI speedup.
 
 `persist = true` is experimental and defaults to false.
-Native Windows owner and WSL keepalive remain Phase 3.
+Native Windows ownership and WSL keepalive admission are implemented; remaining Phase 3 work is manual qualification and live-owner upgrade checks.
 SSH trust remains user-managed.
 
 ### Tests per phase

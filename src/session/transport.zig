@@ -20,6 +20,10 @@ pub const Options = struct {
     /// Internal isolated fixture endpoint. Never read from user Lua config.
     /// Only valid for native Windows local owners; guests keep their namespace.
     namespace: ?[]const u8 = null,
+    wsl: ?p.WslHold = null,
+    /// Isolated WSL fixtures only, never read from user Lua configuration.
+    wsl_owner: ?[]const u8 = null,
+    wsl_namespace: ?[]const u8 = null,
 };
 
 pub const Status = struct {
@@ -56,6 +60,11 @@ pub const Connection = struct {
     /// Copies all configuration before starting any background work.
     pub fn create(a: std.mem.Allocator, io: std.Io, options: Options) !*Connection {
         if (options.agent.timeout_ms == 0) return error.InvalidArgument;
+        if (options.wsl) |value| {
+            try value.validate(options.wsl_namespace != null);
+            if (!value.matchesConnector(options.connector.argv, options.connector.remote_shell)) return error.InvalidArgument;
+        } else if (options.wsl_owner != null or options.wsl_namespace != null) return error.InvalidArgument;
+        if (options.wsl_owner != null and options.wsl_namespace == null) return error.InvalidArgument;
         if (options.namespace != null and !(builtin.os.tag == .windows and options.connector.argv.len == 0)) return error.InvalidArgument;
         if (builtin.os.tag == .windows and options.connector.argv.len == 0) {
             if (builtin.cpu.arch != .x86_64) return error.NativeSessionOwnerUnsupported;
@@ -76,6 +85,9 @@ pub const Connection = struct {
         self.options.connector = try options.connector.dupe(arena);
         self.options.agent = try options.agent.dupe(arena);
         if (options.namespace) |namespace| self.options.namespace = try arena.dupe(u8, namespace);
+        if (options.wsl) |value| self.options.wsl = try value.dupe(arena);
+        if (options.wsl_owner) |value| self.options.wsl_owner = try arena.dupe(u8, value);
+        if (options.wsl_namespace) |value| self.options.wsl_namespace = try arena.dupe(u8, value);
         self.client.identity = try arena.dupe(u8, options.ghostty_identity);
         self.options.ghostty_identity = self.client.identity;
         self.future = try io.concurrent(run, .{self});
@@ -306,10 +318,25 @@ pub const Connection = struct {
             self.mutex.unlock(self.io);
             return err;
         };
+        // The borrowed Windows-owner pin is admitted before a guest bridge can
+        // submit anything. Tear it down only after that bridge and its I/O stop.
+        const keeper = if (builtin.os.tag == .windows and self.options.wsl != null) try self.keepWsl(installed.path) else null;
+        defer if (keeper) |connection| connection.destroy();
+        const guest_command: []const []const u8 = if (self.options.wsl) |spec| blk: {
+            if (spec.session_dir) |directory| break :blk &.{
+                "/usr/bin/env",
+                try std.fmt.allocPrint(arena, "HOLLOW_SESSION_DIR={s}", .{directory}),
+                try std.fmt.allocPrint(arena, "XDG_STATE_HOME={s}/state", .{directory}),
+                installed.path,
+                "session",
+                "connect",
+            };
+            break :blk &.{ installed.path, "session", "connect" };
+        } else &.{ installed.path, "session", "connect" };
         const argv = if (native)
             try @import("native_windows.zig").command(arena, installed.path, self.options.namespace)
         else
-            try self.options.connector.command(arena, &.{ installed.path, "session", "connect" });
+            try self.options.connector.command(arena, guest_command);
         self.mutex.lockUncancelable(self.io);
         const closing = self.closing;
         self.connect_deadline = now(self.io) + @as(i128, self.options.agent.timeout_ms) * std.time.ns_per_ms;
@@ -350,6 +377,43 @@ pub const Connection = struct {
                 return failure.set("cannot prepare immutable native Windows session owner: {s}", .{@errorName(err)}) };
         }
         return deploy.install(self.io, arena, &self.control, self.options.connector, self.options.agent, failure, .{});
+    }
+
+    fn keepWsl(self: *Connection, path: []const u8) !*Connection {
+        var spec = self.options.wsl.?;
+        spec.agent = path;
+        const keeper = try Connection.create(self.allocator, self.io, .{
+            .agent = .{ .path = self.options.wsl_owner, .timeout_ms = self.options.agent.timeout_ms },
+            .namespace = self.options.wsl_namespace,
+            .ghostty_identity = self.options.ghostty_identity,
+        });
+        errdefer keeper.destroy();
+        const deadline = now(self.io) + @as(i128, @min(self.options.agent.timeout_ms, 40_000)) * std.time.ns_per_ms;
+        var request_id: ?u64 = null;
+        while (now(self.io) < deadline) {
+            if (self.control.isCancelled(self.io)) return error.Disconnected;
+            const status_value = keeper.status();
+            if (status_value.phase == .ended) {
+                if (keeper.deploymentFailure()) |detail| {
+                    self.mutex.lockUncancelable(self.io);
+                    self.deploy_failure = detail;
+                    self.mutex.unlock(self.io);
+                }
+                return status_value.failure orelse error.KeepaliveFailed;
+            }
+            if (status_value.phase == .ready and request_id == null)
+                request_id = try keeper.request(.{ .id = 0, .op = .hold_wsl, .wsl = spec });
+            if (keeper.pollUntil(now(self.io) + 50 * std.time.ns_per_ms)) |message| {
+                defer message.deinit();
+                if (message.kind == .reply and message.request_id == request_id and request_id != null) {
+                    const parsed = try p.parse(p.Reply, self.allocator, message.payload);
+                    defer parsed.deinit();
+                    if (!parsed.value.ok) return error.KeepaliveRejected;
+                    return keeper;
+                }
+            }
+        }
+        return error.Timeout;
     }
 
     fn writeLoop(self: *Connection) !void {

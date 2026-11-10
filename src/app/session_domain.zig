@@ -69,6 +69,7 @@ pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resol
             .agent = host.agent,
             .ghostty_identity = @import("../term/ghostty.zig").buildIdentity(),
             .path_style = host.path_style,
+            .wsl = host.wsl,
         },
     };
 }

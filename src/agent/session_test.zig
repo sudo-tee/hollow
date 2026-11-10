@@ -11,6 +11,7 @@ const a = std.testing.allocator;
 
 test {
     _ = @import("session_wait.zig");
+    _ = @import("session_hold.zig");
     _ = @import("session_core.zig");
     _ = @import("session_stream.zig");
     _ = @import("session_attachment.zig");

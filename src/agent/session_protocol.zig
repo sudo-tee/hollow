@@ -93,6 +93,75 @@ pub const Welcome = struct {
 };
 
 pub const owner_features = [_][]const u8{ "respawn", "create-id" };
+pub const windows_owner_features = owner_features ++ [_][]const u8{"wsl-keepalive"};
+
+test "WSL keepalive validates bounded identities and cannot redirect production state" {
+    const valid: WslHold = .{ .distro = "Guest & Distro", .user = "alice", .agent = "/opt/agent" };
+    try valid.validate(false);
+    for ([_][]const u8{ "", "-guest", "guest\x00bad" }) |name| {
+        var bad = valid;
+        bad.distro = name;
+        try std.testing.expectError(error.InvalidArgument, bad.validate(false));
+    }
+    var bad = valid;
+    bad.launcher = "relative/wsl.exe";
+    try std.testing.expectError(error.InvalidArgument, bad.validate(false));
+    bad = valid;
+    bad.session_dir = "/private/fixture";
+    try std.testing.expectError(error.InvalidArgument, bad.validate(false));
+    try bad.validate(true);
+    try std.testing.expect(valid.matchesConnector(&.{ "wsl.exe", "--distribution", valid.distro, "--user", "alice", "--cd", "/", "--exec" }, false));
+    try std.testing.expect(!valid.matchesConnector(&.{ "wsl.exe", "--distribution", "other", "--user", "alice", "--cd", "/", "--exec" }, false));
+    try std.testing.expect(!valid.matchesConnector(&.{ "wsl.exe", "--distribution", valid.distro, "--user", "alice", "--cd", "/", "--exec" }, true));
+}
+
+/// Windows-local mechanism, never forwarded to a Linux owner.
+pub const WslHold = struct {
+    distro: []const u8,
+    user: ?[]const u8 = null,
+    launcher: []const u8 = "wsl.exe",
+    agent: []const u8,
+    /// Private fixtures only; production admission rejects overrides.
+    session_dir: ?[]const u8 = null,
+
+    /// The caller supplies an arena; partial copies roll back with that arena.
+    pub fn dupe(self: WslHold, a: std.mem.Allocator) !WslHold {
+        return .{
+            .distro = try a.dupe(u8, self.distro),
+            .user = if (self.user) |value| try a.dupe(u8, value) else null,
+            .launcher = try a.dupe(u8, self.launcher),
+            .agent = try a.dupe(u8, self.agent),
+            .session_dir = if (self.session_dir) |value| try a.dupe(u8, value) else null,
+        };
+    }
+
+    pub fn matchesConnector(self: WslHold, argv: []const []const u8, remote_shell: bool) bool {
+        if (remote_shell or argv.len != @as(usize, if (self.user != null) 8 else 6)) return false;
+        if (!std.mem.eql(u8, argv[0], self.launcher) or !std.mem.eql(u8, argv[1], "--distribution") or !std.mem.eql(u8, argv[2], self.distro)) return false;
+        const offset: usize = if (self.user) |user| blk: {
+            if (!std.mem.eql(u8, argv[3], "--user") or !std.mem.eql(u8, argv[4], user)) return false;
+            break :blk 5;
+        } else 3;
+        return std.mem.eql(u8, argv[offset], "--cd") and std.mem.eql(u8, argv[offset + 1], "/") and std.mem.eql(u8, argv[offset + 2], "--exec");
+    }
+
+    pub fn validate(self: WslHold, fixture: bool) !void {
+        if (!name(self.distro)) return error.InvalidArgument;
+        if (self.user) |user| if (!name(user)) return error.InvalidArgument;
+        if (self.agent.len == 0 or self.agent.len > 4096 or self.agent[0] != '/' or std.mem.indexOfScalar(u8, self.agent, 0) != null) return error.InvalidArgument;
+        if (self.session_dir) |dir| {
+            if (!fixture or dir.len == 0 or dir.len > 4096 or dir[0] != '/' or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidArgument;
+        }
+        const path = self.launcher;
+        const absolute = (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '/' or path[2] == '\\')) or std.mem.startsWith(u8, path, "\\\\");
+        if (path.len == 0 or path.len > 32 * 1024 or std.mem.indexOfScalar(u8, path, 0) != null or
+            (!std.ascii.eqlIgnoreCase(path, "wsl.exe") and !absolute)) return error.InvalidArgument;
+    }
+
+    fn name(value: []const u8) bool {
+        return value.len > 0 and value.len <= 256 and value[0] != '-' and std.mem.indexOfScalar(u8, value, 0) == null;
+    }
+};
 
 pub fn validCreateId(id: []const u8) bool {
     if (id.len != 32) return false;
@@ -147,6 +216,9 @@ pub const Op = enum {
     /// Restart exited `pane` in the attached session from its original spawn,
     /// keeping its screen. Requires the "respawn" feature.
     respawn,
+    /// Pin an explicitly resolved WSL host in the native Windows owner.
+    /// Requires "wsl-keepalive". The pin lasts until this client disconnects.
+    hold_wsl,
 };
 
 pub const PaneSize = struct { pane: u32, cols: u16, rows: u16 };
@@ -164,6 +236,7 @@ pub const Request = struct {
     revision: ?u64 = null,
     /// Opaque, GUI-defined layout blob.
     layout: ?[]const u8 = null,
+    wsl: ?WslHold = null,
 };
 
 pub const PaneInfo = struct {

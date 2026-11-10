@@ -38,7 +38,7 @@ pub const Open = struct {
     /// including nested argv/env; no caller storage survives this call.
     pub fn prepare(a: Allocator, request: p.Request) !Open {
         if (request.id != 0 or request.pane != null or request.panes.len != 0 or
-            request.revision != null or request.layout != null) return error.InvalidRequest;
+            request.revision != null or request.layout != null or request.wsl != null) return error.InvalidRequest;
         switch (request.op) {
             .create => {
                 if (request.session != null or request.spawn == null) return error.InvalidRequest;

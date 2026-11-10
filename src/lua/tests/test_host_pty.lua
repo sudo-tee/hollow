@@ -50,6 +50,14 @@ describe("hollow.host.pty", function()
     assert.truthy(pty.request("native", "pwsh.exe").error)
   end)
 
+  it("carries explicit WSL identity only for persistent session mechanisms", function()
+    domains.guest = { host = { type = "wsl", distro = "Guest Distro", user = "alice" } }
+    local target = pty.session_request("guest", "/bin/sh")
+    assert.is_nil(target.error)
+    assert.are.same({ distro = "Guest Distro", user = "alice", launcher = "wsl.exe" }, target.wsl)
+    assert.is_nil(pty.request("guest", "/bin/sh").wsl)
+  end)
+
   it("uses Windows agent paths only for native Windows owners", function()
     for _, path in ipairs({
       "C:\\Program Files\\Hollow\\hollow-agent.exe",

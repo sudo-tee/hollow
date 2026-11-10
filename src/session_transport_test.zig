@@ -83,6 +83,14 @@ test "session client validates welcome format direction and reply correlation" {
     try std.testing.expectEqual(core.RequestState.unknown, client.requestState(id));
 }
 
+test "session client never submits WSL pin operations to a legacy owner" {
+    var client: core.Client = .{ .allocator = a, .identity = "test" };
+    defer client.deinit();
+    try welcome(&client);
+    try std.testing.expectError(error.Unsupported, client.request(.{ .id = 0, .op = .hold_wsl, .wsl = .{ .distro = "fixture", .agent = "/agent" } }));
+    try std.testing.expect(client.nextWrite() == null);
+}
+
 /// Receives one full output frame and discards it; parsing is reported
 /// separately through consumedBytes.
 fn receiveFrame(client: *core.Client, pane: u32) !void {

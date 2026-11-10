@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-10 after the WSL guest lifetime-watcher foundation.
+Updated 2026-11-10 after Windows-owned WSL keepalive integration qualification.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -59,6 +59,7 @@ Commit map (current IDs, oldest first):
 | `764b10a` | Bounded Windows multi-pane spawn/close/respawn |
 | `8c359c2` | Preserve PowerShell integration in owner shells |
 | `62c9013` | Native Windows persistent domain/App integration |
+| `53b5317` | Bounded read-only WSL guest lifetime watcher |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -66,9 +67,48 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: live-window native Windows smoke and Windows-owner WSL keepalive admission/lifetime management; the guest watcher foundation is implemented below.
+3. Phase 3: live-window native Windows smoke, otherwise-idle spare-distro WSL survival, and live-owner upgrade qualification; keepalive admission/lifetime management is implemented below.
 
-WSL keepalive guest foundation:
+Windows-owned WSL keepalive integration:
+
+- Explicit WSL session descriptors now carry copied distro/user/launcher metadata from Lua through strict host resolution into `session/transport.zig`; mismatched connectors fail closed.
+- Before spawning a guest bridge, the transport obtains a capability-gated `hold_wsl` pin through a native Windows transport; bridge/I/O teardown precedes pin release.
+- `session_keepalive_windows.zig` owns eight bounded host records with at most sixteen client pins; `session_keepalive_process_windows.zig` launches suspended, handle-whitelisted children into unnamed per-keeper kill-on-close jobs.
+- The parent uses overlapped pipes and fixed five-byte controls, with coalesced pin updates and generation-checked ACKs before admitting a new create/attach.
+- Internal Linux `session wait --hold` retains a WSL connection across observation errors, never starts or takes over an owner, and acknowledges an explicit empty state only after the last pin's 30-second drain grace.
+- An admitted helper crash, including status zero without the empty control, retains its host record and repairs only read-only observation; uncertain mutations are never replayed.
+- Real private Windows-to-WSL fixtures verify create, copied host identity, original owner PID and shell-variable continuity after all GUI/native guard connections close, re-pin/reattach, explicit kill, and automatic Windows-owner exit after empty collection.
+- A missing guest helper rejects before a queued create is submitted; old native owners are also capability-fenced before submission.
+- Fixture namespaces, helper paths, and private guest runtime/state paths never come from Lua configuration and never touch production cache, host identity, or owners.
+- Conditional Windows argv quoting is essential for WSL's `--exec` tail; always quoting option words caused guest exit 127 during qualification, and a regression now covers it.
+- Real fixtures include spaces and apostrophes in the guest agent path and spaces in private guest state paths.
+- Updated full agent bundles are required: a GUI-only development rebuild can leave an old Linux helper without `--hold`; existing Linux owners need no restart.
+- Windows native owners already running without `wsl-keepalive` fail visibly rather than being replaced automatically.
+- This qualifies private Windows/WSL integration, not the idle-stop timer of an otherwise-unused distro; the coding distro stayed running and no GUI or production owner was restarted.
+- CI runs the standalone keeper mechanism suite; real WSL fixture tests require explicit distro and agent build options and skip without them.
+
+Validation commands for this slice:
+
+```sh
+zig build --build-file build-agent.zig test-session-windows-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all
+zig build --build-file build-agent.zig test-session-wsl-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe -Dkeepalive-test-agent=/absolute/guest/agent -Dkeepalive-test-distro=Ubuntu --summary all
+```
+
+Use a freshly rebuilt guest binary and a private fixture, never the production session directory.
+Logs for the final matrix are `/tmp/opencode/wsl-keeper-*-final-20261110.log`; full Lua and bundled syntax checks also passed.
+
+Verified results for this slice:
+
+- Windows keeper mechanism: 23 passed each in Debug, ReleaseSafe, and ReleaseFast.
+- Private Windows-to-WSL fixtures: 2 passed in each of those three modes.
+- Full native transport/Open/cache: 93 passed, 2 POSIX-only skips each in ReleaseSafe and ReleaseFast, with the WSL fixtures enabled.
+- Windows owner Debug: 89 passed, 2 restrictive-job startup/survival skips after fail-closed checks.
+- Windows App/borrowers: 53 passed, 1 optional guest-fixture skip each in ReleaseSafe and ReleaseFast; bundled LuaJIT syntax passed.
+- Linux Debug transport/owner/PTY: 175 passed; ReleaseSafe graph passed 100 executed tests plus the cached 75-test owner-loop result, and ReleaseSmall owner-loop passed 75.
+- Full Lua: 983 successes, no failures or errors; Windows GUI cross-build passed.
+- Remaining qualification: actual user windows, otherwise-idle spare-distro survival, and live-owner upgrade behavior; CI was registered but not run locally.
+
+WSL keepalive guest foundation checkpoint (`53b5317`, superseded by integration above):
 
 - `src/agent/session_wait.zig` implements Linux `hollow-agent session wait` using only existing hello/list requests; no Linux wire change or owner restart is needed.
 - Startup tolerates a missing owner or empty list for 30 seconds without starting an owner; observing sessions removes that startup limit, and the first subsequent empty list ends the watcher successfully.
@@ -106,7 +146,7 @@ Final native integration validation:
 - Full Lua suite: 982 passed, zero failures or errors.
 - Launcher installation tests, Windows GUI cross-build, and Linux transport/agent-loop/PTY regressions passed.
 - Native Linux full borrower build remains unavailable here because `xproto.pc` is missing and the compiler aborted; Linux pane/headless suites passed.
-- Live-window smoke and WSL per-distro keepalive remain outstanding.
+- Live-window smoke and otherwise-idle spare-distro WSL qualification remain outstanding.
 
 Windows host identity is now persisted as 32 lowercase hexadecimal bytes at `%LOCALAPPDATA%\hollow\sessions\host-id`.
 Production loads it after singleton endpoint admission; fixture namespaces generate ephemeral owner-local identities without touching production state.
@@ -231,7 +271,7 @@ The first live Windows owner now also uses this metadata; the earlier bootstrap 
 Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
 The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
 Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
-Next concrete slice: manual native-window smoke and bounded per-distro WSL keepalive while guest sessions remain live, without coupling owner lifetime to the GUI.
+Next concrete slice: manual native-window smoke, otherwise-idle spare-distro WSL survival, and the Phase 4 promise/upgrade audit.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
@@ -513,7 +553,7 @@ Gotchas that cost time before:
   through explicit close replies/failure. `deinit` must not issue remote close.
 - Terminal replacement allocates helpers first. Controller-owned search/etc.
   borrowers must be released with `session_before_replace` before freeing old VT.
-- SSH trust remains user-managed. Windows owner/WSL keepalive remain Phase 3.
+- SSH trust remains user-managed; Windows ownership and WSL keepalives are implemented, with manual qualification still open.
 
 ## Validation
 
