@@ -2,12 +2,10 @@
 
 Persistent workspaces keep terminal processes, screen state, and scrollback in a host-side owner when the GUI disconnects.
 Persistence is opt-in per domain and leaves ordinary domains unchanged.
-This implementation supports Linux owners locally, inside WSL, or through SSH to Linux.
-Native Windows owners are not supported yet.
-The developer-only Windows owner supports raw `session connect` transport and bounded multi-pane sessions for protocol fixtures.
-It supports create/list, attach/detach, input/resize, snapshots, layout revisions, pane spawn/close/respawn, and kill.
-Windows owner limits are 16 sessions, 16 panes per session, and 64 panes total; native Windows GUI domains remain disabled.
-Its separate `session-owner-windows` build target does not enable native Windows domains; see the [implementation plan](persistent-sessions.md#phase-3-implementation-slices).
+This implementation supports native Linux, native Windows x86_64, WSL, and SSH to Linux.
+Native Windows support is experimental and uses the same asynchronous workspace opening and restoration path.
+Windows owner limits are 16 sessions, 16 panes per session, and 64 panes total, with 1 MiB scrollback per pane.
+Remote Windows owners are not supported.
 
 ## Enable a test domain
 
@@ -29,6 +27,30 @@ For native Linux, use `host = { type = "local" }` instead.
 For SSH, use an explicit `host = { type = "ssh", destination = "my-alias" }` descriptor and configure SSH trust yourself first.
 Existing agent deployment settings such as `agent_path`, `agent_dir`, and `timeout_ms` apply to the host descriptor.
 An omitted shell selects the guest login shell; an explicit guest shell such as `/bin/zsh -l` preserves its arguments.
+
+For native Windows, use an explicit local host and a Windows shell:
+
+```lua
+hollow.config.set({
+  domains = {
+    persistent_windows = {
+      persist = true,
+      host = { type = "local" },
+      shell = "powershell.exe -NoLogo -NoProfile",
+    },
+  },
+})
+```
+
+The Windows session-only owner is included in Windows builds, releases, and development GUI builds.
+Missing owner binaries fail visibly; Hollow does not probe Linux or fall back to a disposable shell.
+`agent_path` on a Windows local host must be an absolute Windows path; guest host overrides remain absolute Linux paths.
+Managed bundles run from an immutable, checksum-addressed cache under `%LOCALAPPDATA%\hollow\session-owners` so GUI upgrades do not overwrite a resident owner executable.
+For an explicit `agent_path`, keep that file unchanged while its owner runs and use a versioned path when upgrading.
+Native persistent PowerShell receives OSC-based cwd/title integration without inheriting GUI pane or workspace identifiers.
+Do not configure `wsl.exe` as a native-local persistent shell: select an explicit WSL host instead.
+Detached owner startup requires permission to leave the GUI launcher's Windows job; restrictive launchers fail visibly rather than creating an owner that would die with the GUI.
+Headless App/controller integration is automated; a live-window smoke check remains recommended before making this your default domain.
 
 Create a workspace through the Lua REPL or your own action:
 

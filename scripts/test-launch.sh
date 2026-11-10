@@ -52,9 +52,10 @@ printf 'lua\n' > "$REPO/src/lua/init.lua"
 printf 'return {}\n' > "$REPO/src/lua/hollow/app.lua"
 printf 'return {}\n' > "$REPO/src/lua/hollow/ui/pane.lua"
 printf 'config\n' > "$REPO/conf/init.lua"
-mkdir -p "$REPO/zig-out/agents/linux-x86_64" "$REPO/zig-out/agents/linux-aarch64"
+mkdir -p "$REPO/zig-out/agents/linux-x86_64" "$REPO/zig-out/agents/linux-aarch64" "$REPO/zig-out/agents/windows-x86_64"
 printf 'x86_64 agent\n' > "$REPO/zig-out/agents/linux-x86_64/hollow-agent"
 printf 'aarch64 agent\n' > "$REPO/zig-out/agents/linux-aarch64/hollow-agent"
+printf 'windows session owner\n' > "$REPO/zig-out/agents/windows-x86_64/hollow-agent.exe"
 printf 'manifest\n' > "$REPO/zig-out/agents/SHA256SUMS"
 mkdir -p "$REPO/zig-out/cli/linux-x86_64" "$REPO/zig-out/cli/linux-aarch64"
 printf 'x86_64 cli\n' > "$REPO/zig-out/cli/linux-x86_64/hollow-cli"
@@ -77,7 +78,7 @@ grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Doptimize=Debug' "$TEST_LOG"
 bash "$REPO/launch.sh" --build-only --pdb
 grep -Fxq 'build build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast -Dpdb' "$TEST_LOG"
 
-# Dev builds only the app executables, except when installing full bundles.
+# Dev builds apps plus their native helper, except when installing full bundles.
 : > "$TEST_LOG"
 bash "$REPO/launch.sh" --build-only --dev
 grep -Fxq 'build build gui -Dtarget=x86_64-windows-gnu -Ddev' "$TEST_LOG"
@@ -112,7 +113,7 @@ for name in app.lua ui/pane.lua; do
   cmp "$REPO/src/lua/hollow/$name" "$INSTALL_DEST/src/lua/hollow/$name"
 done
 cmp "$REPO/conf/init.lua" "$INSTALL_DEST/conf/init.lua"
-for name in SHA256SUMS linux-x86_64/hollow-agent linux-aarch64/hollow-agent; do
+for name in SHA256SUMS linux-x86_64/hollow-agent linux-aarch64/hollow-agent windows-x86_64/hollow-agent.exe; do
   cmp "$REPO/zig-out/agents/$name" "$INSTALL_DEST/agents/$name"
 done
 grep -Fxq close "$TEST_LOG"
@@ -171,6 +172,14 @@ grep -Fxq config "$INSTALL_DEST/conf/init.lua"
 ! grep -Eq '^start$|^run ' "$TEST_LOG"
 
 # Reject incomplete bundles and unsupported targets.
+mv "$REPO/zig-out/agents/windows-x86_64/hollow-agent.exe" "$TEST_DIR/saved-owner.exe"
+: > "$TEST_LOG"
+if bash "$REPO/launch.sh" --install --no-build --build-only; then
+  echo 'Expected missing native session owner to fail before closing Hollow' >&2
+  exit 1
+fi
+! grep -Eq '^close$|^start$|^run ' "$TEST_LOG"
+mv "$TEST_DIR/saved-owner.exe" "$REPO/zig-out/agents/windows-x86_64/hollow-agent.exe"
 rm "$REPO/zig-out/bin/hollow-native.exe"
 if bash "$REPO/launch.sh" --install --no-build --build-only; then
   echo 'Expected incomplete installation to fail' >&2

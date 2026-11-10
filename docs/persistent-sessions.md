@@ -510,8 +510,7 @@ GUI workspace/controller wiring implemented for an already-attached session:
   persistent domain; workspace snapshots expose `session_id`.
   Host options, request data and callback generation are captured before I/O;
   stale queued session operations are rejected after config reload.
-  Native Windows owners remain unsupported; Linux-local, WSL and SSH-to-Linux
-  use the existing connector/deployment machinery without native fallback.
+  Native Windows x86_64 local owners now use their bundled session-only helper; Linux-local, WSL, and SSH-to-Linux retain the existing connector/deployment machinery without fallback.
 - Async admission foundation: `src/session/open.zig` owns a copied create/attach
   request and stops at the matching reply, before consuming pane snapshots or
   output. `src/app/session_open.zig` bounds pending operations to 16, captures
@@ -620,13 +619,14 @@ Next implementation slices:
 
 ### Phase 3 implementation slices
 
-Keep native Windows persistence rejected until transport and owner lifecycle are usable end to end.
+Native Windows x86_64 persistence is now experimentally available through explicit local hosts and the existing per-domain opt-in.
+Defaults remain nonpersistent; unsupported platforms, WSL launcher bypasses, and invalid host resolution still fail closed.
 Do not restart existing Linux owners or change the Linux wire contract merely to introduce Windows mechanisms.
 
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
 3. Done: shared metadata, attachment, and stream state support the bounded multi-pane Windows owner, with spawn/close/respawn and persisted stable host identity.
-4. Connect native Windows persistent domains through the asynchronous GUI path and qualify create/detach/reattach/kill with real processes.
+4. Done: native Windows local domains use the asynchronous GUI path, qualified by headless App/controller create, multi-pane layout, detach, and reattach fixtures; live-window smoke remains manual.
 5. Hold bounded per-distro WSL keepalives in the Windows owner while guest sessions remain live, independent of GUI connections.
 6. Add Windows-owner CI and record last-client disconnect, process-tree teardown, WSL idle survival, and live-owner upgrade checks.
 
@@ -694,7 +694,15 @@ Final-component reparse points are rejected, concurrent creation converges on th
 Owner-side process/output events wake the overlapped transport loop without idle polling.
 Published creates that cannot allocate an attachment reply become uncertain disconnections, not definitive rejections, and remain discoverable by reserved identity.
 Input-channel failure preserves process liveness and output draining; the signed exit wire saturates high-bit Windows codes instead of encoding false Unix signals.
-Native Windows GUI persistence remains disabled; detached-start qualification depends on whether the runner's enclosing job permits breakaway.
+Native Windows GUI domains are now admitted through strict explicit-local resolution; detached-start qualification depends on whether the runner's enclosing job permits breakaway.
+Native transport resolves the bundled session-only owner without Linux deployment probing and keeps namespace injection internal to isolated fixtures.
+Managed bundles execute from an immutable checksum-addressed cache so later GUI builds or installs do not overwrite resident owner images.
+Windows releases and development GUI builds include the helper, and installation rejects missing helpers before closing the existing GUI.
+Interactive PowerShell receives the existing cwd/title profile through literal argv preparation, with OSC activation independent of GUI identifiers; command/file launches and integration opt-out remain direct.
+Native transport/Open/cache qualification passed 85 tests with 2 POSIX-only skips in Debug, ReleaseSafe, and ReleaseFast.
+The Windows owner suite passed 85 tests in ReleaseSafe; full App/controller qualification passed 52 tests with 1 guest-fixture skip in ReleaseSafe and ReleaseFast.
+The Lua suite passed 982 tests, and launcher, Windows GUI build, and Linux transport/agent regressions passed.
+Live-window smoke and WSL keepalive remain outstanding; native Linux full borrower qualification was blocked locally by missing X11 build prerequisites.
 The live-owner suite passes 70 tests each in Debug, ReleaseSafe, and ReleaseFast on the permissive main runner, including binary restore, a snapshot larger than the transport queue, takeover, process continuity, and descendant teardown.
 The combined ReleaseSafe owner/pane/ConPTY suite passes 111 tests.
 The production launcher test now verifies independence from a known kill-on-close launcher job and reachability at the same owner PID after that job closes; restrictive runners retain explicit fail-closed skips.

@@ -84,6 +84,7 @@ fn addSessionVt(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner");
     const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
+    const native_windows_tests = b.step("test-session-native-windows", "Run native-local asynchronous Windows session transport and open tests");
     if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
         const owner_module = b.createModule(.{
             .root_source_file = b.path("src/session_owner_windows.zig"),
@@ -97,10 +98,12 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         owner_module.addOptions("build_options", owner_options);
         addSessionVt(b, owner_module, target, optimize);
         const owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = owner_module });
+        b.addNamedLazyPath("windows_session_owner", owner.getEmittedBin());
         const install_owner = b.addInstallArtifact(owner, .{
             .dest_dir = .{ .override = .{ .custom = "agents/windows-x86_64" } },
         });
         windows_owner_step.dependOn(&install_owner.step);
+        b.getInstallStep().dependOn(&install_owner.step);
         const options = b.addOptions();
         options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
         options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
@@ -116,10 +119,23 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
         run.has_side_effects = true;
         windows_owner_tests.dependOn(&run.step);
+        const native_module = b.createModule(.{
+            .root_source_file = b.path("src/session_native_windows_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        native_module.linkSystemLibrary("advapi32", .{});
+        native_module.addOptions("build_options", options);
+        addSessionVt(b, native_module, target, optimize);
+        const native_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module }));
+        native_run.has_side_effects = true;
+        native_windows_tests.dependOn(&native_run.step);
     } else {
         const fail = b.addFail("Windows session owner requires -Dtarget=x86_64-windows-gnu (or native x86_64 Windows)");
         windows_owner_step.dependOn(&fail.step);
         windows_owner_tests.dependOn(&fail.step);
+        native_windows_tests.dependOn(&fail.step);
     }
     const windows_pty_step = b.step("test-session-windows-pty", "Run headless Windows ConPTY session job lifecycle tests");
     const windows_pane_step = b.step("test-session-windows-pane", "Run headless Windows owner pane and terminal snapshot tests");

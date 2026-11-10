@@ -1,13 +1,13 @@
 # Persistent sessions handoff
 
-Updated 2026-11-09 during Windows host identity and multi-pane qualification.
+Updated 2026-11-10 during native Windows GUI/domain integration qualification.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
 
 ## Start here
 
-Feature state: persistence is opt-in per domain (`domains.<name>.persist = true`) and works for Linux owners locally, in WSL, and over SSH.
+Feature state: persistence is opt-in per domain (`domains.<name>.persist = true`) for native Linux, WSL, SSH-to-Linux, and now experimental native Windows x86_64 local domains.
 A user can create a persistent workspace, close the GUI, and get the same processes, screens, tabs, and splits back.
 Startup reattaches remembered sessions automatically (slice 3).
 The workspace switcher lists, attaches, kills, and creates sessions (slice 4).
@@ -56,6 +56,7 @@ Commit map (current IDs, oldest first):
 | `6597ca2` | Windows owner ConPTY/headless-VT pane adapter |
 | `e5f7670` | Bounded live single-pane Windows owner |
 | `f6d92ca` | Secured, persisted Windows session host identity |
+| `764b10a` | Bounded Windows multi-pane spawn/close/respawn |
 
 Commit IDs inside the notes below may predate a rebase; trust the table and `git log`.
 
@@ -63,7 +64,31 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: native Windows GUI/domain integration and WSL keepalive, with owner mechanisms now implemented.
+3. Phase 3: live-window native Windows smoke and WSL keepalive, with native domain/App integration now implemented.
+
+Native-local Windows admission now resolves the existing explicit local host descriptor and Windows-native agent paths, never implicit/fallback hosts or WSL launchers under the native owner.
+`persist` remains false by default, and Linux-local/WSL/SSH deployment and ordinary nonpersistent PTY paths are unchanged.
+`session/native_windows.zig` locates an explicit owner or `agents/windows-x86_64/hollow-agent.exe` beside the GUI (including `bin/../agents`) without a Linux probe.
+Missing bundles fail visibly and never create disposable panes.
+The Windows helper is included in default installs and `gui` developer builds, and launcher preflight checks it before closing an installed GUI.
+Managed bundles are copied into an immutable per-user SHA-256 cache before execution; existing mismatched entries fail closed, and old versions remain available to resident owners.
+Explicit preinstalled paths remain caller-managed; private namespaces bypass production cache and host state.
+Configured interactive PowerShell argv now shares ordinary GUI integration preparation; its profile accepts OSC transport without GUI IDs, while command/file launches and opt-out remain literal.
+PowerShell profile paths containing apostrophes are quoted literally.
+The internal transport namespace option is copied and validated, never read from Lua/user config, and is used only by isolated Windows fixtures.
+The full headless App fixture resolves a native domain, creates three interactive panes through the async opener/controller, flushes layout, destroys the App, and restores matching variables, shell PID, layout, host identity, and owner PID in another App.
+No actual user window or production owner was restarted during qualification.
+
+Final native integration validation:
+
+- Native transport/Open/cache suite: 85 passed, 2 POSIX-only skips in Debug, ReleaseSafe, and ReleaseFast.
+- Windows owner suite: 85 passed in ReleaseSafe, including configured PowerShell cwd integration.
+- Full Windows App/controller borrower suite: 52 passed, 1 guest-fixture skip in ReleaseSafe and ReleaseFast.
+- Real cached-owner fixture preserved owner PID, host identity, and interactive state after replacing its private bundle source; old cached bytes stayed unchanged and replacement selected a different cache path.
+- Full Lua suite: 982 passed, zero failures or errors.
+- Launcher installation tests, Windows GUI cross-build, and Linux transport/agent-loop/PTY regressions passed.
+- Native Linux full borrower build remains unavailable here because `xproto.pc` is missing and the compiler aborted; Linux pane/headless suites passed.
+- Live-window smoke and WSL per-distro keepalive remain outstanding.
 
 Windows host identity is now persisted as 32 lowercase hexadecimal bytes at `%LOCALAPPDATA%\hollow\sessions\host-id`.
 Production loads it after singleton endpoint admission; fixture namespaces generate ephemeral owner-local identities without touching production state.
@@ -142,7 +167,7 @@ They can receive input before their first output.
 Owner-side destruction kills descendants too; GUI detach must never destroy this owner-side PTY.
 Session input overflow rejects admission atomically with `ResourceExhausted`, without marking the pane dead.
 The ordinary GUI pre-output input buffer is now bounded to the same 1 MiB input limit.
-Native Windows persistence remains unsupported until shared session semantics and GUI wiring land.
+At this foundation checkpoint native Windows persistence remained unsupported; the native domain milestone above now wires it through the existing GUI path.
 This foundation does not change Linux owners or require restarting existing sessions.
 Foundation validation: real Windows ConPTY/job tests pass (11 tests each in Debug, ReleaseSafe, and ReleaseFast), Linux ReleaseSafe transport/agent-loop/PTY suites pass (138 tests), Windows borrower/App tests pass (49 tests, one optional fixture skipped), and the ReleaseFast Windows GUI cross-build passes.
 The standalone target is registered in Windows CI; final read-only review found no actionable issues.
@@ -188,7 +213,7 @@ The first live Windows owner now also uses this metadata; the earlier bootstrap 
 Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
 The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
 Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
-Next concrete slice: connect native Windows domains to the asynchronous GUI path and qualify create, multi-pane operations, detach/reattach, remembered host identity, and kill before enabling persistence.
+Next concrete slice: manual native-window smoke and bounded per-distro WSL keepalive while guest sessions remain live, without coupling owner lifetime to the GUI.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.

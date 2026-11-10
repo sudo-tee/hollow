@@ -23,7 +23,12 @@ function M.absolute(path)
     and (path:sub(1, 1) == "/" or path:match("^[A-Za-z]:[/\\]") ~= nil or path:sub(1, 2) == "\\\\")
 end
 
-local function agent(opts)
+local function windows_absolute(path)
+  return type(path) == "string"
+    and (path:match("^[A-Za-z]:[/\\]") ~= nil or path:sub(1, 2) == "\\\\")
+end
+
+local function agent(opts, native_windows)
   local result = { timeout_ms = opts.timeout_ms or 60000 }
   local timeout = result.timeout_ms
   if
@@ -37,7 +42,9 @@ local function agent(opts)
   end
   if opts.agent_path ~= nil then
     result.path = M.string(opts.agent_path, "agent_path")
-    if result.path:sub(1, 1) ~= "/" then
+    if native_windows and not windows_absolute(result.path) then
+      error("agent_path must be an absolute Windows path", 3)
+    elseif not native_windows and result.path:sub(1, 1) ~= "/" then
       error("agent_path must be an absolute Linux path", 3)
     end
   end
@@ -86,7 +93,7 @@ function M.target(kind, opts)
   return { connector = require(module).connector(opts), agent = agent(opts) }
 end
 
---- Session owners also support native Linux, without a connector process.
+--- Session owners also support native Linux/Windows, without a connector process.
 function M.session_target(kind, opts)
   if type(opts) ~= "table" then
     error("session host expects an options table", 2)
@@ -100,7 +107,10 @@ function M.session_target(kind, opts)
   if type(opts) ~= "table" then
     error("local host expects an options table", 2)
   end
-  return { connector = { argv = {} }, agent = agent(opts) }
+  return {
+    connector = { argv = {} },
+    agent = agent(opts, (_G.hollow.platform or {}).is_windows),
+  }
 end
 
 return M

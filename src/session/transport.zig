@@ -2,6 +2,7 @@
 //! nonpersistent PTYs remain separate. Destroying this connection closes only
 //! the bridge: the host owner and its panes remain alive.
 const std = @import("std");
+const builtin = @import("builtin");
 const deploy = @import("../host/deploy.zig");
 const protocol = @import("client.zig");
 const Wake = @import("../pty/wake.zig").Wake;
@@ -16,6 +17,9 @@ pub const Options = struct {
     ghostty_identity: []const u8,
     wake: Wake = .{},
     path_style: p.pty.PathStyle = .posix,
+    /// Internal isolated fixture endpoint. Never read from user Lua config.
+    /// Only valid for native Windows local owners; guests keep their namespace.
+    namespace: ?[]const u8 = null,
 };
 
 pub const Status = struct {
@@ -52,6 +56,12 @@ pub const Connection = struct {
     /// Copies all configuration before starting any background work.
     pub fn create(a: std.mem.Allocator, io: std.Io, options: Options) !*Connection {
         if (options.agent.timeout_ms == 0) return error.InvalidArgument;
+        if (options.namespace != null and !(builtin.os.tag == .windows and options.connector.argv.len == 0)) return error.InvalidArgument;
+        if (builtin.os.tag == .windows and options.connector.argv.len == 0) {
+            if (builtin.cpu.arch != .x86_64) return error.NativeSessionOwnerUnsupported;
+            if (options.connector.remote_shell) return error.InvalidSessionHost;
+            try @import("native_windows.zig").validateNamespace(options.namespace);
+        }
         const self = try a.create(Connection);
         errdefer a.destroy(self);
         self.* = .{
@@ -65,6 +75,7 @@ pub const Connection = struct {
         const arena = self.arena.allocator();
         self.options.connector = try options.connector.dupe(arena);
         self.options.agent = try options.agent.dupe(arena);
+        if (options.namespace) |namespace| self.options.namespace = try arena.dupe(u8, namespace);
         self.client.identity = try arena.dupe(u8, options.ghostty_identity);
         self.options.ghostty_identity = self.client.identity;
         self.future = try io.concurrent(run, .{self});
@@ -288,13 +299,17 @@ pub const Connection = struct {
     fn runInner(self: *Connection) !void {
         var failure: deploy.Failure = .{};
         const arena = self.arena.allocator();
-        const installed = deploy.install(self.io, arena, &self.control, self.options.connector, self.options.agent, &failure, .{}) catch |err| {
+        const native = builtin.os.tag == .windows and self.options.connector.argv.len == 0;
+        const installed = self.install(&failure) catch |err| {
             self.mutex.lockUncancelable(self.io);
             self.deploy_failure = failure;
             self.mutex.unlock(self.io);
             return err;
         };
-        const argv = try self.options.connector.command(arena, &.{ installed.path, "session", "connect" });
+        const argv = if (native)
+            try @import("native_windows.zig").command(arena, installed.path, self.options.namespace)
+        else
+            try self.options.connector.command(arena, &.{ installed.path, "session", "connect" });
         self.mutex.lockUncancelable(self.io);
         const closing = self.closing;
         self.connect_deadline = now(self.io) + @as(i128, self.options.agent.timeout_ms) * std.time.ns_per_ms;
@@ -315,6 +330,26 @@ pub const Connection = struct {
         switch (result) {
             inline else => |value| try value,
         }
+    }
+
+    fn install(self: *Connection, failure: *deploy.Failure) !deploy.Install {
+        const arena = self.arena.allocator();
+        if (builtin.os.tag == .windows and self.options.connector.argv.len == 0) {
+            const path = try @import("native_windows.zig").resolve(self.io, arena, self.options.agent, failure);
+            // Explicit preinstalled paths remain caller-controlled. Managed
+            // bundles execute immutably, so upgrading the GUI never overwrites
+            // an image still owned by persistent processes. Fixtures never
+            // access production cache or host state.
+            if (self.options.agent.path != null or self.options.namespace != null) return .{ .path = path };
+            const root = @import("../io.zig").getEnvVarOwned(arena, "LOCALAPPDATA") catch
+                return failure.set("native Windows session owner cache requires LOCALAPPDATA", .{});
+            if (!std.fs.path.isAbsolute(root) or std.mem.indexOfScalar(u8, root, 0) != null)
+                return failure.set("native Windows session owner cache requires an absolute LOCALAPPDATA path", .{});
+            const cache_root = try std.fs.path.join(arena, &.{ root, "hollow", "session-owners" });
+            return .{ .path = @import("native_windows_cache.zig").install(self.io, arena, path, cache_root) catch |err|
+                return failure.set("cannot prepare immutable native Windows session owner: {s}", .{@errorName(err)}) };
+        }
+        return deploy.install(self.io, arena, &self.control, self.options.connector, self.options.agent, failure, .{});
     }
 
     fn writeLoop(self: *Connection) !void {

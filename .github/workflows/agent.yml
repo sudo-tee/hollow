@@ -40,6 +40,12 @@ jobs:
         run: |
           zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pane 2>&1 | Tee-Object -FilePath session-windows-pane.log
           exit $LASTEXITCODE
+      - name: Native-local asynchronous session transport and open lifecycle
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-native-windows 2>&1 | Tee-Object -FilePath session-native-windows.log
+          exit $LASTEXITCODE
       - name: Portable session metadata and admission on Windows
         shell: pwsh
         run: |
@@ -54,6 +60,7 @@ jobs:
             session-windows-pty.log
             session-windows-owner.log
             session-windows-pane.log
+            session-native-windows.log
             session-core.log
   docker:
     runs-on: ubuntu-latest

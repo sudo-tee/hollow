@@ -35,14 +35,66 @@ describe("hollow.host.pty", function()
     assert.truthy(pty.request("native", "/bin/sh").error)
   end)
 
-  it("rejects native Windows session owners", function()
+  it("resolves native Windows session owners without changing ordinary PTYs", function()
     domains.native = { host = { type = "local" } }
     domains.off = { host = false }
     for _, domain in ipairs({ "native", "off", "absent" }) do
       local host = pty.session_request(domain, "pwsh.exe")
       assert.are.equal("explicit", host.mode)
-      assert.truthy(host.error:find("Windows", 1, true))
+      assert.is_nil(host.error)
+      assert.are.same({}, host.connector.argv)
+      assert.is_nil(host.connector.remote_shell)
+      assert.are.equal("posix", host.path_style)
     end
+    assert.is_nil(pty.request("off", "pwsh.exe"))
+    assert.truthy(pty.request("native", "pwsh.exe").error)
+  end)
+
+  it("uses Windows agent paths only for native Windows owners", function()
+    for _, path in ipairs({
+      "C:\\Program Files\\Hollow\\hollow-agent.exe",
+      "C:/Hollow/agent.exe",
+      "\\\\server\\share\\agent.exe",
+    }) do
+      domains.native = { host = { type = "local", agent_path = path } }
+      assert.are.equal(path, pty.session_request("native", "pwsh.exe").agent.path)
+      for _, spec in ipairs({
+        { type = "wsl", distro = "Ubuntu", agent_path = path },
+        { type = "ssh", destination = "box", agent_path = path },
+      }) do
+        domains.guest = { host = spec }
+        assert.truthy(pty.session_request("guest", "sh").error)
+      end
+      env.hollow.platform.is_windows = false
+      assert.truthy(pty.session_request("native", "/bin/sh").error)
+      env.hollow.platform.is_windows = true
+    end
+    for _, path in ipairs({ "/opt/agent", "C:agent.exe", "\\agent.exe", "C:\\bad\0agent.exe" }) do
+      domains.native = { host = { type = "local", agent_path = path } }
+      assert.truthy(pty.session_request("native", "pwsh.exe").error)
+    end
+    domains.guest = { host = { type = "wsl", distro = "Ubuntu", agent_path = "/opt/agent" } }
+    assert.are.equal("/opt/agent", pty.session_request("guest", "sh").agent.path)
+  end)
+
+  it("never launches WSL under a native owner even with host opt-out", function()
+    domains.native = { host = { type = "local" } }
+    domains.off = { host = false, wsl_distro = "Ubuntu" }
+    for _, shell in ipairs({
+      "wsl.exe",
+      "WSL",
+      '"C:\\Windows\\System32\\WSL.EXE" -d Ubuntu',
+      "wsl.exe -d",
+    }) do
+      for _, domain in ipairs({ "native", "off" }) do
+        assert.truthy(pty.session_request(domain, shell).error)
+      end
+    end
+    assert.truthy(pty.session_request(nil, "wsl.exe").error)
+    local inferred = pty.session_request(nil, '"C:\\Windows\\System32\\WSL.EXE" -d Ubuntu')
+    assert.are.equal("explicit", inferred.mode)
+    assert.are.equal("wsl", inferred.path_style)
+    assert.are.equal("C:\\Windows\\System32\\WSL.EXE", inferred.connector.argv[1])
   end)
 
   it("normalizes implicit WSL sessions to explicit without ordinary fallback changes", function()

@@ -202,7 +202,10 @@ function M.session_request(domain, shell)
     end
     spec = spec or { type = "local" }
     if spec.type == "local" and (_G.hollow.platform or {}).is_windows then
-      error("native Windows session owners are unsupported", 0)
+      local program = (words(shell)[1] or ""):match("[^/\\]*$"):lower()
+      if program == "wsl" or program == "wsl.exe" then
+        error("WSL launcher requires a WSL session host", 0)
+      end
     end
     local style = path_style(spec)
     if style ~= "posix" and style ~= "wsl" then

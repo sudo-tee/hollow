@@ -1213,6 +1213,7 @@ pub const Runtime = struct {
 
     /// Strict, synchronous session host resolution. No deployment or network I/O.
     pub fn sessionHost(self: *Runtime, arena: std.mem.Allocator, domain: ?[]const u8, shell: []const u8) !@import("pty/agent.zig").Host {
+        if (std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidSessionHost;
         self.mutex.lock();
         defer self.mutex.unlock();
         const api = self.context.api;
@@ -1240,8 +1241,11 @@ pub const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSessionHost,
         };
+        const native_windows = @import("builtin").os.tag == .windows and host.connector.argv.len == 0;
+        if (native_windows and @import("pty/spawn_spec.zig").isWsl(shell)) return error.InvalidSessionHost;
         if (host.agent.path) |path| {
-            if (path.len == 0 or path[0] != '/' or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidSessionHost;
+            const absolute = if (native_windows) windowsSessionPath(path) else path.len > 0 and path[0] == '/';
+            if (!absolute or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidSessionHost;
         }
         if (host.agent.dir) |dir| {
             if (!std.fs.path.isAbsolute(dir) or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidSessionHost;
@@ -3869,7 +3873,12 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
     }
 }
 
-/// readTarget requires a process argv. For native Linux sessions, use its agent
+fn windowsSessionPath(path: []const u8) bool {
+    return (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/')) or
+        std.mem.startsWith(u8, path, "\\\\");
+}
+
+/// readTarget requires a process argv. For native sessions, use its agent
 /// validator on a temporary descriptor, then discard the placeholder connector.
 fn readSessionTarget(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator) !host_lua.Target {
     const top = api.get_top(state);
@@ -3887,7 +3896,9 @@ fn readSessionTarget(api: Api, state: *State, idx: c_int, arena: std.mem.Allocat
     const argv = absoluteIndex(api, state, -1);
     api.push_nil(state);
     if (api.next(state, argv) != 0) return host_lua.readTarget(arena, api, state, idx);
-    if (remote or @import("builtin").os.tag != .linux) return error.InvalidSessionHost;
+    const build_target = @import("builtin");
+    const native_supported = build_target.os.tag == .linux or (build_target.os.tag == .windows and build_target.cpu.arch == .x86_64);
+    if (remote or !native_supported) return error.InvalidSessionHost;
     api.create_table(state, 0, 2);
     const descriptor = absoluteIndex(api, state, -1);
     api.get_field(state, idx, "agent");
@@ -8338,21 +8349,49 @@ test "session borrowers host resolution is strict and preserves the Lua stack" {
     try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
 }
 
-test "session borrowers host native connector is Linux only" {
+test "session borrowers host native connector accepts only supported local platforms" {
     var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
     var runtime = try Runtime.initWithDiscovery(std.testing.allocator, &cfg, false);
     defer runtime.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={}},agent={path='/opt/agent'}} end}");
-    if (@import("builtin").os.tag == .linux) {
+    try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={},remote_shell=false}} end}");
+    const target = @import("builtin");
+    const supported = target.os.tag == .linux or (target.os.tag == .windows and target.cpu.arch == .x86_64);
+    if (supported) {
         const host = try runtime.sessionHost(arena.allocator(), null, "sh");
         try std.testing.expectEqual(@as(usize, 0), host.connector.argv.len);
         try std.testing.expect(!host.fallback);
-        try std.testing.expectEqualStrings("/opt/agent", host.agent.path.?);
     } else {
         try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+    }
+    try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={},remote_shell=true}} end}");
+    try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+    for ([_][:0]const u8{ "'/opt/agent'", "'C:\\\\Program Files\\\\Hollow\\\\agent.exe'", "'\\\\\\\\server\\\\share\\\\agent.exe'", "'C:agent.exe'", "'C:\\\\bad\\0agent.exe'" }, 0..) |path, i| {
+        const script = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit',path_style='posix',connector={{argv={{}}}},agent={{path={s}}}}} end}}", .{path}, 0);
+        try runtime.runString(script);
+        const valid = supported and (if (target.os.tag == .windows) i == 1 or i == 2 else i == 0);
+        if (valid) {
+            const host = try runtime.sessionHost(arena.allocator(), null, "sh");
+            try std.testing.expect(host.agent.path != null);
+        } else {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        }
+        // Guest paths remain Linux paths on every client platform.
+        const guest = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit',path_style='posix',connector={{argv={{'ssh','box'}}}},agent={{path={s}}}}} end}}", .{path}, 0);
+        try runtime.runString(guest);
+        if (i == 0) {
+            _ = try runtime.sessionHost(arena.allocator(), null, "sh");
+        } else {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        }
+    }
+    if (target.os.tag == .windows) {
+        try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={}}} end}");
+        for ([_][]const u8{ "wsl.exe", "\"C:\\Windows\\System32\\WSL.EXE\" -d Ubuntu", "pwsh.exe\x00bad" }) |shell| {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, shell));
+        }
     }
 }
 

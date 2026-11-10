@@ -57,7 +57,8 @@ pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resol
     const shell = configured_shell orelse try a.dupe(u8, app.config.shellOrDefault());
     const lua = if (app.lua) |*value| value else return error.LuaUnavailable;
     const host = try lua.sessionHost(a, domain, shell);
-    if (host.connector.argv.len == 0 and builtin.os.tag != .linux) return error.NativeSessionOwnerUnsupported;
+    if (host.error_message != null or host.fallback) return error.InvalidSessionHost;
+    if (host.connector.argv.len == 0 and !nativeSupported()) return error.NativeSessionOwnerUnsupported;
     return .{
         .domain = domain,
         .shell = shell,
@@ -101,25 +102,42 @@ fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const
         opens.beginWithInput(app, options, request, domain, name, callback_ref, command);
 }
 
+fn nativeSupported() bool {
+    return builtin.os.tag == .linux or (builtin.os.tag == .windows and builtin.cpu.arch == .x86_64);
+}
+
 fn reservedEnv(key: []const u8) bool {
     return std.mem.eql(u8, key, "HOLLOW_PANE_ID") or
         std.mem.eql(u8, key, "HOLLOW_WORKSPACE_ID") or
         std.mem.eql(u8, key, "HOLLOW_COMMAND_ADDR");
 }
 
+fn sessionReservedEnv(key: []const u8, native_windows: bool) bool {
+    return if (native_windows)
+        std.ascii.eqlIgnoreCase(key, "HOLLOW_PANE_ID") or
+            std.ascii.eqlIgnoreCase(key, "HOLLOW_WORKSPACE_ID") or
+            std.ascii.eqlIgnoreCase(key, "HOLLOW_COMMAND_ADDR")
+    else
+        reservedEnv(key);
+}
+
 /// Arena-owned output. Never place GUI IDs or a client-local command endpoint
 /// in a process that outlives/reconnects to different GUIs. OSC is pane-bound.
 pub fn prepareSpawn(a: std.mem.Allocator, cfg: Config, host: agent.Host, shell: []const u8, cwd: ?[]const u8, domain: ?[]const u8, command: ?[]const u8, filter: spec.Filter) !wire.Spawn {
-    if (host.error_message != null) return error.InvalidSessionHost;
+    if (host.error_message != null or host.fallback) return error.InvalidSessionHost;
     const local = host.connector.argv.len == 0;
-    if (local and builtin.os.tag != .linux) return error.NativeSessionOwnerUnsupported;
+    if (local and host.connector.remote_shell) return error.InvalidSessionHost;
+    if (local and !nativeSupported()) return error.NativeSessionOwnerUnsupported;
+    const native_windows = local and builtin.os.tag == .windows;
+    if (native_windows and spec.isWsl(shell)) return error.InvalidSessionHost;
     if (shell.len > 64 * 1024 or (cwd != null and cwd.?.len > 32 * 1024) or (command != null and command.?.len > 64 * 1024)) return error.ResourceExhausted;
+    if (std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidSessionHost;
     var block: std.ArrayList(u8) = .empty;
     try block.appendSlice(a, "TERM=xterm-256color\x00COLORTERM=truecolor\x00TERM_PROGRAM=ghostty\x00");
     const env = cfg.envForDomain(domain);
     if (env.len > 256) return error.ResourceExhausted;
     for (env) |pair| {
-        if (reservedEnv(pair.key)) return error.InvalidSessionEnvironment;
+        if (sessionReservedEnv(pair.key, native_windows)) return error.InvalidSessionEnvironment;
         if (pair.key.len == 0 or std.mem.indexOfAny(u8, pair.key, "=\x00") != null or std.mem.indexOfScalar(u8, pair.value, 0) != null) return error.InvalidSessionEnvironment;
         if (pair.key.len + pair.value.len + 2 > max_env_bytes -| block.items.len) return error.ResourceExhausted;
         try block.appendSlice(a, pair.key);
@@ -138,13 +156,16 @@ pub fn prepareSpawn(a: std.mem.Allocator, cfg: Config, host: agent.Host, shell: 
     if (filtered.len > 256) return error.ResourceExhausted;
     const values = try a.alloc(wire.EnvVar, filtered.len + 1);
     for (filtered, values[0..filtered.len]) |pair, *value| {
-        if (reservedEnv(pair.key)) return error.InvalidSessionEnvironment;
+        if (sessionReservedEnv(pair.key, native_windows)) return error.InvalidSessionEnvironment;
         value.* = pair;
     }
     values[filtered.len] = .{ .key = "HOLLOW_TRANSPORT", .value = "osc" };
     const argv = if (!local and spec.isWsl(shell)) try agent.wslInnerArgv(a, shell) else try agent.tokenize(a, shell);
     if (argv.len > 256) return error.ResourceExhausted;
-    if (spawn_spec.cwd) |value| if (std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidSessionCwd;
+    if (spawn_spec.cwd) |value| {
+        if (value.len > 32 * 1024) return error.ResourceExhausted;
+        if (std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidSessionCwd;
+    }
     if (command) |value| if (std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidSessionCommand;
     return .{ .cols = cfg.cols, .rows = cfg.rows, .cwd = spawn_spec.cwd, .argv = argv, .env = values, .path_style = host.path_style };
 }
@@ -153,6 +174,7 @@ fn filterProbe(context: *anyopaque, _: std.mem.Allocator, value: *spec.SpawnSpec
     const count: *usize = @ptrCast(@alignCast(context));
     count.* += 1;
     value.cwd = "/filtered";
+    value.shell = "ignored-filter-shell";
 }
 
 test "session pane domain spawn preserves guest argv env and skips local filters" {
@@ -363,7 +385,173 @@ test "session borrowers domain create and explicit attach preserve interactive s
     }
 }
 
-test "session pane domain spawn rejects GUI bindings and supports native Linux filters only" {
+const NativeAppFixture = if (builtin.os.tag == .windows) struct {
+    const Self = @This();
+    const io = @import("../io.zig");
+    const owner = @import("../agent/session_windows.zig");
+    const pipe = @import("../agent/session_pipe_windows.zig");
+    const p = transport.p;
+    extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+    extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) u32;
+    extern "kernel32" fn WaitForSingleObject(std.os.windows.HANDLE, u32) callconv(.winapi) u32;
+
+    namespace: []const u8,
+    exe: []const u8,
+    child: std.process.Child,
+    guard: owner.Connection,
+    pid: i64,
+
+    fn init(temp: std.mem.Allocator) !Self {
+        const namespace = try std.fmt.allocPrint(temp, "native-app-{d}-{d}", .{ GetCurrentProcessId(), io.nanoTimestamp() });
+        const path = @import("session_test_options").native_owner;
+        const exe = if (std.mem.startsWith(u8, path, "/")) blk: {
+            const distro = try io.getEnvVarOwned(temp, "WSL_DISTRO_NAME");
+            const result = try std.fmt.allocPrint(temp, "\\\\wsl.localhost\\{s}{s}", .{ distro, path });
+            std.mem.replaceScalar(u8, result, '/', '\\');
+            break :blk result;
+        } else if (std.fs.path.isAbsolute(path)) path else try std.Io.Dir.cwd().realPathFileAlloc(io.get(), path, temp);
+        var child = try std.process.spawn(io.get(), .{
+            .argv = &.{ exe, "session", "serve", "--namespace", namespace },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .inherit,
+            .create_no_window = true,
+        });
+        errdefer child.kill(io.get());
+        var endpoint = try pipe.Endpoint.init(std.testing.allocator, namespace);
+        defer endpoint.deinit(std.testing.allocator);
+        const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+        while (io.nanoTimestamp() < deadline) {
+            const handle = endpoint.connect() catch |err| switch (err) {
+                error.PipeBusy => null,
+                else => return err,
+            };
+            if (handle) |h| {
+                var guard = try owner.Connection.init(std.testing.allocator, h);
+                errdefer guard.deinit();
+                try guard.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = @import("../term/ghostty.zig").buildIdentity(), .client = "native-app-guard" });
+                const frame = try guard.next(5000);
+                try std.testing.expectEqual(p.Kind.welcome, frame.kind);
+                const welcome = try p.parse(p.Welcome, std.testing.allocator, frame.payload);
+                defer welcome.deinit();
+                try std.testing.expect(welcome.value.owner_pid > 0);
+                try std.testing.expectEqual(@as(i64, GetProcessId(child.id.?)), welcome.value.owner_pid);
+                try std.testing.expect(p.validHost(welcome.value.host));
+                return .{ .namespace = namespace, .exe = exe, .child = child, .guard = guard, .pid = welcome.value.owner_pid };
+            }
+            try std.Io.sleep(io.get(), .fromMilliseconds(10), .awake);
+        }
+        return error.FixtureStartupTimeout;
+    }
+
+    fn deinit(self: *Self) void {
+        // Only this test's private namespace and exact owner child are touched.
+        self.guard.sendJson(.request, p.Request{ .id = 999, .op = .kill_server }) catch {};
+        self.guard.deinit();
+        _ = WaitForSingleObject(self.child.id.?, 10_000);
+        self.child.kill(io.get());
+    }
+
+    fn detachedSession(self: *Self, id: []const u8) !void {
+        try std.testing.expectEqual(@as(u32, 258), WaitForSingleObject(self.child.id.?, 0));
+        try std.testing.expectEqual(self.pid, @as(i64, GetProcessId(self.child.id.?)));
+        const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+        var request_id: u64 = 1;
+        while (io.nanoTimestamp() < deadline) : (request_id += 1) {
+            try self.guard.sendJson(.request, p.Request{ .id = request_id, .op = .list });
+            const frame = try self.guard.next(5000);
+            try std.testing.expectEqual(p.Kind.reply, frame.kind);
+            const reply = try p.parse(p.Reply, std.testing.allocator, frame.payload);
+            defer reply.deinit();
+            try std.testing.expect(reply.value.ok);
+            const sessions = reply.value.sessions orelse return error.MissingSessions;
+            try std.testing.expectEqual(@as(usize, 1), sessions.len);
+            try std.testing.expectEqualStrings(id, sessions[0].id);
+            try std.testing.expectEqual(@as(usize, 3), sessions[0].panes.len);
+            for (sessions[0].panes) |pane| try std.testing.expect(pane.exit == null);
+            if (!sessions[0].attached) return;
+            try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+        }
+        return error.DetachTimeout;
+    }
+} else struct {};
+
+test "session borrowers native Windows full App detach and attach preserve three interactive panes" {
+    if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = @import("../io.zig");
+    const controller = @import("session_controller.zig");
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const temp = arena.allocator();
+    var fixture = try NativeAppFixture.init(temp);
+    defer fixture.deinit();
+    var session_id: []const u8 = undefined;
+    var host_id: []const u8 = undefined;
+    var split_ratio: f32 = undefined;
+    {
+        const app = try testApp(a, &.{}, fixture.exe);
+        defer a.destroy(app);
+        defer app.deinit();
+        try app.config.setDomainShell("persistent-test", "powershell.exe -NoLogo -NoProfile");
+        const resolved = try resolve(app, temp, "persistent-test");
+        var options = resolved.options;
+        // Private fixture routing is internal test input, never Lua/user config.
+        options.namespace = fixture.namespace;
+        const spawn = try prepareSpawn(temp, app.config, resolved.host, resolved.shell, null, resolved.domain, null, app.mux.?.spawn_filter);
+        try std.testing.expect(spawn.command == null);
+        _ = try opens.beginWithInput(app, options, .{ .id = 0, .op = .create, .spawn = spawn }, resolved.domain, "native-app-check", -1, "$global:MY_SESSION_VALUE='kept'; $global:MY_SESSION_PID=$PID; Write-Output ('native-'+'marker')");
+        try testWaitText(app, "native-marker");
+        controller.newTab(app, null, null, "$global:TAB_VALUE='second'; Write-Output ('tab-'+'marker')", -1, false);
+        try testWaitText(app, "tab-marker");
+        controller.splitPane(app, .vertical, 0.4, null, null, "$global:SPLIT_VALUE='third'; Write-Output ('split-'+'marker')", .send, false, false, false, null, null, null, null, -1);
+        try testWaitText(app, "split-marker");
+        const workspace = app.activeWorkspace().?;
+        try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);
+        try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items[1].panes.items.len);
+        split_ratio = workspace.tabs.items[1].root_split.?.ratio;
+        const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+        while (workspace.session_controller.?.layout_request != null or workspace.session_controller.?.layout_dirty or app.session_spawn_count != 0) {
+            if (io.nanoTimestamp() >= deadline) return error.Timeout;
+            try testPump(app);
+            try std.Io.sleep(io.get(), .fromMilliseconds(2), .awake);
+        }
+        const session = workspace.session_controller.?;
+        session_id = try temp.dupe(u8, session.session_id);
+        host_id = try temp.dupe(u8, session.host);
+        try std.testing.expectEqual(@as(usize, 32), host_id.len);
+    }
+    // The guard keeps this exact owner alive across destruction of every App.
+    try fixture.detachedSession(session_id);
+    const app = try testApp(a, &.{}, fixture.exe);
+    defer a.destroy(app);
+    defer app.deinit();
+    try app.config.setDomainShell("persistent-test", "powershell.exe -NoLogo -NoProfile");
+    const resolved = try resolve(app, temp, "persistent-test");
+    var options = resolved.options;
+    options.namespace = fixture.namespace;
+    _ = try opens.beginWithInput(app, options, .{ .id = 0, .op = .attach, .session = session_id }, resolved.domain, null, -1, null);
+    try testWaitText(app, "split-marker");
+    const restored = app.activeWorkspace().?;
+    try std.testing.expectEqualStrings(host_id, restored.session_controller.?.host);
+    try std.testing.expectEqual(@as(usize, 2), restored.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), restored.tabs.items[1].panes.items.len);
+    try std.testing.expectEqual(split_ratio, restored.tabs.items[1].root_split.?.ratio);
+    app.activePane().?.content.terminal.sendText("Write-Output ('split-resumed:'+$global:SPLIT_VALUE)\r");
+    try testWaitText(app, "split-resumed:third");
+    app.mux.?.switchTab(0);
+    try testWaitText(app, "native-marker");
+    app.activePane().?.content.terminal.sendText("Write-Output ('resumed:'+$global:MY_SESSION_VALUE+':'+($global:MY_SESSION_PID -eq $PID))\r");
+    try testWaitText(app, "resumed:kept:True");
+    app.mux.?.switchTab(1);
+    restored.tabs.items[1].active_pane = restored.tabs.items[1].panes.items[0];
+    app.activePane().?.content.terminal.sendText("Write-Output ('tab-resumed:'+$global:TAB_VALUE)\r");
+    try testWaitText(app, "tab-resumed:second");
+    try std.testing.expectEqual(@as(u32, 258), NativeAppFixture.WaitForSingleObject(fixture.child.id.?, 0));
+    try std.testing.expectEqual(fixture.pid, @as(i64, NativeAppFixture.GetProcessId(fixture.child.id.?)));
+}
+
+test "session pane domain spawn rejects GUI bindings and supports native filters only" {
     const a = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -373,7 +561,7 @@ test "session pane domain spawn rejects GUI bindings and supports native Linux f
     const remote: agent.Host = .{ .connector = .{ .argv = &.{"ssh"} } };
     try std.testing.expectError(error.InvalidSessionEnvironment, prepareSpawn(arena.allocator(), cfg, remote, "/bin/sh", null, "guest", null, .{}));
     var calls: usize = 0;
-    if (builtin.os.tag == .linux) {
+    if (nativeSupported()) {
         const spawn = try prepareSpawn(arena.allocator(), cfg, .{}, "/bin/sh", null, null, null, .{ .context = &calls, .callback = filterProbe });
         try std.testing.expectEqual(@as(usize, 1), calls);
         try std.testing.expectEqualStrings("/filtered", spawn.cwd.?);
@@ -381,6 +569,82 @@ test "session pane domain spawn rejects GUI bindings and supports native Linux f
     } else {
         try std.testing.expectError(error.NativeSessionOwnerUnsupported, prepareSpawn(arena.allocator(), cfg, .{}, "/bin/sh", null, null, null, .{}));
     }
+}
+
+test "session borrowers native Windows spawn preserves literal shell and rejects forged GUI environment" {
+    if (builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    const shell = "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo -WorkingDirectory \"C:\\work space\"";
+    var calls: usize = 0;
+    const spawn = try prepareSpawn(arena.allocator(), cfg, .{}, shell, "C:\\work space", null, "Write-Output queued", .{ .context = &calls, .callback = filterProbe });
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    try std.testing.expectEqualStrings("/filtered", spawn.cwd.?);
+    const expected = [_][]const u8{ "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-NoLogo", "-WorkingDirectory", "C:\\work space" };
+    try std.testing.expectEqual(expected.len, spawn.argv.len);
+    for (expected, spawn.argv) |want, actual| try std.testing.expectEqualStrings(want, actual);
+    try std.testing.expect(spawn.command == null);
+    try std.testing.expectEqualStrings("osc", spawn.env[spawn.env.len - 1].value);
+    const default_cwd = try prepareSpawn(arena.allocator(), cfg, .{}, shell, null, null, null, .{});
+    try std.testing.expect(default_cwd.cwd == null);
+    for ([_][]const u8{ "wsl.exe", "\"C:\\Windows\\System32\\WSL.EXE\" -d Ubuntu", "pwsh.exe\x00bad" }) |invalid| {
+        try std.testing.expectError(error.InvalidSessionHost, prepareSpawn(arena.allocator(), cfg, .{}, invalid, null, null, null, .{}));
+    }
+    for ([_][]const u8{ "Hollow_Pane_Id", "hollow_WORKSPACE_id", "hOlLoW_Command_ADDR" }) |key| {
+        var bad = Config.init(a);
+        defer bad.deinit();
+        try bad.setDomainEnv("native", key, "forged");
+        try std.testing.expectError(error.InvalidSessionEnvironment, prepareSpawn(arena.allocator(), bad, .{}, shell, null, "native", null, .{}));
+        const remote: agent.Host = .{ .connector = .{ .argv = &.{"ssh"} } };
+        _ = try prepareSpawn(arena.allocator(), bad, remote, "/bin/sh", null, "native", null, .{});
+    }
+    const ForgedFilter = struct {
+        fn apply(_: *anyopaque, _: std.mem.Allocator, value: *spec.SpawnSpec) !void {
+            value.env_block = "hollow_PANE_id=42\x00\x00";
+        }
+    };
+    try std.testing.expectError(error.InvalidSessionEnvironment, prepareSpawn(arena.allocator(), cfg, .{}, shell, null, null, null, .{ .context = &calls, .callback = ForgedFilter.apply }));
+    try std.testing.expectError(error.InvalidSessionHost, prepareSpawn(arena.allocator(), cfg, .{ .fallback = true }, shell, null, null, null, .{}));
+    try std.testing.expectError(error.InvalidSessionHost, prepareSpawn(arena.allocator(), cfg, .{ .error_message = "unresolved" }, shell, null, null, null, .{}));
+}
+
+test "session borrowers resolves explicit native Windows Lua domain without opening an owner" {
+    if (builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    try app.config.setDomainPersist("native", true);
+    try app.config.setDomainShell("native", "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo");
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(a, &app.config);
+    try app.lua.?.runString(
+        \\hollow = {platform={is_windows=true}, config={get=function(key)
+        \\  if key == 'domains' then return {native={host={type='local',agent_path='C:\\Hollow\\hollow-agent.exe'}}} end
+        \\end}}
+        \\require('hollow.host.pty').setup(hollow)
+    );
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const resolved = try resolve(app, arena.allocator(), "native");
+    try std.testing.expectEqual(@as(usize, 0), resolved.options.connector.argv.len);
+    try std.testing.expect(!resolved.options.connector.remote_shell);
+    try std.testing.expectEqualStrings("C:\\Hollow\\hollow-agent.exe", resolved.options.agent.path.?);
+    try std.testing.expect(!resolved.host.fallback);
+    try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
+    try app.config.setDomainShell("native", "pwsh.exe\x00bad");
+    try std.testing.expectError(error.InvalidSessionHost, resolve(app, arena.allocator(), "native"));
+    try app.config.setDomainShell("native", "pwsh.exe");
+    try app.lua.?.runString(
+        \\hollow.config.get = function(key)
+        \\  if key == 'domains' then return {native={host={type='local',agent_path='C:\\bad\0agent.exe'}}} end
+        \\end
+    );
+    try std.testing.expectError(error.InvalidSessionHost, resolve(app, arena.allocator(), "native"));
+    try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
 }
 
 test "session borrowers persistent workspace admission never falls back without Lua" {

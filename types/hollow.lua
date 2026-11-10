@@ -3096,7 +3096,7 @@ local fs = {}
 ---@field remote_shell? boolean The connector joins arguments for a remote shell (ssh)
 
 ---@class HollowHostAgentSource
----@field path? string Absolute preinstalled Linux executable; skips deployment
+---@field path? string Absolute preinstalled Linux executable, or native Windows executable for local Windows sessions; skips deployment
 ---@field dir? string Client-native bundle directory with SHA256SUMS
 ---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
 ---@field timeout_ms? integer Deploy deadline; default 60000, maximum 300000

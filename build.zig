@@ -156,6 +156,9 @@ pub fn build(b: *std.Build) void {
     const connector_test_options = b.addOptions();
     connector_test_options.addOption(?[]const u8, "wsl", b.option([]const u8, "session-test-wsl", "WSL distro for opt-in session connector checks"));
     connector_test_options.addOption(?[]const u8, "agent", b.option([]const u8, "session-test-agent", "Preinstalled guest Linux agent for session connector checks"));
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        connector_test_options.addOptionPath("native_owner", b.named_lazy_paths.get("windows_session_owner").?);
+    } else connector_test_options.addOption(?[]const u8, "native_owner", null);
     connector_test_module.addOptions("session_test_options", connector_test_options);
     const connector_tests = b.addTest(.{ .root_module = connector_test_module, .filters = &.{"session connector"} });
     const connector_run = b.addRunArtifact(connector_tests);
@@ -350,9 +353,12 @@ pub fn build(b: *std.Build) void {
     bench_root_module.addImport("ft_c", ft_translate.createModule());
     @import("src/c_build.zig").addTextWidth(b, bench_root_module, ghostty_dep.artifact("ghostty-vt-static"));
 
-    // Only the app executables; skips the standalone CLI and guest agent
-    // bundles that the install step also cross-builds.
-    const gui_step = b.step("gui", "Build and install only the app executables (no CLI/agent bundles)");
+    // App executables plus their native Windows session helper; skip standalone
+    // CLI and Linux guest bundles that the install step also cross-builds.
+    const gui_step = b.step("gui", "Build and install app executables and native session helper");
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        gui_step.dependOn(&b.top_level_steps.get("session-owner-windows").?.step);
+    }
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
         const res_obj = b.addSystemCommand(&.{
@@ -471,6 +477,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
     const borrower_tests = b.addTest(.{ .root_module = root_module, .filters = &.{"session borrowers"} });
+    if (target.result.os.tag == .windows) root_module.linkSystemLibrary("advapi32", .{});
     root_module.addOptions("session_test_options", connector_test_options);
     b.step("test-session-borrowers", "Run app session terminal borrower invalidation tests").dependOn(&b.addRunArtifact(borrower_tests).step);
     const clay_test_module = b.createModule(.{
