@@ -32,6 +32,7 @@ class HollowCli:
         self.envelope = envelope
         self.transport = transport
         self.timeout = timeout
+        self.pane_filter = {"scope": None, "workspace": None, "tab": None}
         self.common_parser = self.build_common_parser()
 
     def run(self, argv):
@@ -45,7 +46,19 @@ class HollowCli:
         if not hasattr(args, "handler"):
             parser.print_help(sys.stderr)
             raise SystemExit(2)
+        self.pane_filter = {
+            "scope": getattr(args, "filter_scope", None),
+            "workspace": getattr(args, "filter_workspace", None),
+            "tab": getattr(args, "filter_tab", None),
+        }
         return args.handler(args)
+
+    def add_pane_filter(self, parser, scope=True):
+        # `pane dock --scope` names the dock placement, so it only filters by id.
+        if scope:
+            parser.add_argument("--scope", dest="filter_scope", choices=["all", "workspace", "tab"])
+        parser.add_argument("--workspace", dest="filter_workspace", type=int)
+        parser.add_argument("--tab", dest="filter_tab", type=int)
 
     def build_parser(self):
         parser = argparse.ArgumentParser(prog="hollow-cli", parents=[self.common_parser])
@@ -132,7 +145,8 @@ class HollowCli:
 
         p = get_sub.add_parser("panes", parents=[self.common_parser])
         p.add_argument("--tag")
-        p.set_defaults(handler=lambda args: self.print_query("panes", self.clean({"tag": args.tag})))
+        self.add_pane_filter(p)
+        p.set_defaults(handler=self.handle_get_panes)
 
         p = get_sub.add_parser("workspace", parents=[self.common_parser])
         p.add_argument("--id", type=int)
@@ -255,31 +269,37 @@ class HollowCli:
         p = pane_sub.add_parser("close", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("close_pane", {}, args.id, args.tag))
 
         p = pane_sub.add_parser("zoom", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("toggle_pane_maximized", {}, args.id, args.tag))
 
         p = pane_sub.add_parser("float", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_floating", {"floating": True}, args.id, args.tag))
 
         p = pane_sub.add_parser("tile", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_floating", {"floating": False}, args.id, args.tag))
 
         p = pane_sub.add_parser("hide", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_visible", {"visible": False}, args.id, args.tag))
 
         p = pane_sub.add_parser("show", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_visible", {"visible": True}, args.id, args.tag))
 
         p = pane_sub.add_parser("dock", parents=[self.common_parser])
@@ -288,17 +308,20 @@ class HollowCli:
         p.add_argument("--ratio", type=float)
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p, scope=False)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("dock_pane", {"edge": args.edge, "scope": args.scope, "ratio": args.ratio}, args.id, args.tag))
 
         p = pane_sub.add_parser("undock", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=lambda args: self.emit_to_matching_panes("undock_pane", {}, args.id, args.tag))
 
         p = pane_sub.add_parser("move", parents=[self.common_parser])
         p.add_argument("direction", choices=["left", "right", "up", "down"])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.add_argument("--amount", type=float)
         p.set_defaults(handler=self.handle_pane_move)
 
@@ -306,12 +329,14 @@ class HollowCli:
         p.add_argument("direction", choices=["left", "right", "up", "down"])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.add_argument("--amount", type=float, default=5.0)
         p.set_defaults(handler=self.handle_pane_resize)
 
         p = pane_sub.add_parser("bell", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.add_argument("--level", choices=["info", "warn", "error", "success"])
         p.add_argument("--color", type=self.hex_color)
         p.set_defaults(handler=self.handle_pane_bell)
@@ -320,24 +345,28 @@ class HollowCli:
         p.add_argument("text")
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=self.handle_pane_send_text)
 
         p = pane_sub.add_parser("set-tag", parents=[self.common_parser])
         p.add_argument("tag")
         p.add_argument("--id", type=int)
         p.add_argument("--tag", dest="target_tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=self.handle_pane_set_tag)
 
         p = pane_sub.add_parser("remove-tag", parents=[self.common_parser])
         p.add_argument("tag")
         p.add_argument("--id", type=int)
         p.add_argument("--tag", dest="target_tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=self.handle_pane_remove_tag)
 
         p = pane_sub.add_parser("set-tags", parents=[self.common_parser])
         p.add_argument("tags", nargs="*")
         p.add_argument("--id", type=int)
         p.add_argument("--tag", dest="target_tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=self.handle_pane_set_tags)
 
     def add_focus(self, sub):
@@ -372,6 +401,7 @@ class HollowCli:
         p.add_argument("keys")
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
+        self.add_pane_filter(p)
         p.set_defaults(handler=self.handle_send_keys)
 
     def add_emit(self, sub):
@@ -558,15 +588,59 @@ class HollowCli:
     def id_payload(self, ident):
         return self.clean({"id": ident})
 
+    def pane_filtered(self):
+        return any(value is not None for value in self.pane_filter.values())
+
+    def pane_query(self, tag):
+        query = self.clean({"tag": tag, **self.pane_filter})
+        scope = query.get("scope")
+        workspace = query.get("workspace")
+        tab = query.get("tab")
+        invalid = (
+            (workspace is not None and tab is not None)
+            or any(value is not None and value <= 0 for value in (workspace, tab))
+            or (scope == "all" and (workspace is not None or tab is not None))
+            or (scope == "workspace" and tab is not None)
+        )
+        if invalid:
+            raise CliError("invalid pane scope: use --scope all|workspace|tab; --workspace and --tab are exclusive and need a matching scope", code="invalid_args", status=2)
+        return query
+
+    def query_panes(self, tag):
+        query = self.pane_query(tag)
+        try:
+            return self.native_query({"kind": "get_panes", **query})
+        except CliError as exc:
+            # Hosts predating the command bridge only offer the unscoped Lua query.
+            if self.pane_filtered() or "command_api" not in exc.message:
+                raise
+        envelope = self.query("panes", self.clean({"tag": tag}))
+        return envelope.get("payload") if isinstance(envelope, dict) else None
+
+    def native_query(self, request):
+        envelope = self.query("command_api", self.clean(request))
+        result = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(result, dict):
+            raise CliError("command bridge returned an invalid reply", code="invalid_response")
+        if result.get("kind") == "error" or result.get("status") != "ok":
+            raise CliError(result.get("error") or "command failed", code=result.get("status") or "error", status=1)
+        return result.get("payload")
+
+    def handle_get_panes(self, args):
+        payload = self.query_panes(args.tag)
+        self.emit_output({"kind": "result", "status": "ok", "channel": "panes", "payload": payload}, payload_only=True)
+        return 0
+
     def resolve_target_pane_ids(self, ident, tag):
         if ident is not None and tag is not None:
             raise CliError("use either --id or --tag, not both", code="invalid_args", status=2)
+        if self.pane_filtered() and tag is None:
+            raise CliError("--scope, --workspace, and --tab require --tag", code="invalid_args", status=2)
         if ident is not None:
             return [ident]
         if tag is None:
             return None
-        envelope = self.query("panes", {"tag": tag})
-        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        payload = self.query_panes(tag)
         if not isinstance(payload, list):
             raise CliError("query 'panes' did not return a pane list", code="invalid_response")
         pane_ids = []
