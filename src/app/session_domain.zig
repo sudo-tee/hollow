@@ -312,7 +312,7 @@ test "session borrowers domain create and explicit attach preserve interactive s
         try testWaitText(app, "persisted-marker");
         @import("session_controller.zig").newTab(app, null, null, "TAB_VALUE=second; printf 'tab-marker'", -1, false);
         try testWaitText(app, "tab-marker");
-        @import("session_controller.zig").splitPane(app, .vertical, 0.4, null, null, "SPLIT_VALUE=third; printf 'split-marker'", .send, false, false, false, null, null, null, null, -1);
+        @import("session_controller.zig").splitPane(app, .vertical, 0.4, null, null, "SPLIT_VALUE=third; printf 'split-marker'", .send, false, false, false, null, null, null, null, -1, null, null);
         try testWaitText(app, "split-marker");
         const workspace = app.activeWorkspace().?;
         try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);

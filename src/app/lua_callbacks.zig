@@ -228,7 +228,7 @@ test "session borrowers tab and split callbacks never drop explicit host argumen
 
         var failing_split = std.testing.FailingAllocator.init(a, .{ .fail_index = index });
         app.allocator = failing_split.allocator();
-        try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1));
+        try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
         try std.testing.expect(app.action_queue.pop() == null);
         try std.testing.expectEqual(failing_split.allocated_bytes, failing_split.freed_bytes);
     }
@@ -242,7 +242,7 @@ test "session borrowers tab and split callbacks free copied arguments when queue
     defer app.deinit();
     while (app.action_queue.push(.none)) {}
     try std.testing.expect(!luaNewTabCallback(app, "/work", "persistent-host", "pwd", -1, false));
-    try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1));
+    try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
     while (app.action_queue.pop()) |event| try std.testing.expect(event == .none);
 }
 
@@ -272,7 +272,7 @@ test "session borrowers workspace tab and split callbacks fence inherited persis
     var tab_event = app.action_queue.pop().?;
     defer input.deinitPendingInputEvent(a, &tab_event);
     try std.testing.expectEqual(@as(?u64, app.lua.?.generation), tab_event.new_tab.lua_generation);
-    try std.testing.expect(luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, -1));
+    try std.testing.expect(luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
     var split_event = app.action_queue.pop().?;
     defer input.deinitPendingInputEvent(a, &split_event);
     try std.testing.expectEqual(@as(?u64, app.lua.?.generation), split_event.split_pane.lua_generation);

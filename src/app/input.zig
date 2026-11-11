@@ -333,7 +333,7 @@ test "session borrowers tab and split generation fences preserve replacement run
         try std.testing.expect(callbacks.luaNewTabCallback(app, null, null, null, callback_ref, false));
         var tab_event = app.action_queue.pop().?;
         tab_event.new_tab.lua_generation = lua.generation - 1;
-        try std.testing.expect(callbacks.luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, callback_ref));
+        try std.testing.expect(callbacks.luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, callback_ref, null, null));
         var split_event = app.action_queue.pop().?;
         split_event.split_pane.lua_generation = lua.generation - 1;
         try std.testing.expect(app.action_queue.push(tab_event));
