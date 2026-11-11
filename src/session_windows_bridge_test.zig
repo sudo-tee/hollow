@@ -179,6 +179,22 @@ const Stub = struct {
         var result = try Client.initOutput(self.exe, self.ns, output);
         errdefer result.deinit();
         _ = try complete(&accept, self.server, 5000);
+        // Consume only the connector preflight. All subsequent bytes belong
+        // to the raw bridge and remain deliberately arbitrary in these tests.
+        var header: [p.header_len]u8 = undefined;
+        try self.readAll(&header);
+        const decoded = try p.Header.decode(&header);
+        try testing.expectEqual(p.Kind.hello, try p.validate(decoded, .to_owner));
+        const payload = try a.alloc(u8, decoded.len);
+        defer a.free(payload);
+        try self.readAll(payload);
+        const hello = try p.parse(p.Hello, a, payload);
+        defer hello.deinit();
+        try testing.expect(hello.value.owner_probe);
+        const welcome = try p.stringify(a, p.Welcome{ .ghostty = "stub", .snapshot = .vt, .owner_pid = 1, .features = &p.owner_features, .retiring = false });
+        defer a.free(welcome);
+        try self.writeAll(&p.header(.welcome, 0, welcome.len).encode());
+        try self.writeAll(welcome);
         // Accept can complete before connectOrStart validates endpoint security.
         // Observe raw traffic before a test disconnects or closes its stdio.
         try write(result.child.stdin.?.handle, "\x00");
@@ -190,6 +206,32 @@ const Stub = struct {
         try testing.expectEqual(@as(usize, 1), try complete(&reader, self.server, 5000));
         try testing.expectEqual(@as(u8, 0), ready[0]);
         return result;
+    }
+
+    fn readAll(self: *Stub, bytes: []u8) !void {
+        var op = try pipe.Operation.init();
+        defer op.deinit();
+        defer op.cancel(self.server);
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            try op.read(self.server, bytes[offset..]);
+            const n = try complete(&op, self.server, 5000);
+            if (n == 0) return error.EndOfStream;
+            offset += n;
+        }
+    }
+
+    fn writeAll(self: *Stub, bytes: []const u8) !void {
+        var op = try pipe.Operation.init();
+        defer op.deinit();
+        defer op.cancel(self.server);
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            try op.write(self.server, bytes[offset..]);
+            const n = try complete(&op, self.server, 5000);
+            if (n == 0) return error.EndOfStream;
+            offset += n;
+        }
     }
 };
 

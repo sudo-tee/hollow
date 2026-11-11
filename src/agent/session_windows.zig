@@ -43,12 +43,17 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
+        pipe.close(self.release());
+    }
+
+    /// Transfer a completed preflight connection to the raw stdio bridge.
+    pub fn release(self: *Connection) windows.HANDLE {
         self.input.cancel(self.handle);
         self.output.cancel(self.handle);
-        pipe.close(self.handle);
         self.input.deinit();
         self.output.deinit();
         self.payload.deinit(self.a);
+        return self.handle;
     }
 
     pub fn sendJson(self: *Connection, kind: p.Kind, value: anytype) !void {
@@ -200,6 +205,7 @@ const Owner = struct {
     slots: [pipe.max_clients]Slot = @splat(.{}),
     connected_once: bool = false,
     stopping: bool = false,
+    upgrade: @import("session_upgrade.zig").Retirement = .{},
     stop_deadline: u64 = 0,
     startup_deadline: u64,
     wake_event: windows.HANDLE,
@@ -255,7 +261,10 @@ const Owner = struct {
                 const hello = try p.parse(p.Hello, self.a, bytes);
                 defer hello.deinit();
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
-                slot.greeted = true;
+                if (hello.value.owner_probe) self.upgrade.observe(hello.value.owner_build);
+                if (hello.value.owner_drain) self.upgrade.pending = true;
+                if (self.upgrade.pending) self.drainKeepers();
+                slot.greeted = !hello.value.owner_probe;
                 slot.client.binary = std.mem.eql(u8, hello.value.ghostty, vt.buildIdentity());
                 slot.client.foreground_events = hello.value.foreground_events;
                 try self.queue(slot, .welcome, p.Welcome{
@@ -264,11 +273,18 @@ const Owner = struct {
                     .owner_pid = windows.GetCurrentProcessId(),
                     .host = &self.host,
                     .features = &p.windows_owner_features,
+                    .owner_build = self.upgrade.identity(),
+                    .retiring = self.upgrade.ready(self.empty()),
                 });
             },
             .request => {
                 const request = try p.parse(p.Request, self.a, bytes);
                 defer request.deinit();
+                if (self.upgrade.ready(self.empty())) {
+                    try self.queue(slot, .reply, p.Reply{ .id = request.value.id, .ok = false, .@"error" = "OwnerRetiring" });
+                    self.retire();
+                    return;
+                }
                 switch (request.value.op) {
                     .kill_server => {
                         // Admit the acknowledgement before irreversible process
@@ -392,6 +408,23 @@ const Owner = struct {
         return more;
     }
 
+    fn empty(self: *const Owner) bool {
+        return !self.sessions.hasSessions() and
+            (!self.keepers.hasEntries() or (self.upgrade.pending and self.keepers.drained()));
+    }
+
+    fn drainKeepers(self: *Owner) void {
+        if (self.keepers.retiring) return;
+        self.keepers.retire();
+    }
+
+    fn retire(self: *Owner) void {
+        if (self.stopping) return;
+        // Unlike kill_server, this never kills sessions or WSL keepalives.
+        self.stopping = true;
+        self.stop_deadline = nowMs() + 2000;
+    }
+
     fn run(self: *Owner) !void {
         while (true) {
             const now = nowMs();
@@ -414,6 +447,7 @@ const Owner = struct {
                 break :blk false;
             }) or more;
             if (!self.stopping) self.keepers.tick(nowMs());
+            if (self.upgrade.ready(self.empty())) self.retire();
             for (&self.slots) |*slot| if (slot.keeper_request != null and (slot.keeper.?.ready() or slot.keeper.?.failed)) {
                 more = true;
             };
@@ -458,11 +492,12 @@ const Owner = struct {
     }
 };
 
-pub fn serve(a: std.mem.Allocator, _: std.Io, namespace: ?[]const u8) !void {
+pub fn serve(a: std.mem.Allocator, io: std.Io, namespace: ?[]const u8) !void {
     var endpoint = try pipe.Endpoint.init(a, namespace);
     defer endpoint.deinit(a);
     const owner = try Owner.create(a, &endpoint, namespace != null);
     defer owner.destroy();
+    owner.upgrade.build = try @import("session_upgrade.zig").current(a, io);
     // Private fixture namespaces never read or mutate production host state.
     if (namespace == null) owner.host = try identity.loadDefault(a, @import("../io.zig").get(), @import("../io.zig").environ(), &endpoint);
     try owner.run();
@@ -491,6 +526,39 @@ pub fn connectOrStart(a: std.mem.Allocator, _: std.Io, namespace: ?[]const u8, e
         Sleep(10);
     }
     return error.OwnerStartTimeout;
+}
+
+/// Preflight only; the bridge still never interprets or replays GUI requests.
+pub fn connectCurrent(a: std.mem.Allocator, io: std.Io, namespace: ?[]const u8, exe_path: []const u8) !windows.HANDLE {
+    const build = try @import("session_upgrade.zig").fingerprint(io, exe_path);
+    const deadline = nowMs() + timeout_ms;
+    while (nowMs() < deadline) {
+        var probe = try Connection.init(a, try connectOrStart(a, io, namespace, exe_path));
+        var transferred = false;
+        defer if (!transferred) probe.deinit();
+        const result = preflight(&probe, &build, deadline) catch |err| switch (err) {
+            error.EndOfStream, error.BrokenPipe => continue,
+            else => return err,
+        };
+        if (result == .legacy) return connectOrStart(a, io, namespace, exe_path);
+        if (result == .current) {
+            transferred = true;
+            return probe.release();
+        }
+        Sleep(10);
+    }
+    return error.OwnerStartTimeout;
+}
+
+fn preflight(probe: *Connection, build: []const u8, deadline: u64) !@import("session_upgrade.zig").Probe {
+    try probe.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "owner-probe", .owner_probe = true, .owner_build = build });
+    const remaining = deadline -| nowMs();
+    if (remaining == 0) return error.Timeout;
+    const frame = try probe.next(@intCast(remaining));
+    if (frame.kind != .welcome) return error.HelloRejected;
+    const welcome = try p.parse(p.Welcome, probe.a, frame.payload);
+    defer welcome.deinit();
+    return @import("session_upgrade.zig").disposition(welcome.value);
 }
 
 fn startOwner(a: std.mem.Allocator, namespace: ?[]const u8, exe_path: []const u8) !void {

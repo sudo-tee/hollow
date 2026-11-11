@@ -118,8 +118,10 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         b.getInstallStep().dependOn(&install_owner.step);
         const options = b.addOptions();
         options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
-        options.addOption(?[]const u8, "keepalive_test_agent", b.option([]const u8, "keepalive-test-agent", "Absolute guest agent for isolated Windows-to-WSL keeper qualification"));
-        options.addOption(?[]const u8, "keepalive_test_distro", b.option([]const u8, "keepalive-test-distro", "Explicit distro for isolated Windows-to-WSL keeper qualification"));
+        const keepalive_test_agent = b.option([]const u8, "keepalive-test-agent", "Absolute guest agent for isolated Windows-to-WSL keeper qualification");
+        const keepalive_test_distro = b.option([]const u8, "keepalive-test-distro", "Explicit distro for isolated Windows-to-WSL keeper qualification");
+        options.addOption(?[]const u8, "keepalive_test_agent", keepalive_test_agent);
+        options.addOption(?[]const u8, "keepalive_test_distro", keepalive_test_distro);
         options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
         const module = b.createModule(.{
             .root_source_file = b.path("src/session_windows_owner_test.zig"),
@@ -140,12 +142,30 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .link_libc = true,
         });
         native_module.linkSystemLibrary("advapi32", .{});
-        native_module.addOptions("build_options", options);
+        // A real, same-protocol replacement image for live-owner upgrade tests.
+        const upgrade_optimize: std.builtin.OptimizeMode = if (optimize == .fast) .safe else .fast;
+        const upgrade_module = b.createModule(.{
+            .root_source_file = b.path("src/session_owner_windows.zig"),
+            .target = target,
+            .optimize = upgrade_optimize,
+            .link_libc = true,
+        });
+        upgrade_module.linkSystemLibrary("advapi32", .{});
+        upgrade_module.addOptions("build_options", owner_options);
+        addSessionVt(b, upgrade_module, target, upgrade_optimize);
+        const upgrade_owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = upgrade_module });
+        const native_options = b.addOptions();
+        native_options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        native_options.addOptionPath("upgrade_owner_exe", upgrade_owner.getEmittedBin());
+        native_options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        native_options.addOption(?[]const u8, "keepalive_test_agent", keepalive_test_agent);
+        native_options.addOption(?[]const u8, "keepalive_test_distro", keepalive_test_distro);
+        native_module.addOptions("build_options", native_options);
         addSessionVt(b, native_module, target, optimize);
         const native_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module }));
         native_run.has_side_effects = true;
         native_windows_tests.dependOn(&native_run.step);
-        const wsl_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module, .filters = &.{ "WSL keepalive admission", "WSL keeper failure" } }));
+        const wsl_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module, .filters = &.{ "WSL keepalive", "WSL keeper failure" } }));
         wsl_run.has_side_effects = true;
         wsl_keepalive_tests.dependOn(&wsl_run.step);
     } else {

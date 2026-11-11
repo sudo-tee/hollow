@@ -24,7 +24,10 @@ const capture_limit = 2 * 1024 * 1024;
 var serial: u32 = 0;
 
 fn executable() ![]u8 {
-    const path = @import("build_options").windows_owner_exe;
+    return windowsPath(@import("build_options").windows_owner_exe);
+}
+
+fn windowsPath(path: []const u8) ![]u8 {
     if (!std.mem.startsWith(u8, path, "/")) return a.dupe(u8, path);
     const distro = try io.getEnvVarOwned(a, "WSL_DISTRO_NAME");
     defer a.free(distro);
@@ -371,6 +374,67 @@ test "WSL keepalive admission survives all GUI clients and retains guest process
     try testing.expectEqual(@as(u32, 0), WaitForSingleObject(fixture.child.id.?, 40_000));
 }
 
+test "WSL keepalive idle GUI pin does not prevent outdated Windows owner retirement" {
+    try retireWslOwner(false);
+}
+
+test "WSL keepalive live session survives Windows retirement until its last close" {
+    try retireWslOwner(true);
+}
+
+fn retireWslOwner(active: bool) !void {
+    const guest = @import("build_options").keepalive_test_agent orelse return error.SkipZigTest;
+    const distro = @import("build_options").keepalive_test_distro orelse return error.SkipZigTest;
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const options = try wslOptions(arena.allocator(), &fixture, guest, distro);
+    defer cleanupGuest(options);
+    var client: Client = .{ .connection = try transport.Connection.create(a, testing.io, options) };
+    defer client.deinit();
+    try client.ready();
+    var sid: [32]u8 = undefined;
+    if (active) {
+        const attached = try client.opened(.{ .id = 0, .op = .create, .spawn = .{
+            .argv = &.{ "/bin/sh", "-c", "value=40; printf 'DRAIN-READY\\n'; while read line; do value=$((value+1)); printf 'DRAIN-%s\\n' \"$value\"; done" },
+            .shell_integration = false,
+        } });
+        defer attached.deinit();
+        @memcpy(&sid, attached.reply.value.session.?.id);
+        try client.until(1, "DRAIN-READY");
+    }
+    var endpoint = try pipe.Endpoint.init(a, fixture.namespace);
+    defer endpoint.deinit(a);
+    var probe = try owner.Connection.init(a, (try endpoint.connect()).?);
+    defer probe.deinit();
+    try probe.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('0'))) });
+    const frame = try probe.next(5000);
+    const welcome = try p.parse(p.Welcome, a, frame.payload);
+    defer welcome.deinit();
+    // No session count is inferred from pins: wait for the guest handshake.
+    try testing.expect(!welcome.value.retiring);
+    if (active) {
+        Sleep(1500);
+        try testing.expectEqual(@as(u32, 258), WaitForSingleObject(fixture.child.id.?, 0));
+        try client.input(1, "inc\n");
+        try client.until(1, "DRAIN-41");
+        // Retirement must not strand detached sessions: a fresh GUI still
+        // obtains a lifetime pin and reattaches while guest work remains.
+        var reconnected: Client = .{ .connection = try transport.Connection.create(a, testing.io, options) };
+        defer reconnected.deinit();
+        const attached = try reconnected.opened(.{ .id = 0, .op = .attach, .session = &sid });
+        defer attached.deinit();
+        try reconnected.input(1, "inc\n");
+        try reconnected.until(1, "DRAIN-42");
+        const killed = try reconnected.request(.{ .id = 0, .op = .kill, .session = &sid });
+        killed.deinit();
+    }
+    // Keep the guest bridge, its GUI pin transport, and the native guard open.
+    // Idle clients cannot prevent retirement after guest-confirmed emptiness.
+    try testing.expectEqual(@as(u32, 0), WaitForSingleObject(fixture.child.id.?, 40_000));
+}
+
 test "WSL keeper failure rejects admission before a create can be submitted" {
     const guest = @import("build_options").keepalive_test_agent orelse return error.SkipZigTest;
     const distro = @import("build_options").keepalive_test_distro orelse return error.SkipZigTest;
@@ -458,12 +522,18 @@ test "native cached live owner survives replacement of its test-owned bundle sou
         try client.until(1, "NATIVE-READY");
         try client.input(1, "inc\r");
         try client.until(1, "NATIVE-VALUE-41");
-        // Simulate GUI installation overwriting only this fixture's source.
-        // Never execute the deliberately invalid replacement image.
-        const file = try std.Io.Dir.createFileAbsolute(testing.io, source, .{});
-        defer file.close(testing.io);
-        try file.writePositionalAll(testing.io, "test-only replacement bundle, not an executable", 0);
+        // Replace only our private bundle with a real same-protocol build.
+        const replacement = try windowsPath(@import("build_options").upgrade_owner_exe);
+        defer a.free(replacement);
+        try std.Io.Dir.copyFile(.cwd(), replacement, .cwd(), source, testing.io, .{});
     }
+    const updated = try cache.install(testing.io, a, source, cache_root);
+    defer a.free(updated);
+    try testing.expect(!std.mem.eql(u8, cached, updated));
+    // The new executable's connect bridge must reuse, not replace, the owner.
+    const new_exe = try a.dupe(u8, updated);
+    a.free(fixture.exe);
+    fixture.exe = new_exe;
     try testing.expectEqual(@as(u32, 258), WaitForSingleObject(fixture.child.id.?, 0));
     var client = try fixture.connect();
     defer client.deinit();
@@ -478,10 +548,46 @@ test "native cached live owner survives replacement of its test-owned bundle sou
     Sha256.hash(bytes, &digest, .{});
     try testing.expectEqual(original_size, bytes.len);
     try testing.expectEqualSlices(u8, &original_digest, &digest);
-    const updated = try cache.install(testing.io, a, source, cache_root);
-    defer a.free(updated);
-    try testing.expect(!std.mem.eql(u8, cached, updated));
     try testing.expectEqual(@as(u32, 258), WaitForSingleObject(fixture.child.id.?, 0));
+
+    // End only the fixture session, disconnect all clients, and let the old
+    // owner collect naturally. No upgrade may kill a resident owner.
+    const killed = try client.request(.{ .id = 0, .op = .kill, .session = session_id });
+    killed.deinit();
+    client.connection.close();
+    fixture.guard.deinit();
+    fixture.guard_live = false;
+    try testing.expectEqual(@as(u32, 0), WaitForSingleObject(fixture.child.id.?, 10_000));
+    const old_pid = fixture.pid;
+    fixture.child.kill(testing.io);
+    fixture.child = try std.process.spawn(testing.io, .{
+        .argv = &.{ updated, "session", "serve", "--namespace", fixture.namespace },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+        .create_no_window = true,
+    });
+    var fresh = try fixture.connect();
+    defer fresh.deinit();
+    const message = try fresh.next();
+    defer message.deinit();
+    try testing.expectEqual(p.Kind.welcome, message.kind);
+    const welcome = try p.parse(p.Welcome, a, message.payload);
+    defer welcome.deinit();
+    try testing.expect(welcome.value.owner_pid != old_pid);
+    // Private owners intentionally use ephemeral identities on each startup.
+    try testing.expect(p.validHost(welcome.value.host));
+    const empty = try fresh.request(.{ .id = 0, .op = .list });
+    defer empty.deinit();
+    try testing.expectEqual(@as(usize, 0), empty.value.sessions.?.len);
+    const created = try fresh.opened(.{ .id = 0, .op = .create, .create_id = session_id, .spawn = spawn(counter) });
+    defer created.deinit();
+    try fresh.until(1, "NATIVE-READY");
+    try fresh.input(1, "inc\r");
+    try fresh.until(1, "NATIVE-VALUE-41");
+    const stopped = try fresh.request(.{ .id = 0, .op = .kill_server });
+    stopped.deinit();
+    try testing.expectEqual(@as(u32, 0), WaitForSingleObject(fixture.child.id.?, 10_000));
 }
 
 test "native transport multipane layout close and respawn survive view destruction" {

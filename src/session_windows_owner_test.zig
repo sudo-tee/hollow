@@ -419,6 +419,52 @@ test "Windows kill-server cancels idle handshake readers and permits fresh owner
     try expectEmpty(&restarted);
 }
 
+fn retirementProbe(fixture: *Fixture, retiring: bool) !owner.Connection {
+    var connection = try fixture.connect();
+    errdefer connection.deinit();
+    try connection.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('0'))) });
+    const frame = try connection.next(5000);
+    try testing.expectEqual(p.Kind.welcome, frame.kind);
+    const welcome = try p.parse(p.Welcome, a, frame.payload);
+    defer welcome.deinit();
+    try testing.expect(p.hasFeature(welcome.value.features, "retire-empty"));
+    try testing.expectEqual(@as(usize, 64), welcome.value.owner_build.len);
+    try testing.expect(!std.mem.eql(u8, welcome.value.owner_build, &(@as([64]u8, @splat('0')))));
+    try testing.expectEqual(retiring, welcome.value.retiring);
+    return connection;
+}
+
+test "Windows outdated empty owner retires with idle connected clients" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var probe = try retirementProbe(&fixture, true);
+    defer probe.deinit();
+    try testing.expectEqual(@as(windows.DWORD, 0), WaitForSingleObject(fixture.process, 4000));
+}
+
+test "Windows outdated owner preserves live sessions and retires after the last close" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const created = try request(&fixture.connection, .{ .id = 1, .op = .create, .spawn = .{
+        .argv = &.{ "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30" },
+        .shell_integration = false,
+    } });
+    defer created.deinit();
+    try testing.expect(created.value.ok);
+    const pane = created.value.session.?.panes[0].id;
+    var probe = try retirementProbe(&fixture, false);
+    defer probe.deinit();
+    try testing.expectEqual(fixture.pid, try hello(&probe));
+    try testing.expectEqual(@as(windows.DWORD, 258), WaitForSingleObject(fixture.process, 0));
+    const listed = try request(&probe, .{ .id = 2, .op = .list });
+    defer listed.deinit();
+    try testing.expectEqual(@as(usize, 1), listed.value.sessions.?.len);
+    try fixture.connection.sendJson(.request, p.Request{ .id = 3, .op = .close, .pane = pane });
+    // Both established clients remain connected. Retirement must not depend
+    // on the GUI disconnecting its idle transports first.
+    try testing.expectEqual(@as(windows.DWORD, 0), WaitForSingleObject(fixture.process, 5000));
+}
+
 test "Windows owner exits naturally after final client disconnects" {
     var fixture = try Fixture.init();
     // Transfer connection ownership so cleanup does not touch a freed client.

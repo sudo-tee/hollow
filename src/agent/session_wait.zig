@@ -71,10 +71,15 @@ pub const Monitor = struct {
     startup_deadline: i64,
     seen_sessions: bool = false,
     request_id: u64 = 0,
+    drain: bool = false,
 
     pub fn init(a: std.mem.Allocator, fd: c_int, now: i64, startup_deadline: i64) !Monitor {
-        var self: Monitor = .{ .a = a, .fd = fd, .deadline = now + exchange_ms, .startup_deadline = startup_deadline };
-        try self.queue(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "session-wait", .client = "hollow-agent-session-wait" });
+        return initMode(a, fd, now, startup_deadline, false);
+    }
+
+    pub fn initMode(a: std.mem.Allocator, fd: c_int, now: i64, startup_deadline: i64, drain: bool) !Monitor {
+        var self: Monitor = .{ .a = a, .fd = fd, .deadline = now + exchange_ms, .startup_deadline = startup_deadline, .drain = drain };
+        try self.queue(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "session-wait", .client = "hollow-agent-session-wait", .owner_drain = drain });
         return self;
     }
 
@@ -108,6 +113,13 @@ pub const Monitor = struct {
                 const parsed = try p.parse(p.Welcome, self.a, bytes);
                 defer parsed.deinit();
                 if (!std.mem.eql(u8, parsed.value.protocol, p.protocol) or parsed.value.version != p.version) return error.ProtocolMismatch;
+                if (self.drain) {
+                    if (!p.hasFeature(parsed.value.features, "drain-empty")) return error.DrainUnsupported;
+                    if (parsed.value.retiring) {
+                        self.phase = .done;
+                        return;
+                    }
+                }
                 try self.list(now);
             },
             .reply => {
@@ -115,11 +127,17 @@ pub const Monitor = struct {
                 const parsed = try p.parse(p.Reply, self.a, bytes);
                 defer parsed.deinit();
                 const reply = parsed.value;
+                if (self.drain and reply.id == self.request_id and !reply.ok and
+                    std.mem.eql(u8, reply.@"error" orelse "", "OwnerRetiring"))
+                {
+                    self.phase = .done;
+                    return;
+                }
                 if (reply.id != self.request_id or !reply.ok) return error.InvalidReply;
                 const sessions = reply.sessions orelse return error.InvalidReply;
                 if (sessions.len > 0) {
                     self.seen_sessions = true;
-                } else if (self.seen_sessions or now >= self.startup_deadline) {
+                } else if (!self.drain and (self.seen_sessions or now >= self.startup_deadline)) {
                     self.phase = .done;
                     return;
                 }
@@ -223,6 +241,33 @@ test "session wait tolerates pre-create emptiness but ends after the last sessio
     try std.testing.expect(!try fixture.monitor.step(startup_ms + 1));
     try fixture.send(.reply, p.Reply{ .id = 3, .sessions = &.{} });
     try std.testing.expect(try fixture.monitor.step(startup_ms + 1));
+}
+
+test "guest drain requires atomic retirement rather than an empty list" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    fixture.monitor.drain = true;
+    fixture.monitor.startup_deadline = 0;
+    try std.testing.expect(!try fixture.monitor.step(0));
+    try fixture.send(.welcome, p.Welcome{ .ghostty = "fixture", .snapshot = .vt, .owner_pid = 1, .features = &p.owner_features });
+    try std.testing.expect(!try fixture.monitor.step(0));
+    try std.testing.expect(!try fixture.monitor.step(0));
+    try fixture.send(.reply, p.Reply{ .id = 1, .sessions = &.{} });
+    try std.testing.expect(!try fixture.monitor.step(0));
+    try std.testing.expect(!try fixture.monitor.step(interval_ms));
+    try fixture.send(.reply, p.Reply{ .id = 2, .ok = false, .@"error" = "OwnerRetiring" });
+    try std.testing.expect(try fixture.monitor.step(interval_ms));
+}
+
+test "guest drain accepts retiring welcome and fails closed with legacy guests" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    fixture.monitor.drain = true;
+    try std.testing.expect(!try fixture.monitor.step(0));
+    try fixture.send(.welcome, p.Welcome{ .ghostty = "fixture", .snapshot = .vt, .owner_pid = 1, .retiring = true });
+    try std.testing.expectError(error.DrainUnsupported, fixture.monitor.step(0));
+    try fixture.send(.welcome, p.Welcome{ .ghostty = "fixture", .snapshot = .vt, .owner_pid = 1, .features = &p.owner_features, .retiring = true });
+    try std.testing.expect(try fixture.monitor.step(0));
 }
 
 test "session wait bounds initial emptiness and checks once more at the deadline" {

@@ -46,7 +46,7 @@ fn run(init: std.process.Init, bridge_admitted: *bool) !void {
         if (input == windows.INVALID_HANDLE_VALUE or output == windows.INVALID_HANDLE_VALUE) return error.InvalidStdio;
         const exe = try std.process.executablePathAlloc(init.io, init.gpa);
         defer init.gpa.free(exe);
-        const handle = try owner.connectOrStart(init.gpa, init.io, namespace, exe);
+        const handle = try owner.connectCurrent(init.gpa, init.io, namespace, exe);
         bridge_admitted.* = true;
         return @import("session_bridge_windows.zig").run(handle, input, output);
     }
