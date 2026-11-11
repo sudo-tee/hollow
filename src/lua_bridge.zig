@@ -2462,6 +2462,7 @@ pub const Runtime = struct {
             api.push_cclosure(self.state, entry[0], 1);
             api.set_field(self.state, -2, entry[1]);
         }
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_activate_session_notice, 1);
         api.set_field(self.state, -2, "activate_session_notice");
 
