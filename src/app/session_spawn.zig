@@ -295,7 +295,7 @@ pub fn saveLayouts(app: *App) void {
     for (mux.workspaces.items) |ws| {
         const controller = ws.session_controller orelse continue;
         if (!canSave(controller) or io.nanoTimestamp() < controller.layout_due_ns) continue;
-        const bytes = @import("../mux/session_layout.zig").capture(app.allocator, ws) catch |err| {
+        const bytes = @import("../mux/session_layout.zig").capture(app.allocator, ws, &mux.global_docks) catch |err| {
             controller.layout_dirty = false;
             report(app, err, .not_sent, null);
             continue;
@@ -339,7 +339,7 @@ pub fn flushLayouts(app: *App, budget_ns: i128) void {
         const controller = ws.session_controller orelse continue;
         if (!canSave(controller)) continue;
         controller.layout_dirty = false;
-        const bytes = @import("../mux/session_layout.zig").capture(app.allocator, ws) catch |err| {
+        const bytes = @import("../mux/session_layout.zig").capture(app.allocator, ws, &mux.global_docks) catch |err| {
             std.log.warn("session layout flush: {s}", .{@errorName(err)});
             continue;
         };

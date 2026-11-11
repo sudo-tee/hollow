@@ -1001,6 +1001,7 @@ pub fn setPaneVisibleById(self: *App, pane_id: usize, visible: bool) void {
         const previous = mux.activePane();
         if (!mux.setPaneVisible(pane, visible)) return;
         if (visible) pane.invalidate();
+        self.markSessionLayoutsDirty();
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
@@ -1017,6 +1018,7 @@ pub fn dockPaneById(self: *App, pane_id: usize, edge: PaneEdge, scope: DockScope
             return;
         };
         pane.invalidate();
+        self.markSessionLayoutsDirty();
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         if (mux.activePane() == pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
@@ -1034,6 +1036,7 @@ pub fn undockPaneById(self: *App, pane_id: usize) void {
             return;
         };
         pane.invalidate();
+        self.markSessionLayoutsDirty();
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });

@@ -6,12 +6,26 @@ pub const max_panes = 1024;
 pub const max_tab_panes = 64;
 pub const max_depth = 32;
 pub const max_bytes = 256 * 1024;
+/// Four slots per scope: workspace and window-global.
+pub const max_docks = 8;
+
+pub const DockEdge = enum { left, right, top, bottom };
+pub const DockScope = enum { global, workspace };
+
+pub const Dock = struct {
+    pane: u32,
+    edge: DockEdge,
+    scope: DockScope = .workspace,
+    ratio: f32 = 0.5,
+};
 
 pub const Layout = struct {
     version: u32 = 1,
     name: ?[]const u8 = null,
     active_tab: usize = 0,
     tabs: []const Tab,
+    docks: []const Dock = &.{},
+    hidden: []const u32 = &.{},
 };
 
 pub const Tab = struct {
@@ -136,6 +150,29 @@ pub fn decodeReconciled(a: std.mem.Allocator, bytes: []const u8, panes: []const 
         if (old_index == parsed.value.active_tab) active_tab = tabs.items.len;
         tabs.appendAssumeCapacity(result);
     }
+    if (parsed.value.docks.len > max_docks or parsed.value.hidden.len > max_panes)
+        return error.InvalidSessionLayout;
+    // Docks claim panes after tabs so tab membership wins stale duplicates.
+    var dock_slots: [max_docks]bool = @splat(false);
+    var docks: std.ArrayList(Dock) = .empty;
+    try docks.ensureTotalCapacity(arena, parsed.value.docks.len);
+    for (parsed.value.docks) |dock| {
+        if (!inRange(dock.ratio, 0.05, 0.95)) return error.InvalidSessionLayout;
+        const index = std.mem.indexOfScalar(u32, panes, dock.pane) orelse {
+            changed = true;
+            continue;
+        };
+        const slot = @as(usize, @backingInt(dock.scope)) * 4 + @backingInt(dock.edge);
+        if (claimed[index] or dock_slots[slot]) {
+            changed = true;
+            continue;
+        }
+        claimed[index] = true;
+        dock_slots[slot] = true;
+        docks.appendAssumeCapacity(dock);
+    }
+    if (docks.items.len != parsed.value.docks.len) changed = true;
+    parsed.value.docks = docks.items;
     for (panes, 0..) |id, i| {
         if (claimed[i]) continue;
         const node = try arena.alloc(Node, 1);
@@ -146,6 +183,25 @@ pub fn decodeReconciled(a: std.mem.Allocator, bytes: []const u8, panes: []const 
     if (tabs.items.len != parsed.value.tabs.len) changed = true;
     parsed.value.tabs = tabs.items;
     parsed.value.active_tab = @min(active_tab, tabs.items.len - 1);
+    // Hidden is orthogonal to ownership; drop stale, duplicate and active
+    // references so restored tabs keep at least one visible pane.
+    var hidden_seen: [max_panes]bool = @splat(false);
+    var hidden: std.ArrayList(u32) = .empty;
+    try hidden.ensureTotalCapacity(arena, parsed.value.hidden.len);
+    for (parsed.value.hidden) |id| {
+        const index = std.mem.indexOfScalar(u32, panes, id) orelse {
+            changed = true;
+            continue;
+        };
+        if (hidden_seen[index] or isActivePane(parsed.value.tabs, id)) {
+            changed = true;
+            continue;
+        }
+        hidden_seen[index] = true;
+        hidden.appendAssumeCapacity(id);
+    }
+    if (hidden.items.len != parsed.value.hidden.len) changed = true;
+    parsed.value.hidden = hidden.items;
     try validate(parsed.value, panes);
     return .{ .parsed = parsed, .changed = changed };
 }
@@ -273,9 +329,37 @@ pub fn validate(value: Layout, panes: []const u32) !void {
             }
         }
     }
+    if (value.docks.len > max_docks or value.hidden.len > max_panes)
+        return error.InvalidSessionLayout;
+    var dock_slots: [max_docks]bool = @splat(false);
+    for (value.docks) |dock| {
+        if (!inRange(dock.ratio, 0.05, 0.95)) return error.InvalidSessionLayout;
+        const slot = @as(usize, @backingInt(dock.scope)) * 4 + @backingInt(dock.edge);
+        if (dock_slots[slot]) return error.InvalidSessionLayout;
+        dock_slots[slot] = true;
+        try claimPane(dock.pane, panes, &seen);
+    }
     for (seen[0..panes.len]) |present| {
         if (!present) return error.InvalidSessionLayout;
     }
+    var hidden_seen: [max_panes]bool = @splat(false);
+    for (value.hidden) |id| {
+        const index = std.mem.indexOfScalar(u32, panes, id) orelse return error.InvalidSessionLayout;
+        if (hidden_seen[index]) return error.InvalidSessionLayout;
+        hidden_seen[index] = true;
+        if (isActivePane(value.tabs, id)) return error.InvalidSessionLayout;
+    }
+}
+
+fn isActivePane(tabs: []const Tab, id: u32) bool {
+    for (tabs) |tab| if (tab.active_pane == id) return true;
+    return false;
+}
+
+fn claimPane(id: u32, panes: []const u32, seen: *[max_panes]bool) Invalid!void {
+    const index = std.mem.indexOfScalar(u32, panes, id) orelse return error.InvalidSessionLayout;
+    if (seen[index]) return error.InvalidSessionLayout;
+    seen[index] = true;
 }
 
 fn inRange(value: f32, min: f32, max: f32) bool {
@@ -328,6 +412,30 @@ test "session pane layout roundtrip nested splits floating and tabs" {
         },
         .{ .active_pane = 55, .floating = &.{ .{ .pane = 55, .anchor = 0xffffffff }, .{ .pane = 0xffffffff, .anchor = 55 } } },
     } };
+    const bytes = try encode(a, value, &panes);
+    defer a.free(bytes);
+    const parsed = try decode(a, bytes, &panes);
+    defer parsed.deinit();
+    try std.testing.expectEqualDeep(value, parsed.value);
+    const again = try encode(a, parsed.value, &panes);
+    defer a.free(again);
+    try std.testing.expectEqualStrings(bytes, again);
+}
+
+test "session pane layout roundtrip docks and hidden panes" {
+    const a = std.testing.allocator;
+    const panes = [_]u32{ 1, 2, 3, 4, 5, 6 };
+    const value: Layout = .{
+        .name = "docks",
+        .tabs = &.{singleTab(&.{ .{ .first = 1, .second = 2 }, .{ .pane = 1 }, .{ .pane = 2 } })},
+        .docks = &.{
+            .{ .pane = 3, .edge = .left, .scope = .workspace, .ratio = 0.3 },
+            .{ .pane = 4, .edge = .right, .scope = .global, .ratio = 0.2 },
+            .{ .pane = 5, .edge = .top, .scope = .workspace, .ratio = 0.4 },
+            .{ .pane = 6, .edge = .bottom, .scope = .global, .ratio = 0.6 },
+        },
+        .hidden = &.{2},
+    };
     const bytes = try encode(a, value, &panes);
     defer a.free(bytes);
     const parsed = try decode(a, bytes, &panes);
@@ -573,6 +681,70 @@ test "session pane layout reconcile keeps exact layouts and rejects malformed on
     defer dup.deinit();
     try std.testing.expect(dup.changed);
     try std.testing.expectEqual(@as(usize, 1), dup.parsed.value.tabs.len);
+}
+
+test "session pane layout reconcile prunes stale and duplicate docks and hidden panes" {
+    const a = std.testing.allocator;
+    const blob =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]},{"active_pane":4,"root":0,"nodes":[{"pane":4}]}],
+        \\"docks":[{"pane":2,"edge":"left","scope":"workspace","ratio":0.3},
+        \\{"pane":3,"edge":"left","scope":"workspace","ratio":0.4},
+        \\{"pane":4,"edge":"top","scope":"global","ratio":0.5},
+        \\{"pane":5,"edge":"top","scope":"global","ratio":0.6},
+        \\{"pane":99,"edge":"right","scope":"global","ratio":0.5}],
+        \\"hidden":[2,3,1,99,2]}
+    ;
+    const result = try decodeReconciled(a, blob, &.{ 1, 2, 3, 4, 5 });
+    defer result.deinit();
+    try std.testing.expect(result.changed);
+    const value = result.parsed.value;
+    // The second workspace-left dock lost to the first, the tab member stays
+    // in its tab, and the closed pane's dock is gone.
+    try std.testing.expectEqual(@as(usize, 2), value.docks.len);
+    try std.testing.expectEqual(@as(u32, 2), value.docks[0].pane);
+    try std.testing.expectEqual(DockEdge.left, value.docks[0].edge);
+    try std.testing.expectEqual(DockScope.workspace, value.docks[0].scope);
+    try std.testing.expectEqual(@as(u32, 5), value.docks[1].pane);
+    try std.testing.expectEqual(DockEdge.top, value.docks[1].edge);
+    try std.testing.expectEqual(DockScope.global, value.docks[1].scope);
+    // Pane 3 lost its dock slot and becomes a trailing tab.
+    try std.testing.expectEqual(@as(usize, 3), value.tabs.len);
+    try std.testing.expectEqual(@as(u32, 3), value.tabs[2].active_pane);
+    // Hidden 3 is now active, 1 is active and 99 is closed.
+    try std.testing.expectEqualSlices(u32, &.{2}, value.hidden);
+    const again = try encode(a, value, &.{ 1, 2, 3, 4, 5 });
+    defer a.free(again);
+}
+
+test "session pane layout rejects invalid docks and hidden panes" {
+    const a = std.testing.allocator;
+    const duplicate_edge =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"docks":[{"pane":2,"edge":"left"},{"pane":3,"edge":"left"}]}
+    ;
+    const duplicate_owner =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"docks":[{"pane":1,"edge":"left"}]}
+    ;
+    const bad_ratio =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"docks":[{"pane":2,"edge":"left","ratio":1.5}]}
+    ;
+    const hidden_active =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"hidden":[1]}
+    ;
+    const hidden_closed =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"hidden":[99]}
+    ;
+    const hidden_duplicate =
+        \\{"tabs":[{"active_pane":1,"root":0,"nodes":[{"pane":1}]}],"hidden":[2,2]}
+    ;
+    const cases = [_]struct { blob: []const u8, panes: []const u32 }{
+        .{ .blob = duplicate_edge, .panes = &.{ 1, 2, 3 } },
+        .{ .blob = duplicate_owner, .panes = &.{ 1, 2 } },
+        .{ .blob = bad_ratio, .panes = &.{ 1, 2 } },
+        .{ .blob = hidden_active, .panes = &.{ 1, 2 } },
+        .{ .blob = hidden_closed, .panes = &.{ 1, 2 } },
+        .{ .blob = hidden_duplicate, .panes = &.{ 1, 2 } },
+    };
+    for (cases) |case| try std.testing.expectError(error.InvalidSessionLayout, decode(a, case.blob, case.panes));
 }
 
 test "session pane layout name peek tolerates unusable blobs" {

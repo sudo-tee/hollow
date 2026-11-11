@@ -1695,12 +1695,28 @@ pub const App = struct {
         const mux = if (self.mux) |*value| value else return;
         if (mux.session_workspace_count == 0) return;
         const workspace = mux.activeWorkspace() orelse return;
-        if (workspace.session_controller) |controller| {
-            // Membership ACKs set an immediate dirty flag; ordinary geometry
-            // edits settle for 100 ms so dragging never serializes each frame.
-            if (!controller.layout_dirty or controller.layout_due_ns != 0) controller.layout_due_ns = io.nanoTimestamp() + 100 * std.time.ns_per_ms;
-            controller.layout_dirty = true;
+        if (workspace.session_controller) |controller| self.markControllerLayoutDirty(controller);
+    }
+
+    /// Dock and visibility edits can touch a pane whose owning session is not
+    /// the active workspace (window-global docks, cross-session workspace
+    /// docks), so refresh every attached session's captured layout.
+    pub fn markSessionLayoutsDirty(self: *App) void {
+        if (self.session_layout_suppressed) return;
+        const mux = if (self.mux) |*value| value else return;
+        if (mux.session_workspace_count == 0) return;
+        for (mux.workspaces.items) |workspace| {
+            const controller = workspace.session_controller orelse continue;
+            self.markControllerLayoutDirty(controller);
         }
+    }
+
+    fn markControllerLayoutDirty(self: *App, controller: *SessionController) void {
+        _ = self;
+        // Membership ACKs set an immediate dirty flag; ordinary geometry
+        // edits settle for 100 ms so dragging never serializes each frame.
+        if (!controller.layout_dirty or controller.layout_due_ns != 0) controller.layout_due_ns = io.nanoTimestamp() + 100 * std.time.ns_per_ms;
+        controller.layout_dirty = true;
     }
 
     fn invalidateCachedBarLayouts(self: *App) void {

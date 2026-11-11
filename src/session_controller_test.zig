@@ -449,7 +449,7 @@ test "session pane layout restores nested tabs and floating geometry with owner 
     try std.testing.expectEqual(@as(u32, 2), try geometry.ownerId(tab.maximized_pane.?));
     try std.testing.expect(tab.active_pane.?.is_floating);
     try std.testing.expectEqual(tab.maximized_pane.?.id, tab.active_pane.?.restore_anchor_id);
-    const captured = try geometry.capture(a, workspace);
+    const captured = try geometry.capture(a, workspace, &mux.global_docks);
     defer a.free(captured);
     try std.testing.expectEqualStrings(bytes, captured);
     mux.deinit(&runtime);
@@ -458,9 +458,137 @@ test "session pane layout restores nested tabs and floating geometry with owner 
     info.layout = captured;
     const restored = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
     try std.testing.expect(restored.tabs.items[0].active_pane.?.id >= 100);
-    const recaptured = try geometry.capture(a, restored);
+    const recaptured = try geometry.capture(a, restored, &mux.global_docks);
     defer a.free(recaptured);
     try std.testing.expectEqualStrings(bytes, recaptured);
+}
+
+fn sessionPane(mux: *@import("mux/mux.zig").Mux, workspace: *@import("mux/workspace.zig").Workspace, owner: u32) !*Pane {
+    var tab_panes = workspace.paneIterator();
+    while (tab_panes.next()) |pane| {
+        if (try @import("mux/session_layout.zig").ownerId(pane) == owner) return pane;
+    }
+    var dock_panes = mux.dockPaneIterator();
+    while (dock_panes.next()) |pane| {
+        if (try @import("mux/session_layout.zig").ownerId(pane) == owner) return pane;
+    }
+    return error.PaneNotFound;
+}
+
+test "session pane layout restores hidden panes and workspace and global docks" {
+    const codec = @import("session/layout.zig");
+    const geometry = @import("mux/session_layout.zig");
+    const Mux = @import("mux/mux.zig").Mux;
+    const PaneEdge = @import("mux/types.zig").PaneEdge;
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    const bytes = try codec.encode(a, .{
+        .name = "docked",
+        .tabs = &.{.{ .active_pane = 1, .root = 0, .nodes = &.{ .{ .first = 1, .second = 2 }, .{ .pane = 1 }, .{ .pane = 2 } } }},
+        .docks = &.{
+            .{ .pane = 3, .edge = .left, .scope = .workspace, .ratio = 0.25 },
+            .{ .pane = 4, .edge = .right, .scope = .global, .ratio = 0.5 },
+        },
+        .hidden = &.{2},
+    }, &.{ 1, 2, 3, 4 });
+    defer a.free(bytes);
+    const info: p.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 9,
+        .layout = bytes,
+        .panes = &.{
+            .{ .id = 1, .cols = 80, .rows = 24 },
+            .{ .id = 2, .cols = 40, .rows = 24 },
+            .{ .id = 3, .cols = 60, .rows = 24 },
+            .{ .id = 4, .cols = 60, .rows = 24 },
+        },
+    };
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const workspace = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    try std.testing.expectEqual(@as(usize, 1), workspace.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items[0].panes.items.len);
+    try std.testing.expect(!(try sessionPane(&mux, workspace, 1)).is_hidden);
+    try std.testing.expect((try sessionPane(&mux, workspace, 2)).is_hidden);
+    const workspace_dock = try sessionPane(&mux, workspace, 3);
+    try std.testing.expectEqual(PaneEdge.left, workspace.docks.edgeOf(workspace_dock).?);
+    try std.testing.expectEqual(@as(f32, 0.25), workspace.docks.size(.left));
+    const global_dock = try sessionPane(&mux, workspace, 4);
+    try std.testing.expectEqual(PaneEdge.right, mux.global_docks.edgeOf(global_dock).?);
+    try std.testing.expectEqual(@as(f32, 0.5), mux.global_docks.size(.right));
+    const captured = try geometry.capture(a, workspace, &mux.global_docks);
+    defer a.free(captured);
+    try std.testing.expectEqualStrings(bytes, captured);
+    mux.deinit(&runtime);
+    try std.testing.expect(!controller.hasBindings());
+    // Global docks die with the mux; the blob restores both scopes again.
+    mux.next_pane_id.store(100, .monotonic);
+    var restored_info = info;
+    restored_info.layout = captured;
+    const restored = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, restored_info, null, null);
+    try std.testing.expect((try sessionPane(&mux, restored, 2)).is_hidden);
+    const restored_global = try sessionPane(&mux, restored, 4);
+    try std.testing.expectEqual(PaneEdge.right, mux.global_docks.edgeOf(restored_global).?);
+    const recaptured = try geometry.capture(a, restored, &mux.global_docks);
+    defer a.free(recaptured);
+    try std.testing.expectEqualStrings(bytes, recaptured);
+}
+
+test "session pane layout global dock conflict falls back to a visible tab" {
+    const codec = @import("session/layout.zig");
+    const geometry = @import("mux/session_layout.zig");
+    const Mux = @import("mux/mux.zig").Mux;
+    const PaneEdge = @import("mux/types.zig").PaneEdge;
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    try setup(&controller);
+    defer controller.deinit();
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = Config.init(a);
+    defer cfg.deinit();
+    const bytes = try codec.encode(a, .{
+        .tabs = &.{.{ .active_pane = 1, .root = 0, .nodes = &.{.{ .pane = 1 }} }},
+        .docks = &.{.{ .pane = 2, .edge = .right, .scope = .global, .ratio = 0.5 }},
+        .hidden = &.{2},
+    }, &.{ 1, 2 });
+    defer a.free(bytes);
+    const info: p.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 4,
+        .layout = bytes,
+        .panes = &.{ .{ .id = 1, .cols = 80, .rows = 24 }, .{ .id = 2, .cols = 80, .rows = 24 } },
+    };
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const occupant = try a.create(Pane);
+    occupant.* = Pane.init(a);
+    try mux.global_docks.place(.right, occupant, 0.25);
+    const workspace = try mux.addSessionWorkspace(&runtime, fixture.callbacks(), cfg, &controller, info, null, null);
+    // The occupied global edge keeps its pane; the restored dock becomes a tab
+    // and cannot stay hidden because it is that tab's active pane.
+    try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);
+    const fallback = workspace.tabs.items[1].active_pane.?;
+    try std.testing.expectEqual(@as(u32, 2), try geometry.ownerId(fallback));
+    try std.testing.expect(!fallback.is_hidden);
+    try std.testing.expectEqual(PaneEdge.right, mux.global_docks.edgeOf(occupant).?);
+    try std.testing.expectEqual(@as(f32, 0.25), mux.global_docks.size(.right));
+    // Foreign docked panes cannot be represented in this session's blob.
+    const captured = try geometry.capture(a, workspace, &mux.global_docks);
+    defer a.free(captured);
+    const parsed = try codec.decode(a, captured, &.{ 1, 2 });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.docks.len);
 }
 
 test "session pane layout restore reconciles stale membership and survives a corrupt blob" {
@@ -597,7 +725,7 @@ fn layoutAllocationRoundtrip(allocator: std.mem.Allocator, connection: *transpor
         try std.testing.expect(!controller.hasBindings());
         return err;
     };
-    const captured = try @import("mux/session_layout.zig").capture(allocator, workspace);
+    const captured = try @import("mux/session_layout.zig").capture(allocator, workspace, null);
     defer allocator.free(captured);
 }
 

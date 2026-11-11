@@ -639,7 +639,7 @@ test "session pane real owner restores binary snapshot into Pane after full clie
         controller.revision = reply.value.session.?.revision;
         _ = try mux.addSessionWorkspace(&runtime, callbacks(), cfg, &controller, reply.value.session.?, null, null);
         try waitWorkspaceText(&controller, &mux, &runtime, "persisted-marker");
-        const layout = try @import("mux/session_layout.zig").capture(a, mux.activeWorkspace().?);
+        const layout = try @import("mux/session_layout.zig").capture(a, mux.activeWorkspace().?, &mux.global_docks);
         defer a.free(layout);
         const layout_request = try controller.requestLayout(layout);
         const saved = try nextControl(&controller);

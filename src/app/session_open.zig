@@ -242,7 +242,7 @@ pub fn pump(app: *App) void {
                     workspace.setDefaultCwd(spawn.cwd) catch |err| std.log.warn("session default cwd failed: {s}", .{@errorName(err)});
                 };
                 if (pending.operation.request.op == .create) save_initial: {
-                    const bytes = @import("../mux/session_layout.zig").capture(app.allocator, workspace) catch |err| {
+                    const bytes = @import("../mux/session_layout.zig").capture(app.allocator, workspace, if (app.mux) |*mux| &mux.global_docks else null) catch |err| {
                         std.log.warn("initial session geometry capture failed: {s}", .{@errorName(err)});
                         break :save_initial;
                     };

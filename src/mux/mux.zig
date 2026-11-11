@@ -60,6 +60,8 @@ pub const Mux = struct {
     global_docks: Docks = .{},
     /// Focused dock pane; overrides the active tab's pane while it is shown.
     focused_dock: ?*Pane = null,
+    /// Persistent identity of that workspace, consumed and freed alongside it.
+    last_removed_session: ?RemovedSession = null,
 
     pub const DockLocation = struct {
         scope: DockScope,
@@ -69,9 +71,6 @@ pub const Mux = struct {
         /// The dock's share of its carved region.
         ratio: f32 = 0,
     };
-
-    /// Persistent identity of that workspace, consumed and freed alongside it.
-    last_removed_session: ?RemovedSession = null,
 
     pub const RemovedSession = struct {
         id: []u8,
@@ -229,6 +228,17 @@ pub const Mux = struct {
             if (value.value.name) |saved_name| try workspace.setName(saved_name);
         }
         const tab_count = if (saved) |value| value.value.tabs.len else info.panes.len;
+        var restored_ids: [codec.max_panes]u32 = undefined;
+        var restored_panes: [codec.max_panes]*Pane = undefined;
+        var restored_count: usize = 0;
+        var restored_global: [4]*Pane = undefined;
+        var restored_global_count: usize = 0;
+        // Global docks outlive this workspace's failure cleanup.
+        errdefer for (restored_global[0..restored_global_count]) |pane| {
+            _ = self.global_docks.remove(pane);
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        };
         for (0..tab_count) |index| {
             const tab = try self.createTab();
             var tab_owned = false;
@@ -260,14 +270,106 @@ pub const Mux = struct {
             }
             try workspace.appendTab(tab);
             tab_owned = true;
+            try recordSessionPanes(tab, &restored_ids, &restored_panes, &restored_count);
         }
-        if (saved) |value| workspace.active_tab = workspace.tabs.items[value.value.active_tab];
+        if (saved) |value| {
+            for (value.value.docks) |dock| {
+                const remote = for (info.panes) |item| {
+                    if (item.id == dock.pane) break item;
+                } else return error.InvalidSessionLayout;
+                const edge: PaneEdge = @fromBackingInt(@intCast(@backingInt(dock.edge)));
+                if (dock.scope == .global and self.global_docks.slot(edge).pane != null) {
+                    // A window dock already holds a pane from another
+                    // attachment: publish this one as an ordinary tab instead.
+                    const tab = try self.appendSessionPaneTab(workspace, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                    try recordSessionPanes(tab, &restored_ids, &restored_panes, &restored_count);
+                    continue;
+                }
+                const pane = try self.createSessionDockView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                var placed = false;
+                errdefer if (!placed) {
+                    pane.deinit(runtime);
+                    self.allocator.destroy(pane);
+                };
+                if (dock.scope == .global) {
+                    self.global_docks.place(edge, pane, dock.ratio) catch |err| return err;
+                    restored_global[restored_global_count] = pane;
+                    restored_global_count += 1;
+                } else {
+                    workspace.docks.place(edge, pane, dock.ratio) catch |err| return err;
+                }
+                placed = true;
+                if (restored_count == codec.max_panes) return error.InvalidSessionLayout;
+                restored_ids[restored_count] = dock.pane;
+                restored_panes[restored_count] = pane;
+                restored_count += 1;
+            }
+            workspace.active_tab = workspace.tabs.items[value.value.active_tab];
+            for (value.value.hidden) |id| {
+                var target: ?*Pane = null;
+                for (restored_ids[0..restored_count], restored_panes[0..restored_count]) |owner, pane| {
+                    if (owner == id) {
+                        target = pane;
+                        break;
+                    }
+                }
+                const pane = target orelse continue;
+                // A hidden pane cannot be its tab's active pane. Global-dock
+                // fallback tabs keep that pane visible instead. The workspace
+                // is not in `self.workspaces` yet, so scan it directly.
+                var active = false;
+                for (workspace.tabs.items) |tab| {
+                    if (tab.active_pane == pane) {
+                        active = true;
+                        break;
+                    }
+                }
+                if (active) continue;
+                pane.is_hidden = true;
+            }
+        }
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
         var panes = workspace.paneIterator();
         self.session_workspace_count += 1;
         while (panes.next()) |pane| self.notifyCreated(pane);
+        for (restored_global[0..restored_global_count]) |pane| self.notifyCreated(pane);
         return workspace;
+    }
+
+    fn recordSessionPanes(tab: *Tab, ids: *[@import("../session/layout.zig").max_panes]u32, panes: *[@import("../session/layout.zig").max_panes]*Pane, count: *usize) !void {
+        const max_panes = @import("../session/layout.zig").max_panes;
+        for (tab.panes.items) |pane| {
+            if (count.* == max_panes) return error.InvalidSessionLayout;
+            ids[count.*] = try @import("session_layout.zig").ownerId(pane);
+            panes[count.*] = pane;
+            count.* += 1;
+        }
+    }
+
+    fn createSessionDockView(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Pane {
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        errdefer {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        }
+        try controller.bind(pane);
+        return pane;
+    }
+
+    fn appendSessionPaneTab(self: *Mux, workspace: *Workspace, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Tab {
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        const root = try self.allocator.create(SplitNode);
+        root.* = SplitNode.initPane(tab.panes.items[0]);
+        tab.root_split = root;
+        tab.active_pane = tab.panes.items[0];
+        try workspace.appendTab(tab);
+        return tab;
     }
 
     fn appendSessionView(self: *Mux, tab: *Tab, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !void {

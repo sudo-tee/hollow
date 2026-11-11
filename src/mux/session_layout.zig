@@ -6,11 +6,25 @@ const Pane = @import("../pane.zig").Pane;
 const Tab = @import("tab.zig").Tab;
 const Workspace = @import("workspace.zig").Workspace;
 const SplitNode = @import("types.zig").SplitNode;
+const PaneEdge = @import("types.zig").PaneEdge;
+const Docks = @import("dock.zig").Docks;
+const Controller = @import("../session/controller.zig").Controller;
+
+const dock_edges = [_]PaneEdge{ .left, .right, .top, .bottom };
 
 pub fn ownerId(pane: *const Pane) !u32 {
     const term = pane.asTerminalConst() orelse return error.InvalidSessionLayout;
     const pty = term.pty orelse return error.InvalidSessionLayout;
     return if (pty == .session) pty.session.pane else error.InvalidSessionLayout;
+}
+
+/// Owner ID only when the view belongs to this attachment. Docked panes can
+/// be borrowed across sessions, which a per-session blob cannot represent.
+fn ownedId(pane: *const Pane, controller: *const Controller) ?u32 {
+    const term = pane.asTerminalConst() orelse return null;
+    const pty = term.pty orelse return null;
+    if (pty != .session or pty.session.connection != controller.connection) return null;
+    return pty.session.pane;
 }
 
 fn find(tab: *Tab, id: u32) !*Pane {
@@ -61,20 +75,25 @@ fn restoreNode(tab: *Tab, nodes: []const codec.Node, index: usize) anyerror!*Spl
 
 /// Explicit capture only: never run geometry serialization per output frame.
 /// Intermediate allocations are arena-owned; caller owns only returned bytes.
-pub fn capture(a: std.mem.Allocator, workspace: *Workspace) ![]u8 {
+/// `global` contributes this attachment's window docks; panes borrowed from
+/// other sessions are omitted because they belong in those sessions' blobs.
+pub fn capture(a: std.mem.Allocator, workspace: *Workspace, global: ?*Docks) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const temp = arena.allocator();
-    if (workspace.session_controller == null) return error.InvalidSessionLayout;
+    const controller = workspace.session_controller orelse return error.InvalidSessionLayout;
     var ids: std.ArrayList(u32) = .empty;
     var tabs: std.ArrayList(codec.Tab) = .empty;
+    var docks: std.ArrayList(codec.Dock) = .empty;
+    var hidden: std.ArrayList(u32) = .empty;
     for (workspace.tabs.items) |tab| {
         var nodes: std.ArrayList(codec.Node) = .empty;
         var floating: std.ArrayList(codec.Floating) = .empty;
         const root = if (tab.root_split) |node| try captureNode(temp, &nodes, node, 0) else null;
         for (tab.panes.items) |pane| {
-            const id = try ownerId(pane);
+            const id = ownedId(pane, controller) orelse return error.InvalidSessionLayout;
             try ids.append(temp, id);
+            if (pane.is_hidden) try hidden.append(temp, id);
             if (!pane.is_floating) continue;
             const anchor: ?u32 = if (pane.restore_anchor_id == 0) null else blk: {
                 for (tab.panes.items) |candidate| {
@@ -104,7 +123,30 @@ pub fn capture(a: std.mem.Allocator, workspace: *Workspace) ![]u8 {
             .maximized_show_background = tab.maximized_show_background,
         });
     }
-    return codec.encode(a, .{ .name = workspace.name, .active_tab = workspace.activeTabIndex(), .tabs = tabs.items }, ids.items);
+    try captureDocks(temp, &docks, &ids, &hidden, &workspace.docks, .workspace, controller);
+    if (global) |source| try captureDocks(temp, &docks, &ids, &hidden, source, .global, controller);
+    return codec.encode(a, .{
+        .name = workspace.name,
+        .active_tab = workspace.activeTabIndex(),
+        .tabs = tabs.items,
+        .docks = docks.items,
+        .hidden = hidden.items,
+    }, ids.items);
+}
+
+fn captureDocks(a: std.mem.Allocator, docks: *std.ArrayList(codec.Dock), ids: *std.ArrayList(u32), hidden: *std.ArrayList(u32), source: *Docks, scope: codec.DockScope, controller: *const Controller) !void {
+    for (dock_edges) |edge| {
+        const pane = source.slot(edge).pane orelse continue;
+        const id = ownedId(pane, controller) orelse continue;
+        try ids.append(a, id);
+        try docks.append(a, .{
+            .pane = id,
+            .edge = @fromBackingInt(@intCast(@backingInt(edge))),
+            .scope = scope,
+            .ratio = source.size(edge),
+        });
+        if (pane.is_hidden) try hidden.append(a, id);
+    }
 }
 
 fn captureNode(a: std.mem.Allocator, nodes: *std.ArrayList(codec.Node), node: *SplitNode, depth: usize) anyerror!usize {
