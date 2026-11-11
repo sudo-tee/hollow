@@ -86,6 +86,136 @@ test "user shell jobs load startup and preserve argv on dedicated and mux agents
     }
 }
 
+test "explicit interactive and login shells report commands on dedicated and mux agents" {
+    const a = std.testing.allocator;
+    const path = try agentPath();
+    defer a.free(path);
+    var home = std.testing.tmpDir(.{});
+    defer home.cleanup();
+    const startup = "PS1='HOLLOW_READY> '\nnvim() { read -r reply; }\n";
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".bashrc", .data = startup });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".bash_profile", .data = "source \"$HOME/.bashrc\"\n" });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".zshrc", .data = startup });
+    const dir = try home.dir.realPathFileAlloc(io.get(), ".", a);
+    defer a.free(dir);
+    const env = try std.fmt.allocPrint(a, "HOME={s}\x00ZDOTDIR={s}\x00HOLLOW_TRANSPORT=osc\x00\x00", .{ dir, dir });
+    defer a.free(env);
+    for ([_]agent.Host{ local(path), multiplex(path) }) |host| {
+        for ([_][:0]const u8{ "/bin/bash -i", "/bin/bash -l", "/bin/bash --login", "/bin/bash -il", "/bin/zsh -l" }) |shell_command| {
+            if (std.mem.startsWith(u8, shell_command, "/bin/zsh")) {
+                std.Io.Dir.accessAbsolute(io.get(), "/bin/zsh", .{}) catch continue;
+            }
+            // The PTY client only forwards explicit WSL inner-shell argv;
+            // ordinary shell hints otherwise select the guest default shell.
+            const explicit_shell = try std.fmt.allocPrintSentinel(a, "wsl.exe --exec {s}", .{shell_command}, 0);
+            defer a.free(explicit_shell);
+            var req = request(explicit_shell, host);
+            req.env_block = env;
+            var pty = try agent.AgentPty.init(a, req, .{});
+            defer pty.closeAndJoin();
+            try pty.start();
+            var output: std.ArrayList(u8) = .empty;
+            defer output.deinit(a);
+            try readUntil(&pty, &output, "HOLLOW_READY>");
+            if (std.mem.startsWith(u8, shell_command, "/bin/zsh")) {
+                // Other terminal apps may drop HOLLOW_* but inherit ZDOTDIR.
+                // Both the normal environment and an inherited wrapper path
+                // must start a child shell without trying to source /zsh.zsh.
+                for ([_][]const u8{ "", "ZDOTDIR=\"$HOLLOW_SHELL_INTEGRATION_DIR/zsh\" " }) |override| {
+                    const command = try std.fmt.allocPrint(
+                        a,
+                        "env -u HOLLOW_SHELL_INTEGRATION_DIR -u HOLLOW_ORIGINAL_ZDOTDIR -u HOLLOW_PANE_ID -u HOLLOW_TRANSPORT {s}/bin/zsh -ic '[[ $ZDOTDIR == $HOME ]] && printf \"CHILD_%s\\n\" CLEAN'\n",
+                        .{override},
+                    );
+                    defer a.free(command);
+                    output.clearRetainingCapacity();
+                    try pty.writeAll(command);
+                    try readUntil(&pty, &output, "CHILD_CLEAN\r\n");
+                    try std.testing.expect(std.mem.indexOf(u8, output.items, "no such file or directory") == null);
+                    try readUntil(&pty, &output, "HOLLOW_READY>");
+                }
+            }
+            output.clearRetainingCapacity();
+            try pty.writeAll("nvim\n");
+            try readUntil(&pty, &output, "\"command\":\"nvim\"");
+            try std.testing.expect(std.mem.indexOf(u8, output.items, "\"name\":\"command_started\"") != null);
+        }
+    }
+}
+
+test "bash login selects one profile and restores ENV before user startup" {
+    const a = std.testing.allocator;
+    const path = try agentPath();
+    defer a.free(path);
+    const profiles = [_][]const u8{ ".bash_profile", ".bash_login", ".profile" };
+    const inherited_env = std.testing.environ.getAlloc(a, "ENV") catch |err| switch (err) {
+        error.EnvironmentVariableMissing => null,
+        else => return err,
+    };
+    defer if (inherited_env) |value| a.free(value);
+    const inherited_history = std.testing.environ.getAlloc(a, "HISTFILE") catch |err| switch (err) {
+        error.EnvironmentVariableMissing => null,
+        else => return err,
+    };
+    defer if (inherited_history) |value| a.free(value);
+    for (profiles, 0..) |_, selected| {
+        var home = std.testing.tmpDir(.{});
+        defer home.cleanup();
+        const dir = try home.dir.realPathFileAlloc(io.get(), ".", a);
+        defer a.free(dir);
+        for (profiles[selected..], selected..) |profile, index| {
+            const data = try std.fmt.allocPrint(
+                a,
+                "HOLLOW_TEST_SELECTED={d}\n" ++
+                    "PS1='LOGIN_READY> '\n" ++
+                    "nvim() {{ [[ $HOLLOW_TEST_SELECTED == $HOLLOW_EXPECTED_PROFILE && ${{ENV-unset}} == $HOLLOW_EXPECTED_ENV && $HISTFILE == $HOLLOW_EXPECTED_HISTFILE ]] && shopt -q login_shell && ! shopt -qo posix || return 1; printf 'LOGIN_PROFILE_OK\\n'; read -r reply; }}\n",
+                .{index},
+            );
+            defer a.free(data);
+            try home.dir.writeFile(io.get(), .{ .sub_path = profile, .data = data });
+        }
+        // Unlike non-login shells, a login shell must not read .bashrc unless
+        // the selected profile chooses to source it.
+        try home.dir.writeFile(io.get(), .{ .sub_path = ".bashrc", .data = "HOLLOW_TEST_SELECTED=unexpected-rc\n" });
+        try home.dir.writeFile(io.get(), .{ .sub_path = ".bash_logout", .data = "printf 'logout\\n' > \"$HOME/logout\"\n" });
+        const expected_env: []const u8 = switch (selected) {
+            0 => inherited_env orelse "unset",
+            1 => "",
+            else => "user env",
+        };
+        const env_suffix: []const u8 = switch (selected) {
+            0 => "",
+            1 => "ENV=\x00",
+            else => "ENV=user env\x00",
+        };
+        const default_history = try std.fs.path.join(a, &.{ dir, ".bash_history" });
+        defer a.free(default_history);
+        const env = try std.fmt.allocPrint(
+            a,
+            "HOME={s}\x00HOLLOW_TRANSPORT=osc\x00HOLLOW_EXPECTED_PROFILE={d}\x00HOLLOW_EXPECTED_ENV={s}\x00HOLLOW_EXPECTED_HISTFILE={s}\x00{s}\x00",
+            .{ dir, selected, expected_env, inherited_history orelse default_history, env_suffix },
+        );
+        defer a.free(env);
+        var req = request("wsl.exe --exec /bin/bash -l", local(path));
+        req.env_block = env;
+        var pty = try agent.AgentPty.init(a, req, .{});
+        defer pty.closeAndJoin();
+        try pty.start();
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(a);
+        try readUntil(&pty, &output, "LOGIN_READY>");
+        output.clearRetainingCapacity();
+        try pty.writeAll("nvim\n");
+        try readUntil(&pty, &output, "LOGIN_PROFILE_OK");
+        try std.testing.expect(std.mem.indexOf(u8, output.items, "\"command\":\"nvim\"") != null);
+        try pty.writeAll("\nexit\n");
+        try std.testing.expectEqual(@as(?u32, 0), try waitExit(&pty));
+        const logout = try home.dir.readFileAlloc(io.get(), "logout", a, .limited(100));
+        defer a.free(logout);
+        try std.testing.expectEqualStrings("logout\n", logout);
+    }
+}
+
 test "closing the last mux pane joins the shared reader and worker" {
     const path = try agentPath();
     defer std.testing.allocator.free(path);

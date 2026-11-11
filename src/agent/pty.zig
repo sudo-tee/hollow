@@ -70,9 +70,10 @@ fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepar
 
     shell_integration.io.init(io, libcEnviron());
     const shell = if (spawn.argv.len > 0) spawn.argv[0] else try defaultShellPath(arena);
-    // Integration only wraps a bare shell; explicit arguments run verbatim.
-    const integrate = spawn.shell_integration and !spawn.one_shot and spawn.argv.len <= 1;
-    const bundle = if (integrate) shell_integration.install(arena, shell) catch null else null;
+    // Interactive/login options still describe a shell, not a custom command.
+    const integrate = spawn.shell_integration and !spawn.one_shot and integrationArgv(shell, spawn.argv);
+    var bundle = if (integrate) shell_integration.install(arena, shell) catch null else null;
+    if (bundle) |*value| value.bash_login = value.shell == .bash and loginArgv(spawn.argv);
     if (bundle) |value| try shell_integration.setupEnv(arena, value);
     if (spawn.one_shot) {
         if (!isPosixShell(shell)) return error.UnsupportedBackgroundShell;
@@ -281,20 +282,47 @@ fn execPrepared(cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8) !void {
 
 fn buildShellArgv(arena: std.mem.Allocator, input: []const []const u8, shell: []const u8, command: ?[]const u8, close_on_exit: bool, bundle: ?shell_integration.Bundle) ![:null]const ?[*:0]const u8 {
     var argv: std.ArrayList(?[*:0]const u8) = .empty;
-    if (input.len == 0) {
-        try argv.append(arena, (try arena.dupeSentinel(u8, shell, 0)).ptr);
-    } else for (input) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
+    try argv.append(arena, (try arena.dupeSentinel(u8, shell, 0)).ptr);
 
     if (bundle) |value| {
-        for (try shell_integration.argv(arena, value, command, close_on_exit)) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
-    } else if (command) |text| {
-        const trimmed = std.mem.trimEnd(u8, text, "\r\n");
-        if (isPosixShell(shell)) try argv.append(arena, "-lc");
-        try argv.append(arena, if (close_on_exit) try std.fmt.allocPrintSentinel(arena, "{s}; exit", .{trimmed}, 0) else try arena.dupeSentinel(u8, trimmed, 0));
-    } else if (input.len == 0 and isPosixShell(shell)) {
-        try argv.append(arena, "-i");
+        const integration = try shell_integration.argv(arena, value, command, close_on_exit);
+        // Bash requires long options (--rcfile PATH) before short options.
+        const prefix: usize = if (value.shell == .bash) (if (value.bash_login) @as(usize, 1) else 2) else 0;
+        for (integration[0..prefix]) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
+        if (input.len > 1) for (input[1..]) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
+        for (integration[prefix..]) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
+    } else {
+        if (input.len > 1) for (input[1..]) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
+        if (command) |text| {
+            const trimmed = std.mem.trimEnd(u8, text, "\r\n");
+            if (isPosixShell(shell)) try argv.append(arena, "-lc");
+            try argv.append(arena, if (close_on_exit) try std.fmt.allocPrintSentinel(arena, "{s}; exit", .{trimmed}, 0) else try arena.dupeSentinel(u8, trimmed, 0));
+        } else if (input.len == 0 and isPosixShell(shell)) {
+            try argv.append(arena, "-i");
+        }
     }
     return argv.toOwnedSliceSentinel(arena, null);
+}
+
+fn integrationArgv(shell: []const u8, input: []const []const u8) bool {
+    _ = shell_integration.detect(shell) orelse return false;
+    if (input.len <= 1) return true;
+    for (input[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--interactive")) continue;
+        if (std.mem.eql(u8, arg, "--login")) continue;
+        if (arg.len < 2 or arg[0] != '-' or arg[1] == '-') return false;
+        for (arg[1..]) |flag| if (flag != 'i' and flag != 'l') return false;
+    }
+    return true;
+}
+
+fn loginArgv(input: []const []const u8) bool {
+    if (input.len <= 1) return false;
+    for (input[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--login")) return true;
+        if (arg.len > 1 and arg[0] == '-' and arg[1] != '-' and std.mem.indexOfScalar(u8, arg[1..], 'l') != null) return true;
+    }
+    return false;
 }
 
 fn isPosixShell(path: []const u8) bool {
@@ -436,6 +464,50 @@ test "launch command without integration wraps posix shells" {
     const argv = try buildShellArgv(arena_state.allocator(), &.{"/bin/sh"}, "/bin/sh", "htop\r\n", true, null);
     try std.testing.expectEqualStrings("-lc", std.mem.span(argv[1].?));
     try std.testing.expectEqualStrings("htop; exit", std.mem.span(argv[2].?));
+}
+
+test "integration accepts interactive shell options but not commands or startup overrides" {
+    for ([_][]const []const u8{
+        &.{},                                         &.{"/bin/zsh"}, &.{ "/bin/zsh", "-l" }, &.{ "/bin/zsh", "-il" },
+        &.{ "/bin/zsh", "--login", "--interactive" },
+    }) |args| try std.testing.expect(integrationArgv("/bin/zsh", args));
+    try std.testing.expect(integrationArgv("/bin/fish", &.{ "/bin/fish", "-il" }));
+    try std.testing.expect(integrationArgv("/bin/bash", &.{ "/bin/bash", "-i" }));
+    for ([_][]const []const u8{
+        &.{ "/bin/zsh", "-c", "echo hello" }, &.{ "/bin/zsh", "-lic", "echo hello" },
+        &.{ "/bin/zsh", "script.zsh" },       &.{ "/bin/zsh", "-f" },
+        &.{ "/bin/zsh", "--" },               &.{ "/bin/zsh", "-o", "no_rcs" },
+        &.{ "/bin/zsh", "-" },
+    }) |args| try std.testing.expect(!integrationArgv("/bin/zsh", args));
+    try std.testing.expect(!integrationArgv("/bin/bash", &.{ "/bin/bash", "--rcfile", "/custom" }));
+    try std.testing.expect(integrationArgv("/bin/bash", &.{ "/bin/bash", "-l" }));
+    try std.testing.expect(integrationArgv("/bin/bash", &.{ "/bin/bash", "--login", "--interactive" }));
+    try std.testing.expect(integrationArgv("/bin/bash", &.{ "/bin/bash", "-il" }));
+    try std.testing.expect(!integrationArgv("/bin/sh", &.{"/bin/sh"}));
+}
+
+test "integrated argv preserves login options and puts bash rcfile before short options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const zsh = try buildShellArgv(arena.allocator(), &.{ "/bin/zsh", "-l" }, "/bin/zsh", "nvim\r\n", false, .{ .root = "/bundle", .shell = .zsh });
+    const expected_zsh = [_][]const u8{ "/bin/zsh", "-l", "-ic", "nvim" };
+    try std.testing.expectEqual(expected_zsh.len, zsh.len);
+    for (expected_zsh, zsh) |expected, actual| try std.testing.expectEqualStrings(expected, std.mem.span(actual.?));
+    const bash = try buildShellArgv(arena.allocator(), &.{ "/bin/bash", "-i" }, "/bin/bash", null, false, .{ .root = "/bundle", .shell = .bash });
+    const expected_bash = [_][]const u8{ "/bin/bash", "--rcfile", "/bundle/bashrc", "-i", "-i" };
+    try std.testing.expectEqual(expected_bash.len, bash.len);
+    for (expected_bash, bash) |expected, actual| try std.testing.expectEqualStrings(expected, std.mem.span(actual.?));
+    const login = try buildShellArgv(arena.allocator(), &.{ "/bin/bash", "-il" }, "/bin/bash", "nvim", false, .{ .root = "/bundle", .shell = .bash, .bash_login = true });
+    const expected_login = [_][]const u8{ "/bin/bash", "--posix", "-il", "-ic", "nvim" };
+    try std.testing.expectEqual(expected_login.len, login.len);
+    for (expected_login, login) |expected, actual| try std.testing.expectEqualStrings(expected, std.mem.span(actual.?));
+    try std.testing.expect(loginArgv(&.{ "/bin/bash", "-li" }));
+    try std.testing.expect(loginArgv(&.{ "/bin/bash", "--login" }));
+    try std.testing.expect(!loginArgv(&.{ "/bin/bash", "--interactive" }));
+    const custom = [_][]const u8{ "/bin/zsh", "-fc", "echo hello" };
+    const unchanged = try buildShellArgv(arena.allocator(), &custom, "/bin/zsh", null, false, null);
+    try std.testing.expectEqual(custom.len, unchanged.len);
+    for (custom, unchanged) |expected, actual| try std.testing.expectEqualStrings(expected, std.mem.span(actual.?));
 }
 
 test "windows paths convert to wsl paths" {

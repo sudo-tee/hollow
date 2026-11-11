@@ -76,6 +76,49 @@ _hollow_cmd_started=0
     def test_bash_activation(self):
         self.check_activation("bash")
 
+    def test_bash_preexec_hooks_preserve_existing_integration(self):
+        for pending in (False, True):
+            with self.subTest(pending_install=pending):
+                self.check_bash_preexec(pending)
+
+    def check_bash_preexec(self, pending):
+        if shutil.which("bash") is None:
+            self.skipTest("bash is not installed")
+        script = r'''
+bash_preexec_imported=defined
+preexec_functions=(existing_preexec)
+precmd_functions=(existing_precmd)
+trap ':' DEBUG
+PROMPT_COMMAND=existing_prompt
+if [[ $HOLLOW_TEST_PENDING == 1 ]]; then
+    __bp_install_string=pending_install
+    PROMPT_COMMAND=pending_install
+    __bp_install() { PROMPT_COMMAND=installed; }
+fi
+source "$1" 2>/dev/null
+[[ $(trap -p DEBUG) == "trap -- ':' DEBUG" ]] || exit 1
+if [[ $HOLLOW_TEST_PENDING == 1 ]]; then
+    [[ $PROMPT_COMMAND == installed ]] || exit 2
+else
+    [[ $PROMPT_COMMAND == existing_prompt ]] || exit 2
+fi
+[[ ${preexec_functions[*]} == 'existing_preexec _hollow_preexec' ]] || exit 3
+[[ ${precmd_functions[*]} == '_hollow_precmd existing_precmd' ]] || exit 4
+_hollow_tty_printf() { :; }
+hollow_htp_send_raw() { printf '%s\n' "$1"; }
+_hollow_preexec 'nvim file.txt'
+'''
+        result = subprocess.run(
+            [shutil.which("bash"), "--noprofile", "--norc", "-c", script,
+             "hollow-test", str(ROOT / "shell-integration/bash.sh")],
+            env={**os.environ, "HOLLOW_TRANSPORT": "osc",
+                 "HOLLOW_TEST_PENDING": "1" if pending else "0"},
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        event = json.loads(result.stdout)
+        self.assertEqual(event["payload"]["command"], "nvim file.txt")
+
     def test_zsh_activation(self):
         self.check_activation("zsh")
 
