@@ -11,8 +11,14 @@ pub const posix = owner;
 
 pub fn run(a: std.mem.Allocator, io: std.Io, args: anytype) !void {
     const command = args.next() orelse return error.InvalidArgument;
-    if (std.mem.eql(u8, command, "serve")) return owner.serve(a, io);
-    if (std.mem.eql(u8, command, "connect")) return connect(a);
+    if (std.mem.eql(u8, command, "serve")) {
+        const option = args.next() orelse return owner.serve(a, io, null);
+        if (!std.mem.eql(u8, option, "--handoff")) return error.InvalidArgument;
+        const fd = std.fmt.parseInt(c_int, args.next() orelse return error.InvalidArgument, 10) catch return error.InvalidArgument;
+        if (fd < 3 or args.next() != null) return error.InvalidArgument;
+        return owner.serve(a, io, fd);
+    }
+    if (std.mem.eql(u8, command, "connect")) return connect(a, io, try upgradeMode(args));
     if (std.mem.eql(u8, command, "list")) return simple(a, .list);
     if (std.mem.eql(u8, command, "kill-server")) return simple(a, .kill_server);
     if (std.mem.eql(u8, command, "wait")) {
@@ -72,10 +78,23 @@ fn startOwner(log: [:0]const u8) !void {
     _ = c.waitpid(pid, null, 0);
 }
 
-fn connect(a: std.mem.Allocator) !void {
-    const fd = try connectOrStart(a);
-    defer _ = c.close(fd);
+/// `connect [--upgrade handoff|retire_empty|never]`. Unknown arguments are
+/// ignored: older GUIs never sent any, and newer ones may add more.
+fn upgradeMode(args: anytype) !Mode {
+    while (args.next()) |arg| {
+        if (!std.mem.eql(u8, arg, "--upgrade")) continue;
+        return std.meta.stringToEnum(Mode, args.next() orelse return error.InvalidArgument) orelse error.InvalidArgument;
+    }
+    return .handoff;
+}
+
+const Mode = @import("session_upgrade.zig").Mode;
+
+fn connect(a: std.mem.Allocator, io: std.Io, mode: Mode) !void {
+    // Preflight writes can race an owner finishing retirement too.
     _ = c.signal(c.SIGPIPE, ignoreSignal);
+    const fd = try connectCurrent(a, io, mode);
+    defer _ = c.close(fd);
     var buf: [64 * 1024]u8 = undefined;
     var fds = [_]c.struct_pollfd{ .{ .fd = 0, .events = c.POLLIN, .revents = 0 }, .{ .fd = fd, .events = c.POLLIN, .revents = 0 } };
     while (true) {
@@ -94,6 +113,50 @@ fn connect(a: std.mem.Allocator) !void {
             writeAll(1, buf[0..@intCast(n)]) catch return;
         }
     }
+}
+
+/// Preflight before admitting any GUI bytes. Only this handshake is retried;
+/// create/spawn/input are never consumed or replayed by the connector.
+fn connectCurrent(a: std.mem.Allocator, io: std.Io, mode: Mode) !c_int {
+    const build = try @import("session_upgrade.zig").current(a, io);
+    var exe: [std.fs.max_path_bytes]u8 = undefined;
+    var hello: p.Hello = .{ .protocol = p.protocol, .version = p.version, .ghostty = "owner-probe", .owner_probe = true };
+    if (mode != .never) hello.owner_build = &build;
+    if (mode == .handoff) {
+        const n = c.readlink("/proc/self/exe", &exe, exe.len);
+        if (n > 0) {
+            hello.handoff_path = exe[0..@intCast(n)];
+            hello.handoff_format = @import("session_handoff.zig").format;
+            hello.handoff_ghostty = @import("session_vt.zig").buildIdentity();
+        }
+    }
+    const deadline = owner.nowMs() + 5000;
+    while (owner.nowMs() < deadline) {
+        const fd = try connectOrStart(a);
+        var keep = false;
+        defer {
+            if (!keep) _ = c.close(fd);
+        }
+        var probe: Conn = .{ .a = a, .fd = fd };
+        defer probe.reader.deinit(a);
+        const result = probe.preflight(hello, deadline) catch |err| switch (err) {
+            // The owner may finish draining between connect and hello. No GUI
+            // bytes have been read, so retrying this preflight cannot replay work.
+            error.EndOfStream, error.ReadFailed, error.WriteFailed => continue,
+            else => return err,
+        };
+        if (result == .legacy) {
+            // Legacy owners consumed the probe as a normal hello. Reconnect
+            // without probing; never infer emptiness or stop an old owner.
+            return connectOrStart(a);
+        }
+        if (result == .current) {
+            keep = true;
+            return fd;
+        }
+        _ = c.poll(null, 0, 10);
+    }
+    return error.OwnerStartTimeout;
 }
 
 /// Blocking framed connection for the small built-in clients.
@@ -152,6 +215,29 @@ const Conn = struct {
             if (try self.poll()) |frame| return frame;
             if (!try self.fill()) return error.EndOfStream;
         }
+    }
+
+    fn nextUntil(self: *Conn, deadline: i64) !Frame {
+        while (true) {
+            if (try self.poll()) |frame| return frame;
+            const remaining = deadline - owner.nowMs();
+            if (remaining <= 0) return error.Timeout;
+            var fd: c.struct_pollfd = .{ .fd = self.fd, .events = c.POLLIN, .revents = 0 };
+            const result = c.poll(@ptrCast(&fd), 1, @intCast(@min(remaining, std.math.maxInt(c_int))));
+            if (result < 0 and errno() == c.EINTR) continue;
+            if (result < 0) return error.PollFailed;
+            if (result == 0) return error.Timeout;
+            if (!try self.fill()) return error.EndOfStream;
+        }
+    }
+
+    fn preflight(self: *Conn, probe_hello: p.Hello, deadline: i64) !@import("session_upgrade.zig").Probe {
+        try self.sendJson(.hello, probe_hello);
+        const frame = try self.nextUntil(deadline);
+        if (frame.kind != .welcome) return error.HelloRejected;
+        const welcome = try p.parse(p.Welcome, self.a, frame.payload);
+        defer welcome.deinit();
+        return @import("session_upgrade.zig").disposition(welcome.value);
     }
 
     fn hello(self: *Conn, ghostty: []const u8) !p.SnapshotFormat {

@@ -95,6 +95,7 @@ pub fn pump(app: *App) void {
     for (0..max_pending) |index| {
         const pending = app.session_queries[index] orelse continue;
         if (pending.state != .running) continue;
+        if (pending.connection.?.takeHandoff()) |handoff| mux_ops.reportHandoff(app, handoff);
         switch (pending.query.step()) {
             .pending => {},
             .failed => |failure| finish(app, pending, failure.reason, failureText(app.allocator, pending, failure) catch null),
@@ -438,6 +439,21 @@ test "session borrowers query kill reports lost replies as uncertain and expires
     unclaimed.finished_ns -= result_ttl_ns;
     pump(app);
     try std.testing.expectEqual(@as(usize, 0), app.session_query_count);
+}
+
+test "session borrowers query reports the owner handoff its welcome carried" {
+    // The restore prompt's list query is often the only connection inside the
+    // owner's report window; the attach that follows arrives too late.
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _, const connection = try admit(app, .list, null);
+    connection.client.handoff = .{ .owner_pid = 1, .from = "0123456789ab".*, .to = "ba9876543210".*, .ok = true };
+    pump(app);
+    try std.testing.expectEqualStrings("ba9876543210", &app.session_handoff_seen.?.to);
+    try std.testing.expect(connection.takeHandoff() == null);
 }
 
 test "session borrowers query admission is bounded and validates before connecting" {

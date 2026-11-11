@@ -104,6 +104,8 @@ pub const Client = struct {
     respawn_supported: bool = false,
     create_id_supported: bool = false,
     wsl_keepalive_supported: bool = false,
+    /// Recent in-place owner handoff from the welcome, until taken.
+    handoff: ?Handoff = null,
     generation: u64 = 0,
     next_id: u64 = 1,
     pending: [max_requests]?Pending = @splat(null),
@@ -120,6 +122,15 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.outgoing.deinit(self.allocator);
         self.incoming.deinit(self.allocator);
+    }
+
+    /// Builds are shown by their first 12 hex digits.
+    pub const Handoff = struct { owner_pid: i64, from: [12]u8, to: [12]u8, ok: bool };
+
+    fn shortBuild(build: []const u8) ?[12]u8 {
+        if (build.len < 12) return null;
+        for (build[0..12]) |ch| if (!std.ascii.isHex(ch)) return null;
+        return build[0..12].*;
     }
 
     pub fn host(self: *const Client) []const u8 {
@@ -409,6 +420,9 @@ pub const Client = struct {
                 self.respawn_supported = p.hasFeature(w.features, "respawn");
                 self.create_id_supported = p.hasFeature(w.features, "create-id");
                 self.wsl_keepalive_supported = p.hasFeature(w.features, "wsl-keepalive");
+                if (w.handoff) |notice| if (shortBuild(notice.from)) |from| if (shortBuild(notice.to)) |to| {
+                    self.handoff = .{ .owner_pid = w.owner_pid, .from = from, .to = to, .ok = notice.ok };
+                };
             },
             .reply => {
                 const reply = try p.parse(p.Reply, self.allocator, bytes);

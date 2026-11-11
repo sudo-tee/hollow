@@ -120,6 +120,7 @@ pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
     while (index < count and index < self.session_controllers.items.len) : (index += 1) {
         const controller = self.session_controllers.items[index];
         controller.reconcile();
+        if (controller.connection.takeHandoff()) |handoff| reportHandoff(self, handoff);
         controller.flushCloses() catch |err| {
             std.log.warn("session close admission failed: {s}", .{@errorName(err)});
         };
@@ -152,6 +153,14 @@ pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
 
     @import("session_spawn.zig").saveLayouts(self);
     retireSessionControllers(self);
+}
+
+/// Any connection may see the welcome first: a session list query often
+/// precedes the attach by longer than the owner reports the handoff.
+pub fn reportHandoff(self: *App, handoff: @import("../session/client.zig").Client.Handoff) void {
+    if (self.session_handoff_seen) |seen| if (std.meta.eql(seen, handoff)) return;
+    self.session_handoff_seen = handoff;
+    self.emitLuaBuiltInEvent("session:handoff", .{ .session_handoff = .{ .from = &handoff.from, .to = &handoff.to, .ok = handoff.ok } });
 }
 
 fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *SessionController, message: SessionTransport.Message) bool {

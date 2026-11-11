@@ -46,6 +46,8 @@ function M.new(host_api)
         ["workspace:new"] = true,
         ["workspace:changed"] = true,
         ["workspace:closed"] = true,
+        ["session:handoff"] = true,
+        ["session:notice"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
         ["term:tab_closed"] = true,

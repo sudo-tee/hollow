@@ -174,6 +174,8 @@
 ---| "workspace:new"
 ---| "workspace:changed"
 ---| "workspace:closed"
+---| "session:handoff"
+---| "session:notice"
 ---| "term:title_changed"
 ---| "term:tab_activated"
 ---| "term:tab_closed"
@@ -227,6 +229,8 @@
 ---@field ["workspace:new"] { workspace: HollowWorkspace, index: integer }
 ---@field ["workspace:changed"] { workspace: HollowWorkspace, index: integer }
 ---@field ["workspace:closed"] { name?: string, session_id?: string, session_host?: string, session_ended?: boolean } `session_ended` is true only when the owner ended the session, false when just this client's views closed
+---@field ["session:handoff"] { from: string, to: string, ok: boolean } The persistent-session owner replaced its runtime in place (`ok`), or the attempt failed and `from` kept serving; builds are 12-digit IDs
+---@field ["session:notice"] { id: integer, close?: boolean, connecting?: boolean, level?: HollowNotifyLevel, title?: string, message?: string } A persistent-session connect or failure notice changed; `close` events carry only `id`. Call `host_api.activate_session_notice(id)` to cancel a connect or dismiss a failure
 ---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }

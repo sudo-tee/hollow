@@ -193,6 +193,36 @@ hollow.events.on("term:notification", function(event)
   })
 end)
 
+hollow.events.on("session:handoff", function(event)
+  local message = event.ok and "Owner upgraded in place (%s -> %s); sessions kept."
+    or "Upgrade from %s to %s failed; the old owner kept running. See owner.log."
+  hollow.ui.notify.show(message:format(event.from, event.to), {
+    level = event.ok and "success" or "warn",
+    title = "Session handoff",
+  })
+end)
+
+-- Native persistent-session notices; clicking cancels a connect or dismisses a failure.
+hollow.events.on("session:notice", function(event)
+  local id = "session-notice:" .. tostring(event.id)
+  if event.close then
+    hollow.ui.notify.clear(id)
+    return
+  end
+  hollow.ui.notify.show(event.message, {
+    id = id,
+    title = event.title,
+    level = event.level,
+    ttl = 0,
+    action = {
+      label = event.connecting and "Cancel" or "Dismiss",
+      fn = function()
+        host_api.activate_session_notice(event.id)
+      end,
+    },
+  })
+end)
+
 function hollow.on_gui_ready(handler)
   return host_api.on_gui_ready(handler)
 end

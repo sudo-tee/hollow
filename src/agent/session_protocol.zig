@@ -73,6 +73,18 @@ pub const Hello = struct {
     client: []const u8 = "",
     /// Client understands the pane-bound HTP foreground sync after snapshots.
     foreground_events: bool = false,
+    /// Connector-only preflight, before any application request. New owners
+    /// allow a normal GUI hello on this same connection after the probe.
+    owner_probe: bool = false,
+    owner_build: []const u8 = "",
+    /// WSL lifetime holder requests an atomic empty-only guest drain.
+    owner_drain: bool = false,
+    /// Probe only: the connector's own executable, its handoff payload
+    /// format, and its ghostty identity. A POSIX owner with live sessions
+    /// may exec this build in place instead of waiting until it is empty.
+    handoff_path: []const u8 = "",
+    handoff_format: u32 = 0,
+    handoff_ghostty: []const u8 = "",
 };
 
 pub const SnapshotFormat = enum { binary, vt };
@@ -90,10 +102,20 @@ pub const Welcome = struct {
     /// the connection on an unknown op, so clients send these only when
     /// advertised.
     features: []const []const u8 = &.{},
+    owner_build: []const u8 = "",
+    retiring: bool = false,
+    /// Sent for `handoff_notice_ms` after an in-place handoff, so the GUI that
+    /// triggered it can tell the user. Absent from older owners.
+    handoff: ?HandoffNotice = null,
 };
 
-pub const owner_features = [_][]const u8{ "respawn", "create-id" };
+/// `from` and `to` are owner builds; when `ok` is false, `from` kept serving.
+pub const HandoffNotice = struct { from: []const u8, to: []const u8, ok: bool };
+pub const handoff_notice_ms = 10_000;
+
+pub const owner_features = [_][]const u8{ "respawn", "create-id", "retire-empty", "drain-empty" };
 pub const windows_owner_features = owner_features ++ [_][]const u8{"wsl-keepalive"};
+pub const posix_owner_features = owner_features ++ [_][]const u8{"exec-handoff"};
 
 test "WSL keepalive validates bounded identities and cannot redirect production state" {
     const valid: WslHold = .{ .distro = "Guest & Distro", .user = "alice", .agent = "/opt/agent" };

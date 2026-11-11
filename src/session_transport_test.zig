@@ -307,6 +307,26 @@ test "session client allocation failure never loses a completed reply" {
     try std.testing.checkAllAllocationFailures(a, allocationFailures, .{});
 }
 
+test "session client keeps a welcome handoff notice only with hex builds" {
+    var client: core.Client = .{ .allocator = a, .identity = "test" };
+    defer client.deinit();
+    const payload = "{\"ghostty\":\"test\",\"snapshot\":\"binary\",\"owner_pid\":7,\"handoff\":{\"from\":\"0123456789abcdef\",\"to\":\"fedcba9876543210\",\"ok\":true}}";
+    try client.receive(p.header(.welcome, 0, payload.len), payload);
+    client.poll().?.deinit();
+    const notice = client.handoff.?;
+    try std.testing.expectEqual(@as(i64, 7), notice.owner_pid);
+    try std.testing.expectEqualStrings("0123456789ab", &notice.from);
+    try std.testing.expectEqualStrings("fedcba987654", &notice.to);
+    try std.testing.expect(notice.ok);
+
+    var bad: core.Client = .{ .allocator = a, .identity = "test" };
+    defer bad.deinit();
+    const injected = "{\"ghostty\":\"test\",\"snapshot\":\"binary\",\"owner_pid\":7,\"handoff\":{\"from\":\"0123456789a\\n\",\"to\":\"fedcba9876543210\",\"ok\":true}}";
+    try bad.receive(p.header(.welcome, 0, injected.len), injected);
+    bad.poll().?.deinit();
+    try std.testing.expect(bad.handoff == null);
+}
+
 fn inputAllocationFailures(allocator: std.mem.Allocator) !void {
     var client: core.Client = .{ .allocator = allocator, .identity = "test" };
     defer client.deinit();
@@ -526,6 +546,298 @@ test "session transport rejects oversized headers before reading any payload" {
     _ = try connection.request(.{ .id = 0, .op = .create });
     try waitEnded(connection);
     try std.testing.expectEqual(error.PayloadTooLarge, connection.status().failure.?);
+}
+
+test "updated connector replaces an empty old owner despite an idle GUI connection" {
+    try replaceOldOwner(false);
+}
+
+test "updated connector preserves an old owner's live session and replaces it after close" {
+    try replaceOldOwner(true);
+}
+
+fn replaceOldOwner(active: bool) !void {
+    const path = std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT") catch return error.SkipZigTest;
+    defer a.free(path);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io.get(), ".", a);
+    defer a.free(dir);
+    const old_path = try oldAgent(path, dir);
+    defer a.free(old_path);
+    const runtime_env = try std.fmt.allocPrint(a, "HOLLOW_SESSION_DIR={s}/socket", .{dir});
+    defer a.free(runtime_env);
+    const state_env = try std.fmt.allocPrint(a, "XDG_STATE_HOME={s}", .{dir});
+    defer a.free(state_env);
+    const options: transport.Options = .{
+        .connector = .{ .argv = &.{ "/usr/bin/env", runtime_env, state_env } },
+        .agent = .{ .path = path },
+        .ghostty_identity = "test",
+        // Empty owners retire in every mode; live ones only wait without handoff.
+        .upgrade = "retire_empty",
+    };
+    var old_options = options;
+    old_options.agent.path = old_path;
+    defer {
+        if (transport.Connection.create(a, io.get(), options)) |cleanup| {
+            defer cleanup.destroy();
+            _ = cleanup.request(.{ .id = 0, .op = .kill_server }) catch 0;
+            if (waitMessage(cleanup, .reply)) |message| message.deinit() else |_| {}
+            waitEnded(cleanup) catch {};
+        } else |_| {}
+    }
+    const first = try transport.Connection.create(a, io.get(), old_options);
+    defer first.destroy();
+    const first_welcome = try waitMessage(first, .welcome);
+    defer first_welcome.deinit();
+    const old = try p.parse(p.Welcome, a, first_welcome.payload);
+    defer old.deinit();
+    var pane: u32 = 0;
+    if (active) {
+        _ = try first.request(.{ .id = 0, .op = .create, .spawn = .{ .argv = &.{ "/bin/sh", "-c", "printf 'session-alive\\n'; sleep 30" }, .shell_integration = false } });
+        const created = try waitMessage(first, .reply);
+        defer created.deinit();
+        const reply = try p.parse(p.Reply, a, created.payload);
+        defer reply.deinit();
+        pane = reply.value.session.?.panes[0].id;
+        try waitShellOutput(first, "session-alive");
+    }
+    const second = try transport.Connection.create(a, io.get(), options);
+    defer second.destroy();
+    const second_welcome = try waitMessage(second, .welcome);
+    defer second_welcome.deinit();
+    const observed = try p.parse(p.Welcome, a, second_welcome.payload);
+    defer observed.deinit();
+    var current = second;
+    var replacement: ?*transport.Connection = null;
+    defer if (replacement) |connection| connection.destroy();
+    if (active) {
+        try std.testing.expectEqual(old.value.owner_pid, observed.value.owner_pid);
+        _ = try second.request(.{ .id = 0, .op = .list });
+        const listed = try waitMessage(second, .reply);
+        defer listed.deinit();
+        const list = try p.parse(p.Reply, a, listed.payload);
+        defer list.deinit();
+        try std.testing.expectEqual(@as(usize, 1), list.value.sessions.?.len);
+        try std.testing.expectEqual(@as(?i32, null), list.value.sessions.?[0].panes[0].exit);
+        _ = try first.request(.{ .id = 0, .op = .close, .pane = pane });
+        const closed = try waitMessage(first, .reply);
+        closed.deinit();
+        try waitEnded(first);
+        try waitEnded(second);
+        replacement = try transport.Connection.create(a, io.get(), options);
+        current = replacement.?;
+    } else {
+        try std.testing.expect(old.value.owner_pid != observed.value.owner_pid);
+        try std.testing.expect(!std.mem.eql(u8, old.value.owner_build, observed.value.owner_build));
+        try waitEnded(first);
+    }
+    // The chosen runtime must admit the next session, not merely exit cleanly.
+    _ = try current.request(.{ .id = 0, .op = .create, .spawn = .{ .argv = &.{ "/bin/sh", "-c", "sleep 30" }, .shell_integration = false } });
+    const created = try waitMessage(current, .reply);
+    defer created.deinit();
+    const result = try p.parse(p.Reply, a, created.payload);
+    defer result.deinit();
+    try std.testing.expect(result.value.ok);
+}
+
+/// A copy of the test agent with a different build fingerprint.
+fn oldAgent(path: []const u8, dir: []const u8) ![]u8 {
+    const old_path = try std.fs.path.join(a, &.{ dir, "old-agent" });
+    errdefer a.free(old_path);
+    try std.Io.Dir.copyFile(.cwd(), path, .cwd(), old_path, io.get(), .{});
+    const file = try std.Io.Dir.cwd().openFile(io.get(), old_path, .{ .mode = .read_write });
+    defer file.close(io.get());
+    try file.setPermissions(io.get(), .fromMode(0o700));
+    var writer = file.writer(io.get(), &.{});
+    try writer.seekTo((try file.stat(io.get())).size);
+    // ELF permits trailing bytes: simulate a different installed build
+    // without a second compilation or any production owner endpoint.
+    try writer.interface.writeAll("old-owner-fixture");
+    try writer.interface.flush();
+    return old_path;
+}
+
+test "updated connector hands a live old owner off in place and keeps its pane" {
+    const path = std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT") catch return error.SkipZigTest;
+    defer a.free(path);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io.get(), ".", a);
+    defer a.free(dir);
+    const old_path = try oldAgent(path, dir);
+    defer a.free(old_path);
+    const runtime_env = try std.fmt.allocPrint(a, "HOLLOW_SESSION_DIR={s}/socket", .{dir});
+    defer a.free(runtime_env);
+    const state_env = try std.fmt.allocPrint(a, "XDG_STATE_HOME={s}", .{dir});
+    defer a.free(state_env);
+    const options: transport.Options = .{
+        .connector = .{ .argv = &.{ "/usr/bin/env", runtime_env, state_env } },
+        .agent = .{ .path = path },
+        .ghostty_identity = "test",
+    };
+    var old_options = options;
+    old_options.agent.path = old_path;
+    defer {
+        if (transport.Connection.create(a, io.get(), options)) |cleanup| {
+            defer cleanup.destroy();
+            _ = cleanup.request(.{ .id = 0, .op = .kill_server }) catch 0;
+            if (waitMessage(cleanup, .reply)) |message| message.deinit() else |_| {}
+            waitEnded(cleanup) catch {};
+        } else |_| {}
+    }
+    const first = try transport.Connection.create(a, io.get(), old_options);
+    defer first.destroy();
+    const first_welcome = try waitMessage(first, .welcome);
+    defer first_welcome.deinit();
+    const old = try p.parse(p.Welcome, a, first_welcome.payload);
+    defer old.deinit();
+    _ = try first.request(.{ .id = 0, .op = .create, .spawn = .{
+        .argv = &.{ "/bin/sh", "-c", "printf 'before-handoff\\n'; read x; printf 'after-%s\\n' \"$x\"; sleep 30" },
+        .shell_integration = false,
+    } });
+    const created = try waitMessage(first, .reply);
+    defer created.deinit();
+    const reply = try p.parse(p.Reply, a, created.payload);
+    defer reply.deinit();
+    const sid = reply.value.session.?.id;
+    const pane = reply.value.session.?.panes[0].id;
+    try waitShellOutput(first, "before-handoff");
+
+    const second = try transport.Connection.create(a, io.get(), options);
+    defer second.destroy();
+    const second_welcome = try waitMessage(second, .welcome);
+    defer second_welcome.deinit();
+    const observed = try p.parse(p.Welcome, a, second_welcome.payload);
+    defer observed.deinit();
+    // Same process and pane, new image.
+    try std.testing.expectEqual(old.value.owner_pid, observed.value.owner_pid);
+    try std.testing.expect(!std.mem.eql(u8, old.value.owner_build, observed.value.owner_build));
+    try std.testing.expect(p.hasFeature(observed.value.features, "exec-handoff"));
+    const notice = observed.value.handoff.?;
+    try std.testing.expect(notice.ok);
+    try std.testing.expectEqualStrings(old.value.owner_build, notice.from);
+    try std.testing.expectEqualStrings(observed.value.owner_build, notice.to);
+    const reported = second.takeHandoff().?;
+    try std.testing.expectEqualStrings(old.value.owner_build[0..12], &reported.from);
+    try std.testing.expect(second.takeHandoff() == null);
+    try waitEnded(first);
+    _ = try second.request(.{ .id = 0, .op = .attach, .session = sid });
+    const attached = try waitMessage(second, .reply);
+    defer attached.deinit();
+    const attach_reply = try p.parse(p.Reply, a, attached.payload);
+    defer attach_reply.deinit();
+    try std.testing.expectEqual(pane, attach_reply.value.session.?.panes[0].id);
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(a);
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (true) {
+        if (io.nanoTimestamp() >= deadline) return error.Timeout;
+        const message = second.poll() orelse {
+            try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+            continue;
+        };
+        defer message.deinit();
+        if (message.kind == .snapshot) try output.appendSlice(a, message.payload);
+        if (message.kind == .snapshot_end) break;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "before-handoff") != null);
+    try second.send(.input, pane, "works\n");
+    try waitShellOutput(second, "after-works");
+    const log = try tmp.dir.readFileAlloc(io.get(), "socket/owner.log", a, .limited(64 * 1024));
+    defer a.free(log);
+    const expected = try std.fmt.allocPrint(a, "session handoff from build {s} complete: adopted 1 sessions, 1 panes", .{old.value.owner_build[0..12]});
+    defer a.free(expected);
+    try std.testing.expect(std.mem.indexOf(u8, log, expected) != null);
+}
+
+test "zsh login session preserves startup files and reports foreground commands through real owner" {
+    try loginShellSession("/bin/zsh");
+}
+
+test "bash login session preserves startup files and reports foreground commands through real owner" {
+    try loginShellSession("/bin/bash");
+}
+
+fn loginShellSession(shell: []const u8) !void {
+    std.Io.Dir.accessAbsolute(io.get(), shell, .{}) catch return error.SkipZigTest;
+    const path = std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT") catch return error.SkipZigTest;
+    defer a.free(path);
+    var home = std.testing.tmpDir(.{});
+    defer home.cleanup();
+    const dir = try home.dir.realPathFileAlloc(io.get(), ".", a);
+    defer a.free(dir);
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".zprofile", .data = "export HOLLOW_TEST_STARTUP=profile\n" });
+    const rc = "HOLLOW_TEST_STARTUP+=:rc\nPS1='HOLLOW_READY> '\n" ++
+        "nvim() { [[ $HOLLOW_TEST_STARTUP == profile:rc:login ]] || return 1; printf 'HOLLOW_NVIM_RUNNING\\n'; read -r reply; }\n";
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".zshrc", .data = rc });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".zlogin", .data = "HOLLOW_TEST_STARTUP+=:login\n" });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".zlogout", .data = "print -r -- logout > \"$HOME/logout\"\n" });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".bashrc", .data = rc });
+    try home.dir.writeFile(io.get(), .{
+        .sub_path = ".bash_profile",
+        .data = "HOLLOW_TEST_STARTUP=profile\nsource \"$HOME/.bashrc\"\nHOLLOW_TEST_STARTUP+=:login\n" ++
+            "shopt -q login_shell && ! shopt -qo posix || HOLLOW_TEST_STARTUP=broken\n" ++
+            "[[ $ENV == 'original value' && ! ${HOLLOW_BASH_ENV+x} && ! ${HOLLOW_BASH_ENV_SET+x} ]] || HOLLOW_TEST_STARTUP=broken\n",
+    });
+    try home.dir.writeFile(io.get(), .{ .sub_path = ".bash_logout", .data = "printf 'logout\\n' > \"$HOME/logout\"\n" });
+    const runtime_env = try std.fmt.allocPrint(a, "HOLLOW_SESSION_DIR={s}/socket", .{dir});
+    defer a.free(runtime_env);
+    const state_env = try std.fmt.allocPrint(a, "XDG_STATE_HOME={s}", .{dir});
+    defer a.free(state_env);
+    const options: transport.Options = .{
+        .connector = .{ .argv = &.{ "/usr/bin/env", runtime_env, state_env } },
+        .agent = .{ .path = path },
+        .ghostty_identity = "test",
+    };
+    const connection = try transport.Connection.create(a, io.get(), options);
+    defer connection.destroy();
+    defer {
+        _ = connection.request(.{ .id = 0, .op = .kill_server }) catch 0;
+        if (waitMessage(connection, .reply)) |message| message.deinit() else |_| {}
+        waitEnded(connection) catch {};
+    }
+    _ = try connection.request(.{ .id = 0, .op = .create, .spawn = .{
+        .argv = &.{ shell, "-l" },
+        .cwd = dir,
+        .env = &.{ .{ .key = "HOME", .value = dir }, .{ .key = "ZDOTDIR", .value = dir }, .{ .key = "ENV", .value = "original value" } },
+    } });
+    const created = try waitMessage(connection, .reply);
+    defer created.deinit();
+    const reply = try p.parse(p.Reply, a, created.payload);
+    defer reply.deinit();
+    try std.testing.expect(reply.value.ok);
+    const pane = reply.value.session.?.panes[0].id;
+    try waitShellOutput(connection, "HOLLOW_READY>");
+    try connection.send(.input, pane, "nvim\n");
+    try waitShellOutput(connection, "HOLLOW_NVIM_RUNNING");
+    _ = try connection.request(.{ .id = 0, .op = .list });
+    const listed = try waitMessage(connection, .reply);
+    defer listed.deinit();
+    const list = try p.parse(p.Reply, a, listed.payload);
+    defer list.deinit();
+    try std.testing.expectEqualStrings("nvim", list.value.sessions.?[0].panes[0].foreground_process);
+    try connection.send(.input, pane, "\n");
+    try waitShellOutput(connection, "HOLLOW_READY>");
+    try connection.send(.input, pane, "exit\n");
+    const exited = try waitMessage(connection, .exit);
+    exited.deinit();
+    const logout = try home.dir.readFileAlloc(io.get(), "logout", a, .limited(100));
+    defer a.free(logout);
+    try std.testing.expectEqualStrings("logout\n", logout);
+}
+
+fn waitShellOutput(connection: *transport.Connection, needle: []const u8) !void {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(a);
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (std.mem.indexOf(u8, output.items, needle) == null) {
+        if (io.nanoTimestamp() >= deadline) return error.Timeout;
+        const message = try waitMessage(connection, .output);
+        defer message.deinit();
+        try output.appendSlice(a, message.payload);
+        try connection.consumed(message);
+    }
 }
 
 test "session transport detaches without killing pane and reattaches through the real owner" {

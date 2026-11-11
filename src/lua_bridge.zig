@@ -668,6 +668,19 @@ pub const BuiltInPayload = union(enum) {
         action: []const u8,
         pattern_index: ?usize = null,
     },
+    session_handoff: struct {
+        from: []const u8,
+        to: []const u8,
+        ok: bool,
+    },
+    session_notice: struct {
+        id: u64,
+        close: bool = false,
+        connecting: bool = false,
+        level: []const u8 = "",
+        title: []const u8 = "",
+        message: []const u8 = "",
+    },
     workspace_closed: struct {
         name: ?[]const u8 = null,
         session_id: ?[]const u8 = null,
@@ -3335,6 +3348,33 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
                 api.push_nil(state);
             }
             api.set_field(state, -2, "pattern_index");
+        },
+        .session_handoff => |value| {
+            api.create_table(state, 0, 3);
+            try pushOwnedString(allocator, api, state, value.from);
+            api.set_field(state, -2, "from");
+            try pushOwnedString(allocator, api, state, value.to);
+            api.set_field(state, -2, "to");
+            api.push_boolean(state, if (value.ok) 1 else 0);
+            api.set_field(state, -2, "ok");
+        },
+        .session_notice => |value| {
+            api.create_table(state, 0, 6);
+            api.push_number(state, @floatFromInt(value.id));
+            api.set_field(state, -2, "id");
+            if (value.close) {
+                api.push_boolean(state, 1);
+                api.set_field(state, -2, "close");
+                return;
+            }
+            api.push_boolean(state, if (value.connecting) 1 else 0);
+            api.set_field(state, -2, "connecting");
+            try pushOwnedString(allocator, api, state, value.level);
+            api.set_field(state, -2, "level");
+            try pushOwnedString(allocator, api, state, value.title);
+            api.set_field(state, -2, "title");
+            try pushOwnedString(allocator, api, state, value.message);
+            api.set_field(state, -2, "message");
         },
         .workspace_closed => |value| {
             api.create_table(state, 0, 4);

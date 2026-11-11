@@ -115,6 +115,8 @@ for an observational event does not change its host behavior.
 | `workspace:new` | `{ workspace, index }` |
 | `workspace:changed` | `{ workspace, index }` |
 | `workspace:closed` | `{ name?, session_id?, session_host?, session_ended? }` — emitted when a named or persistent workspace closes. `session_ended` is true only when the owner ended the session, and false when only this client's views closed |
+| `session:handoff` | `{ from, to, ok }` — emitted once when a Linux or WSL session owner reports an in-place handoff from build `from` to build `to`. `ok` is false when the new build could not take over and `from` kept serving. The default handler shows a toast |
+| `session:notice` | `{ id, close, connecting, level, title, message }` — emitted when a persistent-session connect or failure notice appears, changes, or goes away. `close` events carry only `id`. The default handler shows it as a notification that stays until it is clicked, so it lands in the attention history. Clicking cancels a connect or dismisses a failure. When Lua cannot show it, Hollow draws a native panel instead |
 | `selection:begin` | (empty) |
 | `selection:cleared` | (empty) |
 | `term:title_changed` | `{ pane, old_title, new_title }` |

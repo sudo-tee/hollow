@@ -24,6 +24,9 @@ pub const Options = struct {
     /// Isolated WSL fixtures only, never read from user Lua configuration.
     wsl_owner: ?[]const u8 = null,
     wsl_namespace: ?[]const u8 = null,
+    /// `session connect --upgrade <mode>` for POSIX owners; null keeps the
+    /// connector default (`handoff`). Native Windows owners ignore it.
+    upgrade: ?[]const u8 = null,
 };
 
 pub const Status = struct {
@@ -134,6 +137,14 @@ pub const Connection = struct {
         const value = self.client.host();
         @memcpy(out[0..value.len], value);
         return out[0..value.len];
+    }
+
+    /// Owner handoff reported by the welcome; returned once.
+    pub fn takeHandoff(self: *Connection) ?protocol.Client.Handoff {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        defer self.client.handoff = null;
+        return self.client.handoff;
     }
 
     pub fn attachmentGeneration(self: *Connection) u64 {
@@ -322,7 +333,7 @@ pub const Connection = struct {
         // submit anything. Tear it down only after that bridge and its I/O stop.
         const keeper = if (builtin.os.tag == .windows and self.options.wsl != null) try self.keepWsl(installed.path) else null;
         defer if (keeper) |connection| connection.destroy();
-        const guest_command: []const []const u8 = if (self.options.wsl) |spec| blk: {
+        const connect_command: []const []const u8 = if (self.options.wsl) |spec| blk: {
             if (spec.session_dir) |directory| break :blk &.{
                 "/usr/bin/env",
                 try std.fmt.allocPrint(arena, "HOLLOW_SESSION_DIR={s}", .{directory}),
@@ -333,6 +344,10 @@ pub const Connection = struct {
             };
             break :blk &.{ installed.path, "session", "connect" };
         } else &.{ installed.path, "session", "connect" };
+        const guest_command = if (self.options.upgrade) |mode|
+            try std.mem.concat(arena, []const u8, &.{ connect_command, &.{ "--upgrade", mode } })
+        else
+            connect_command;
         const argv = if (native)
             try @import("native_windows.zig").command(arena, installed.path, self.options.namespace)
         else

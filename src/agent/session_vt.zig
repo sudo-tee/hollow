@@ -32,6 +32,26 @@ pub const Vt = struct {
         return self;
     }
 
+    /// Rebuilds a pane terminal from an owner handoff: a binary snapshot
+    /// from the same ghostty build, else a `formatVt` replay.
+    pub fn adopt(allocator: std.mem.Allocator, bytes: []const u8, binary: bool, cols: u16, rows: u16, scrollback_bytes: usize) !*Vt {
+        if (!binary) {
+            const self = try create(allocator, cols, rows, scrollback_bytes);
+            self.write(bytes);
+            var replies = self.takeReplies();
+            replies.deinit(allocator);
+            return self;
+        }
+        const self = try allocator.create(Vt);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .terminal = try restore(bytes, scrollback_bytes) };
+        errdefer g.ghostty_terminal_free(self.terminal);
+        try self.setValue(g.GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES, usize, continuation_max);
+        try check(g.ghostty_terminal_set(self.terminal, opt(g.GHOSTTY_TERMINAL_OPT_USERDATA), self));
+        try check(g.ghostty_terminal_set(self.terminal, opt(g.GHOSTTY_TERMINAL_OPT_WRITE_PTY), @ptrCast(&writePty)));
+        return self;
+    }
+
     pub fn destroy(self: *Vt) void {
         g.ghostty_terminal_free(self.terminal);
         self.replies.deinit(self.allocator);
@@ -278,6 +298,28 @@ test "snapshot restores title, screen text, and alt screen over main" {
     const main = try plain(restored, a);
     defer a.free(main);
     try std.testing.expect(std.mem.indexOf(u8, main, "main two") != null);
+}
+
+test "handoff adoption keeps screen text and answers queries in both formats" {
+    const a = std.testing.allocator;
+    const vt = try Vt.create(a, 40, 6, 1 << 20);
+    defer vt.destroy();
+    vt.write("\x1b]0;kept\x07line one\r\nline two");
+    for ([_]bool{ true, false }) |binary| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(a);
+        try if (binary) vt.snapshot(a, &bytes) else vt.formatVt(a, &bytes);
+        const copy = try Vt.adopt(a, bytes.items, binary, 40, 6, 1 << 20);
+        defer copy.destroy();
+        const text = try plain(copy.terminal, a);
+        defer a.free(text);
+        try std.testing.expect(std.mem.indexOf(u8, text, "line two") != null);
+        try std.testing.expectEqual(@as(usize, 0), copy.replies.items.len);
+        copy.write("\x1b[5n");
+        var replies = copy.takeReplies();
+        defer replies.deinit(a);
+        try std.testing.expectEqualStrings("\x1b[0n", replies.items);
+    }
 }
 
 test "formatter fallback replays screen text and cursor" {

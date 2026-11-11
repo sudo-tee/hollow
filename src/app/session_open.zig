@@ -164,6 +164,7 @@ pub fn pump(app: *App) void {
             }
             continue;
         }
+        if (pending.connection.?.takeHandoff()) |handoff| mux_ops.reportHandoff(app, handoff);
         const step = pending.operation.step() catch |err| {
             const failure = pending.operation.cancel();
             retire(app, pending, err, failure.outcome, null);

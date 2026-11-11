@@ -11,6 +11,9 @@ const attachment = @import("session_attachment.zig");
 const pty = @import("pty.zig");
 const Vt = @import("session_vt.zig").Vt;
 const session_vt = @import("session_vt.zig");
+const handoff = @import("session_handoff.zig");
+const upgrade = @import("session_upgrade.zig");
+const build_len = @sizeOf(upgrade.Build);
 const c = @import("posix_c");
 
 const read_chunk = 64 * 1024;
@@ -162,6 +165,7 @@ const Client = struct {
     reader: p.Reader = .{},
     out: Queue = .{},
     hello: bool = false,
+    drain_holder: bool = false,
     binary: bool = false,
     foreground_events: bool = false,
     session: ?*Session = null,
@@ -171,6 +175,32 @@ const Client = struct {
 };
 
 const Doomed = struct { pid: c.pid_t, deadline: i64, killed: bool = false };
+
+test "handoff adoption keeps the foreground command smart split reads" {
+    const a = std.testing.allocator;
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    var session: Session = .{ .meta = .{ .id = @splat('a') } };
+    defer {
+        for (session.panes.items) |pane| owner.freePane(pane);
+        session.panes.deinit(a);
+    }
+    const saved: handoff.PaneState = .{ .id = 1, .pid = 1, .master = -1, .cols = 80, .rows = 24, .spawn = "{}", .vt = .binary, .foreground = "nvim" };
+    try owner.adoptPane(&session, saved, "");
+    try std.testing.expectEqualStrings("nvim", session.panes.items[0].vt.shell_command.value());
+    // Payloads from builds before this field adopt with no command.
+    const old = try std.json.parseFromSlice(handoff.PaneState, a,
+        \\{"id":2,"pid":1,"master":-1,"cols":80,"rows":24,"spawn":"{}","vt":"binary"}
+    , .{});
+    defer old.deinit();
+    try owner.adoptPane(&session, old.value, "");
+    try std.testing.expectEqualStrings("", session.panes.items[1].vt.shell_command.value());
+    var oversized = saved;
+    oversized.id = 3;
+    oversized.foreground = &(@as([@import("session_command.zig").Command.limit + 1]u8, @splat('x')));
+    try std.testing.expectError(error.InvalidHandoff, owner.adoptPane(&session, oversized, ""));
+    try std.testing.expectEqual(@as(usize, 2), session.panes.items.len);
+}
 
 test "output admission failure detaches without consuming cleared backlog or credit" {
     const a = std.testing.allocator;
@@ -239,7 +269,20 @@ pub const Owner = struct {
     had_client: bool = false,
     /// `idle` is cancelled by a new client; `kill` (kill_server, SIGTERM)
     /// stops listening.
-    stop: enum { none, idle, kill } = .none,
+    stop: enum { none, idle, kill, retire } = .none,
+    upgrade: upgrade.Retirement = .{},
+    /// Owner lock; kept open across an in-place handoff exec.
+    lock_fd: c_int = -1,
+    /// Validated in-place upgrade, run at the end of a step.
+    handoff: ?Handoff = null,
+    /// Never handed off to: the build that handed off to this one, and a
+    /// target whose exec or takeover already failed.
+    predecessor: ?upgrade.Build = null,
+    failed: ?upgrade.Build = null,
+    /// Latest handoff result, reported in welcomes for a short window.
+    handoff_notice: ?struct { at: i64, from: upgrade.Build, to: upgrade.Build, ok: bool } = null,
+
+    const Handoff = struct { path: [:0]u8, build: upgrade.Build, binary: bool };
 
     pub fn init(a: std.mem.Allocator, io: std.Io) Owner {
         return .{ .a = a, .io = io, .identity = session_vt.buildIdentity(), .started = nowMs() };
@@ -259,12 +302,18 @@ pub const Owner = struct {
         self.fds.deinit(self.a);
         self.slots.deinit(self.a);
         if (self.state_dir) |dir| self.a.free(dir);
+        if (self.handoff) |target| self.a.free(target.path);
     }
 
     /// Done once stopping and every killed process has been reaped (or
     /// escalated to SIGKILL).
     pub fn done(self: *Owner) bool {
         if (self.stop == .none) return false;
+        // A WSL holder keeps the empty admission barrier alive until the
+        // Windows owner commits retirement and closes its helper connection.
+        if (self.stop == .retire) {
+            for (self.clients.items) |client| if (!client.dead and client.drain_holder) return false;
+        }
         for (self.doomed.items) |d| if (!d.killed) return false;
         return true;
     }
@@ -283,7 +332,7 @@ pub const Owner = struct {
     pub fn step(self: *Owner, timeout_ms: i32) !void {
         self.fds.clearRetainingCapacity();
         self.slots.clearRetainingCapacity();
-        if (self.listen_fd >= 0 and self.stop != .kill) try self.watch(.listen, self.listen_fd, c.POLLIN);
+        if (self.listen_fd >= 0 and self.stop != .kill and self.stop != .retire) try self.watch(.listen, self.listen_fd, c.POLLIN);
         if (self.signal_fd >= 0) try self.watch(.signal, self.signal_fd, c.POLLIN);
         for (self.clients.items) |client| {
             if (client.dead) continue;
@@ -341,6 +390,9 @@ pub const Owner = struct {
             self.flushClient(client);
         };
         self.collect();
+        // A pane still waiting for its exec status would lose the pipe.
+        if (self.handoff != null and self.stop == .none and !self.launching()) self.execHandoff();
+        if (self.stop != .kill and self.upgrade.ready(self.sessionsEmpty())) self.stop = .retire;
         if (self.touch_paths.len > 0 and nowMs() - self.touched >= touch_interval_ms) {
             self.touched = nowMs();
             for (self.touch_paths) |path| _ = c.utimensat(c.AT_FDCWD, path.ptr, null, 0);
@@ -455,6 +507,227 @@ pub const Owner = struct {
         self.sendJson(client, .event, p.Event{ .event = kind, .session = &s.meta.id, .pane = pane });
     }
 
+    // -- in-place upgrade ----------------------------------------------------
+
+    /// Accepts a probe's build as the in-place upgrade target. Any client of
+    /// this socket can already run commands as this user, so the target is
+    /// checked for compatibility (same executable the probe runs, same
+    /// payload format), not trust.
+    fn offerHandoff(self: *Owner, hello: p.Hello) bool {
+        if (self.handoff != null) return true;
+        if (self.lock_fd < 0 or self.listen_fd < 0 or self.stop != .none or self.sessionsEmpty()) return false;
+        if (hello.handoff_format != handoff.format or hello.handoff_ghostty.len == 0) return false;
+        if (!std.fs.path.isAbsolute(hello.handoff_path)) return false;
+        const own = self.upgrade.build orelse return false;
+        if (hello.owner_build.len != own.len or std.mem.eql(u8, hello.owner_build, &own)) return false;
+        for ([_]?upgrade.Build{ self.predecessor, self.failed }) |refused| {
+            if (refused) |build| if (std.mem.eql(u8, &build, hello.owner_build)) return false;
+        }
+        const path = self.a.dupeSentinel(u8, hello.handoff_path, 0) catch return false;
+        const valid = c.access(path.ptr, c.X_OK) == 0 and if (upgrade.fingerprint(self.io, path)) |build|
+            std.mem.eql(u8, &build, hello.owner_build)
+        else |_|
+            false;
+        if (!valid) {
+            self.a.free(path);
+            return false;
+        }
+        self.handoff = .{ .path = path, .build = hello.owner_build[0..own.len].*, .binary = std.mem.eql(u8, hello.handoff_ghostty, self.identity) };
+        return true;
+    }
+
+    fn recentHandoff(self: *const Owner) ?p.HandoffNotice {
+        const notice = if (self.handoff_notice) |*n| n else return null;
+        if (nowMs() - notice.at > p.handoff_notice_ms) return null;
+        return .{ .from = &notice.from, .to = &notice.to, .ok = notice.ok };
+    }
+
+    fn launching(self: *const Owner) bool {
+        for (self.sessions.items) |s| for (s.panes.items) |pane| if (pane.launch >= 0) return true;
+        return false;
+    }
+
+    /// Only returns when the exec failed; this build keeps serving and never
+    /// retries the same target.
+    fn execHandoff(self: *Owner) void {
+        const target = self.handoff.?;
+        self.handoff = null;
+        defer self.a.free(target.path);
+        self.handoffTo(target) catch |err| {
+            std.log.warn("session handoff to {s} failed: {s}", .{ target.path, @errorName(err) });
+            self.failed = target.build;
+            if (self.upgrade.build) |own| self.handoff_notice = .{ .at = nowMs(), .from = own, .to = target.build, .ok = false };
+        };
+    }
+
+    fn handoffTo(self: *Owner, target: Handoff) !void {
+        for (self.sessions.items) |s| for (s.panes.items) |pane| flushInput(pane);
+        // Best effort: the probe's welcome tells its connector to reconnect.
+        // Other clients are closed by the exec and must attach again.
+        for (self.clients.items) |client| if (!client.dead) self.flushClient(client);
+        var arena_state = std.heap.ArenaAllocator.init(self.a);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var keep: std.ArrayList(c_int) = .empty;
+        try keep.appendSlice(arena, &.{ self.listen_fd, self.lock_fd });
+        var blobs: std.ArrayList([]const u8) = .empty;
+        var sessions: std.ArrayList(handoff.SessionState) = .empty;
+        for (self.sessions.items) |s| {
+            if (s.meta.ended) continue;
+            var panes: std.ArrayList(handoff.PaneState) = .empty;
+            for (s.panes.items) |pane| {
+                if (pane.removed) continue;
+                var bytes: std.ArrayList(u8) = .empty;
+                try if (target.binary) pane.vt.snapshot(arena, &bytes) else pane.vt.formatVt(arena, &bytes);
+                try blobs.append(arena, bytes.items);
+                try panes.append(arena, .{
+                    .id = pane.id,
+                    .pid = pane.pid,
+                    .master = pane.master,
+                    .cols = pane.cols,
+                    .rows = pane.rows,
+                    .spawn = pane.spawn,
+                    .close_on_exit = pane.close_on_exit,
+                    .status = pane.status,
+                    .exit_deadline = pane.exit_deadline,
+                    .vt = if (target.binary) .binary else .vt,
+                    .foreground = pane.vt.shell_command.value(),
+                });
+                if (pane.master >= 0) try keep.append(arena, pane.master);
+            }
+            try sessions.append(arena, .{ .id = &s.meta.id, .next_pane = s.meta.next_pane, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items });
+        }
+        var doomed: std.ArrayList(handoff.DoomedState) = .empty;
+        for (self.doomed.items) |d| try doomed.append(arena, .{ .pid = d.pid, .deadline = d.deadline, .killed = d.killed });
+        // The fallback execs this image through an fd, so it still works
+        // after a deploy replaced or removed the file.
+        const exe = c.open("/proc/self/exe", c.O_RDONLY | c.O_CLOEXEC);
+        if (exe < 0) return error.ExePathFailed;
+        defer _ = c.close(exe);
+        try keep.append(arena, exe);
+        const fallback_path = try std.fmt.allocPrint(arena, "/proc/self/fd/{d}", .{exe});
+        const json = try p.stringify(arena, handoff.State{
+            .listen_fd = self.listen_fd,
+            .lock_fd = self.lock_fd,
+            .exe_fd = exe,
+            .predecessor = self.upgrade.identity(),
+            .target = &target.build,
+            .sessions = sessions.items,
+            .doomed = doomed.items,
+        });
+        const fd = try handoff.writeFd(try handoff.encode(arena, fallback_path, json, blobs.items));
+        defer _ = c.close(fd);
+        try keep.append(arena, fd);
+        defer for (keep.items) |kept| setCloexec(kept, true) catch {};
+        for (keep.items) |kept| try setCloexec(kept, false);
+        try execServe(target.path, fd);
+    }
+
+    /// Adopts the state a previous build handed off. Validates everything
+    /// before taking any fd, and never closes an adopted fd on failure, so
+    /// the caller can still pass the payload back to the fallback build.
+    pub fn takeover(self: *Owner, fd: c_int) !void {
+        const bytes = try handoff.readFd(self.a, fd);
+        defer self.a.free(bytes);
+        const view = try handoff.parse(bytes);
+        const parsed = try std.json.parseFromSlice(handoff.State, self.a, view.json, .{});
+        defer parsed.deinit();
+        const state = parsed.value;
+        self.upgrade.build = try upgrade.current(self.a, self.io);
+        for ([_]c_int{ state.listen_fd, state.lock_fd, state.exe_fd }) |kept| try checkFd(kept);
+        var blobs: handoff.Blobs = .{ .rest = view.blobs };
+        errdefer self.abandon();
+        for (state.sessions) |saved| {
+            const id = try core.reservedId(saved.id);
+            try core.checkCollision(self.sessions.items, &id);
+            const s = try self.a.create(Session);
+            s.* = .{ .meta = .{ .id = id, .next_pane = saved.next_pane, .revision = saved.revision } };
+            self.sessions.append(self.a, s) catch |err| {
+                self.a.destroy(s);
+                return err;
+            };
+            s.meta.layout = try self.a.dupe(u8, saved.layout);
+            for (saved.panes) |pane| try self.adoptPane(s, pane, try blobs.next());
+        }
+        try blobs.finish();
+        for (state.doomed) |d| try self.doomed.append(self.a, .{ .pid = d.pid, .deadline = d.deadline, .killed = d.killed });
+        if (state.predecessor.len == build_len) self.predecessor = state.predecessor[0..build_len].*;
+        // Read by the fallback: never hand off to the build that rejected it.
+        if (state.target.len == build_len and !std.mem.eql(u8, state.target, self.upgrade.identity()))
+            self.failed = state.target[0..build_len].*;
+        self.listen_fd = state.listen_fd;
+        self.lock_fd = state.lock_fd;
+        try setCloexec(self.listen_fd, true);
+        try setCloexec(self.lock_fd, true);
+        for (self.sessions.items) |s| for (s.panes.items) |pane| if (pane.master >= 0) try setCloexec(pane.master, true);
+        _ = c.close(state.exe_fd);
+        _ = c.close(fd);
+        self.had_client = true;
+        var panes: usize = 0;
+        for (self.sessions.items) |s| panes += s.panes.items.len;
+        const own = self.upgrade.build.?;
+        if (self.failed) |*target| {
+            self.handoff_notice = .{ .at = nowMs(), .from = own, .to = target.*, .ok = false };
+            std.log.warn("session handoff to build {s} failed; resumed with {d} sessions, {d} panes", .{ target[0..12], self.sessions.items.len, panes });
+        } else {
+            if (self.predecessor) |from| self.handoff_notice = .{ .at = nowMs(), .from = from, .to = own, .ok = true };
+            const from: []const u8 = if (self.predecessor) |*b| b[0..12] else "unknown";
+            std.log.info("session handoff from build {s} complete (test): adopted {d} sessions, {d} panes", .{ from, self.sessions.items.len, panes });
+        }
+    }
+
+    fn adoptPane(self: *Owner, s: *Session, saved: handoff.PaneState, blob: []const u8) !void {
+        if (saved.pid <= 0 or saved.cols == 0 or saved.rows == 0) return error.InvalidHandoff;
+        if (saved.master >= 0) try checkFd(saved.master);
+        if (s.find(saved.id) != null) return error.InvalidHandoff;
+        const spawn = try self.a.dupe(u8, saved.spawn);
+        errdefer self.a.free(spawn);
+        // A screen that cannot be restored starts blank; the process lives on.
+        const vt = Vt.adopt(self.a, blob, saved.vt == .binary, saved.cols, saved.rows, self.scrollback_bytes) catch
+            try Vt.create(self.a, saved.cols, saved.rows, self.scrollback_bytes);
+        errdefer vt.destroy();
+        try vt.shell_command.set(saved.foreground);
+        const pane = try self.a.create(Pane);
+        errdefer self.a.destroy(pane);
+        try s.panes.ensureUnusedCapacity(self.a, 1);
+        pane.* = .{
+            .id = saved.id,
+            .pid = saved.pid,
+            .master = saved.master,
+            .launch = -1,
+            .vt = vt,
+            .cols = saved.cols,
+            .rows = saved.rows,
+            .spawn = spawn,
+            .close_on_exit = saved.close_on_exit,
+            .status = saved.status,
+            .exit_deadline = saved.exit_deadline,
+        };
+        s.panes.appendAssumeCapacity(pane);
+    }
+
+    /// Frees a partial takeover without closing any inherited fd.
+    fn abandon(self: *Owner) void {
+        for (self.sessions.items) |s| {
+            for (s.panes.items) |pane| {
+                pane.master = -1;
+                self.freePane(pane);
+            }
+            s.panes.deinit(self.a);
+            s.meta.deinit(self.a);
+            self.a.destroy(s);
+        }
+        self.sessions.clearRetainingCapacity();
+        self.doomed.clearRetainingCapacity();
+        self.predecessor = null;
+        self.failed = null;
+    }
+
+    fn sessionsEmpty(self: *const Owner) bool {
+        for (self.sessions.items) |s| if (!s.meta.ended) return false;
+        return true;
+    }
+
     fn handleFrame(self: *Owner, client: *Client, h: p.Header, payload: []const u8) !void {
         const kind = try p.validate(h, .to_owner);
         if (!client.hello and kind != .hello) return error.ExpectedHello;
@@ -464,14 +737,22 @@ pub const Owner = struct {
                 const hello = try p.parse(p.Hello, self.a, payload);
                 defer hello.deinit();
                 if (!std.mem.eql(u8, hello.value.protocol, p.protocol) or hello.value.version != p.version) return error.ProtocolMismatch;
-                client.hello = true;
+                if (hello.value.owner_probe and !self.offerHandoff(hello.value)) self.upgrade.observe(hello.value.owner_build);
+                if (hello.value.owner_drain) self.upgrade.pending = true;
+                client.drain_holder = hello.value.owner_drain;
+                client.hello = !hello.value.owner_probe;
                 client.binary = std.mem.eql(u8, hello.value.ghostty, self.identity);
                 client.foreground_events = hello.value.foreground_events;
-                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host, .features = &p.owner_features });
+                self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host, .features = &p.posix_owner_features, .owner_build = self.upgrade.identity(), .retiring = (hello.value.owner_probe and self.handoff != null) or self.upgrade.ready(self.sessionsEmpty()), .handoff = self.recentHandoff() });
             },
             .request => {
                 const parsed = try p.parse(p.Request, self.a, payload);
                 defer parsed.deinit();
+                if (self.upgrade.ready(self.sessionsEmpty())) {
+                    self.replyError(client, parsed.value.id, error.OwnerRetiring);
+                    self.stop = .retire;
+                    return;
+                }
                 self.handleRequest(client, parsed.value) catch |err| self.replyError(client, parsed.value.id, err);
             },
             .input => {
@@ -1062,16 +1343,27 @@ fn flushInput(pane: *Pane) void {
 
 /// Runs the owner in the foreground until its last session ends. `session
 /// connect` daemonizes it; running it directly is useful for debugging.
-pub fn serve(a: std.mem.Allocator, io: std.Io) !void {
+/// With `handoff_fd`, adopts the lock, socket, and panes a previous build
+/// handed off (`session serve --handoff <fd>`) instead of opening them.
+pub fn serve(a: std.mem.Allocator, io: std.Io, handoff_fd: ?c_int) !void {
     const paths = try resolvePaths(a);
     defer paths.deinit(a);
-    const lock_fd = c.open(paths.lock.ptr, c.O_RDWR | c.O_CREAT | c.O_CLOEXEC, @as(c_uint, 0o600));
-    if (lock_fd < 0) return error.LockFailed;
-    defer _ = c.close(lock_fd);
+    var owner = Owner.init(a, io);
+    if (handoff_fd) |fd| {
+        owner.takeover(fd) catch |err| {
+            std.log.err("session handoff takeover failed: {s}", .{@errorName(err)});
+            fallback(a, io, fd);
+            return err;
+        };
+    } else {
+        owner.lock_fd = c.open(paths.lock.ptr, c.O_RDWR | c.O_CREAT | c.O_CLOEXEC, @as(c_uint, 0o600));
+        if (owner.lock_fd < 0) return error.LockFailed;
+    }
+    defer _ = c.close(owner.lock_fd);
     // A second owner (two racing connects) waits briefly for a stopping
     // owner to exit, then gives up quietly if one is still running.
     const lock_deadline = nowMs() + 5000;
-    while (c.flock(lock_fd, c.LOCK_EX | c.LOCK_NB) != 0) {
+    while (handoff_fd == null and c.flock(owner.lock_fd, c.LOCK_EX | c.LOCK_NB) != 0) {
         if (nowMs() >= lock_deadline) return;
         _ = c.poll(null, 0, 20);
     }
@@ -1086,15 +1378,14 @@ pub fn serve(a: std.mem.Allocator, io: std.Io) !void {
     // A handler, not SIG_IGN, so exec restores the default for pane shells.
     _ = c.signal(c.SIGPIPE, ignoreSignal);
 
-    const listen_fd = try listenAt(paths.socket);
+    if (handoff_fd == null) owner.listen_fd = try listenAt(paths.socket);
     defer {
-        _ = c.close(listen_fd);
+        _ = c.close(owner.listen_fd);
         _ = c.unlink(paths.socket.ptr);
     }
 
-    var owner = Owner.init(a, io);
     defer owner.deinit();
-    owner.listen_fd = listen_fd;
+    if (handoff_fd == null) owner.upgrade.build = try upgrade.current(a, io);
     owner.signal_fd = signal_fd;
     owner.state_dir = stateDir(a) catch null;
     if (owner.state_dir) |dir| owner.loadHost(dir);
@@ -1104,6 +1395,40 @@ pub fn serve(a: std.mem.Allocator, io: std.Io) !void {
     while (!owner.done()) try owner.step(1000);
     // Best effort: let the kill_server reply reach its client.
     for (owner.clients.items) |client| if (!client.dead) owner.flushClient(client);
+}
+
+/// Execs `path session serve --handoff <fd>`; returns only on failure.
+fn execServe(path: [*:0]const u8, fd: c_int) !void {
+    var fd_buf: [16]u8 = undefined;
+    const fd_arg = try std.fmt.bufPrintSentinel(&fd_buf, "{d}", .{fd}, 0);
+    const argv = [_:null]?[*:0]const u8{ path, "session", "serve", "--handoff", fd_arg.ptr };
+    _ = std.c.execve(path, &argv, @ptrCast(std.c.environ));
+    return error.ExecFailed;
+}
+
+/// A successor that cannot adopt the payload passes it back to the build
+/// that wrote it, whose fds are all still open.
+fn fallback(a: std.mem.Allocator, io: std.Io, fd: c_int) void {
+    const bytes = handoff.readFd(a, fd) catch return;
+    defer a.free(bytes);
+    const path = a.dupeSentinel(u8, handoff.fallbackPath(bytes) catch return, 0) catch return;
+    defer a.free(path);
+    // The fallback itself failing must not exec itself again.
+    const own = upgrade.current(a, io) catch return;
+    const previous = upgrade.fingerprint(io, path) catch return;
+    if (std.mem.eql(u8, &own, &previous)) return;
+    execServe(path, fd) catch {};
+}
+
+fn checkFd(fd: c_int) !void {
+    if (fd < 0 or c.fcntl(fd, c.F_GETFD) < 0) return error.InvalidHandoff;
+}
+
+fn setCloexec(fd: c_int, on: bool) !void {
+    const flags = c.fcntl(fd, c.F_GETFD);
+    if (flags < 0) return error.FcntlFailed;
+    const next = if (on) flags | c.FD_CLOEXEC else flags & ~@as(c_int, c.FD_CLOEXEC);
+    if (c.fcntl(fd, c.F_SETFD, next) < 0) return error.FcntlFailed;
 }
 
 /// Binds the socket under the held lock, replacing any stale file.

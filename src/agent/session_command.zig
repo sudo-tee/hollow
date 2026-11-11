@@ -14,6 +14,12 @@ pub const Command = struct {
         return self.command[0..self.command_len];
     }
 
+    pub fn set(self: *Command, command: []const u8) !void {
+        if (command.len > limit) return error.InvalidHandoff;
+        @memcpy(self.command[0..command.len], command);
+        self.command_len = command.len;
+    }
+
     pub fn feed(self: *Command, allocator: std.mem.Allocator, bytes: []const u8) void {
         var index: usize = 0;
         while (index < bytes.len) : (index += 1) {

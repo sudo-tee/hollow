@@ -409,6 +409,8 @@ pub const App = struct {
     session_query_count: usize = 0,
     session_query_next_id: u64 = 1,
     session_notices: @import("session/notice.zig").Notices = .{},
+    /// Last reported owner handoff; one owner serves every window's domains.
+    session_handoff_seen: ?@import("session/client.zig").Client.Handoff = null,
     startup_session_target: session_open.StartupTarget = .unbound,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,

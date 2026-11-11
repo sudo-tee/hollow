@@ -10,6 +10,7 @@ const c = @import("posix_c");
 const a = std.testing.allocator;
 
 test {
+    _ = @import("session_handoff.zig");
     _ = @import("session_wait.zig");
     _ = @import("session_hold.zig");
     _ = @import("session_core.zig");
@@ -26,12 +27,16 @@ const Fake = struct {
     next_id: u64 = 1,
 
     fn open(owner: *Owner, identity: []const u8) !*Fake {
+        return openHello(owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = identity, .foreground_events = true });
+    }
+
+    fn openHello(owner: *Owner, hello: p.Hello) !*Fake {
         var pair: [2]c_int = undefined;
         if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM | c.SOCK_CLOEXEC | c.SOCK_NONBLOCK, 0, &pair) != 0) return error.SocketFailed;
         _ = try owner.addClient(pair[0]);
         const self = try a.create(Fake);
         self.* = .{ .fd = pair[1] };
-        try self.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = identity, .foreground_events = true }));
+        try self.send(.hello, 0, try json(hello));
         _ = try self.wait(owner, .welcome, 0);
         return self;
     }
@@ -165,6 +170,90 @@ fn shell(comptime script: []const u8) p.Spawn {
 fn sessionId(buf: *[32]u8, reply: p.Reply) []const u8 {
     @memcpy(buf, reply.session.?.id[0..32]);
     return buf;
+}
+
+test "outdated empty owner retires despite idle clients and refuses a racing create" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const idle = try Fake.open(&owner, owner.identity);
+    defer idle.deinit();
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('b'))) });
+    defer probe.deinit();
+    const welcome = try p.parse(p.Welcome, a, probe.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(welcome.value.retiring);
+    try std.testing.expect(owner.done());
+    const result = try idle.reply(&owner, try idle.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer result.deinit();
+    try std.testing.expectEqualStrings("OwnerRetiring", result.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+}
+
+test "outdated owner preserves sessions then retires atomically after the last close" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('b'))) });
+    defer probe.deinit();
+    try std.testing.expect(owner.upgrade.pending);
+    try std.testing.expect(!owner.done());
+    try std.testing.expect(owner.sessions.items[0].panes.items[0].status == null);
+    // A supported preflight leaves this same socket available for the GUI.
+    try probe.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity }));
+    try owner.step(0);
+    try std.testing.expect(owner.clients.items[1].hello);
+    const closing = try client.request(.{ .id = 0, .op = .close, .pane = pane });
+    const racing = try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") });
+    const closed = try client.reply(&owner, closing);
+    defer closed.deinit();
+    const rejected = try client.reply(&owner, racing);
+    defer rejected.deinit();
+    try std.testing.expect(closed.value.ok);
+    try std.testing.expectEqualStrings("OwnerRetiring", rejected.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+}
+
+test "WSL holder drain seals guest create admission without a runtime mismatch" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const drain = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "holder", .owner_drain = true });
+    defer drain.deinit();
+    try std.testing.expect(owner.upgrade.pending);
+    const welcome = try p.parse(p.Welcome, a, drain.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(welcome.value.retiring);
+    const result = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer result.deinit();
+    try std.testing.expectEqualStrings("OwnerRetiring", result.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+    // Hold the empty admission barrier until Windows commits retirement;
+    // otherwise a connector could start a fresh owner before keeper teardown.
+    try std.testing.expect(!owner.done());
+    drain.close();
+    try owner.step(0);
+    try std.testing.expect(owner.done());
+}
+
+test "matching owner probes retain an empty owner for the next GUI hello" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('a'))) });
+    defer probe.deinit();
+    try std.testing.expect(!owner.upgrade.pending);
+    try std.testing.expect(!owner.done());
+    try std.testing.expect(!owner.clients.items[0].hello);
+    try probe.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity }));
+    try owner.step(0);
+    try std.testing.expect(owner.clients.items[0].hello);
 }
 
 test "session wait observes real owner lifetime without taking over or mutating panes" {
