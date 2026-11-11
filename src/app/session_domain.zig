@@ -54,6 +54,7 @@ pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resol
     const definition = app.config.domainByName(selected_domain) orelse return error.UnknownDomain;
     const domain = try a.dupe(u8, selected_domain);
     const configured_shell = if (definition.shell) |value| try a.dupe(u8, value) else null;
+    const upgrade = definition.upgrade;
     const shell = configured_shell orelse try a.dupe(u8, app.config.shellOrDefault());
     const lua = if (app.lua) |*value| value else return error.LuaUnavailable;
     const host = try lua.sessionHost(a, domain, shell);
@@ -70,6 +71,7 @@ pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resol
             .ghostty_identity = @import("../term/ghostty.zig").buildIdentity(),
             .path_style = host.path_style,
             .wsl = host.wsl,
+            .upgrade = if (upgrade == .handoff) null else @tagName(upgrade),
         },
     };
 }

@@ -5159,6 +5159,11 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
             try cfg.setDomainDefaultCwd(domain_name, value);
             continue;
         }
+
+        if (std.mem.eql(u8, key, "upgrade")) {
+            if (std.meta.stringToEnum(config.Config.SessionUpgrade, value)) |upgrade| try cfg.setDomainUpgrade(domain_name, upgrade);
+            continue;
+        }
     }
 }
 
@@ -8507,6 +8512,10 @@ test "session borrowers config parses persistence without requiring a domain she
     try std.testing.expect(!cfg.persistForDomain("ordinary"));
     try std.testing.expect(cfg.persistForDomain("shell"));
     try std.testing.expectEqualStrings("/bin/zsh", cfg.domainByName("shell").?.shell.?);
+    try std.testing.expectEqual(config.Config.SessionUpgrade.handoff, cfg.domainByName("persist_only").?.upgrade);
+    try runtime.runString("host_api.set_config({ domains = { pinned = { persist = true, upgrade = 'retire_empty' }, typo = { persist = true, upgrade = 'sometimes' } } })");
+    try std.testing.expectEqual(config.Config.SessionUpgrade.retire_empty, cfg.domainByName("pinned").?.upgrade);
+    try std.testing.expectEqual(config.Config.SessionUpgrade.handoff, cfg.domainByName("typo").?.upgrade);
     try runtime.runString("host_api.set_config({ domains = { persist_only = { persist = false } } })");
     try std.testing.expect(!cfg.persistForDomain(null));
     try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));

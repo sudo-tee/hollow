@@ -65,9 +65,13 @@ pub const Config = struct {
         }
     };
 
+    pub const SessionUpgrade = enum { handoff, retire_empty, never };
+
     pub const Domain = struct {
         name: []u8,
         persist: bool = false,
+        /// How an outdated Linux/WSL session owner is replaced.
+        upgrade: SessionUpgrade = .handoff,
         shell: ?[]u8 = null,
         default_cwd: ?[]u8 = null,
         ssh: ?DomainSsh = null,
@@ -466,6 +470,11 @@ pub const Config = struct {
     pub fn setDomainPersist(self: *Config, name: []const u8, persist: bool) !void {
         const domain = try self.ensureDomain(name);
         domain.persist = persist;
+    }
+
+    pub fn setDomainUpgrade(self: *Config, name: []const u8, upgrade: SessionUpgrade) !void {
+        const domain = try self.ensureDomain(name);
+        domain.upgrade = upgrade;
     }
 
     pub fn setDomainDefaultCwd(self: *Config, name: []const u8, cwd_value: []const u8) !void {

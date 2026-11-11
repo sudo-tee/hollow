@@ -522,6 +522,7 @@
 ---@class HollowDomainConfig
 ---@field persist? boolean Experimental host-owned persistent workspaces; default false, Linux owner only
 ---@field restore? boolean Remember this domain's persistent sessions and reattach them at startup; default true when `persist` is set
+---@field upgrade? "handoff"|"retire_empty"|"never" How a Linux/WSL session owner from an older Hollow is replaced; `handoff` (default) execs the new agent in place and keeps live panes, `retire_empty` waits until it has no sessions, `never` leaves it running
 ---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
