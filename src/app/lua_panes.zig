@@ -9,8 +9,25 @@ const bridge = @import("../lua_bridge.zig");
 pub fn contentInfo(context: *anyopaque, id: usize) ?bridge.PaneContentInfo {
     const app: *App = @ptrCast(@alignCast(context));
     const pane = app.findPaneById(id) orelse return null;
-    const surface = pane.asLua() orelse return .{ .kind = .terminal };
-    return .{ .kind = .lua, .descriptor_json = surface.descriptor_json, .floating = pane.is_floating, .x = pane.floating_x, .y = pane.floating_y, .width = pane.floating_width, .height = pane.floating_height };
+    const mux = if (app.mux) |*value| value else null;
+    const edge: ?[]const u8 = if (mux) |m| if (m.paneEdge(pane)) |value| @tagName(value) else null else null;
+    const dock = if (mux) |m| m.paneDock(pane) else null;
+    var info: bridge.PaneContentInfo = .{ .kind = .terminal, .hidden = pane.is_hidden, .edge = edge };
+    if (dock) |location| {
+        info.dock_edge = @tagName(location.edge);
+        info.dock_scope = @tagName(location.scope);
+        info.dock_workspace_id = if (location.workspace) |ws| ws.id else 0;
+        info.dock_ratio = location.ratio;
+    }
+    const surface = pane.asLua() orelse return info;
+    info.kind = .lua;
+    info.descriptor_json = surface.descriptor_json;
+    info.floating = pane.is_floating;
+    info.x = pane.floating_x;
+    info.y = pane.floating_y;
+    info.width = pane.floating_width;
+    info.height = pane.floating_height;
+    return info;
 }
 
 pub const Pointer = struct {
@@ -350,7 +367,10 @@ pub fn process(app: *App, payload: Create) void {
     };
     const previous = mux.activePane();
     const edge: ?[]const u8 = if (object.get("edge")) |value| (if (value == .string) value.string else null) else null;
-    const insertion = if (std.mem.eql(u8, placement, "split") and !payload.floating and edge != null)
+    const dock: ?[]const u8 = if (object.get("dock")) |value| (if (value == .string) value.string else null) else null;
+    const insertion = if (std.mem.eql(u8, placement, "split") and !payload.floating and dock != null)
+        dockNew(mux, pane, edge orelse "", dock.?, payload.ratio)
+    else if (std.mem.eql(u8, placement, "split") and !payload.floating and edge != null)
         splitEdge(mux, pane, edge.?, payload.ratio)
     else if (std.mem.eql(u8, placement, "split"))
         mux.splitActivePaneWith(pane, payload.direction, payload.ratio, payload.floating)
@@ -380,6 +400,12 @@ pub fn process(app: *App, payload: Create) void {
         app.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     }
     complete(app, payload, true);
+}
+
+fn dockNew(mux: anytype, pane: *Pane, edge: []const u8, scope: []const u8, ratio: f32) !void {
+    const side = std.meta.stringToEnum(@import("../mux.zig").PaneEdge, edge) orelse return error.InvalidEdge;
+    const dock_scope = std.meta.stringToEnum(@import("../mux.zig").DockScope, scope) orelse return error.InvalidDockScope;
+    return mux.dockNewPane(pane, side, dock_scope, ratio);
 }
 
 fn splitEdge(mux: anytype, pane: *Pane, edge: []const u8, ratio: f32) !void {

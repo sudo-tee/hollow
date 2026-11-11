@@ -117,6 +117,108 @@ hollow.term.set_floating_pane_bounds(pane_id, { x = 0.05, y = 0.1, width = 0.5, 
 A _maximized_ pane covers the tiled area; other tiled panes are hidden
 unless `show_background = true` is passed to `toggle_pane_maximized`.
 
+### Toggleable PTY utility panes
+
+Terminal panes can live along a whole tab edge, just like docked Lua panes.
+Unlike Lua panes they retain a PTY and can run interactive applications:
+
+```lua
+hollow.term.split_pane({
+  edge = "right",   -- "left", "top", "bottom"
+  ratio = 0.30,     -- fraction of the full tiled layout
+  command = "lazygit",
+  command_mode = "spawn",
+  on_complete = function(result)
+    if result.success then
+      hollow.term.set_pane_visible(result.pane_id, false)
+    end
+  end,
+})
+```
+
+`hollow.term.set_pane_visible(id, visible)` hides or shows either terminal
+or Lua panes **without closing them**. Hidden panes remain in their tab,
+retain their identity, and (for terminals) keep the PTY and process running.
+The native split tree reflows around hidden tiled panes. A hidden floating
+pane is absent from the visible layout and hit testing. The last visible
+pane in a tab cannot be hidden. Focus moves to another visible pane when
+hiding the active pane; showing a pane does not automatically steal focus.
+
+This is *presentation visibility*, not session detach/reattach. Closing
+the pane or terminating Hollow still follows the configured session
+lifetime; the experimental agent mux alone does not retain PTYs after
+Hollow exits. A future persistent-session feature can serialize the
+`is_hidden` presentation flag independently from its durable PTY handles.
+
+The pane's `is_hidden` snapshot field reports its current visibility. From
+outside Hollow, use `hollow-cli pane hide|show [--id ID|--tag TAG]` (command
+API: `pane_hide` / `pane_show`); `get_pane`/`get_panes` report `is_hidden`
+and, for edge-docked panes, `edge`.
+See [the toggleable TUI example](../examples/toggleable-tui.lua) for a
+keymap that toggles a workspace-docked Claude Code agent, reusing the same
+PTY rather than restarting the TUI.
+
+Hidden panes stay discoverable:
+
+- The default top bar shows a `󰈉 N` badge when the active tab has hidden
+  panes. It takes the attention color when a hidden pane rings the bell or
+  reports program attention. Clicking it opens the mux navigator filtered to
+  hidden panes. Disable it with `hollow.ui.topbar.configure({ hidden_panes = false })`.
+- The mux navigator (`<leader>n`) marks hidden panes with `󰈉` and
+  `(hidden)`, summarizes the count on tab rows, and has a **Hidden panes**
+  filter (cycle with `f`, or `ui.mux_navigator.open({ filter = "hidden" })`).
+  Activating a hidden pane shows and focuses it; `v` toggles the selected
+  pane's visibility without closing the navigator.
+
+### Window docks
+
+An edge split belongs to one tab. A **dock** is a window-edge slot that
+stays on screen across tab switches, so a TUI like Lazygit or the docked
+sidebar does not vanish when you change tabs:
+
+```lua
+-- Create a terminal straight into a dock...
+hollow.term.split_pane({
+  edge = "right",
+  dock = "global",   -- or "workspace"
+  ratio = 0.30,      -- share of the window content
+  command = "lazygit",
+  command_mode = "spawn",
+})
+
+-- ...or move an existing pane into one, and back.
+hollow.term.dock_pane(pane_id, { edge = "bottom", scope = "workspace", ratio = 0.25 })
+hollow.term.undock_pane(pane_id)
+```
+
+- **Global** docks show in every workspace; **workspace** docks only while
+  their workspace is active. Global docks sit outermost.
+- Each scope has one slot per edge. Docking into an occupied slot, or
+  docking a tab's last pane, is refused. Docking an already docked pane
+  moves it to the new slot.
+- Docked panes are in no tab. `get_pane` reports
+  `dock = { edge, scope, workspace_id?, ratio }`; `hollow.term.docks()`
+  lists every docked pane (global first) and `mux_tree()` gives each
+  workspace its `docks`.
+- Docks take part in directional focus: moving toward a dock from the tab's
+  edge enters it, and moving toward the centre returns to the tab. Drag the
+  seam to resize; `resize_pane` resizes a focused dock along its axis.
+- `set_pane_visible` hides and shows docks like any pane; hidden docks give
+  their space back. The hidden-pane badge and the mux navigator include
+  docks (navigator groups them under **Docks** and **Global docks**).
+- `undock_pane` returns the pane to the active tab as an edge split of the
+  same size. Closing a workspace closes its docks.
+- Saved workspaces keep docks: `export_current()` writes workspace docks to
+  `docks` and global docks to `global_docks` (each entry carries `edge` and
+  `size`). Bootstrapping restores them and skips a global dock whose edge is
+  already docked.
+- `ui.sidebar.dock()` docks the sidebar globally (`scope` option to change),
+  and `ui.pane.split({ edge = ..., dock = ... })` docks a Lua pane.
+
+From outside Hollow: `hollow-cli pane dock <edge> [--scope global|workspace]
+[--ratio N] [--id ID|--tag TAG]` and `hollow-cli pane undock` (command API:
+`pane_dock` / `pane_undock`).
+
 ### Move and resize
 
 ```lua

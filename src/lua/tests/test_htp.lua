@@ -47,6 +47,16 @@ describe("HTP test suite", function()
       )
     end)
 
+    it("includes docked panes in the tagged panes query", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "global", ratio = 0.25, tag = "scratch" })
+      local docked_id = hollow.term.docks()[1].id
+      local ok, tagged = hollow.htp._handle_query("panes", { tag = "scratch" }, 101)
+      harness.assert_true(ok, "HTP tagged panes query should succeed")
+      harness.assert_equal(#tagged, 1, "docked pane should match its tag once")
+      harness.assert_equal(tagged[1].id, docked_id, "HTP panes query should include docks")
+      hollow.term.undock_pane(docked_id)
+    end)
+
     it("supports targeted tab lookups", function()
       local ok_tab_query, tab_query = hollow.htp._handle_query("tab", { id = 201 }, 101)
       harness.assert_true(ok_tab_query, "built-in HTP tab query should succeed")
@@ -86,6 +96,35 @@ describe("HTP test suite", function()
         0.2,
         "HTP emit should preserve payload values"
       )
+    end)
+
+    it("dispatches set_pane_visible", function()
+      harness.assert_true(
+        hollow.htp._handle_emit("set_pane_visible", { id = 101, visible = false }, 101),
+        "HTP set_pane_visible should succeed"
+      )
+      harness.assert_equal(
+        recorded.set_pane_visible.id,
+        101,
+        "HTP set_pane_visible targets pane ids"
+      )
+      harness.assert_equal(recorded.set_pane_visible.visible, false, "HTP set_pane_visible hides")
+      hollow.htp._handle_emit("set_pane_visible", { id = 101 }, 101)
+      harness.assert_equal(recorded.set_pane_visible.visible, true, "visible defaults to true")
+    end)
+
+    it("dispatches dock_pane and undock_pane", function()
+      harness.assert_true(
+        hollow.htp._handle_emit("dock_pane", { id = 101, edge = "left", scope = "workspace" }, 101),
+        "HTP dock_pane should succeed"
+      )
+      harness.assert_equal(recorded.dock_pane.edge, "left", "HTP dock_pane forwards the edge")
+      harness.assert_equal(recorded.dock_pane.scope, "workspace", "HTP dock_pane forwards scope")
+      harness.assert_true(
+        hollow.htp._handle_emit("undock_pane", { id = 101 }, 101),
+        "HTP undock_pane should succeed"
+      )
+      harness.assert_equal(recorded.undock_pane, 101, "HTP undock_pane targets pane ids")
     end)
 
     it("dispatches close_pane", function()
@@ -146,12 +185,8 @@ describe("HTP test suite", function()
       end)
 
       recorded.now_ms = 5000
-      local ok_start = hollow.htp._handle_emit(
-        "command_started",
-        { command = "cargo test" },
-        101,
-        5000
-      )
+      local ok_start =
+        hollow.htp._handle_emit("command_started", { command = "cargo test" }, 101, 5000)
       harness.assert_true(ok_start, "command_started should succeed with custom HTP handler")
       harness.assert_true(custom_handler_called, "custom command handler should still run")
       harness.assert_equal(
@@ -159,7 +194,11 @@ describe("HTP test suite", function()
         "cargo test",
         "command start should preserve foreground process tracking"
       )
-      harness.assert_equal(started_event.command, "cargo test", "start event should include command")
+      harness.assert_equal(
+        started_event.command,
+        "cargo test",
+        "start event should include command"
+      )
       harness.assert_equal(started_event.cwd, "/tmp/project", "start event should include cwd")
       harness.assert_equal(started_event.pane.id, 101, "start event should include pane snapshot")
       harness.assert_true(started_event.pane.busy, "start event pane should be busy")
@@ -171,7 +210,11 @@ describe("HTP test suite", function()
 
       recorded.now_ms = 5250
       local running_pane = hollow.term.pane_by_id(101)
-      harness.assert_equal(running_pane.running.ms, 250, "running duration should use monotonic time")
+      harness.assert_equal(
+        running_pane.running.ms,
+        250,
+        "running duration should use monotonic time"
+      )
 
       recorded.now_ms = 6500
       local ok_finish = hollow.htp._handle_emit("command_ended", { exit_code = 7 }, 101, 6375)
@@ -180,11 +223,27 @@ describe("HTP test suite", function()
       harness.assert_equal(finished_event.status, 7, "finish event should expose shell exit code")
       harness.assert_equal(finished_event.took_ms, 1375, "duration should use HTP receipt times")
       harness.assert_true(not finished_event.pane.busy, "finished pane should no longer be busy")
-      harness.assert_equal(finished_event.pane.running, nil, "finished pane should clear running command")
-      harness.assert_equal(finished_event.pane.last.command, "cargo test", "snapshot should retain last command")
+      harness.assert_equal(
+        finished_event.pane.running,
+        nil,
+        "finished pane should clear running command"
+      )
+      harness.assert_equal(
+        finished_event.pane.last.command,
+        "cargo test",
+        "snapshot should retain last command"
+      )
       harness.assert_equal(finished_event.pane.last.status, 7, "snapshot should retain exit status")
-      harness.assert_equal(finished_event.pane.last.took_ms, 1375, "snapshot should retain duration")
-      harness.assert_equal(recorded.set_pane_foreground_process.process, nil, "finish should clear foreground process")
+      harness.assert_equal(
+        finished_event.pane.last.took_ms,
+        1375,
+        "snapshot should retain duration"
+      )
+      harness.assert_equal(
+        recorded.set_pane_foreground_process.process,
+        nil,
+        "finish should clear foreground process"
+      )
     end)
   end)
 
@@ -252,12 +311,11 @@ describe("HTP test suite", function()
     end)
 
     it("dispatches new_tab", function()
-      local ok_new_tab =
-        hollow.htp._handle_emit(
-          "new_tab",
-          { cwd = "/tmp/project", domain = "dev", command = "npm run dev" },
-          101
-        )
+      local ok_new_tab = hollow.htp._handle_emit(
+        "new_tab",
+        { cwd = "/tmp/project", domain = "dev", command = "npm run dev" },
+        101
+      )
       harness.assert_true(ok_new_tab, "HTP new_tab should succeed")
       harness.assert_equal(recorded.new_tab.cwd, "/tmp/project", "HTP new_tab should forward cwd")
       harness.assert_equal(recorded.new_tab.domain, "dev", "HTP new_tab should forward domain")

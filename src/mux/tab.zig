@@ -108,6 +108,7 @@ pub const Tab = struct {
             root.* = SplitNode.initPane(pane);
             try self.panes.append(self.allocator, pane);
             self.root_split = root;
+            pane.is_hidden = false;
             self.active_pane = pane;
             return;
         }
@@ -175,9 +176,43 @@ pub const Tab = struct {
         new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
         new_pane.restore_split_horizontal = direction == .horizontal;
         new_pane.restore_place_first = place_first;
+        new_pane.placed_edge = edgeFor(direction, place_first);
         self.panes.appendAssumeCapacity(new_pane);
         self.active_pane = new_pane;
         self.maximized_pane = null;
+    }
+
+    fn edgeFor(direction: SplitDirection, first: bool) types.PaneEdge {
+        return switch (direction) {
+            .vertical => if (first) .left else .right,
+            .horizontal => if (first) .top else .bottom,
+        };
+    }
+
+    fn leafPlacedAt(node: *const SplitNode, direction: SplitDirection, first: bool) ?*Pane {
+        if (node.kind != .pane) return null;
+        const pane = node.pane orelse return null;
+        const edge = pane.placed_edge orelse return null;
+        return if (edge == edgeFor(direction, first)) pane else null;
+    }
+
+    /// The edge `pane` is still docked to, or null once moves, closes or
+    /// splits of the pane itself have taken it off the window edge. Edge panes
+    /// wrap the tree, so walk inward through edge-docked siblings only.
+    pub fn paneEdge(self: *const Tab, pane: *const Pane) ?types.PaneEdge {
+        const wanted = pane.placed_edge orelse return null;
+        var node = self.root_split orelse return null;
+        while (node.kind == .split) {
+            const first = node.first orelse return null;
+            const second = node.second orelse return null;
+            const docked_first = leafPlacedAt(first, node.direction, true);
+            const docked_second = leafPlacedAt(second, node.direction, false);
+            inline for (.{ docked_first, docked_second }) |docked| {
+                if (docked) |candidate| if (candidate == pane) return wanted;
+            }
+            node = if (docked_first != null) second else if (docked_second != null) first else return null;
+        }
+        return null;
     }
 
     pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
@@ -253,6 +288,7 @@ pub const Tab = struct {
         if (self.active_pane == pane or self.active_pane == null) {
             self.active_pane = if (self.panes.items.len > 0) self.panes.items[self.panes.items.len - 1] else null;
         }
+        self.ensureVisibleActivePane();
 
         return self.panes.items.len == 0;
     }
@@ -282,6 +318,25 @@ pub const Tab = struct {
         if (self.active_pane == pane or self.active_pane == null) {
             self.active_pane = if (self.panes.items.len > 0) self.panes.items[self.panes.items.len - 1] else null;
         }
+        self.ensureVisibleActivePane();
+    }
+
+    fn ensureVisibleActivePane(self: *Tab) void {
+        if (self.active_pane) |active| {
+            if (!active.is_hidden) return;
+        }
+        for (self.panes.items) |candidate| {
+            if (candidate.is_hidden) continue;
+            self.active_pane = candidate;
+            return;
+        }
+        if (self.panes.items.len == 0) {
+            self.active_pane = null;
+            return;
+        }
+        const replacement = self.panes.items[0];
+        replacement.is_hidden = false;
+        self.active_pane = replacement;
     }
 
     /// Compute pixel bounds for every leaf pane in this tab's split tree.
@@ -303,7 +358,7 @@ pub const Tab = struct {
                     layout.layoutVisibleTree(root, bounds, out, &written, null, cell_w, cell_h);
                 }
             }
-            if (written < out.len) {
+            if (!pane.is_hidden and written < out.len) {
                 out[written] = .{ .pane = pane, .bounds = bounds };
                 written += 1;
             }
@@ -312,7 +367,7 @@ pub const Tab = struct {
         }
 
         for (self.panes.items) |pane| {
-            if (!pane.is_floating) continue;
+            if (!pane.is_floating or pane.is_hidden) continue;
             if (self.maximized_pane == pane) continue;
             if (written >= out.len) break;
             out[written] = .{ .pane = pane, .bounds = layout.floatingPaneBounds(bounds, pane) };
@@ -320,6 +375,29 @@ pub const Tab = struct {
         }
 
         return out[0..written];
+    }
+
+    /// Hiding is a presentation operation, not a close/detach. Keep the last
+    /// visible pane so this tab always has a usable focus target.
+    pub fn setPaneVisible(self: *Tab, pane: *Pane, visible: bool) bool {
+        if (pane.is_hidden == !visible) return true;
+        if (!visible) {
+            var replacement: ?*Pane = null;
+            for (self.panes.items) |candidate| {
+                if (candidate != pane and !candidate.is_hidden) {
+                    replacement = candidate;
+                    break;
+                }
+            }
+            if (replacement == null) return false;
+            if (self.active_pane == pane) self.active_pane = replacement;
+            if (self.maximized_pane == pane) {
+                self.maximized_pane = null;
+                self.maximized_show_background = false;
+            }
+        }
+        pane.is_hidden = !visible;
+        return true;
     }
 
     pub fn isPaneMaximized(self: *const Tab, pane: *const Pane) bool {

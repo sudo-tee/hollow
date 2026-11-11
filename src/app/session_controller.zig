@@ -16,6 +16,8 @@ const Mux = @import("../mux.zig").Mux;
 const Workspace = @import("../mux.zig").Workspace;
 const Tab = @import("../mux.zig").Tab;
 const SplitDirection = @import("../mux.zig").SplitDirection;
+const PaneEdge = @import("../mux.zig").PaneEdge;
+const DockScope = @import("../mux.zig").DockScope;
 const FocusDirection = @import("../mux.zig").FocusDirection;
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const PaneBounds = @import("../mux.zig").PaneBounds;
@@ -183,7 +185,7 @@ pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?
     else
         null;
     mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command, insert_at_end) catch |err| {
-        std.log.err("app: newTab failed: {s}", .{@errorName(err)});
+        std.log.err("app: newTab failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
@@ -380,7 +382,7 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     else
         null;
     mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
-        std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
+        std.log.err("app: newWorkspace failed: {s} domain={s}", .{ @errorName(err), inherited_domain orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
@@ -468,9 +470,17 @@ pub fn switchWorkspace(self: *App, index: usize) void {
 // Split/resize operations
 // ============================================================
 
-pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int) void {
+pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge, dock: ?DockScope) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
+    if (dock) |scope| {
+        const occupied = if (edge) |side| mux.dockOccupant(scope, side) != null else true;
+        if (occupied or floating) {
+            std.log.warn("app: splitPane dock={s} needs a free edge slot", .{@tagName(scope)});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+            return;
+        }
+    }
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
@@ -494,7 +504,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         }
         break :blk self.activeLayoutBounds();
     };
-    const snapped_ratio = snapSplitRatio(self, ratio, direction, split_bounds);
+    const snapped_ratio = if (edge != null) std.math.clamp(ratio, 0.05, 0.95) else snapSplitRatio(self, ratio, direction, split_bounds);
     std.log.info("split-trace create dir={s} requested={d:.4} snapped={d:.4} bounds={d}x{d} cell={d}x{d}", .{
         @tagName(direction),
         ratio,
@@ -504,12 +514,12 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         self.cell_width_px,
         self.cell_height_px,
     });
-    const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command) catch |err| {
-        std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
+    const pane = mux.splitActivePanePlaced(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command, edge) catch |err| {
+        std.log.err("app: splitPane failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
-    if (!floating) {
+    if (!floating and edge == null) {
         if (previous) |prev| {
             if (mux.splitContainingPane(prev, direction)) |node| {
                 self.pending_post_split_snap = .{
@@ -520,6 +530,12 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
                 self.debug_split_trace_frames = 4;
             }
         }
+    }
+    if (dock) |scope| {
+        // The edge split gave the pane its domain/cwd; now hand it to the dock.
+        mux.dockPane(pane, edge.?, scope, std.math.clamp(ratio, 0.05, 0.95)) catch |err| {
+            std.log.warn("app: splitPane dock failed: {s}", .{@errorName(err)});
+        };
     }
     if (floating) {
         if (x != null or y != null or width != null or height != null) {
@@ -587,6 +603,53 @@ pub fn togglePaneMaximizedById(self: *App, pane_id: usize, show_background: bool
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         if (!mux.togglePaneMaximized(pane, show_background)) return;
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
+        self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Hide/show a pane without closing its PTY or releasing its mux session.
+pub fn setPaneVisibleById(self: *App, pane_id: usize, visible: bool) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        if (!mux.setPaneVisible(pane, visible)) return;
+        if (visible) pane.invalidate();
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Move a pane into a window-edge dock; it then survives tab switches.
+pub fn dockPaneById(self: *App, pane_id: usize, edge: PaneEdge, scope: DockScope, ratio: f32) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        mux.dockPane(pane, edge, scope, ratio) catch |err| {
+            std.log.warn("app: dockPane failed: {s} pane={d} edge={s} scope={s}", .{ @errorName(err), pane_id, @tagName(edge), @tagName(scope) });
+            return;
+        };
+        pane.invalidate();
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.requestLayoutResize(false);
+        if (mux.activePane() == pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+        self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    }
+}
+
+/// Return a docked pane to the active tab as an edge split.
+pub fn undockPaneById(self: *App, pane_id: usize) void {
+    const pane = self.findPaneById(pane_id) orelse return;
+    if (self.mux) |*mux| {
+        const previous = mux.activePane();
+        mux.undockPane(pane) catch |err| {
+            std.log.warn("app: undockPane failed: {s} pane={d}", .{ @errorName(err), pane_id });
+            return;
+        };
+        pane.invalidate();
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });

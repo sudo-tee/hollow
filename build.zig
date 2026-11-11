@@ -475,6 +475,21 @@ pub fn build(b: *std.Build) void {
     b.step("test-background", "Run headless background pane, mux, and native PTY tests").dependOn(&background_run.step);
     test_step.dependOn(&background_run.step);
 
+    const mux_visibility_tests = b.addTest(.{
+        .root_module = background_module,
+        .filters = &.{
+            "hidden split branches collapse for focus and resize",
+            "pane IDs survive moves and floating restore and are never reused after close",
+            "hidden panes retain session identity and restore tiled bounds",
+            "edge split spans the whole layout on the requested side",
+            "edge placement is dropped once the pane leaves the window edge",
+        },
+    });
+    const mux_visibility_run = b.addRunArtifact(mux_visibility_tests);
+    const mux_visibility_test_step = b.step("test-mux-visibility", "Run headless hidden-pane mux regressions");
+    mux_visibility_test_step.dependOn(&mux_visibility_run.step);
+    test_step.dependOn(&mux_visibility_run.step);
+
     const search_module = b.createModule(.{
         .root_source_file = b.path("src/terminal_search_test.zig"),
         .target = target,

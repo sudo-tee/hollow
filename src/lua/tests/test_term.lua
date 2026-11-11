@@ -60,6 +60,23 @@ describe("term test suite", function()
         "pane snapshots should include tags"
       )
     end)
+
+    it("stores tags in the host so they are shared and survive reloads", function()
+      hollow.term.set_pane_tags({ "zeta", " alpha ", "zeta" }, 101)
+      assert.same({ "zeta", "alpha" }, recorded.host_tags[101], "tags are written to the host")
+      recorded.host_tags[101] = { "from-cli", "beta" }
+      assert.same(
+        { "beta", "from-cli" },
+        hollow.term.get_pane_tags(101),
+        "host tags read back sorted"
+      )
+      hollow.term.add_pane_tag("beta", 101)
+      hollow.term.remove_pane_tag("from-cli", 101)
+      assert.same({ "beta" }, recorded.host_tags[101])
+      hollow.term.set_pane_tags(nil, 101)
+      harness.assert_equal(recorded.host_tags[101], nil, "clearing removes the host entry")
+      hollow.term.add_pane_tag("test-runner", 101)
+    end)
   end)
 
   describe("domain snapshots", function()
@@ -145,6 +162,77 @@ describe("term test suite", function()
     end)
   end)
 
+  describe("pane visibility", function()
+    it("forwards visibility without closing the pane", function()
+      local previous = env.host_api.set_pane_visible
+      env.host_api.set_pane_visible = function(id, visible)
+        recorded.visibility = { id = id, visible = visible }
+      end
+      hollow.term.set_pane_visible(101, false)
+      harness.assert_equal(
+        recorded.visibility.id,
+        101,
+        "visibility should target the existing pane"
+      )
+      harness.assert_equal(recorded.visibility.visible, false, "visibility should be forwarded")
+      hollow.term.set_pane_visible(101, true)
+      harness.assert_equal(recorded.visibility.visible, true, "show should be forwarded")
+      env.host_api.set_pane_visible = previous
+    end)
+
+    it("rejects malformed visibility arguments", function()
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, "101", false))
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, 101, "false"))
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, -1, false))
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, 101.5, false))
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, 0 / 0, false))
+      harness.assert_true(not pcall(hollow.term.set_pane_visible, math.huge, false))
+    end)
+  end)
+
+  describe("pane docks", function()
+    it("docks, lists, and undocks panes", function()
+      hollow.term.dock_pane(101, { edge = "right" })
+      harness.assert_equal(recorded.dock_pane.id, 101, "dock targets the pane")
+      harness.assert_equal(recorded.dock_pane.edge, "right", "dock forwards the edge")
+      harness.assert_equal(recorded.dock_pane.scope, "global", "scope defaults to global")
+      harness.assert_equal(recorded.dock_pane.ratio, 0.3, "ratio defaults to 0.3")
+      local docks = hollow.term.docks()
+      harness.assert_equal(#docks, 1, "docks lists the docked pane")
+      harness.assert_equal(docks[1].id, 101, "docks returns pane snapshots")
+      harness.assert_equal(docks[1].dock.edge, "right", "snapshot reports the dock edge")
+      harness.assert_equal(
+        hollow.term.pane_by_id(101).dock.scope,
+        "global",
+        "get_pane reports dock"
+      )
+      hollow.term.undock_pane(101)
+      harness.assert_equal(recorded.undock_pane, 101, "undock targets the pane")
+      harness.assert_equal(#hollow.term.docks(), 0, "undocked panes leave the dock list")
+      harness.assert_equal(hollow.term.pane_by_id(101).dock, nil, "undocked panes have no dock")
+    end)
+
+    it("forwards scope and ratio and rejects bad arguments", function()
+      hollow.term.dock_pane(101, { edge = "top", scope = "workspace", ratio = 0.4 })
+      harness.assert_equal(recorded.dock_pane.scope, "workspace", "scope is forwarded")
+      harness.assert_equal(recorded.dock_pane.ratio, 0.4, "ratio is forwarded")
+      hollow.term.undock_pane(101)
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "diagonal" }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "left", scope = "tab" }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, 101, { edge = "left", ratio = 1 }))
+      harness.assert_true(not pcall(hollow.term.dock_pane, "101", { edge = "left" }))
+      harness.assert_true(not pcall(hollow.term.undock_pane, -1))
+    end)
+
+    it("split_pane forwards dock with an edge", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "workspace", command = "htop" })
+      harness.assert_equal(recorded.split_pane.dock, "workspace", "dock should be forwarded")
+      harness.assert_true(not pcall(hollow.term.split_pane, { dock = "global" }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { edge = "left", dock = "tab" }))
+    end)
+  end)
+
   describe("split_pane", function()
     local split_result = nil
 
@@ -161,11 +249,47 @@ describe("term test suite", function()
       )
     end)
 
+    it("accepts PTY edge placement and rejects incompatible floating mode", function()
+      hollow.term.split_pane({
+        edge = "right",
+        ratio = 0.3,
+        command = "lazygit",
+        command_mode = "spawn",
+      })
+      harness.assert_equal(recorded.split_pane.edge, "right", "edge should be forwarded")
+      harness.assert_true(not pcall(hollow.term.split_pane, { edge = "right", floating = true }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { edge = "diagonal" }))
+    end)
+
     it("reports the created pane id", function()
       harness.assert_true(
         type(split_result.pane_id) == "number",
         "split_pane on_complete should receive the created pane id"
       )
+    end)
+
+    it("tags the new pane before on_complete runs", function()
+      local seen
+      hollow.term.split_pane({
+        tags = { "build", " logs " },
+        on_complete = function(result)
+          seen = hollow.term.get_pane_tags(result.pane_id)
+        end,
+      })
+      harness.assert_equal(recorded.split_pane.tags, nil, "tags are not forwarded to the host")
+      assert.same({ "build", "logs" }, seen)
+
+      local single
+      hollow.term.split_pane({ tag = "lazygit" })
+      single = hollow.term.get_pane_tags(hollow.term.current_pane().id)
+      assert.same({ "lazygit" }, single)
+    end)
+
+    it("rejects invalid tag options", function()
+      harness.assert_true(not pcall(hollow.term.split_pane, { tag = "a", tags = { "b" } }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { tags = "a" }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { tags = { "" } }))
+      harness.assert_true(not pcall(hollow.term.split_pane, { tag = 3 }))
     end)
   end)
 end)

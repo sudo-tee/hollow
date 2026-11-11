@@ -80,10 +80,12 @@ HollowWorkspaceBootstrapPane = {
   close_on_exit = boolean | nil,
   floating = boolean | nil,
   fullscreen = boolean | nil,
+  hidden = boolean | nil,     -- created, then hidden after the tab is built
   x = number | nil, y = number | nil,
   width = number | nil, height = number | nil,
   size = number | nil,        -- ratio of additional panes
   direction = "horizontal" | "vertical" | nil,
+  edge = "left" | "right" | "top" | "bottom" | nil, -- terminal panes only
   main = boolean | nil,       -- or `default`
   default = boolean | nil,
 }
@@ -121,7 +123,13 @@ configuration: factories may have effects, just as terminal leaves may run
 commands. Loading an untrusted layout does not authorize bootstrapping it.
 
 Export includes named Lua leaves with creation args, titles, tags, focus, split
-ratios and floating geometry. It omits anonymous Lua panes and tabs left empty
+ratios, floating geometry, edge placement and hidden state. A pane is exported
+with `edge` only while it is still docked to the window edge it was created on;
+bootstrap creates edge panes after every other pane in the tab, in order, so
+each wraps the whole layout again. Hidden panes (terminal or Lua) are
+still created and run; bootstrap hides them only after every pane in the tab
+exists, so split order and ratios match the export. A hidden pane cannot take
+focus, so `hidden` wins over `main`. It omits anonymous Lua panes and tabs left empty
 by their omission. Neither functions nor live Lua state are serialized. File
 bootstrap creates new IDs; config reload instead keeps IDs/layout and rebuilds
 owners. Workspace layouts remain linear, not arbitrary nested split trees.

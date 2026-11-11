@@ -38,6 +38,10 @@ pub const Kind = enum {
     pane_zoom,
     pane_float,
     pane_tile,
+    pane_hide,
+    pane_show,
+    pane_dock,
+    pane_undock,
     pane_move,
     pane_resize,
     pane_send_text,
@@ -96,6 +100,9 @@ pub const WorkspaceNew = struct { cmd: ?[]const u8 = null, cwd: ?[]const u8 = nu
 pub const Screenshot = struct { id: ?usize = null, path: []const u8 };
 pub const Split = struct { direction: []const u8, cmd: ?[]const u8 = null, cwd: ?[]const u8 = null, domain: ?[]const u8 = null, ratio: ?f64 = null };
 pub const Move = struct { id: ?usize = null, direction: []const u8, amount: ?f64 = null };
+/// `scope` defaults to `all`; `workspace`/`tab` ids imply their scope.
+pub const PaneQuery = struct { tag: ?[]const u8 = null, scope: ?[]const u8 = null, workspace: ?usize = null, tab: ?usize = null };
+pub const PaneDock = struct { id: usize, edge: []const u8, scope: ?[]const u8 = null, ratio: ?f64 = null };
 pub const PaneMove = struct { id: usize, direction: []const u8, amount: ?f64 = null };
 pub const Text = struct { id: usize, text: []const u8 };
 pub const Tag = struct { id: usize, tag: []const u8 };
@@ -116,7 +123,7 @@ pub const Command = union(Kind) {
     get_tab: Id,
     get_current_tab: Empty,
     get_tabs: Empty,
-    get_panes: struct { tag: ?[]const u8 = null },
+    get_panes: PaneQuery,
     get_activities: struct {
         view: ?[]const u8 = null,
         id: ?usize = null,
@@ -148,6 +155,10 @@ pub const Command = union(Kind) {
     pane_zoom: RequiredId,
     pane_float: RequiredId,
     pane_tile: RequiredId,
+    pane_hide: RequiredId,
+    pane_show: RequiredId,
+    pane_dock: PaneDock,
+    pane_undock: RequiredId,
     pane_move: PaneMove,
     pane_resize: Move,
     pane_send_text: Text,

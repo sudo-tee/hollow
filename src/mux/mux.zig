@@ -9,6 +9,7 @@ const types = @import("types.zig");
 const layout = @import("layout.zig");
 const tab_mod = @import("tab.zig");
 const workspace_mod = @import("workspace.zig");
+const dock_mod = @import("dock.zig");
 
 const SplitNode = types.SplitNode;
 const SplitDirection = types.SplitDirection;
@@ -18,6 +19,9 @@ const LayoutLeaf = types.LayoutLeaf;
 const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
 const Tab = tab_mod.Tab;
 const Workspace = workspace_mod.Workspace;
+const Docks = dock_mod.Docks;
+const DockScope = dock_mod.DockScope;
+const PaneEdge = types.PaneEdge;
 
 pub const Mux = struct {
     pub const PaneSplitInfo = Tab.PaneSplitInfo;
@@ -36,11 +40,25 @@ pub const Mux = struct {
     /// Set by removeWorkspace to the name of the workspace that was just removed.
     /// Caller must free and set to null after consuming.
     last_removed_workspace_name: ?[]u8 = null,
+    /// Window-scoped docks, shown in every workspace outside the workspace docks.
+    global_docks: Docks = .{},
+    /// Focused dock pane; overrides the active tab's pane while it is shown.
+    focused_dock: ?*Pane = null,
+
+    pub const DockLocation = struct {
+        scope: DockScope,
+        edge: PaneEdge,
+        /// Owning workspace for `workspace` scope.
+        workspace: ?*Workspace = null,
+        /// The dock's share of its carved region.
+        ratio: f32 = 0,
+    };
 
     pub const PaneIterator = struct {
         mux: *Mux,
         workspace_index: usize = 0,
         pane_iter: ?Workspace.PaneIterator = null,
+        dock_iter: ?Docks.Iterator = null,
         active_first: ?*Pane = null,
         active_first_yielded: bool = false,
 
@@ -59,7 +77,14 @@ pub const Mux = struct {
                     self.pane_iter = null;
                 }
 
-                if (self.workspace_index >= self.mux.workspaces.items.len) return null;
+                if (self.workspace_index >= self.mux.workspaces.items.len) {
+                    if (self.dock_iter == null) self.dock_iter = self.mux.global_docks.iterator();
+                    while (self.dock_iter.?.next()) |pane| {
+                        if (self.active_first != null and pane == self.active_first.?) continue;
+                        return pane;
+                    }
+                    return null;
+                }
                 const workspace = self.mux.workspaces.items[self.workspace_index];
                 self.workspace_index += 1;
                 self.pane_iter = workspace.paneIterator();
@@ -80,6 +105,7 @@ pub const Mux = struct {
             self.allocator.destroy(workspace);
         }
         self.workspaces.deinit(self.allocator);
+        self.global_docks.deinit(self.allocator, runtime);
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
         self.* = Mux.init(self.allocator);
     }
@@ -194,25 +220,199 @@ pub const Mux = struct {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
                     if (pane.id != pane_id) continue;
+                    if (pane.is_hidden) return false;
                     self.active_workspace = ws;
                     ws.active_tab = tab;
                     tab.active_pane = pane;
+                    self.focused_dock = null;
                     return true;
                 }
             }
+        }
+        var docked = self.dockPaneIterator();
+        while (docked.next()) |pane| {
+            if (pane.id != pane_id) continue;
+            if (pane.is_hidden) return false;
+            const location = self.paneDock(pane).?;
+            if (location.workspace) |ws| self.active_workspace = ws;
+            self.focused_dock = pane;
+            return true;
         }
         return false;
     }
 
     pub fn setActivePane(self: *Mux, pane: *Pane) void {
+        if (pane.is_hidden) return;
+        if (self.paneDock(pane) != null) {
+            if (self.dockIsShown(pane)) self.focused_dock = pane;
+            return;
+        }
+        self.focused_dock = null;
         if (self.activeTab()) |tab| {
             tab.active_pane = pane;
         }
     }
 
     pub fn activePane(self: *Mux) ?*Pane {
+        if (self.focusedDockPane()) |pane| return pane;
         const tab = self.activeTab() orelse return null;
         return tab.activePane();
+    }
+
+    /// The focused dock pane, only while it is on screen.
+    pub fn focusedDockPane(self: *Mux) ?*Pane {
+        const pane = self.focused_dock orelse return null;
+        return if (self.dockIsShown(pane)) pane else null;
+    }
+
+    /// Hand focus back to the active tab's pane.
+    pub fn focusTab(self: *Mux) void {
+        self.focused_dock = null;
+    }
+
+    pub const DockPaneIterator = struct {
+        mux: *Mux,
+        workspace_index: usize = 0,
+        iter: ?Docks.Iterator = null,
+
+        pub fn next(self: *DockPaneIterator) ?*Pane {
+            while (true) {
+                if (self.iter) |*iter| {
+                    if (iter.next()) |pane| return pane;
+                }
+                if (self.workspace_index > self.mux.workspaces.items.len) return null;
+                const docks = if (self.workspace_index == 0)
+                    &self.mux.global_docks
+                else
+                    &self.mux.workspaces.items[self.workspace_index - 1].docks;
+                self.workspace_index += 1;
+                self.iter = docks.iterator();
+            }
+        }
+    };
+
+    /// Every docked pane: global docks first, then each workspace's docks.
+    pub fn dockPaneIterator(self: *Mux) DockPaneIterator {
+        return .{ .mux = self };
+    }
+
+    pub fn paneDock(self: *Mux, pane: *const Pane) ?DockLocation {
+        if (self.global_docks.edgeOf(pane)) |edge| return .{ .scope = .global, .edge = edge, .ratio = self.global_docks.size(edge) };
+        for (self.workspaces.items) |ws| {
+            if (ws.docks.edgeOf(pane)) |edge| return .{ .scope = .workspace, .edge = edge, .workspace = ws, .ratio = ws.docks.size(edge) };
+        }
+        return null;
+    }
+
+    fn docksFor(self: *Mux, location: DockLocation) *Docks {
+        return if (location.workspace) |ws| &ws.docks else &self.global_docks;
+    }
+
+    /// Visible, and in a global dock or a dock of the active workspace.
+    pub fn dockIsShown(self: *Mux, pane: *const Pane) bool {
+        if (pane.is_hidden) return false;
+        const location = self.paneDock(pane) orelse return false;
+        return location.workspace == null or location.workspace == self.active_workspace;
+    }
+
+    /// Carve the visible docks out of `bounds` (global outermost), appending
+    /// their leaves to `out`; `bounds` is left holding the tab region.
+    pub fn layoutDocks(self: *Mux, bounds: *PaneBounds, out: []LayoutLeaf, written: *usize, cell_w: u32, cell_h: u32) void {
+        self.global_docks.carve(bounds, out, written, cell_w, cell_h);
+        if (self.active_workspace) |ws| ws.docks.carve(bounds, out, written, cell_w, cell_h);
+    }
+
+    pub fn hitTestDockDivider(self: *Mux, bounds: PaneBounds, mx: f32, my: f32, radius: f32, cell_w: u32, cell_h: u32) ?types.DividerHit {
+        var region = bounds;
+        if (self.global_docks.hitTestDivider(&region, mx, my, radius, cell_w, cell_h)) |hit| return hit;
+        const ws = self.active_workspace orelse return null;
+        return ws.docks.hitTestDivider(&region, mx, my, radius, cell_w, cell_h);
+    }
+
+    /// Ratio nodes of the shown docks are valid drag targets.
+    pub fn dockContainsNode(self: *Mux, node: *const SplitNode) bool {
+        if (self.global_docks.containsNode(node)) return true;
+        const ws = self.active_workspace orelse return false;
+        return ws.docks.containsNode(node);
+    }
+
+    fn dockTarget(self: *Mux, scope: DockScope, owner: ?*Workspace) !*Docks {
+        return switch (scope) {
+            .global => &self.global_docks,
+            .workspace => &(owner orelse self.active_workspace orelse return error.NoActiveWorkspace).docks,
+        };
+    }
+
+    /// Move a tab pane (or a docked pane) into a dock slot. The pane keeps its
+    /// PTY/session; only its layout owner changes.
+    pub fn dockPane(self: *Mux, pane: *Pane, edge: PaneEdge, scope: DockScope, size: f32) !void {
+        if (self.paneDock(pane)) |current| {
+            const target = try self.dockTarget(scope, current.workspace);
+            if (target.slot(edge).pane) |occupant| if (occupant != pane) return error.DockOccupied;
+            _ = self.docksFor(current).remove(pane);
+            target.place(edge, pane, size) catch unreachable;
+        } else {
+            var owner: ?*Workspace = null;
+            const tab = for (self.workspaces.items) |ws| {
+                if (ws.tabContainingPane(pane)) |tab| {
+                    owner = ws;
+                    break tab;
+                }
+            } else return error.PaneNotFound;
+            if (tab.panes.items.len <= 1) return error.LastPaneInTab;
+            const target = try self.dockTarget(scope, owner);
+            if (target.slot(edge).pane != null) return error.DockOccupied;
+            if (pane.is_floating) _ = tab.setPaneFloating(pane, false);
+            tab.detachPane(pane);
+            target.place(edge, pane, size) catch unreachable;
+        }
+        pane.is_floating = false;
+        pane.placed_edge = null;
+        pane.is_hidden = false;
+        if (self.dockIsShown(pane)) self.focused_dock = pane;
+    }
+
+    /// The pane holding a dock slot of the active context, if any.
+    pub fn dockOccupant(self: *Mux, scope: DockScope, edge: PaneEdge) ?*Pane {
+        const docks = self.dockTarget(scope, null) catch return null;
+        return docks.slot(edge).pane;
+    }
+
+    /// Publish a freshly created pane straight into a dock slot.
+    pub fn dockNewPane(self: *Mux, pane: *Pane, edge: PaneEdge, scope: DockScope, size: f32) !void {
+        const target = try self.dockTarget(scope, null);
+        try target.place(edge, pane, size);
+        self.focused_dock = pane;
+        self.notifyCreated(pane);
+    }
+
+    /// Return a docked pane to the active tab along the same edge and size.
+    pub fn undockPane(self: *Mux, pane: *Pane) !void {
+        const location = self.paneDock(pane) orelse return error.PaneNotDocked;
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        const docks = self.docksFor(location);
+        const size = docks.size(location.edge);
+        try tab.splitEdge(pane, dock_mod.directionFor(location.edge), size, dock_mod.placesFirst(location.edge));
+        _ = docks.remove(pane);
+        pane.is_hidden = false;
+        if (self.focused_dock == pane) self.focused_dock = null;
+    }
+
+    fn destroyDockPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) void {
+        const location = self.paneDock(pane) orelse return;
+        self.notifyClosing(pane);
+        _ = self.docksFor(location).remove(pane);
+        if (self.focused_dock == pane) self.focused_dock = null;
+        pane.deinit(runtime);
+        self.allocator.destroy(pane);
+    }
+
+    fn closeDeadDockPanes(self: *Mux, runtime: *GhosttyRuntime, docks: *Docks) void {
+        for (&docks.slots) |*entry| {
+            const pane = entry.pane orelse continue;
+            const term = pane.asTerminal() orelse continue;
+            if (!term.retain_on_exit and !term.hasLiveChild()) self.destroyDockPane(runtime, pane);
+        }
     }
 
     pub fn paneIterator(self: *Mux) PaneIterator {
@@ -254,7 +454,13 @@ pub const Mux = struct {
         return tab.splitInfoForPane(pane);
     }
 
+    pub fn paneEdge(self: *Mux, pane: *Pane) ?types.PaneEdge {
+        const tab = self.tabContainingPane(pane) orelse return null;
+        return tab.paneEdge(pane);
+    }
+
     pub fn togglePaneMaximized(self: *Mux, pane: *Pane, show_background: bool) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         _ = tab.togglePaneMaximized(pane, show_background);
@@ -267,7 +473,19 @@ pub const Mux = struct {
         return tab.isPaneMaximized(pane);
     }
 
+    /// Does not detach or destroy the pane, PTY, or session transport.
+    pub fn setPaneVisible(self: *Mux, pane: *Pane, visible: bool) bool {
+        if (self.paneDock(pane) != null) {
+            pane.is_hidden = !visible;
+            if (!visible and self.focused_dock == pane) self.focused_dock = null;
+            return true;
+        }
+        const tab = self.tabContainingPane(pane) orelse return false;
+        return tab.setPaneVisible(pane, visible);
+    }
+
     pub fn setPaneFloating(self: *Mux, pane: *Pane, floating: bool) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         _ = tab.setPaneFloating(pane, floating);
@@ -282,6 +500,7 @@ pub const Mux = struct {
     }
 
     pub fn movePane(self: *Mux, pane: *Pane, direction: FocusDirection, window_width: u32, window_height: u32, amount: f32) bool {
+        if (pane.is_hidden) return false;
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
         const moved = tab.movePane(pane, direction, window_width, window_height, amount);
@@ -387,6 +606,7 @@ pub const Mux = struct {
             self.allocator.destroy(pane);
         }
         try tab.appendPane(pane);
+        if (activate) self.focused_dock = null;
         if (!activate) {
             const term = pane.asTerminal().?;
             term.retain_on_exit = true;
@@ -410,6 +630,7 @@ pub const Mux = struct {
         try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
         try tab.appendPane(pane);
         ws.insertTab(tab) catch unreachable;
+        self.focused_dock = null;
         self.notifyCreated(pane);
     }
 
@@ -432,6 +653,7 @@ pub const Mux = struct {
         ws.active_tab = tab;
         self.workspaces.appendAssumeCapacity(ws);
         self.active_workspace = ws;
+        self.focused_dock = null;
         self.notifyCreated(pane);
     }
 
@@ -463,6 +685,10 @@ pub const Mux = struct {
     /// Close the currently active pane. Kills the associated process.
     /// Returns true if the entire app should quit (no panes remain anywhere).
     pub fn closeActivePane(self: *Mux, runtime: *GhosttyRuntime) bool {
+        if (self.focusedDockPane()) |pane| {
+            self.destroyDockPane(runtime, pane);
+            return false;
+        }
         const ws = self.activeWorkspace() orelse return true;
         const tab = ws.activeTab() orelse return true;
         const pane = tab.activePane() orelse return true;
@@ -481,6 +707,12 @@ pub const Mux = struct {
     }
 
     pub fn closePaneByIdWithFocus(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize, activate: bool) bool {
+        var docked = self.dockPaneIterator();
+        while (docked.next()) |pane| {
+            if (pane.id != pane_id) continue;
+            self.destroyDockPane(runtime, pane);
+            return false;
+        }
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
@@ -508,10 +740,12 @@ pub const Mux = struct {
     }
 
     pub fn nextTab(self: *Mux) void {
+        self.focused_dock = null;
         if (self.activeWorkspace()) |ws| ws.nextTab();
     }
 
     pub fn prevTab(self: *Mux) void {
+        self.focused_dock = null;
         if (self.activeWorkspace()) |ws| ws.prevTab();
     }
 
@@ -560,6 +794,7 @@ pub const Mux = struct {
     }
 
     pub fn switchTab(self: *Mux, index: usize) void {
+        self.focused_dock = null;
         if (self.activeWorkspace()) |ws| ws.switchTab(index);
     }
 
@@ -574,6 +809,11 @@ pub const Mux = struct {
     }
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand) !*Pane {
+        return self.splitActivePanePlaced(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, direction, ratio, domain_name, cwd, floating, launch_command, null);
+    }
+
+    /// Edge placement reuses the terminal constructor and session ownership path.
+    pub fn splitActivePanePlaced(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand, edge: ?types.PaneEdge) !*Pane {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
         if (!floating and source_pane.is_floating) {
@@ -601,7 +841,16 @@ pub const Mux = struct {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
-        try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        if (edge) |placement| {
+            if (floating) return error.FloatingPaneCannotUseEdge;
+            const edge_direction: SplitDirection = switch (placement) {
+                .left, .right => .vertical,
+                .top, .bottom => .horizontal,
+            };
+            try self.splitEdgeWith(new_pane, edge_direction, ratio, placement == .left or placement == .top);
+        } else {
+            try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+        }
         return new_pane;
     }
 
@@ -609,6 +858,7 @@ pub const Mux = struct {
     /// Ownership transfers to the tab only on success.
     pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
+        self.focused_dock = null;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
         if (!floating and source_pane.is_floating) {
             if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
@@ -640,6 +890,7 @@ pub const Mux = struct {
     pub fn splitEdgeWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         try tab.splitEdge(new_pane, direction, ratio, place_first);
+        self.focused_dock = null;
         self.notifyCreated(new_pane);
     }
 
@@ -647,8 +898,16 @@ pub const Mux = struct {
     /// split node along the given axis. `delta` is a fraction in (-1, 1) —
     /// positive means "grow the first child" (i.e. push the divider right/down).
     pub fn resizeActivePane(self: *Mux, direction: SplitDirection, delta: f32) void {
+        if (self.focusedDockPane()) |pane| {
+            const location = self.paneDock(pane).?;
+            if (dock_mod.directionFor(location.edge) != direction) return;
+            const node = &self.docksFor(location).slot(location.edge).node;
+            node.ratio = std.math.clamp(node.ratio + delta, 0.05, 0.95);
+            return;
+        }
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
+        if (current.is_hidden or current.is_floating) return;
         const root = tab.root_split orelse return;
         if (layout.findSplitContaining(root, current, direction)) |node| {
             node.ratio = std.math.clamp(node.ratio + delta, 0.05, 0.95);
@@ -659,14 +918,35 @@ pub const Mux = struct {
     /// Navigation follows the split tree rather than global pane centers, so nested
     /// layouts move into the sibling subtree of the nearest matching split.
     pub fn focusPaneInDirection(self: *Mux, direction: FocusDirection, window_width: u32, window_height: u32) void {
+        const edge = edgeForDirection(direction);
+        if (self.focusedDockPane()) |pane| {
+            const location = self.paneDock(pane).?;
+            // Toward the centre: the inner workspace dock on that side, else the tab.
+            if (location.edge == oppositeEdge(edge)) {
+                if (location.scope == .global) {
+                    if (self.active_workspace) |ws| if (ws.docks.slot(location.edge).pane) |inner| if (!inner.is_hidden) {
+                        self.focused_dock = inner;
+                        return;
+                    };
+                }
+                self.focused_dock = null;
+            } else if (location.scope == .workspace and location.edge == edge) {
+                if (self.global_docks.slot(edge).pane) |outer| if (!outer.is_hidden) {
+                    self.focused_dock = outer;
+                };
+            }
+            return;
+        }
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
+        if (current.is_hidden) return;
 
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = tab.computeLayout(window_width, window_height, &layout_buf);
-        if (leaves.len < 2) return;
-
-        const target_subtree = layout.findFocusTargetSubtree(tab.root_split orelse return, current, direction) orelse return;
+        const target_subtree = (if (leaves.len < 2) null else layout.findFocusTargetSubtree(tab.root_split orelse return, current, direction)) orelse {
+            self.focusDockAtEdge(edge);
+            return;
+        };
 
         var cur_bounds: ?PaneBounds = null;
         for (leaves) |leaf| {
@@ -705,6 +985,17 @@ pub const Mux = struct {
         }
 
         if (best_pane) |p| tab.active_pane = p;
+    }
+
+    /// From the tab region, the workspace dock is nearer than the global one.
+    fn focusDockAtEdge(self: *Mux, edge: PaneEdge) void {
+        if (self.active_workspace) |ws| if (ws.docks.slot(edge).pane) |pane| if (!pane.is_hidden) {
+            self.focused_dock = pane;
+            return;
+        };
+        if (self.global_docks.slot(edge).pane) |pane| if (!pane.is_hidden) {
+            self.focused_dock = pane;
+        };
     }
 
     /// Move a tab to a different workspace by index (0-based).
@@ -792,6 +1083,24 @@ pub const Mux = struct {
         return true;
     }
 
+    fn edgeForDirection(direction: FocusDirection) PaneEdge {
+        return switch (direction) {
+            .left => .left,
+            .right => .right,
+            .up => .top,
+            .down => .bottom,
+        };
+    }
+
+    fn oppositeEdge(edge: PaneEdge) PaneEdge {
+        return switch (edge) {
+            .left => .right,
+            .right => .left,
+            .top => .bottom,
+            .bottom => .top,
+        };
+    }
+
     fn allocId(self: *Mux) usize {
         const id = self.next_id;
         self.next_id += 1;
@@ -802,6 +1111,8 @@ pub const Mux = struct {
     /// Returns true if the entire app should quit (no tabs remain anywhere).
     pub fn closeDeadPanes(self: *Mux, runtime: *GhosttyRuntime) bool {
         const ws = self.activeWorkspace() orelse return true;
+        self.closeDeadDockPanes(runtime, &self.global_docks);
+        self.closeDeadDockPanes(runtime, &ws.docks);
 
         var tab_index: usize = 0;
         while (tab_index < ws.tabs.items.len) {
@@ -857,6 +1168,11 @@ pub const Mux = struct {
         self.last_removed_workspace_name = if (workspace.name) |n| self.allocator.dupe(u8, n) catch null else null;
 
         for (workspace.tabs.items) |tab| self.notifyTabClosing(tab);
+        var docked = workspace.docks.iterator();
+        while (docked.next()) |pane| {
+            self.notifyClosing(pane);
+            if (self.focused_dock == pane) self.focused_dock = null;
+        }
         _ = self.workspaces.orderedRemove(remove_idx);
         workspace.deinit(runtime);
         self.allocator.destroy(workspace);

@@ -35,6 +35,7 @@ pub fn closing(context: *anyopaque, pane: *Pane) void {
     exited(app, pane);
     _ = app.automation_events.publish(.{ .kind = "pane_closed", .pane_id = pane.id });
     app.emitLuaBuiltInEvent("term:pane_closed", .{ .pane_id = pane.id });
+    @import("command_dispatcher.zig").clearPaneTags(app, pane.id);
 }
 
 test "pane lifecycle emits observed exit once before closing across Lua reloads" {

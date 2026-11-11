@@ -10,6 +10,26 @@ const FocusDirection = types.FocusDirection;
 const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
 const DividerHit = types.DividerHit;
 
+// Hidden panes stay in the split tree and keep their sessions alive. Their
+// sibling takes the full parent bounds until the pane is shown again.
+pub fn hasVisibleTiledPane(node: *const SplitNode, skip_pane: ?*Pane) bool {
+    if (node.kind == .pane) {
+        const pane = node.pane orelse return false;
+        return pane != skip_pane and !pane.is_hidden and !pane.is_floating;
+    }
+    return (if (node.first) |first| hasVisibleTiledPane(first, skip_pane) else false) or
+        (if (node.second) |second| hasVisibleTiledPane(second, skip_pane) else false);
+}
+
+fn hasVisiblePane(node: *const SplitNode) bool {
+    if (node.kind == .pane) {
+        const pane = node.pane orelse return false;
+        return !pane.is_hidden;
+    }
+    return (if (node.first) |first| hasVisiblePane(first) else false) or
+        (if (node.second) |second| hasVisiblePane(second) else false);
+}
+
 // ── Layout math ──────────────────────────────────────────────────────────────
 
 fn splitCellCount(total: u32, ratio: f32) u32 {
@@ -44,6 +64,10 @@ pub fn hitTestDivider(
 
     const first = node.first orelse return null;
     const second = node.second orelse return null;
+    const first_visible = hasVisibleTiledPane(first, null);
+    const second_visible = hasVisibleTiledPane(second, null);
+    if (!first_visible) return if (second_visible) hitTestDivider(second, bounds, mx, my, radius) else null;
+    if (!second_visible) return hitTestDivider(first, bounds, mx, my, radius);
     const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
 
     var first_bounds: PaneBounds = undefined;
@@ -96,6 +120,10 @@ pub fn boundsForNode(
 
     const first = node.first orelse return null;
     const second = node.second orelse return null;
+    const first_visible = hasVisibleTiledPane(first, null);
+    const second_visible = hasVisibleTiledPane(second, null);
+    if (!first_visible) return if (second_visible) boundsForNode(second, target, bounds, cell_w, cell_h) else null;
+    if (!second_visible) return boundsForNode(first, target, bounds, cell_w, cell_h);
     const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
     var first_bounds: PaneBounds = undefined;
     var second_bounds: PaneBounds = undefined;
@@ -192,7 +220,7 @@ pub fn layoutVisibleTree(
     switch (node.kind) {
         .pane => {
             const pane = node.pane orelse return;
-            if (skip_pane == pane or pane.is_floating) return;
+            if (skip_pane == pane or pane.is_floating or pane.is_hidden) return;
             if (written.* >= out.len) return;
             out[written.*] = .{ .pane = pane, .bounds = bounds };
             written.* += 1;
@@ -200,6 +228,16 @@ pub fn layoutVisibleTree(
         .split => {
             const first = node.first orelse return;
             const second = node.second orelse return;
+            const first_visible = hasVisibleTiledPane(first, skip_pane);
+            const second_visible = hasVisibleTiledPane(second, skip_pane);
+            if (!first_visible) {
+                if (second_visible) layoutVisibleTree(second, bounds, out, written, skip_pane, cell_w, cell_h);
+                return;
+            }
+            if (!second_visible) {
+                layoutVisibleTree(first, bounds, out, written, skip_pane, cell_w, cell_h);
+                return;
+            }
             const first_bounds, const second_bounds = splitChildBounds(node, bounds, cell_w, cell_h);
             layoutVisibleTree(first, first_bounds, out, written, skip_pane, cell_w, cell_h);
             layoutVisibleTree(second, second_bounds, out, written, skip_pane, cell_w, cell_h);
@@ -274,6 +312,7 @@ pub fn splitDirectionForFocus(direction: FocusDirection) SplitDirection {
 }
 
 pub fn findFocusTargetSubtree(node: *SplitNode, pane: *Pane, direction: FocusDirection) ?*SplitNode {
+    if (pane.is_hidden) return null;
     if (node.kind != .split) return null;
 
     const first = node.first orelse return null;
@@ -281,16 +320,18 @@ pub fn findFocusTargetSubtree(node: *SplitNode, pane: *Pane, direction: FocusDir
     const wants_first = direction == .left or direction == .up;
     const wants_second = direction == .right or direction == .down;
     const matching_axis = node.direction == splitDirectionForFocus(direction);
+    const first_visible = hasVisiblePane(first);
+    const second_visible = hasVisiblePane(second);
 
     if (subtreeContainsPane(first, pane)) {
         if (findFocusTargetSubtree(first, pane, direction)) |target| return target;
-        if (matching_axis and wants_second) return second;
+        if (matching_axis and wants_second and second_visible) return second;
         return null;
     }
 
     if (subtreeContainsPane(second, pane)) {
         if (findFocusTargetSubtree(second, pane, direction)) |target| return target;
-        if (matching_axis and wants_first) return first;
+        if (matching_axis and wants_first and first_visible) return first;
         return null;
     }
 
@@ -385,13 +426,16 @@ pub fn findSplitContaining(node: *SplitNode, pane: *Pane, direction: SplitDirect
     // Only consider this node if it has `pane` in its subtree.
     if (findPaneLeafNode(node, pane) == null) return null;
 
+    const first = node.first orelse return null;
+    const second = node.second orelse return null;
+    const first_visible = hasVisibleTiledPane(first, null);
+    const second_visible = hasVisibleTiledPane(second, null);
+    if (!first_visible) return if (second_visible) findSplitContaining(second, pane, direction) else null;
+    if (!second_visible) return findSplitContaining(first, pane, direction);
+
     // Try children first (innermost wins).
-    if (node.first) |first| {
-        if (findSplitContaining(first, pane, direction)) |found| return found;
-    }
-    if (node.second) |second| {
-        if (findSplitContaining(second, pane, direction)) |found| return found;
-    }
+    if (findSplitContaining(first, pane, direction)) |found| return found;
+    if (findSplitContaining(second, pane, direction)) |found| return found;
 
     // This node contains `pane` and no child does — use it if direction matches.
     if (node.direction == direction) return node;

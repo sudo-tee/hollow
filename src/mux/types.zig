@@ -8,6 +8,8 @@ pub const FocusDirection = enum {
     down,
 };
 
+pub const PaneEdge = enum { left, right, top, bottom };
+
 pub const SplitDirection = enum {
     horizontal,
     vertical,

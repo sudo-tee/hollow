@@ -607,6 +607,17 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
         try object.put(self.allocator, try self.allocator.dupe(u8, "tags"), try cmd_ipc.getPaneTags(self, pane_id));
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_hidden"), .{ .bool = pane.is_hidden });
+        if (self.mux) |*mux| if (mux.paneEdge(pane)) |edge| try putJsonField(self.allocator, &object, "edge", .{ .string = try self.allocator.dupe(u8, @tagName(edge)) });
+        if (self.mux) |*mux| if (mux.paneDock(pane)) |location| {
+            var dock = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
+            errdefer deinitJsonValue(self.allocator, .{ .object = dock });
+            try putJsonField(self.allocator, &dock, "edge", .{ .string = try self.allocator.dupe(u8, @tagName(location.edge)) });
+            try putJsonField(self.allocator, &dock, "scope", .{ .string = try self.allocator.dupe(u8, @tagName(location.scope)) });
+            if (location.workspace) |ws| try putJsonField(self.allocator, &dock, "workspace_id", .{ .integer = @intCast(ws.id) });
+            try putJsonField(self.allocator, &dock, "ratio", .{ .float = location.ratio });
+            try putJsonField(self.allocator, &object, "dock", .{ .object = dock });
+        };
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
         try object.put(self.allocator, try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
@@ -861,22 +872,67 @@ pub const App = struct {
         return .{ .array = array };
     }
 
-    pub fn panesValue(self: *App, wanted_tag: ?[]const u8) !std.json.Value {
+    /// Narrowed scopes add the docks shown there: global docks and the
+    /// owning workspace's docks.
+    pub fn panesValue(self: *App, query: command_mod.Args(.get_panes)) !std.json.Value {
         var array = std.json.Array.init(self.allocator);
         errdefer deinitJsonValue(self.allocator, .{ .array = array });
-        if (self.mux) |*mux| {
+        const mux = if (self.mux) |*m| m else return .{ .array = array };
+
+        const Scope = enum { all, workspace, tab };
+        const scope: Scope = if (query.tab != null)
+            .tab
+        else if (query.scope) |name|
+            std.meta.stringToEnum(Scope, name) orelse .all
+        else if (query.workspace != null)
+            .workspace
+        else
+            .all;
+
+        if (scope == .all) {
             var panes = mux.paneIterator();
-            while (panes.next()) |pane| {
-                const pane_id = pane.id;
-                if (wanted_tag) |tag| {
-                    const entry = cmd_ipc.findPaneTagEntry(self, pane_id) orelse continue;
-                    if (!entry.tags.contains(tag)) continue;
-                }
-                const pane_value = try self.snapshotPane(pane_id);
-                if (pane_value) |value| try array.append(value);
-            }
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+            return .{ .array = array };
         }
+
+        var workspace: *Workspace = undefined;
+        var tab: ?*Tab = null;
+        if (query.tab) |tab_id| {
+            tab = for (mux.workspaces.items) |ws| {
+                if (for (ws.tabs.items) |candidate| {
+                    if (candidate.id == tab_id) break candidate;
+                } else null) |found| {
+                    workspace = ws;
+                    break found;
+                }
+            } else return error.TabNotFound;
+        } else {
+            workspace = if (query.workspace) |ws_id| for (mux.workspaces.items) |ws| {
+                if (ws.id == ws_id) break ws;
+            } else return error.WorkspaceNotFound else mux.activeWorkspace() orelse return .{ .array = array };
+            if (scope == .tab) tab = workspace.activeTab() orelse return .{ .array = array };
+        }
+
+        if (tab) |t| {
+            var panes = t.paneIterator();
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+            var docks = workspace.docks.iterator();
+            while (docks.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+        } else {
+            var panes = workspace.paneIterator();
+            while (panes.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
+        }
+        var global = mux.global_docks.iterator();
+        while (global.next()) |pane| try self.appendTaggedPane(&array, pane, query.tag);
         return .{ .array = array };
+    }
+
+    fn appendTaggedPane(self: *App, array: *std.json.Array, pane: *Pane, wanted_tag: ?[]const u8) !void {
+        if (wanted_tag) |tag| {
+            const entry = cmd_ipc.findPaneTagEntry(self, pane.id) orelse return;
+            if (!entry.tags.contains(tag)) return;
+        }
+        if (try self.snapshotPane(pane.id)) |value| try array.append(value);
     }
 
     pub fn snapshotWorkspace(self: *App, workspace: *Workspace, index: usize) !std.json.Value {
@@ -1149,6 +1205,11 @@ pub const App = struct {
             .invalidate_lua_pane = @import("app/lua_panes.zig").invalidate,
             .title_lua_pane = @import("app/lua_panes.zig").title,
             .toggle_pane_maximized = lua_callbacks.luaTogglePaneMaximizedCallback,
+            .set_pane_visible = lua_callbacks.luaSetPaneVisibleCallback,
+            .dock_pane = lua_callbacks.luaDockPaneCallback,
+            .undock_pane = lua_callbacks.luaUndockPaneCallback,
+            .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
+            .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1217,6 +1278,9 @@ pub const App = struct {
             .send_text_to_pane = lua_callbacks.luaSendTextToPaneCallback,
             .send_key_to_pane = lua_callbacks.luaSendKeyToPaneCallback,
             .get_pane_domain = lua_callbacks.luaGetPaneDomainCallback,
+            .get_pane_tag_count = lua_callbacks.luaGetPaneTagCountCallback,
+            .get_pane_tag_at = lua_callbacks.luaGetPaneTagAtCallback,
+            .set_pane_tags = lua_callbacks.luaSetPaneTagsCallback,
             .get_pane_split_direction = lua_callbacks.luaGetPaneSplitDirectionCallback,
             .get_pane_split_ratio = lua_callbacks.luaGetPaneSplitRatioCallback,
             .get_pane_active_screen = lua_callbacks.luaGetPaneActiveScreenCallback,
@@ -1597,7 +1661,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    if (!mux.activeTabContainsPane(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
+                    if (!mux.activeTabContainsPane(pane) and !mux.dockIsShown(pane)) if (pane.asTerminal()) |term| term.releaseRenderHelpers(runtime);
                 }
             }
         }
@@ -1917,6 +1981,7 @@ pub const App = struct {
             if (hit.pane.is_floating) return null;
         }
         const mux = if (self.mux) |*m| m else return null;
+        if (mux.hitTestDockDivider(self.contentBounds(), x, y, radius, self.cell_width_px, self.cell_height_px)) |hit| return hit;
         const tab = mux.activeTab() orelse return null;
         const root = tab.root_split orelse return null;
         const bounds = self.activeLayoutBounds();
@@ -1929,6 +1994,7 @@ pub const App = struct {
     /// by tree mutations (pane close, tab switch, etc.).
     pub fn isSplitNodeValid(self: *App, node: *const SplitNode) bool {
         const mux = if (self.mux) |*m| m else return false;
+        if (mux.dockContainsNode(node)) return true;
         const tab = mux.activeTab() orelse return false;
         const root = tab.root_split orelse return false;
         return nodeIsInTree(root, node);
@@ -2104,19 +2170,41 @@ pub const App = struct {
         self.config_watcher = watcher;
     }
 
+    /// Dock leaves first, then the active tab's leaves.
     pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
-        const bounds = self.activeLayoutBounds();
-        if (self.mux) |*mux| {
-            const tab = mux.activeTab() orelse return out[0..0];
-            return tab.computeLayoutInBounds(bounds, out, self.cell_width_px, self.cell_height_px);
-        }
-        return out[0..0];
+        return self.layoutContent(self.contentBounds(), out);
     }
 
+    pub fn layoutContent(self: *App, content: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
+        const mux = if (self.mux) |*m| m else return out[0..0];
+        var bounds = content;
+        var written: usize = 0;
+        mux.layoutDocks(&bounds, out, &written, self.cell_width_px, self.cell_height_px);
+        const tab = mux.activeTab() orelse return out[0..written];
+        const tab_leaves = tab.computeLayoutInBounds(bounds, out[written..], self.cell_width_px, self.cell_height_px);
+        return out[0 .. written + tab_leaves.len];
+    }
+
+    /// The active tab's region: the content area minus the visible docks.
     pub fn activeLayoutBounds(self: *App) PaneBounds {
+        var bounds = self.contentBounds();
+        if (self.mux) |*mux| {
+            var scratch: [8]LayoutLeaf = undefined;
+            var written: usize = 0;
+            mux.layoutDocks(&bounds, &scratch, &written, self.cell_width_px, self.cell_height_px);
+        }
+        return bounds;
+    }
+
+    /// Window area below the bars and outside the reserved sidebar.
+    pub fn contentBounds(self: *App) PaneBounds {
+        return self.contentBoundsFor(self.config.window_width, self.config.window_height);
+    }
+
+    fn contentBoundsFor(self: *App, window_width: u32, window_height: u32) PaneBounds {
         const tbh = self.tabBarHeight();
         const bbh = self.bottomBarHeight();
-        const height = if (self.config.window_height > tbh + bbh) self.config.window_height - tbh - bbh else 1;
+        const height = if (window_height > tbh + bbh) window_height - tbh - bbh else 1;
         const sidebar = self.sidebarLayout();
         const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
             self.sidebarReservedWidthPx(sidebar.?)
@@ -2126,8 +2214,8 @@ pub const App = struct {
             self.sidebarReservedWidthPx(sidebar.?)
         else
             0;
-        const width = if (self.config.window_width > left_inset + right_inset)
-            self.config.window_width - left_inset - right_inset
+        const width = if (window_width > left_inset + right_inset)
+            window_width - left_inset - right_inset
         else
             1;
         return .{
@@ -2827,13 +2915,7 @@ pub const App = struct {
         // activity arrives when the tab becomes active again.
         const tab = active_tab orelse return;
         {
-            const bounds = PaneBounds{
-                .x = left_inset,
-                .y = tbh,
-                .width = layout_width,
-                .height = pane_h,
-            };
-            const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, self.cell_width_px, self.cell_height_px);
+            const leaves = self.layoutContent(self.contentBoundsFor(pixel_width, pixel_height), &layout_buf);
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     // Skip panes with zero-size bounds — can happen when the window
@@ -3275,6 +3357,102 @@ test "factory pane metadata and reload retain native identity while rebuilding L
     @import("app/lua_panes.zig").restoreAll(app);
     try std.testing.expect(pane.asLua().?.ref >= 0);
     try std.testing.expectEqual(@as(c_int, 0), app.lua.?.context.api.get_top(app.lua.?.state));
+}
+
+test "Lua pane tags share the command store and survive Lua reloads" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    const workspace = try a.create(Workspace);
+    workspace.* = Workspace.init(a, 1);
+    try mux.workspaces.append(a, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try mux.createLuaPane();
+    try tab.appendPane(pane);
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    var buf: [256]u8 = undefined;
+    try app.lua.?.runString(try std.fmt.bufPrint(&buf,
+        \\hollow.term.set_pane_tags({{ 'sidebar', ' git ' }}, {d})
+        \\hollow.term.add_pane_tag('extra', {d})
+        \\hollow.term.remove_pane_tag('extra', {d})
+    , .{ pane.id, pane.id, pane.id }));
+
+    const entry = cmd_ipc.findPaneTagEntry(app, pane.id).?;
+    try std.testing.expect(entry.tags.contains("sidebar") and entry.tags.contains("git"));
+    try std.testing.expectEqual(@as(usize, 2), entry.tags.count());
+    const tagged = try app.panesValue(.{ .tag = "sidebar" });
+    defer deinitJsonValue(a, tagged);
+    try std.testing.expectEqual(@as(usize, 1), tagged.array.items.len);
+
+    try cmd_ipc.addPaneTag(app, pane.id, "from-cli");
+    app.lua.?.deinit();
+    app.lua = null;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(try std.fmt.bufPrint(&buf,
+        \\local tags = table.concat(hollow.term.get_pane_tags({d}), ',')
+        \\assert(tags == 'from-cli,git,sidebar', tags)
+    , .{pane.id}));
+}
+
+test "pane queries scope to workspaces and tabs with their visible docks" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    _ = try app.initTerminalRuntime();
+    app.mux = Mux.init(a);
+    const mux = &app.mux.?;
+    var workspaces: [2]*Workspace = undefined;
+    for (&workspaces, 1..) |*slot, id| {
+        slot.* = try a.create(Workspace);
+        slot.*.* = Workspace.init(a, id);
+        try mux.workspaces.append(a, slot.*);
+    }
+    mux.active_workspace = workspaces[0];
+    // ws1: tab 10 = {p0, p1}, tab 11 = {p2} (active); ws2: tab 20 = {p3} + workspace dock p4; global dock p5.
+    var panes: [6]*Pane = undefined;
+    for (&panes) |*slot| {
+        slot.* = try mux.createLuaPane();
+        try cmd_ipc.addPaneTag(app, slot.*.id, "t");
+    }
+    const tab10 = try workspaces[0].newTab(10, true);
+    try tab10.appendPane(panes[0]);
+    try tab10.appendPane(panes[1]);
+    try (try workspaces[0].newTab(11, true)).appendPane(panes[2]);
+    try (try workspaces[1].newTab(20, true)).appendPane(panes[3]);
+    try workspaces[1].docks.place(.bottom, panes[4], 0.25);
+    try mux.global_docks.place(.right, panes[5], 0.3);
+
+    const Case = struct { query: command_mod.PaneQuery, expected: []const usize };
+    const cases = [_]Case{
+        .{ .query = .{ .tag = "t" }, .expected = &.{ 0, 1, 2, 3, 4, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "workspace" }, .expected = &.{ 0, 1, 2, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "tab" }, .expected = &.{ 2, 5 } },
+        .{ .query = .{ .tag = "t", .workspace = 2 }, .expected = &.{ 3, 4, 5 } },
+        .{ .query = .{ .tag = "t", .tab = 10 }, .expected = &.{ 0, 1, 5 } },
+        .{ .query = .{ .tag = "t", .scope = "tab", .workspace = 2 }, .expected = &.{ 3, 4, 5 } },
+    };
+    for (cases) |case| {
+        const value = try app.panesValue(case.query);
+        defer deinitJsonValue(a, value);
+        try std.testing.expectEqual(case.expected.len, value.array.items.len);
+        for (case.expected, value.array.items) |index, item| {
+            try std.testing.expectEqual(@as(i64, @intCast(panes[index].id)), item.object.get("id").?.integer);
+        }
+    }
+    try std.testing.expectError(error.WorkspaceNotFound, app.panesValue(.{ .workspace = 99 }));
+    try std.testing.expectError(error.TabNotFound, app.panesValue(.{ .tab = 99 }));
 }
 
 test "Lua panes survive app ticks and terminal-only input without terminal handles" {

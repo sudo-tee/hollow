@@ -7,6 +7,7 @@ const io = @import("io.zig");
 
 comptime {
     _ = @import("app/background_jobs.zig");
+    _ = @import("mux/tests.zig");
 }
 
 const Callbacks = struct {

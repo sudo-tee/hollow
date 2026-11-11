@@ -12,8 +12,11 @@ pub const Pane = struct {
     foreground_process: []const u8,
     tags: []const []const u8,
     is_focused: bool,
+    is_hidden: bool,
     is_floating: bool,
     is_maximized: bool,
+    /// Window edge the pane is still docked to; absent otherwise.
+    edge: ?[]const u8 = null,
     frame: Frame,
     size: Size,
 };

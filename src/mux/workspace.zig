@@ -3,6 +3,7 @@ const Pane = @import("../pane.zig").Pane;
 const GhosttyRuntime = @import("../term/ghostty.zig").Runtime;
 const types = @import("types.zig");
 const tab_mod = @import("tab.zig");
+const Docks = @import("dock.zig").Docks;
 
 const SplitNode = types.SplitNode;
 const Tab = tab_mod.Tab;
@@ -14,11 +15,14 @@ pub const Workspace = struct {
     default_cwd: ?[]u8 = null,
     tabs: std.ArrayList(*Tab),
     active_tab: ?*Tab = null,
+    /// Workspace-scoped docks, shown only while this workspace is active.
+    docks: Docks = .{},
 
     pub const PaneIterator = struct {
         workspace: *Workspace,
         tab_index: usize = 0,
         pane_iter: ?Tab.PaneIterator = null,
+        dock_iter: ?Docks.Iterator = null,
 
         pub fn next(self: *PaneIterator) ?*Pane {
             while (true) {
@@ -27,7 +31,10 @@ pub const Workspace = struct {
                     self.pane_iter = null;
                 }
 
-                if (self.tab_index >= self.workspace.tabs.items.len) return null;
+                if (self.tab_index >= self.workspace.tabs.items.len) {
+                    if (self.dock_iter == null) self.dock_iter = self.workspace.docks.iterator();
+                    return self.dock_iter.?.next();
+                }
                 const tab = self.workspace.tabs.items[self.tab_index];
                 self.tab_index += 1;
                 self.pane_iter = tab.paneIterator();
@@ -51,6 +58,7 @@ pub const Workspace = struct {
             self.allocator.destroy(tab);
         }
         self.tabs.deinit(self.allocator);
+        self.docks.deinit(self.allocator, runtime);
         self.* = Workspace.init(self.allocator, self.id);
     }
 
@@ -151,6 +159,13 @@ pub const Workspace = struct {
 
     pub fn activeTab(self: *Workspace) ?*Tab {
         return self.active_tab;
+    }
+
+    pub fn tabContainingPane(self: *Workspace, needle: *const Pane) ?*Tab {
+        for (self.tabs.items) |tab| {
+            for (tab.panes.items) |pane| if (pane == needle) return tab;
+        }
+        return null;
     }
 
     pub fn tabById(self: *Workspace, id: usize) ?*Tab {

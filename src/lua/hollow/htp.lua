@@ -215,20 +215,32 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
 
   hollow.htp.on_query("panes", function(ctx)
     local panes = {}
+    local seen = {}
     local wanted_tag = ctx and ctx.params and ctx.params.tag or nil
-    for _, tab in ipairs(hollow.term.tabs()) do
-      for _, pane in ipairs(tab.panes) do
-        if type(wanted_tag) ~= "string" then
+    local function consider(pane)
+      if seen[pane.id] then
+        return
+      end
+      seen[pane.id] = true
+      if type(wanted_tag) ~= "string" then
+        panes[#panes + 1] = pane
+        return
+      end
+      for _, tag in ipairs(pane.tags or {}) do
+        if tag == wanted_tag then
           panes[#panes + 1] = pane
-        else
-          for _, tag in ipairs(pane.tags or {}) do
-            if tag == wanted_tag then
-              panes[#panes + 1] = pane
-              break
-            end
-          end
+          return
         end
       end
+    end
+    for _, tab in ipairs(hollow.term.tabs()) do
+      for _, pane in ipairs(tab.panes) do
+        consider(pane)
+      end
+    end
+    -- Docked panes live outside the tab tree.
+    for _, pane in ipairs(hollow.term.docks()) do
+      consider(pane)
     end
     return panes
   end)
@@ -401,6 +413,35 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
   hollow.htp.on_emit("set_pane_floating", function(ctx)
     local payload = event_payload(ctx)
     hollow.term.set_pane_floating(target_pane_id(ctx, payload), payload.floating ~= false)
+  end)
+
+  hollow.htp.on_emit("set_pane_visible", function(ctx)
+    local payload = event_payload(ctx)
+    local pane_id = target_pane_id(ctx, payload)
+    if type(pane_id) ~= "number" then
+      error("set_pane_visible requires a pane id")
+    end
+    hollow.term.set_pane_visible(pane_id, payload.visible ~= false)
+  end)
+
+  hollow.htp.on_emit("dock_pane", function(ctx)
+    local payload = event_payload(ctx)
+    local pane_id = target_pane_id(ctx, payload)
+    if type(pane_id) ~= "number" then
+      error("dock_pane requires a pane id")
+    end
+    hollow.term.dock_pane(
+      pane_id,
+      { edge = payload.edge, scope = payload.scope, ratio = payload.ratio }
+    )
+  end)
+
+  hollow.htp.on_emit("undock_pane", function(ctx)
+    local pane_id = target_pane_id(ctx, event_payload(ctx))
+    if type(pane_id) ~= "number" then
+      error("undock_pane requires a pane id")
+    end
+    hollow.term.undock_pane(pane_id)
   end)
 
   hollow.htp.on_emit("set_floating_pane_bounds", function(ctx)

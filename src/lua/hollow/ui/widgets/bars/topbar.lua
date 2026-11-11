@@ -1,4 +1,5 @@
 local attention = require("hollow.ui.widgets.attention")
+local hidden_panes = require("hollow.ui.widgets.hidden_panes")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.topbar")
 local hollow = _G.hollow
@@ -181,6 +182,7 @@ function M.widget()
         end)
         :get()
       local right_items = tbl({
+          opts.hidden_panes ~= false and hidden_panes.topbar_button(ctx),
           attention.topbar_button(),
           cwd or false,
           key_legend ~= false and ui.bar.key_legend(key_legend),

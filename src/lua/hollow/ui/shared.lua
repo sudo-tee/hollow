@@ -1249,6 +1249,7 @@ function M.widget_ctx()
       tabs = util.safe_call(hollow.term.tabs, {}),
       workspace = util.safe_call(hollow.term.current_workspace, nil),
       workspaces = util.safe_call(hollow.term.workspaces, {}),
+      docks = util.safe_call(hollow.term.docks, {}),
     },
     size = M.window_size_snapshot(),
     time = {

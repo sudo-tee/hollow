@@ -407,4 +407,53 @@ describe("workspace test suite", function()
       )
     end)
   end)
+
+  describe("docks", function()
+    it("restores workspace and global docks and skips occupied slots", function()
+      local before = #recorded.split_pane_calls
+      hollow.workspace.bootstrap({
+        tabs = { { panes = { { command = "nvim" } } } },
+        docks = { { edge = "bottom", command = "htop", size = 0.25 } },
+        global_docks = { { edge = "right", command = "lazygit", size = 0.3, hidden = true } },
+      })
+      flush_deferred()
+      local calls = { table.unpack(recorded.split_pane_calls, before + 1) }
+      local docked = {}
+      for _, call in ipairs(calls) do
+        if call.dock ~= nil then
+          docked[#docked + 1] = call
+        end
+      end
+      harness.assert_equal(#docked, 2, "both docks are created")
+      harness.assert_equal(docked[1].dock, "workspace", "workspace dock scope")
+      harness.assert_equal(docked[1].edge, "bottom", "workspace dock edge")
+      harness.assert_equal(docked[1].ratio, 0.25, "dock size maps to ratio")
+      harness.assert_equal(docked[2].dock, "global", "global dock scope")
+      harness.assert_equal(recorded.set_pane_visible.visible, false, "hidden docks stay hidden")
+
+      local exported = hollow.workspace.export_current()
+      harness.assert_equal(exported.docks[1].edge, "bottom", "workspace docks export")
+      harness.assert_equal(exported.docks[1].size, 0.25, "dock ratio exports as size")
+      harness.assert_equal(exported.docks[1].command, "htop", "dock command exports")
+      harness.assert_equal(exported.global_docks[1].edge, "right", "global docks export")
+      harness.assert_equal(exported.global_docks[1].hidden, true, "hidden dock exports")
+
+      local again = #recorded.split_pane_calls
+      hollow.workspace.bootstrap({
+        tabs = { { panes = { { command = "nvim" } } } },
+        global_docks = { { edge = "right", command = "lazygit" } },
+      })
+      flush_deferred()
+      for index = again + 1, #recorded.split_pane_calls do
+        harness.assert_equal(recorded.split_pane_calls[index].dock, nil, "occupied dock skipped")
+      end
+    end)
+
+    it("rejects dock entries without a valid edge", function()
+      harness.assert_true(not pcall(hollow.workspace.bootstrap, {
+        tabs = { { panes = { {} } } },
+        docks = { { command = "htop" } },
+      }))
+    end)
+  end)
 end)

@@ -5,6 +5,7 @@ const layout = @import("mux/layout.zig");
 const tab_mod = @import("mux/tab.zig");
 const workspace_mod = @import("mux/workspace.zig");
 const mux_mod = @import("mux/mux.zig");
+const dock_mod = @import("mux/dock.zig");
 
 // Pull test definitions into the build's test discovery graph.
 pub const tests = @import("mux/tests.zig");
@@ -14,6 +15,7 @@ comptime {
 
 pub const FocusDirection = types.FocusDirection;
 pub const SplitDirection = types.SplitDirection;
+pub const PaneEdge = types.PaneEdge;
 pub const PaneBounds = types.PaneBounds;
 pub const LayoutLeaf = types.LayoutLeaf;
 pub const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
@@ -23,10 +25,13 @@ pub const SplitNode = types.SplitNode;
 pub const Tab = tab_mod.Tab;
 pub const Workspace = workspace_mod.Workspace;
 pub const Mux = mux_mod.Mux;
+pub const Docks = dock_mod.Docks;
+pub const DockScope = dock_mod.DockScope;
 
 pub const layoutSplitTree = layout.layoutSplitTree;
 pub const splitChildBounds = layout.splitChildBounds;
 pub const floatingPaneBounds = layout.floatingPaneBounds;
+pub const hasVisibleTiledPane = layout.hasVisibleTiledPane;
 pub const hitTestDivider = layout.hitTestDivider;
 pub const boundsForNode = layout.boundsForNode;
 pub const nodeIsInTree = layout.nodeIsInTree;
