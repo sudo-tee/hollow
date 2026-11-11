@@ -7,6 +7,49 @@ Native Windows support is experimental and uses the same asynchronous workspace 
 Windows owner limits are 16 sessions, 16 panes per session, and 64 panes total, with 1 MiB scrollback per pane.
 Remote Windows owners are not supported.
 
+## Updating session owners
+
+Updating Hollow installs a new runtime without interrupting sessions.
+On Linux and WSL, a connector that finds an owner with live sessions from a different runtime asks it to hand off in place.
+The owner re-executes the new agent in the same process and keeps every pane, its screen, and its scrollback.
+The window that triggered the handoff reconnects on its own.
+Other windows still attached to the owner are disconnected; [reconnect](#detach-and-reconnect) them to continue.
+If the new agent cannot take over, the old one resumes and is not asked to upgrade to that build again.
+The triggering window shows a "Session handoff" toast with the old and new build IDs, or a warning after a fallback.
+Handle the [`session:handoff`](reference/lua/events.md) event to react to it in your config.
+Each handoff also writes one line to `/tmp/hollow-session-$UID/owner.log`:
+`session handoff from build <id> complete: adopted N sessions, M panes` on success, or `session handoff to build <id> failed; resumed …` after a fallback.
+See the [upgrade plan](persistent-sessions-upgrade-plan.md) for details.
+
+Set `upgrade` on a domain to choose the policy:
+
+```lua
+domains = {
+  persistent_test = { persist = true, upgrade = "retire_empty" },
+}
+```
+
+- `"handoff"` (default) replaces Linux and WSL owners in place.
+- `"retire_empty"` keeps live sessions on the old owner until they end.
+- `"never"` leaves outdated owners running.
+
+Native Windows owners, empty owners, and the `retire_empty` policy use empty-only retirement.
+A connector detects a different runtime and requests empty-only retirement.
+Existing and detached sessions keep running on their original owner.
+After its last session ends, the old owner exits despite idle GUI clients.
+The next connection starts the installed runtime without replaying old sessions.
+On Windows, idle GUI-held WSL pins are drained automatically during retirement.
+Live or detached WSL sessions still prevent retirement until they end.
+Reconnecting to a live WSL session remains supported during retirement.
+The guest confirms empty-only shutdown before its keepalive is released.
+Guest observation failures never count as an empty state.
+The owner checks emptiness atomically with admission to protect racing creates.
+
+Owners predating the `retire-empty` capability cannot participate in automatic replacement.
+For that first upgrade, finish sessions and disconnect clients to let them exit.
+Updates never forcibly stop legacy owners or migrate shell environments.
+Legacy WSL guests without `drain-empty` also need a normal shutdown.
+
 ## WSL lifetime on Windows
 
 Persistent WSL domains now borrow a Windows-owner keepalive before create, attach, or discovery can reach the guest owner.
@@ -69,7 +112,8 @@ For an explicit `agent_path`, keep that file unchanged while its owner runs and 
 Native persistent PowerShell receives OSC-based cwd/title integration without inheriting GUI pane or workspace identifiers.
 Do not configure `wsl.exe` as a native-local persistent shell: select an explicit WSL host instead.
 Detached owner startup requires permission to leave the GUI launcher's Windows job; restrictive launchers fail visibly rather than creating an owner that would die with the GUI.
-Headless App/controller integration is automated; a live-window smoke check remains recommended before making this your default domain.
+Headless App/controller integration and an isolated real-window create/split/tab/quit/restore smoke check are qualified.
+The real-window fixture used a prestarted private owner because this runner rejects detached breakaway startup; it does not qualify GUI-driven owner startup under a permissive launcher or visual rendering correctness.
 
 Create a workspace through the Lua REPL or your own action:
 
@@ -111,6 +155,12 @@ Attachment rebuilds terminal views without starting another shell.
 It takes over the session if another client is attached; the previous client retains a disconnected view.
 Closing a disconnected view only removes that local view.
 To clean up the test session, explicitly close its workspace after reattaching.
+
+While a session connects, a "Connecting persistent session" notification is shown; click it to cancel.
+Failures, such as a missing session or a lost create reply, replace it with an error or warning notification that stays until you click it.
+Both kinds land in the attention history.
+Handle the [`session:notice`](reference/lua/events.md) event to customize them.
+If Lua cannot show a notice, Hollow draws it as a native panel over the panes instead.
 
 ## Find and clean up sessions
 
@@ -260,6 +310,42 @@ Without combining them, the GUI's 16-read poll limit could process only 64 KiB w
 Combining frames removes that artificial cap without changing parser time budgets, receive-ahead bounds, or the owner's credit window.
 This is a GUI-only fix; an existing owner need not be restarted for it.
 
+## Qualification checks
+
+### Native Windows bundle replacement
+
+Run `zig build --build-file build-agent.zig test-session-native-windows -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary failures`.
+The private live-owner fixture now replaces its bundle with a real executable built in a different optimization mode, publishes a new checksum-addressed cache entry, and uses that executable's bridge to reattach to the original owner.
+It checks the original owner PID, host identity, shell-variable continuity, and original cached image digest.
+After explicitly ending only the fixture session and disconnecting all clients, it waits for natural owner exit, starts the replacement at the same private endpoint, and checks a fresh session works.
+This qualifies same-protocol executable replacement, not arbitrary historical protocol or capability skew.
+Private fixture owners intentionally use ephemeral host identities across owner restarts; durable production identity has separate tests.
+No production owner or installed bundle is modified.
+
+### Otherwise-idle WSL survival
+
+Use a disposable, otherwise-unused distro, never the distro running this checkout or other work.
+Keep the Windows-owned keeper and its executable on a Windows filesystem so observing the test does not keep a development distro alive.
+Record the distro's configured idle timeout without changing `.wslconfig`.
+Create a persistent session containing a shell variable or counter and record its owner PID and session ID.
+Close all GUI clients and unrelated WSL connections to that distro, including shells, editors, services, and test runners.
+Wait comfortably beyond both the configured idle timeout and the keeper's 30-second drain grace, observing only from Windows without executing guest commands.
+Reconnect and verify the original owner PID, session ID, and shell state.
+End only the test session, disconnect again, and verify keeper collection followed by the distro returning to its idle stopped state.
+Do not use `wsl --terminate` or `wsl --shutdown` as evidence of idle behavior; explicit termination is outside the persistence guarantee.
+If another process keeps the distro active, the result is inconclusive rather than a pass.
+
+### Native Windows live-window smoke
+
+An isolated Windows GUI fixture created one persistent session, split its first tab, and added a second tab for three total panes.
+It set a PowerShell variable in the first pane, closed the actual window through `WM_CLOSE`, launched a new window, and verified startup restored the same session ID, two tabs, and three panes.
+The restored first pane incremented the original variable from 41 to 42, confirming process-state continuity.
+Configuration, remembered-session files, IPC metadata, and shell-integration files used private application-data directories.
+A test-only forwarding executable added an internal private owner namespace; no namespace override was added to the public Lua API.
+The owner was prestarted in that private namespace because detached startup fails closed with `ACCESS_DENIED` under this runner's job restrictions.
+Only the private owner was stopped afterwards; the installed GUI and its owners were not restarted.
+This is a real-window lifecycle smoke check, not pixel-level visual inspection or otherwise-idle WSL qualification.
+
 ## Current limits
 
 - New ordinary panes cannot be spawned directly on a persistent domain; create a workspace instead.
@@ -268,6 +354,7 @@ This is a GUI-only fix; an existing owner need not be restarted for it.
 - Panes opened or closed after the last save are reconciled on reattach: closed panes are removed from their splits and new panes appear as extra tabs.
 - Lost-create recovery is explicit list/attach, not automatic; old owners cannot provide the exact ID.
 - Owner crashes, host reboots, and WSL shutdown do not preserve live processes.
-- Windows-owned WSL keepalives are implemented; otherwise-idle spare-distro survival and live-window behavior still need manual qualification.
+- Windows-owned WSL keepalives are implemented; otherwise-idle spare-distro survival remains unqualified.
+- Native real-window lifecycle and same-protocol bundle replacement are qualified in private fixtures; permissive-launcher GUI owner startup, visual inspection, and historical version skew remain separate checks.
 
 For implementation details, see the [architecture and implementation plan](persistent-sessions.md).

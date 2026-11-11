@@ -3,7 +3,7 @@
 Status: design approved 2026-11-04; updated 2026-11-10.
 Phase 0 (headless VT spike) and Phase 1 (Linux owner + `connect`) are complete.
 Phase 2 GUI integration includes owner-backed tabs/splits, layout autosave, startup restore, discovery, and switcher actions; manual GUI qualification remains open.
-Phase 3 native Windows ownership, GUI admission, and Windows-owned WSL keepalives are implemented; live-window and spare-distro idle qualification remain open.
+Phase 3 native Windows ownership, GUI admission, and Windows-owned WSL keepalives are implemented; isolated live-window lifecycle and same-protocol owner upgrades are qualified, while spare-distro idle qualification remains open.
 Phase 4 is partially delivered; its remaining promises need an explicit implementation audit.
 Historical checkpoints below retain their original dates and are superseded by later milestone notes.
 Snapshots use ghostty's binary snapshot API with VT formatter fallback.
@@ -89,6 +89,8 @@ Windows GUI connects to the named pipe directly.
   New sessions always go to a current owner.
 - The owner exits when its last session ends. It never kills live sessions on
   idle. `kill-server` is the escape hatch.
+- Linux and WSL owners with live sessions upgrade in place by re-executing the
+  new agent; see [the upgrade plan](persistent-sessions-upgrade-plan.md).
 - No auth token: same trust model as tmux. Connectors (ssh, wsl.exe)
   authenticate remote access.
 - Only the `session` subcommand is ported to Windows. Platform code lives in
@@ -314,6 +316,7 @@ Code: `src/agent/session.zig` (subcommands `serve`, `connect`, `list`,
 socketpair).
 
 Behaviour as built:
+
 - `connect` starts the owner with `setsid` and a double fork. Owner stderr goes
   to `owner.log` in the socket dir. Racing starters are resolved by `flock`
   on `session-v1.lock`; the loser retries for 5 s, then exits.
@@ -346,6 +349,7 @@ both a killed `ssh` client and a killed server-side `sshd-session`; `list`
 shows it detached and reattach restores the screen.
 
 Carried into Phase 2:
+
 - Scrollback cap is a fixed 10 MiB per pane until the GUI passes its config.
 - The VT fallback does not forward unparsed trailing bytes after the snapshot.
 - Title in `list` comes from the owner VT and was empty under zsh
@@ -360,6 +364,7 @@ Carried into Phase 2:
 ### Phase 2 status (2026-11-04)
 
 Implemented foundation (not yet exposed through GUI workspace creation):
+
 - `src/term/session_snapshot.zig`: caller-owned terminal returned at READY,
   then one history/image record decoded per `next` call. The caller reapplies
   its scrollback limit, keeps the terminal alive until decoder cleanup, and
@@ -385,6 +390,7 @@ Implemented foundation (not yet exposed through GUI workspace creation):
   GL and ALSA development libraries in this environment.
 
 Session transport implemented (workspace integration described below):
+
 - `src/session/client.zig`: GUI-independent protocol state, request correlation,
   handshake/build-identity validation, owned messages and output-credit ledger.
   Limits per connection: 64 retained requests, 1024 pane metadata slots, and
@@ -423,6 +429,7 @@ Session transport implemented (workspace integration described below):
   and kills its owner afterwards; it does not test WSL idle shutdown.
 
 Session-backed terminal pane adapter implemented:
+
 - `src/pty/session.zig` is a `Pty.session` backend. A workspace controller
   owns the connection and routes frames; the adapter owns bounded pane output,
   not the connector. Received output is credited within the receive-ahead
@@ -465,6 +472,7 @@ Session-backed terminal pane adapter implemented:
   `-Dsession-test-wsl=<distro> -Dsession-test-agent=<guest-agent-path>` for WSL.
 
 GUI workspace/controller wiring implemented for an already-attached session:
+
 - The App creates wake-wired session connections and owns the controller and
   connection after publishing a workspace. Pane views borrow the connection;
   App teardown destroys views first, then closes the bridge without remote pane
@@ -540,6 +548,7 @@ GUI workspace/controller wiring implemented for an already-attached session:
   Xcursor, GL, and ALSA development libraries.
 
 Creation/attachment validation now includes real-owner App integration:
+
 - A configured domain creates a workspace, queues an initial command into its
   continuing interactive shell, destroys the GUI/connector, explicitly reattaches,
   and reads the original shell variable before acknowledged close.
@@ -549,6 +558,7 @@ Creation/attachment validation now includes real-owner App integration:
 - Config and strict-host tests avoid unrelated detached WSL platform discovery.
 
 Owner-backed tabs and splits implemented:
+
 - A bounded GUI operation pool captures workspace/tab/source IDs, callback
   generation, guest spawn data and startup input. One pending spawn per workspace
   is admitted only over that workspace's existing generation-fenced connection.
@@ -615,9 +625,10 @@ Owner-backed tabs and splits implemented:
   asks first); kill confirms, never retries, and re-lists on failure.
 
 Next implementation slices:
+
 1. Manual GUI verification of startup restore, switcher, native notices, and shell auto-close.
-2. Qualify native live windows and otherwise-idle WSL survival in a spare distro; Windows-owner WSL admission and lifetime management are implemented (see below).
-3. Audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
+2. Qualify otherwise-idle WSL survival in a spare distro; isolated native live-window lifecycle is qualified with a prestarted private owner, not GUI-driven detached startup under a permissive launcher.
+3. Same-protocol live-owner bundle replacement is qualified by real replacement executables; audit remaining Phase 4 promises: detached activity replay, version-skew UX, and detach/kill-server scripting coverage.
 4. Placeholder workspaces for missing sessions, if wanted; startup currently forgets missing IDs deliberately.
 
 ### Phase 3 implementation slices
@@ -629,9 +640,11 @@ Do not restart existing Linux owners or change the Linux wire contract merely to
 1. Done: reuse ConPTY with explicit owner-side process-tree ownership, one kill-on-close Job Object per pane, assigned before the process can run.
 2. Windows bootstrap implements the session-only executable, user-SID-only local named pipe, singleton admission, and fail-closed detached startup; successful launch/survival qualification requires a parent job that permits breakaway.
 3. Done: shared metadata, attachment, and stream state support the bounded multi-pane Windows owner, with spawn/close/respawn and persisted stable host identity.
-4. Done: native Windows local domains use the asynchronous GUI path, qualified by headless App/controller create, multi-pane layout, detach, and reattach fixtures; live-window smoke remains manual.
+4. Done: native Windows local domains use the asynchronous GUI path, qualified by headless App/controller fixtures and an isolated actual-window create/split/tab/quit/startup-restore smoke check with preserved PowerShell state.
+   The live-window fixture prestarts its private owner because this runner denies detached breakaway startup; visual rendering inspection and permissive-launcher GUI startup remain separate.
 5. Done: bounded Windows-owned per-host WSL keepalives are admitted before guest create/attach, survive GUI disconnect, and collect only after a confirmed empty observation.
-6. Windows-owner and keeper-mechanism CI are registered; last-client disconnect and process-tree teardown are automated, while spare-distro idle survival and live-owner upgrade checks remain open.
+6. Windows-owner and keeper-mechanism CI are registered; last-client disconnect and process-tree teardown are automated.
+   Same-protocol live-owner bundle replacement now uses two real builds; otherwise-idle spare-distro survival and historical version-skew checks remain open.
 
 WSL keepalive integration (`session_keepalive_windows.zig`, `session_hold.zig`, and `session/transport.zig`):
 
@@ -770,7 +783,8 @@ Producer/DSR timings still measure the owner parser rather than GUI completion.
 On 2026-11-06, the user visually confirmed repaint now feels on par with non-persistent panes; this is not a measured GUI speedup.
 
 `persist = true` is experimental and defaults to false.
-Native Windows ownership and WSL keepalive admission are implemented; remaining Phase 3 work is manual qualification and live-owner upgrade checks.
+Native Windows ownership and WSL keepalive admission are implemented; isolated native live-window lifecycle and same-protocol live-owner upgrades are qualified.
+Otherwise-idle spare-distro survival remains blocked by the lack of an unused distro; permissive-launcher GUI startup, visual inspection, and historical version skew are not covered by the private fixtures.
 SSH trust remains user-managed.
 
 ### Tests per phase

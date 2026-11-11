@@ -1,6 +1,6 @@
 # Persistent sessions handoff
 
-Updated 2026-11-10 after Windows-owned WSL keepalive integration qualification.
+Updated 2026-11-10 after native live-window lifecycle and same-protocol Windows live-owner upgrade qualification.
 Working branch: `feat/persistent-sessions`, nothing pushed.
 Primary plan/status: [persistent-sessions.md](persistent-sessions.md).
 User guide: [persistent-sessions-guide.md](persistent-sessions-guide.md).
@@ -67,7 +67,31 @@ Open work, in suggested order:
 
 1. User reports GUI behavior works; dedicated checks of switcher confirmations, SSH loading, and startup restore remain unrecorded.
 2. Placeholder workspaces for missing sessions, only if the user wants them (slice 3 forgets them silently by design).
-3. Phase 3: live-window native Windows smoke, otherwise-idle spare-distro WSL survival, and live-owner upgrade qualification; keepalive admission/lifetime management is implemented below.
+3. Phase 3: otherwise-idle spare-distro WSL survival remains blocked by environment, by user choice.
+   Isolated native live-window lifecycle and same-protocol live-owner upgrade qualification are complete below; permissive-launcher GUI startup, visual inspection, and historical version skew remain separate.
+
+Native live-window lifecycle qualification:
+
+- Actual visible Windows GUI windows created one persistent session with two tabs and three panes, closed through `WM_CLOSE`, and restored the same session/layout on reopen.
+- The first pane's resident PowerShell variable continued from 41 to 42.
+- The fixture used private application-data directories and a test-only executable forwarding to an internal owner namespace; no public Lua/config namespace escape was added.
+- A private owner was prestarted because this runner fails closed on detached startup with `ACCESS_DENIED`; this does not qualify GUI-driven detached owner startup under a permissive launcher.
+- Cleanup stopped only the private namespace; the original installed GUI PID 26044 remained running.
+- Fixture scripts and wrapper source are `/tmp/opencode/session-live-{config.lua,launch.ps1,sequence.ps1,wrapper.c}`; binary digests are in `/tmp/opencode/session-live-artifacts-20261110.log`.
+- Logs: `/tmp/opencode/session-live-sequence-20261110.log`, with application logs and remembered state under the Windows TEMP `hollow-live-qualification-20261110` directory.
+- This covers actual window lifecycle, not pixel-level visual inspection, WSL idle behavior, or production-owner replacement.
+
+Same-protocol live-owner upgrade qualification:
+
+- The native transport suite builds a second real owner executable in a different optimization mode instead of using an invalid replacement placeholder.
+- Its private live-cache fixture publishes the new image, connects through the replacement executable, and verifies the resident owner's PID/host, original image digest, and shell counter continuity.
+- It then explicitly ends only the fixture session, disconnects all clients, waits for natural owner exit, and starts the replacement at the same private endpoint to verify a fresh session.
+- Private owner host identities are intentionally ephemeral across restarts; production identity durability is covered separately.
+- Debug, ReleaseSafe, and ReleaseFast each passed 91 tests with 4 skips (two optional real-WSL fixtures and two POSIX-only cases).
+- Logs: `/tmp/opencode/session-upgrade-{debug,safe,fast}-20261110.log`.
+- This is same-protocol artifact replacement, not historical protocol/capability-skew qualification or production-owner replacement.
+- Only the active development distro `Ubuntu-26.04` is installed; the user chose to leave otherwise-idle spare-distro survival blocked rather than install another distro.
+- The guide now includes the spare-distro procedure and explicit inconclusive-result criteria.
 
 Windows-owned WSL keepalive integration:
 
@@ -271,7 +295,8 @@ The first live Windows owner now also uses this metadata; the earlier bootstrap 
 Metadata validation passes: 53 agent-loop tests in Debug, ReleaseSafe, and ReleaseSmall; 14 portable core/protocol tests on Linux and real Windows; 144 Linux transport/agent-loop/PTY tests; 105 Linux pane/snapshot/client tests; and 155 Windows-to-WSL pane/snapshot/client/borrower tests with isolated real owners.
 The Windows GUI cross-build and formatting/diff checks pass, and the portable core target is now registered in Windows CI.
 Source audit found no new core-extraction bugs; an existing `attach()` info-allocation failure can still reject after create has spawned, and remains a separate recovery-hardening edge.
-Next concrete slice: manual native-window smoke, otherwise-idle spare-distro WSL survival, and the Phase 4 promise/upgrade audit.
+Next concrete slice: otherwise-idle spare-distro WSL survival when an unused distro is available, and the Phase 4 promise/version-skew audit.
+Native real-window lifecycle and same-protocol owner replacement are qualified by the latest checkpoints above.
 
 Workspace-picker follow-up: open workspaces now appear above domain categories, sharing reusable collapsible rows with the command palette.
 Enter/click toggles headings; search temporarily reveals matches without changing saved collapse choices.
@@ -314,7 +339,7 @@ Validation: Linux pane/snapshot/client suites pass with the real agent (103 test
 Agent protocol/loop/transport/PTY suites, Windows pane/client/borrower suites, Windows-to-WSL real-owner suites, and the Windows GUI cross-build pass.
 Shell lifecycle and respawn-notice regression names were corrected to match the headless target's filter; those previously excluded tests now execute and pass.
 
-Respawn rejections now show "Pane respawn failed: <owner reason>" and explain that the existing screen was kept, with no automatic retry.
+Respawn rejections now show `Pane respawn failed: <owner reason>` and explain that the existing screen was kept, with no automatic retry.
 Notice unit tests and a Windows App regression verify wording, retained exit status, and absence of replay.
 Linux pane tests, Windows borrower/App tests, and the Windows GUI cross-build pass.
 
