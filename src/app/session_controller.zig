@@ -52,6 +52,14 @@ pub fn addSessionWorkspace(self: *App, connection: *SessionConnection, info: Ses
 }
 
 pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8, name: ?[]const u8) !*Workspace {
+    return publishSessionWorkspace(self, connection, info, domain, name, null);
+}
+
+pub fn replaceSessionWorkspace(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8, workspace_id: usize) !*Workspace {
+    return publishSessionWorkspace(self, connection, info, domain, null, workspace_id);
+}
+
+fn publishSessionWorkspace(self: *App, connection: *SessionConnection, info: SessionProtocol.SessionInfo, domain: ?[]const u8, name: ?[]const u8, replacement: ?usize) !*Workspace {
     const was_suppressed = self.session_layout_suppressed;
     self.session_layout_suppressed = true;
     defer self.session_layout_suppressed = was_suppressed;
@@ -75,8 +83,21 @@ pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info
     controller.generation = connection.attachmentGeneration();
     controller.revision = info.revision;
 
-    const previous = mux.activePane();
-    const workspace = try mux.addSessionWorkspaceNamed(
+    const previous = if (replacement) |id| blk: {
+        const old = mux.workspaceById(id) orelse return error.WorkspaceNotFound;
+        const pane = mux.activePane() orelse break :blk null;
+        break :blk if (mux.controllerForPane(pane.id) == old.session_controller) null else pane;
+    } else mux.activePane();
+    const workspace = if (replacement) |id| try mux.replaceSessionWorkspace(
+        runtime,
+        terminal_callbacks.terminalCallbacks(),
+        self.config,
+        controller,
+        info,
+        domain,
+        @import("session_borrowers.zig").beforeReplace,
+        id,
+    ) else try mux.addSessionWorkspaceNamed(
         runtime,
         terminal_callbacks.terminalCallbacks(),
         self.config,
@@ -90,7 +111,7 @@ pub fn addSessionWorkspaceNamed(self: *App, connection: *SessionConnection, info
     htp.bindHtpHandlers(self);
     self.syncActivePaneChange(previous, mux.activePane());
     self.refreshActivePaneDisplay();
-    self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
+    if (replacement == null) self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     self.requestLayoutResize(false);
     self.requestLayoutRefresh();
@@ -190,13 +211,32 @@ fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *Sessi
             return true;
         }
         closePaneByIdNow(self, runtime, pane_id);
+        if (self.mux) |*mux| for (mux.workspaces.items) |workspace| {
+            if (workspace.session_controller == controller and workspace.session_close_desired) {
+                scheduleSessionWorkspaceClose(self, workspace);
+                break;
+            }
+        };
         controller.layout_dirty = true;
         controller.layout_due_ns = 0;
         self.markAutomationChanged();
         return true;
     }
 
-    if (message.kind == .event) return true;
+    if (message.kind == .event) {
+        const parsed = SessionProtocol.parse(SessionProtocol.Event, self.allocator, message.payload) catch |err| {
+            std.log.err("invalid session event: {s}", .{@errorName(err)});
+            return true;
+        };
+        defer parsed.deinit();
+        if (parsed.value.event == .taken) {
+            self.markAutomationChanged();
+            self.requestLayoutResize(false);
+            self.requestLayoutRefresh();
+            std.log.info("session {s} taken by another client; retained views are frozen", .{controller.session_id});
+        }
+        return true;
+    }
     return false;
 }
 
@@ -619,6 +659,14 @@ fn scheduleSessionPaneClose(self: *App, pane_id: usize) bool {
     const mux = if (self.mux) |*value| value else return false;
     const controller = mux.controllerForPane(pane_id) orelse return false;
     if (!sessionCanCloseRemotely(controller)) return false;
+    for (mux.workspaces.items) |workspace| {
+        if (workspace.session_controller != controller or workspace.tabs.items.len != 1) continue;
+        const tab = workspace.tabs.items[0];
+        if (tab.panes.items.len == 1 and tab.panes.items[0].id == pane_id) {
+            scheduleSessionWorkspaceClose(self, workspace);
+            return true;
+        }
+    }
     controller.scheduleClose(pane_id) catch |err| {
         std.log.warn("could not schedule persistent pane close: {s}", .{@errorName(err)});
     };
@@ -637,6 +685,10 @@ fn scheduleSessionTabClose(self: *App, workspace: *Workspace, tab: *Tab) void {
     const controller = workspace.session_controller orelse return;
     const mux = if (self.mux) |*value| value else return;
     tab.close_after_session_ack = true;
+    if (workspace.tabs.items.len == 1) {
+        scheduleSessionWorkspaceClose(self, workspace);
+        return;
+    }
     for (tab.panes.items) |pane| {
         if (mux.controllerForPane(pane.id) != controller) continue;
         controller.scheduleClose(pane.id) catch |err| {
@@ -654,9 +706,26 @@ fn pendingSessionTabCloseForPane(mux: *Mux, pane_id: usize) ?usize {
     return null;
 }
 
-fn scheduleSessionWorkspaceClose(self: *App, workspace: *Workspace) void {
+pub fn scheduleSessionWorkspaceClose(self: *App, workspace: *Workspace) void {
     const controller = workspace.session_controller orelse return;
     workspace.session_close_desired = true;
+    const mux = if (self.mux) |*value| value else return;
+    // Preserve the final tab until all owned docks have acknowledged closure.
+    // Otherwise removing that tab destroys workspace docks before their ACKs
+    // and leaves global docks with no workspace to persist their layout.
+    var docked = mux.dockPaneIterator();
+    var closing_docks = false;
+    while (docked.next()) |pane| {
+        if (mux.controllerForPane(pane.id) != controller) continue;
+        closing_docks = true;
+        controller.scheduleClose(pane.id) catch |err| {
+            std.log.warn("could not schedule persistent dock close: {s}", .{@errorName(err)});
+        };
+    }
+    if (closing_docks) {
+        self.signalWake();
+        return;
+    }
     var panes = workspace.paneIterator();
     while (panes.next()) |pane| {
         controller.scheduleClose(pane.id) catch |err| {
@@ -769,7 +838,14 @@ pub fn closeWorkspace(self: *App, workspace_id: ?usize) void {
         if (mux.activeWorkspace()) |workspace| workspace.id == target_id else false
     else
         mux.activeWorkspace() != null;
-    const previous = if (closing_active_workspace) null else mux.activePane();
+    // A background attachment can own the focused global dock. Its view is
+    // destroyed by local workspace removal too, so do not retain that pointer.
+    const previous = if (closing_active_workspace) null else if (mux.activePane()) |pane| blk: {
+        if (target_workspace) |workspace| if (workspace.session_controller) |controller| {
+            if (mux.controllerForPane(pane.id) == controller) break :blk null;
+        };
+        break :blk pane;
+    } else null;
     const should_quit = mux.closeWorkspace(runtime, workspace_id);
     if (should_quit) {
         quitOnWorkspaceRemoved(self, mux, null);
@@ -867,17 +943,24 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     };
     const snapped_ratio = if (edge != null) std.math.clamp(ratio, 0.05, 0.95) else snapSplitRatio(self, ratio, direction, split_bounds);
     if (mux.activeWorkspace()) |workspace| if (workspace.session_controller != null) {
-        if (edge != null or dock != null) {
-            std.log.warn("app: session-backed workspaces do not support edge or dock splits", .{});
-            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+        if (dock) |scope| {
+            // The free-slot and floating checks above validated this request.
+            @import("session_spawn.zig").split(self, .{ .dock = .{
+                .edge = edge.?,
+                .scope = scope,
+                .ratio = std.math.clamp(ratio, 0.05, 0.95),
+            } }, cwd, domain_name, effective_command, command_mode, close_on_exit, callback_ref) catch |err| {
+                @import("session_spawn.zig").reject(self, callback_ref, err);
+            };
             return;
         }
-        const source = previous orelse return;
+        const source = mux.activeTab().?.activePane() orelse return;
         @import("session_spawn.zig").split(self, .{ .split = .{
             .tab_id = mux.activeTab().?.id,
             .source_id = source.id,
             .direction = direction,
             .ratio = snapped_ratio,
+            .edge = edge,
             .floating = floating,
             .fullscreen = fullscreen,
             .x = x,
@@ -1422,8 +1505,10 @@ test "session borrowers rejected respawn keeps dead pane and shows dedicated not
 
 const recordWorkspaceClosed =
     \\closed = {}
+    \\notices = {}
     \\hollow = {_emit_builtin_event = function(name, payload)
     \\  if name == "workspace:closed" then closed[#closed + 1] = payload end
+    \\  if name == "session:notice" then notices[#notices + 1] = payload end
     \\end}
 ;
 
@@ -1455,7 +1540,12 @@ test "session borrowers allow local close after takeover or connection loss" {
             defer allocator.free(body);
             try connection.client.receive(p.header(.event, 0, body.len), body);
             pumpSessionControllers(app, &app.ghostty.?);
-            closePaneById(app, pane_id);
+            try std.testing.expect(app.activeWorkspace().?.session_controller.?.taken);
+            try std.testing.expect(app.session_notices.current() == null);
+            @import("session_open.zig").syncNotices(app);
+            try app.lua.?.runString("assert(#notices == 0)");
+            try std.testing.expect(@import("../session/dead_pane.zig").state(app.activePane().?) == null);
+            try std.testing.expect(try app.sendKey(.d, ghostty.Mods.ctrl, .press, null, false));
         } else {
             connection.client.ended = true;
             connection.finished = true;

@@ -52,6 +52,24 @@ describe("host-first workspace guests", function()
     assert.are.equal(0, #warnings)
   end)
 
+  it("marks only disconnected open workspaces offline", function()
+    local original = hollow.term.mux_tree
+    for _, state in ipairs({ "attached", "taken", "disconnected" }) do
+      hollow.term.mux_tree = function()
+        return { { id = 1, index = 1, name = "main", is_active = true, tabs = {}, session_state = state } }
+      end
+      hollow.ui.workspace.configure({ sources = {} })
+      local result = require("hollow.ui.workspace.source").items(true)
+      assert.are.equal(state, result[1].session_state)
+      if state == "attached" then
+        assert.is_nil(result[1].session_badge)
+      else
+        assert.are.equal("offline", result[1].session_badge)
+      end
+    end
+    hollow.term.mux_tree = original
+  end)
+
   it("shares persistent guest connections across sources, refreshes and reconfiguration", function()
     local sources = {
       { host = { type = "wsl", distro = "Ubuntu" }, roots = { "/one" } },

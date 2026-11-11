@@ -11,8 +11,8 @@ pub const State = struct {
     respawn: bool,
 };
 
-/// Exited, still-attached session pane. Lost attachments are not "dead": the
-/// process may still run on the host.
+/// Exited, still-attached session pane. Takeover is workspace-wide and has a
+/// separate banner; it must not repeat a footer in every pane.
 pub fn state(pane: *Pane) ?State {
     const term = pane.asTerminal() orelse return null;
     const pty = if (term.pty) |*value| value else return null;

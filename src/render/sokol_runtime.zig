@@ -33,6 +33,7 @@ const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
 const session_notice = @import("../session/notice.zig");
 const dead_pane = @import("../session/dead_pane.zig");
+const workspace_banner = @import("../session/workspace_banner.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
@@ -138,6 +139,7 @@ fn blitLuaPaneCache(renderer: *FtRenderer, pane: *Pane, bounds: PaneBounds, widt
 const clay_paint = @import("../ui/clay_paint.zig");
 var g_clay_surface: ClaySurface = .{};
 var g_sidebar_clay: ClaySurface = .{};
+var g_session_banner_clay: ClaySurface = .{};
 var g_sidebar_bounds: ?ui_semantics.Bounds = null;
 // Stable allocations: each lower overlay retains its Clay scroll/layout state
 // and owns all text until the following pre-raster pass.
@@ -153,6 +155,7 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_pre_raster_ctx orelse return;
     g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     prepareSidebarClaySurface(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+    prepareSessionBanner(runtime, ctx.app, ctx.renderer);
     prepareLowerClayOverlays(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     g_grid_debug.sync(runtime);
     syncInspectorWidth(runtime);
@@ -165,6 +168,42 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
 
 // The edge sidebar owns its Clay context independently of the overlay stack.
 // Snapshot and pre-rasterize it before drawing, just like the other surfaces.
+fn prepareSessionBanner(runtime: *lua_mod.Runtime, app: *App, renderer: *FtRenderer) void {
+    if (g_session_banner_clay.runtime_generation != runtime.generation) {
+        g_session_banner_clay.deinit();
+        g_session_banner_clay = .{ .runtime_generation = runtime.generation };
+    }
+    g_session_banner_clay.active = false;
+    const height = app.sessionBannerHeight();
+    if (height == 0) return;
+    const workspace = app.activeWorkspace().?;
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const saved = api.get_top(state);
+    defer api.set_top(state, saved);
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    api.get_field(state, -1, "ui");
+    api.get_field(state, -1, "_session_banner_prepare");
+    if (api.value_type(state, -1) != @backingInt(LuaType.function)) return;
+    api.push_number(state, @floatFromInt(app.config.window_width));
+    api.push_number(state, @floatFromInt(height));
+    api.push_number(state, renderer.cell_w);
+    api.push_number(state, renderer.cell_h);
+    api.push_number(state, @floatFromInt(workspace.id));
+    const phase = @tagName(workspace.session_reclaim);
+    api.push_lstring(state, phase.ptr, phase.len);
+    var buf: [160]u8 = undefined;
+    const message = workspace_banner.message(workspace.session_reclaim, workspace.session_reclaim_error, &buf);
+    api.push_lstring(state, message.ptr, message.len);
+    if (api.pcall(state, 7, 3, 0) != 0) {
+        std.log.warn("session banner widget preparation failed", .{});
+        return;
+    }
+    const revision = api.to_number(state, -2);
+    const surface_id = api.to_number(state, -1);
+    g_session_banner_clay.prepareSnapshot(runtime, renderer, -3, revision, surface_id);
+}
+
 fn prepareSidebarClaySurface(runtime: *lua_mod.Runtime, renderer: *FtRenderer, width: f32, height: f32) void {
     if (g_sidebar_clay.runtime_generation != runtime.generation) {
         g_sidebar_clay.deinit();
@@ -531,7 +570,7 @@ test "sidebar semantic ids drop the layout surface namespace" {
 fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32, sidebar: bool) void {
     if (!surface.active) return;
     surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
-    const interactive = surface.owner_index > 0 or sidebar;
+    const interactive = surface.owner_index > 0 or sidebar or surface == &g_session_banner_clay;
     if (interactive) {
         surface.mouse_x = g_mouse_x - offset_x;
         surface.mouse_y = g_mouse_y - offset_y;
@@ -1896,7 +1935,48 @@ fn drawSessionNotice(app: *App, renderer: *FtRenderer, value: session_notice.Not
     }
 }
 
-/// One-line placeholder over the bottom row of an exited persistent pane.
+fn drawWorkspaceBanner(app: *App, renderer: *FtRenderer) void {
+    if (app.sessionBannerHeight() == 0) return;
+    const height: f32 = @floatFromInt(app.sessionBannerHeight());
+    const width: f32 = @floatFromInt(app.config.window_width);
+    const theme = &app.config.terminal_theme;
+    const bg = theme.background;
+    const accent = theme.palette[3];
+    drawBorderRect(0, 0, width, height, bg.r, bg.g, bg.b, 255);
+    drawClaySurface(&g_session_banner_clay, renderer, width, height, 0, 0, false);
+    drawBorderRect(0, height - 1, width, 1, accent.r, accent.g, accent.b, 255);
+}
+
+fn bannerLabel(renderer: *FtRenderer, rect: workspace_banner.Rect, text: []const u8, color: ghostty.ColorRgb) void {
+    if (rect.width < 1 or rect.height < 1) return;
+    c.sgl_scissor_rect(@intFromFloat(rect.x), @intFromFloat(rect.y), @intFromFloat(rect.width), @intFromFloat(rect.height), true);
+    renderer.drawLabel(rect.x + renderer.cell_w * 0.25, rect.y + (rect.height - renderer.cell_h) / 2, text, color.r, color.g, color.b);
+    c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+}
+
+fn takenGlobalDock(app: *App, pane: *Pane) bool {
+    const term = pane.asTerminal() orelse return false;
+    const pty = term.pty orelse return false;
+    if (pty != .session or !pty.session.taken) return false;
+    const mux = if (app.mux) |*value| value else return false;
+    const location = mux.paneDock(pane) orelse return false;
+    return location.scope == .global;
+}
+
+fn drawTakenDockBadge(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf) void {
+    const width = @min(@as(f32, @floatFromInt(leaf.bounds.width)), renderer.cell_w * 8);
+    const rect: workspace_banner.Rect = .{
+        .x = @as(f32, @floatFromInt(leaf.bounds.x + leaf.bounds.width)) - width,
+        .y = @floatFromInt(leaf.bounds.y),
+        .width = width,
+        .height = renderer.cell_h * 1.25,
+    };
+    const bg = app.config.terminal_theme.background;
+    drawBorderRect(rect.x, rect.y, rect.width, rect.height, bg.r, bg.g, bg.b, 230);
+    bannerLabel(renderer, rect, "offline", app.config.terminal_theme.palette[3]);
+}
+
+/// One-line placeholder for an exited process.
 fn drawDeadPaneFooter(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf, value: dead_pane.State) void {
     const x: f32 = @floatFromInt(leaf.bounds.x);
     const w: f32 = @floatFromInt(leaf.bounds.width);
@@ -2825,7 +2905,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
     if (top_h > 0 and pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state")) {
         parseBarWidgetView(&scratch.widget, api, state, lua_mod.absoluteIndex(api, state, -1), scratch.text_buf[0..], scratch);
-        renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, 0.0, top_h, &scratch.widget);
+        renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, @floatFromInt(ctx.app.sessionBannerHeight()), top_h, &scratch.widget);
         lua_mod.pop(api, state, 1);
     }
 
@@ -2835,6 +2915,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         lua_mod.pop(api, state, 1);
     }
 
+    top_h += @as(f32, @floatFromInt(ctx.app.sessionBannerHeight()));
     api.get_field(state, -1, "_sidebar_state");
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const sidebar_idx = absoluteIndex(api, state, -1);
@@ -4593,7 +4674,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const swapchain_ui_start_ns = io.nanoTimestamp();
     const tbh_u = app.tabBarHeight();
     const bbh_u = app.bottomBarHeight();
-    resetBarCache(&g_top_bar_cache, width, 0.0, @floatFromInt(tbh_u));
+    const banner_h = app.sessionBannerHeight();
+    resetBarCache(&g_top_bar_cache, width, @floatFromInt(banner_h), @floatFromInt(tbh_u - banner_h));
     resetBarCache(&g_bottom_bar_cache, width, height - @as(f32, @floatFromInt(bbh_u)), @floatFromInt(bbh_u));
     app.beginUiSemanticFrame();
     if (g_ft_renderer) |*renderer| {
@@ -4633,7 +4715,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Their order within this layer leaves Lua overlays above the card.
         var any_dead = false;
         if (app.mux) |*mux| if (mux.session_workspace_count != 0) {
-            for (leaves) |leaf| if (dead_pane.state(leaf.pane) != null) {
+            for (leaves) |leaf| if (dead_pane.state(leaf.pane) != null or takenGlobalDock(app, leaf.pane)) {
                 any_dead = true;
                 break;
             };
@@ -4642,7 +4724,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         defer c.sgl_layer(0);
         if (any_dead) for (leaves) |leaf| {
             if (dead_pane.state(leaf.pane)) |value| drawDeadPaneFooter(app, renderer, leaf, value);
+            if (takenGlobalDock(app, leaf.pane)) drawTakenDockBadge(app, renderer, leaf);
         };
+        drawWorkspaceBanner(app, renderer);
         if (notice_value) |value| drawSessionNotice(app, renderer, value, &notice_text);
 
         if (app.lua) |*lua| {
@@ -5054,6 +5138,7 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     app_profile.deinit();
     g_clay_surface.deinit();
     g_sidebar_clay.deinit();
+    g_session_banner_clay.deinit();
     for (g_clay_overlays.items) |surface| {
         surface.deinit();
         std.heap.page_allocator.destroy(surface);
@@ -5283,6 +5368,7 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
                     if (g_gui_ready_fired and !app.config.window_titlebar_show) {
                         const border = windowFrameBorder();
                         const top_bar_h: i32 = @intCast(app.tabBarHeight());
+                        if (local_y >= border.y and local_y < border.y + @as(i32, @intCast(app.sessionBannerHeight()))) return @as(win32.LRESULT, @intCast(win32.HTCLIENT));
                         if (top_bar_h > 0 and local_y >= border.y and local_y < border.y + top_bar_h) {
                             const hit = topBarHitTest(app, @floatFromInt(local_x), @floatFromInt(local_y - border.y), @floatFromInt(width));
                             if (hit.inBar()) return @as(win32.LRESULT, @intCast(win32.HTCLIENT));
@@ -5992,6 +6078,16 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     // Route only after suppression, bars and overlay clicks. Queue the stable
     // notice ID; cancellation/dismissal belongs to the frame-thread lifecycle.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        const banner_height = app.sessionBannerHeight();
+        if (banner_height > 0 and event.mouse_y >= 0 and event.mouse_y < @as(f32, @floatFromInt(banner_height))) {
+            if (g_session_banner_clay.hitTest(.clickable, event.mouse_x, event.mouse_y)) |index| {
+                app.emitLuaBuiltInEvent("session_banner:click", .{ .session_banner_node = .{ .id = g_session_banner_clay.nodeId(index) } });
+            }
+            g_block_left_mouse_until_up = true;
+            g_mouse_button_down = null;
+            c.sapp_consume_event();
+            return;
+        }
         if (hitTestSessionNotice(app, event.mouse_x, event.mouse_y)) |id| {
             _ = app.enqueueMouse(.{ .session_notice_activate = id });
             g_block_left_mouse_until_up = true;
@@ -6301,6 +6397,15 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
+    if (app.sessionBannerHeight() > 0 and event.mouse_y >= 0 and event.mouse_y < @as(f32, @floatFromInt(app.sessionBannerHeight()))) {
+        updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
+        g_scrollbar_hover_pane = null;
+        g_hover_hyperlink = false;
+        const hit = g_session_banner_clay.hitTest(.clickable, event.mouse_x, event.mouse_y);
+        setTextSelectionCursor(if (hit != null) .hand else .arrow);
+        app.requestRedraw();
+        return;
+    }
     if (bar_hit.inBar()) {
         updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;

@@ -48,6 +48,7 @@ pub const Controller = struct {
     snapshot_limit: usize = snapshots.max_snapshot_bytes,
     failure: ?anyerror = null,
     detached: bool = false,
+    taken: bool = false,
     kill_request: ?u64 = null,
     close_work: bool = false,
     layout_request: ?u64 = null,
@@ -60,6 +61,12 @@ pub const Controller = struct {
 
     pub fn init(a: std.mem.Allocator, connection: *transport.Connection) Controller {
         return .{ .allocator = a, .connection = connection };
+    }
+
+    pub fn stateName(self: *const Controller) []const u8 {
+        if (self.taken) return "taken";
+        if (self.detached or self.connection.status().phase == .ended) return "disconnected";
+        return "attached";
     }
 
     /// Views must already be unbound/deinitialized. This does not free them or
@@ -120,6 +127,7 @@ pub const Controller = struct {
         if (self.detached) return error.Detached;
         if (self.kill_request != null) return error.SessionClosing;
         const entry = self.byNode(id) orelse return error.PaneNotFound;
+        if (entry.close_request != null and !entry.close_completed) return;
         entry.close_desired = true;
         self.close_work = true;
     }
@@ -372,7 +380,13 @@ pub const Controller = struct {
                         if (dropped > 0) try self.connection.consumedBytes(pty.generation, pty.pane, dropped);
                         try self.beginSnapshot(entry);
                     }
-                } else self.detachViews();
+                } else {
+                    self.taken = parsed.value.event == .taken;
+                    if (parsed.value.event == .taken) for (self.bindings) |slot| if (slot) |entry| {
+                        if (entry.node) |node| node.content.terminal.pty.?.session.taken = true;
+                    };
+                    self.detachViews();
+                }
                 return .control;
             },
             .output, .snapshot, .snapshot_end, .exit => {

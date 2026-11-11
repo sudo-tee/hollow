@@ -32,12 +32,19 @@ pub const Mux = struct {
             source_id: usize,
             direction: SplitDirection,
             ratio: f32,
+            edge: ?PaneEdge = null,
             floating: bool = false,
             x: ?f32 = null,
             y: ?f32 = null,
             width: ?f32 = null,
             height: ?f32 = null,
             fullscreen: bool = false,
+        },
+        /// New pane appears directly in a dock slot of the admitting workspace.
+        dock: struct {
+            edge: PaneEdge,
+            scope: DockScope,
+            ratio: f32 = 0.3,
         },
     };
 
@@ -196,6 +203,19 @@ pub const Mux = struct {
     }
 
     pub fn addSessionWorkspaceNamed(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, name: ?[]const u8) !*Workspace {
+        return self.buildSessionWorkspace(runtime, callbacks, cfg, controller, info, domain, before_replace, name, null);
+    }
+
+    pub fn replaceSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, workspace_id: usize) !*Workspace {
+        const old = self.workspaceById(workspace_id) orelse return error.WorkspaceNotFound;
+        const previous = old.session_controller orelse return error.NotSessionWorkspace;
+        if (!previous.detached and previous.connection.status().phase != .ended) return error.SessionStillAttached;
+        if (!std.mem.eql(u8, previous.session_id, info.id)) return error.WrongSession;
+        if (previous.host.len > 0 and !std.mem.eql(u8, previous.host, controller.host)) return error.SessionHostChanged;
+        return self.buildSessionWorkspace(runtime, callbacks, cfg, controller, info, domain, before_replace, null, old);
+    }
+
+    fn buildSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, name: ?[]const u8, replacement: ?*Workspace) !*Workspace {
         const codec = @import("../session/layout.zig");
         const geometry = @import("session_layout.zig");
         if (info.panes.len == 0) return error.EmptySession;
@@ -216,12 +236,34 @@ pub const Mux = struct {
         };
         defer if (reconciled) |value| value.deinit();
         const saved = if (reconciled) |value| value.parsed else null;
+        // Temporarily free only this attachment's global slots. No callbacks
+        // run before commit, and failure restores every frozen view and ratio.
+        var displaced: Docks = .{};
+        var committed = false;
+        if (replacement) |old| {
+            var global = self.global_docks.iterator();
+            while (global.next()) |pane| {
+                if (self.controllerForPane(pane.id) != old.session_controller) continue;
+                const edge = self.global_docks.edgeOf(pane).?;
+                const ratio = self.global_docks.size(edge);
+                _ = self.global_docks.remove(pane);
+                displaced.place(edge, pane, ratio) catch unreachable;
+            }
+        }
+        defer if (!committed) {
+            var restore = displaced.iterator();
+            while (restore.next()) |pane| {
+                const edge = displaced.edgeOf(pane).?;
+                self.global_docks.place(edge, pane, displaced.size(edge)) catch unreachable;
+            }
+        };
         const workspace = try self.createWorkspace();
         errdefer {
             workspace.deinit(runtime);
             self.allocator.destroy(workspace);
         }
         workspace.session_controller = controller;
+        if (replacement) |old| try workspace.setDefaultCwd(old.default_cwd);
         if (name) |value| {
             try workspace.setName(value);
         } else if (saved) |value| {
@@ -328,10 +370,34 @@ pub const Mux = struct {
                 pane.is_hidden = true;
             }
         }
-        try self.workspaces.append(self.allocator, workspace);
-        self.active_workspace = workspace;
+        if (replacement) |old| {
+            workspace.id = old.id;
+            for (self.workspaces.items) |*item| if (item.* == old) {
+                item.* = workspace;
+                break;
+            };
+            if (self.active_workspace == old) self.active_workspace = workspace;
+            for (old.tabs.items) |tab| self.notifyTabClosing(tab);
+            var local_docks = old.docks.iterator();
+            while (local_docks.next()) |pane| {
+                self.notifyClosing(pane);
+                if (self.focused_dock == pane) self.focused_dock = null;
+            }
+            var global = displaced.iterator();
+            while (global.next()) |pane| {
+                self.notifyClosing(pane);
+                if (self.focused_dock == pane) self.focused_dock = null;
+            }
+            displaced.deinit(self.allocator, runtime);
+            old.deinit(runtime);
+            self.allocator.destroy(old);
+        } else {
+            try self.workspaces.append(self.allocator, workspace);
+            self.active_workspace = workspace;
+            self.session_workspace_count += 1;
+        }
+        committed = true;
         var panes = workspace.paneIterator();
-        self.session_workspace_count += 1;
         while (panes.next()) |pane| self.notifyCreated(pane);
         for (restored_global[0..restored_global_count]) |pane| self.notifyCreated(pane);
         return workspace;
@@ -415,8 +481,9 @@ pub const Mux = struct {
         if (ws.session_controller != controller) return error.WrongSession;
         if (remote.id == 0 or remote.cols == 0 or remote.rows == 0) return error.InvalidSessionLayout;
         var count: usize = 0;
-        var iter = ws.paneIterator();
-        while (iter.next() != null) count += 1;
+        for (controller.bindings) |slot| if (slot != null) {
+            count += 1;
+        };
         if (count >= @import("../session/layout.zig").max_panes) return error.ResourceExhausted;
 
         const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
@@ -427,6 +494,25 @@ pub const Mux = struct {
         };
         // Spawn replies have no snapshot; live output may be parsed immediately.
         pane.content.terminal.terminal_output_ready = true;
+
+        if (placement == .dock) {
+            const spec = placement.dock;
+            const docks = try self.dockTarget(spec.scope, ws);
+            if (docks.slot(spec.edge).pane == null) {
+                try controller.bind(pane);
+                docks.place(spec.edge, pane, spec.ratio) catch unreachable;
+                pane.is_floating = false;
+                pane.placed_edge = null;
+                pane.is_hidden = false;
+                published = true;
+                if (self.active_workspace == ws) self.focused_dock = pane;
+                self.notifyCreated(pane);
+                return pane;
+            }
+            // Another session may have claimed the shared global edge while this
+            // spawn was in flight. Keep the acknowledged pane as a tab rather
+            // than aborting an otherwise healthy attachment.
+        }
 
         if (placement == .split) {
             const spec = placement.split;
@@ -450,7 +536,9 @@ pub const Mux = struct {
                         tab.maximized_pane = old_maximized;
                         tab.maximized_show_background = old_background;
                     };
-                    if (spec.floating) {
+                    if (spec.edge) |edge| {
+                        try tab.splitEdge(pane, dock_mod.directionFor(edge), spec.ratio, dock_mod.placesFirst(edge));
+                    } else if (spec.floating) {
                         tab.panes.appendAssumeCapacity(pane);
                         _ = tab.setPaneFloating(pane, true);
                         var restore_anchor: ?*Pane = if (!anchor.is_floating) anchor else null;
@@ -574,8 +662,11 @@ pub const Mux = struct {
         if (self.session_workspace_count == 0) return null;
         for (self.workspaces.items) |workspace| {
             const controller = workspace.session_controller orelse continue;
-            var panes = workspace.paneIterator();
-            while (panes.next()) |pane| if (pane.id == id) return controller;
+            // Bindings retain ownership when a view moves out of its tab into
+            // a global or borrowed workspace dock.
+            for (controller.bindings) |slot| if (slot) |entry| {
+                if (entry.node != null and entry.local_id == id) return controller;
+            };
         }
         return null;
     }
@@ -777,6 +868,8 @@ pub const Mux = struct {
     /// Return a docked pane to the active tab along the same edge and size.
     pub fn undockPane(self: *Mux, pane: *Pane) !void {
         const location = self.paneDock(pane) orelse return error.PaneNotDocked;
+        const workspace = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (self.controllerForPane(pane.id) != workspace.session_controller) return error.CrossSessionMove;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const docks = self.docksFor(location);
         const size = docks.size(location.edge);
@@ -1574,6 +1667,15 @@ pub const Mux = struct {
         if (self.last_removed_session) |value| value.deinit(self.allocator);
         self.last_removed_session = if (workspace.session_controller) |controller| removedSession(self.allocator, controller) catch null else null;
 
+        // Global is a visibility scope, not ownership independent of the
+        // persistent attachment. Detached/local workspace removal drops its
+        // global views too; live removal is gated by close acknowledgements.
+        if (workspace.session_controller) |controller| {
+            var global = self.global_docks.iterator();
+            while (global.next()) |pane| {
+                if (self.controllerForPane(pane.id) == controller) self.destroyDockPane(runtime, pane);
+            }
+        }
         for (workspace.tabs.items) |tab| self.notifyTabClosing(tab);
         var docked = workspace.docks.iterator();
         while (docked.next()) |pane| {

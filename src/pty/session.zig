@@ -20,6 +20,8 @@ pub const SessionPty = struct {
     status: ?i32 = null,
     close_on_exit: bool = false,
     detached: bool = false,
+    /// The owner explicitly transferred this attachment to another client.
+    taken: bool = false,
     close_request: ?u64 = null,
     pending_resize: ?struct { cols: u16, rows: u16 } = null,
 

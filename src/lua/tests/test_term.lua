@@ -96,6 +96,19 @@ describe("term test suite", function()
   end)
 
   describe("workspace snapshots", function()
+    it("forwards local persistent attachment state when available", function()
+      local old = env.host_api.get_workspace_session_state
+      for _, state in ipairs({ "attached", "taken", "disconnected" }) do
+        env.host_api.get_workspace_session_state = function(index)
+          harness.assert_equal(index, 0)
+          return state
+        end
+        harness.assert_equal(hollow.term.current_workspace().session_state, state)
+      end
+      env.host_api.get_workspace_session_state = nil
+      harness.assert_equal(hollow.term.current_workspace().session_state, nil)
+      env.host_api.get_workspace_session_state = old
+    end)
     it("exposes persistent session ids without changing ordinary snapshots", function()
       local old = env.host_api.get_workspace_session_id
       env.host_api.get_workspace_session_id = function(index)
@@ -276,6 +289,14 @@ describe("term test suite", function()
       harness.assert_equal(recorded.split_pane.dock, "workspace", "dock should be forwarded")
       harness.assert_true(not pcall(hollow.term.split_pane, { dock = "global" }))
       harness.assert_true(not pcall(hollow.term.split_pane, { edge = "left", dock = "tab" }))
+    end)
+
+    it("split_pane forwards a global scratch dock and tags the created pane", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "global", ratio = 0.25, tag = "scratch" })
+      harness.assert_equal(recorded.split_pane.edge, "bottom", "edge should be forwarded")
+      harness.assert_equal(recorded.split_pane.dock, "global", "scope should be forwarded")
+      harness.assert_equal(recorded.split_pane.ratio, 0.25, "ratio should be forwarded")
+      assert.same({ "scratch" }, hollow.term.get_pane_tags(hollow.term.current_pane().id))
     end)
   end)
 

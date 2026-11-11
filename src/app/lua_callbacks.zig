@@ -63,6 +63,11 @@ pub fn luaActivateSessionNoticeCallback(app_ptr: *anyopaque, id: u64) void {
     _ = app.enqueueMouse(.{ .session_notice_activate = id });
 }
 
+pub fn luaSessionBannerActionCallback(app_ptr: *anyopaque, id: usize, action: @import("../session/workspace_banner.zig").Action) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .session_banner = .{ .workspace_id = id, .action = action } });
+}
+
 pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.{ .toggle_pane_maximized = .{ .pane_id = pane_id, .show_background = show_background } });
@@ -660,6 +665,14 @@ pub fn luaGetWorkspaceSessionHostCallback(app_ptr: *anyopaque, index: usize, out
     if (index >= mux.workspaces.items.len) return "";
     const controller = mux.workspaces.items[index].session_controller orelse return "";
     return copyOut(controller.host, out_buf);
+}
+
+pub fn luaGetWorkspaceSessionStateCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*value| value else return "";
+    if (index >= mux.workspaces.items.len) return "";
+    const controller = mux.workspaces.items[index].session_controller orelse return "";
+    return copyOut(controller.stateName(), out_buf);
 }
 
 fn copyOut(value: []const u8, out_buf: []u8) []const u8 {

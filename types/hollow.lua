@@ -610,6 +610,7 @@
 ---@field domain? string
 ---@field session_id? string Host-owned persistent session ID; absent for ordinary workspaces
 ---@field session_host? string Stable owner host ID of a persistent workspace; absent from older owners
+---@field session_state? "attached"|"taken"|"disconnected" Local attachment status; a taken view is frozen
 ---@field is_active boolean
 
 ---@class HollowMuxWorkspace: HollowWorkspace
@@ -3298,6 +3299,8 @@ function plugins.sync() end
 ---@field get_workspace_name fun(index: integer): string
 ---@field get_workspace_session_id fun(index: integer): string|nil
 ---@field get_workspace_session_host fun(index: integer): string|nil
+---@field get_workspace_session_state fun(index: integer): string|nil
+---@field session_banner_action fun(workspace_id: integer, action: "reclaim"|"confirm"|"cancel"|"close") Queue a native session-banner action
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)

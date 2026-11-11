@@ -242,6 +242,9 @@ function M.setup(hollow, host_api)
       session_host = host_api.get_workspace_session_host and host_api.get_workspace_session_host(
         index
       ) or nil,
+      session_state = host_api.get_workspace_session_state
+          and host_api.get_workspace_session_state(index)
+        or nil,
       is_active = is_active,
     }
   end

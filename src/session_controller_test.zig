@@ -316,11 +316,15 @@ test "session pane controller take-over freezes view and can tear down before vi
     const result = try controller.step();
     result.control.deinit();
     try std.testing.expect(controller.detached);
+    try std.testing.expect(controller.taken);
+    try std.testing.expect(@import("session/dead_pane.zig").state(&node) == null);
     try std.testing.expectError(error.Detached, controller.requestClose(node.id));
     controller.deinit();
     try std.testing.expect(node.content.terminal.session_view == null);
     try std.testing.expectError(error.Detached, node.content.terminal.pty.?.session.requestClose());
     try std.testing.expect(!node.content.terminal.pty.?.isAlive());
+    try std.testing.expect(node.content.terminal.pty.?.session.taken);
+    try std.testing.expect(@import("session/dead_pane.zig").state(&node) == null);
 }
 
 test "session pane controller creates a mux workspace without native shell spawn" {

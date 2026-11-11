@@ -165,6 +165,7 @@ pub const AppCallbacks = struct {
     get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
     invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
     activate_session_notice: ?*const fn (*anyopaque, u64) void = null,
+    session_banner_action: ?*const fn (*anyopaque, usize, @import("session/workspace_banner.zig").Action) void = null,
     title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
@@ -214,6 +215,7 @@ pub const AppCallbacks = struct {
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
     get_workspace_session_id: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
     get_workspace_session_host: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
+    get_workspace_session_state: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
     get_workspace_tab_count: *const fn (app: *anyopaque, workspace_index: usize) usize,
     get_workspace_tab_id_at: *const fn (app: *anyopaque, workspace_index: usize, tab_index: usize) usize,
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -627,6 +629,7 @@ pub const BuiltInPayload = union(enum) {
     topbar_node: BarNode,
     bottombar_node: BarNode,
     sidebar_node: BarNode,
+    session_banner_node: BarNode,
     overlay_node: struct {
         id: []const u8,
         index: usize = 0,
@@ -2465,6 +2468,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_activate_session_notice, 1);
         api.set_field(self.state, -2, "activate_session_notice");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_session_banner_action, 1);
+        api.set_field(self.state, -2, "session_banner_action");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_floating, 1);
@@ -2611,6 +2617,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_session_host, 1);
         api.set_field(self.state, -2, "get_workspace_session_host");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_session_state, 1);
+        api.set_field(self.state, -2, "get_workspace_session_state");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_tab_count, 1);
@@ -3257,7 +3266,7 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .files_dropped => |value| {
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
-        .topbar_node, .bottombar_node, .sidebar_node => |value| {
+        .topbar_node, .bottombar_node, .sidebar_node, .session_banner_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
@@ -6108,6 +6117,18 @@ fn l_activate_session_notice(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_session_banner_action(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = ctx.api.to_number(state, 1);
+    if (!std.math.isFinite(id) or id < 0 or id >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) return 0;
+    var len: usize = 0;
+    const name = (ctx.api.to_lstring(state, 2, &len) orelse return 0)[0..len];
+    const action = std.meta.stringToEnum(@import("session/workspace_banner.zig").Action, name) orelse return 0;
+    if (cbs.session_banner_action) |callback| callback(cbs.app, @intFromFloat(id), action);
+    return 0;
+}
+
 fn l_title_lua_pane(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const cbs = ctx.app_callbacks orelse return 0;
@@ -6709,6 +6730,10 @@ fn l_get_workspace_session_id(state: *State) callconv(.c) c_int {
 
 fn l_get_workspace_session_host(state: *State) callconv(.c) c_int {
     return workspaceSessionString(state, "get_workspace_session_host");
+}
+
+fn l_get_workspace_session_state(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_state");
 }
 
 fn workspaceSessionString(state: *State, comptime field: []const u8) c_int {

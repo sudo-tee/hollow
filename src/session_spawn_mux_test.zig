@@ -220,14 +220,64 @@ test "session pane spawn mux owner bound and controller identity reject before p
     const tab = h.ws.active_tab.?;
     const source = tab.active_pane.?;
     try std.testing.expectError(error.UnsupportedSessionMutation, h.mux.splitActivePaneWith(source, .vertical, 0.5, false));
-    // Repeated tab references model owner-count saturation without allocating
-    // 1024 VT instances. Restore the real ownership list before teardown.
-    try h.ws.tabs.ensureTotalCapacity(a, 1024);
-    while (h.ws.tabs.items.len < 1024) h.ws.tabs.appendAssumeCapacity(tab);
-    defer h.ws.tabs.items.len = 1;
+    // Repeated binding metadata models owner-count saturation (including
+    // global docks) without allocating 1024 VT instances. Restore it before
+    // teardown so the real view is unbound only once.
+    const bindings = h.controller.bindings;
+    defer h.controller.bindings = bindings;
+    for (&h.controller.bindings) |*slot| slot.* = bindings[0];
     try std.testing.expectError(error.ResourceExhausted, h.add(2, .{ .tab = .{} }));
     try std.testing.expectEqual(@as(usize, 1), tab.panes.items.len);
     try std.testing.expectEqual(source, tab.active_pane.?);
+}
+
+fn reclaimAllocationCase(allocator: std.mem.Allocator) !void {
+    var connection = try fixture.mockConnection();
+    defer fixture.freeMock(&connection);
+    var controller = Controller.init(a, &connection);
+    defer controller.deinit();
+    controller.session_id = try a.dupe(u8, "mock");
+    controller.generation = connection.client.generation;
+    var h: Harness = undefined;
+    try h.initAllocated(allocator);
+    defer h.deinit();
+    const workspace_id = h.ws.id;
+    const original = h.mux.activePane().?;
+    const global = try h.add(2, .{ .dock = .{ .edge = .bottom, .scope = .global, .ratio = 0.25 } });
+    h.controller.detached = true;
+    h.controller.taken = true;
+    const bytes = try @import("mux/session_layout.zig").capture(a, h.ws, &h.mux.global_docks);
+    defer a.free(bytes);
+    const info: transport.p.SessionInfo = .{
+        .id = "mock",
+        .attached = true,
+        .revision = 4,
+        .layout = bytes,
+        .panes = &.{ .{ .id = 1, .cols = 80, .rows = 24 }, .{ .id = 2, .cols = 80, .rows = 24 }, .{ .id = 3, .cols = 80, .rows = 24 } },
+    };
+    const restored = h.mux.replaceSessionWorkspace(&h.runtime, fixture.callbacks(), h.cfg, &controller, info, "persistent", null, workspace_id) catch |err| {
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expectEqual(h.ws, h.mux.workspaceById(workspace_id).?);
+        try std.testing.expectEqual(@as(usize, 1), h.mux.workspaces.items.len);
+        try std.testing.expectEqual(global, h.mux.dockOccupant(.global, .bottom).?);
+        try std.testing.expectEqual(global, h.mux.activePane().?);
+        try std.testing.expectEqual(@as(f32, 0.25), h.mux.global_docks.size(.bottom));
+        try std.testing.expectEqual(original, h.ws.active_tab.?.active_pane.?);
+        try std.testing.expect(h.controller.hasBindings());
+        try std.testing.expect(!controller.hasBindings());
+        return err;
+    };
+    try std.testing.expectEqual(workspace_id, restored.id);
+    try std.testing.expectEqual(@as(usize, 1), h.mux.workspaces.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.mux.session_workspace_count);
+    try std.testing.expectEqual(@as(usize, 2), restored.tabs.items.len); // New owner pane was reconciled.
+    try std.testing.expect(!h.controller.hasBindings());
+    try std.testing.expectEqual(@as(u32, 2), h.mux.dockOccupant(.global, .bottom).?.content.terminal.pty.?.session.pane);
+    try std.testing.expect(h.mux.activePane().? != global);
+}
+
+test "session pane reclaim atomically replaces frozen tabs and owned global docks under allocation failure" {
+    try std.testing.checkAllAllocationFailures(a, reclaimAllocationCase, .{});
 }
 
 fn allocationCase(allocator: std.mem.Allocator, mode: u8) !void {

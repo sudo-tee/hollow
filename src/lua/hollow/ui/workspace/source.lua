@@ -649,6 +649,12 @@ local function open_workspace_items()
       source = "open",
       is_active = workspace.is_active == true,
       is_open = true,
+      session_state = workspace.session_state,
+      session_badge = (
+        workspace.session_state == "taken" or workspace.session_state == "disconnected"
+      )
+          and "offline"
+        or nil,
       program_status_badge = badge,
       program_status_state = status_state,
       program_status_attention = program_status.workspace_needs_attention(workspace),

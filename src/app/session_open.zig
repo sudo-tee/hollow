@@ -27,6 +27,8 @@ pub const Pending = struct {
     domain: ?[]const u8,
     name: ?[]const u8,
     startup_input: ?[]u8 = null,
+    replace_workspace: ?usize = null,
+    replace_controller: ?*@import("../session/controller.zig").Controller = null,
     callback_ref: c_int,
     lua_generation: u64,
     state: enum { running, publishing, retiring } = .running,
@@ -110,6 +112,59 @@ pub fn beginStartup(app: *App, options: transport.Options, request: p.Request, d
     const id = try begin(app, options, request, domain, name, no_ref);
     app.startup_session_target = .{ .opening = id };
     return id;
+}
+
+/// Explicit takeover of the original endpoint, never domain re-resolution or
+/// create. Keep the old views until an acknowledged attach can replace them.
+pub fn beginReclaim(app: *App, workspace_id: usize) !u64 {
+    const mux = if (app.mux) |*value| value else return error.MuxUnavailable;
+    const workspace = mux.workspaceById(workspace_id) orelse return error.WorkspaceNotFound;
+    const controller = workspace.session_controller orelse return error.NotSessionWorkspace;
+    if (!controller.taken) return error.SessionStillAttached;
+    if (workspace.session_reclaim == .connecting) return error.SessionBusy;
+    var domain: ?[]const u8 = null;
+    for (controller.bindings) |slot| if (slot) |entry| if (entry.node) |pane| {
+        domain = pane.domainName();
+        break;
+    };
+    const id = try begin(app, controller.connection.options, .{ .id = 0, .op = .attach, .session = controller.session_id }, domain, null, no_ref);
+    for (app.session_opens) |slot| if (slot) |pending| if (pending.id == id) {
+        pending.replace_workspace = workspace_id;
+        pending.replace_controller = controller;
+        break;
+    };
+    workspace.session_reclaim = .connecting;
+    workspace.session_reclaim_error = null;
+    _ = app.session_notices.clear(id); // Progress belongs to the workspace banner.
+    return id;
+}
+
+pub fn bannerAction(app: *App, workspace_id: usize, action: @import("../session/workspace_banner.zig").Action) void {
+    const mux = if (app.mux) |*value| value else return;
+    const workspace = mux.workspaceById(workspace_id) orelse return;
+    const controller = workspace.session_controller orelse return;
+    if (!controller.taken) return; // Stale click after a successful replacement.
+    switch (action) {
+        .reclaim => if (workspace.session_reclaim != .connecting) {
+            workspace.session_reclaim = .confirming;
+        },
+        .cancel => if (workspace.session_reclaim == .confirming) {
+            workspace.session_reclaim = .idle;
+        },
+        .confirm => if (workspace.session_reclaim == .confirming) {
+            _ = beginReclaim(app, workspace_id) catch |err| {
+                workspace.session_reclaim = .failed;
+                workspace.session_reclaim_error = err;
+            };
+        },
+        .close => {
+            for (app.session_opens) |slot| if (slot) |pending| {
+                if (pending.replace_workspace == workspace_id and pending.state == .running) _ = cancel(app, pending.id);
+            };
+            mux_ops.closeWorkspace(app, workspace_id); // Taken attachments close locally.
+        },
+    }
+    app.requestRedraw();
 }
 
 /// Configuration/validation failure before transport admission still needs a
@@ -203,6 +258,14 @@ pub fn pump(app: *App) void {
             }
             continue;
         }
+        if (pending.replace_workspace) |id| {
+            const workspace = if (app.mux) |*mux| mux.workspaceById(id) else null;
+            if (workspace == null or workspace.?.session_controller != pending.replace_controller) {
+                const failure = pending.operation.cancel();
+                retire(app, pending, error.WorkspaceNotFound, failure.outcome, null);
+                continue;
+            }
+        }
         if (pending.connection.?.takeHandoff()) |handoff| mux_ops.reportHandoff(app, handoff);
         const step = pending.operation.step() catch |err| {
             const failure = pending.operation.cancel();
@@ -216,10 +279,13 @@ pub fn pump(app: *App) void {
                 defer attachment.deinit();
                 pending.state = .publishing;
                 const info = attachment.reply.value.session.?;
-                const workspace = mux_ops.addSessionWorkspaceNamed(app, pending.connection.?, info, pending.domain, pending.name) catch |err| {
+                const workspace = (if (pending.replace_workspace) |id|
+                    mux_ops.replaceSessionWorkspace(app, pending.connection.?, info, pending.domain, id)
+                else
+                    mux_ops.addSessionWorkspaceNamed(app, pending.connection.?, info, pending.domain, pending.name)) catch |err| {
                     // Owner has already created/attached. Do not kill its pane
                     // or replay create just because GUI allocation failed.
-                    std.log.err("session {s} attached but view publication failed: {s}", .{ info.id, @errorName(err) });
+                    std.log.warn("session {s} attached but view publication failed: {s}", .{ info.id, @errorName(err) });
                     pending.connection.?.close();
                     retire(app, pending, err, .uncertain, null);
                     continue;
@@ -279,6 +345,12 @@ pub fn pump(app: *App) void {
 }
 
 fn retire(app: *App, pending: *Pending, reason: anyerror, outcome: opener.Outcome, remote: ?[]const u8) void {
+    if (pending.replace_workspace) |id| if (app.mux) |*mux| if (mux.workspaceById(id)) |workspace| {
+        if (workspace.session_controller == pending.replace_controller) {
+            workspace.session_reclaim = .failed;
+            workspace.session_reclaim_error = reason;
+        }
+    };
     pending.state = .retiring;
     pending.connection.?.close();
     const callback_ref = pending.callback_ref;
@@ -334,6 +406,111 @@ fn mockConnection(a: std.mem.Allocator) !*transport.Connection {
     defer a.free(welcome);
     try connection.client.receive(p.header(.welcome, 0, welcome.len), welcome);
     return connection;
+}
+
+fn mockTakenWorkspace(app: *App) !*@import("../mux/workspace.zig").Workspace {
+    const a = app.allocator;
+    const connection = try mockConnection(a);
+    var owned = false;
+    errdefer if (!owned) connection.destroy();
+    connection.poll().?.deinit();
+    const id = try connection.request(.{ .id = 0, .op = .attach, .session = "mock" });
+    connection.client.nextWrite().?.deinit();
+    const info: p.SessionInfo = .{ .id = "mock", .attached = true, .revision = 1, .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }} };
+    const reply = try p.stringify(a, p.Reply{ .id = id, .session = info });
+    defer a.free(reply);
+    try connection.client.receive(p.header(.reply, 0, reply.len), reply);
+    connection.poll().?.deinit();
+    const workspace = try mux_ops.addSessionWorkspace(app, connection, info, "captured-domain");
+    owned = true;
+    const event = try p.stringify(a, p.Event{ .event = .taken, .session = "mock" });
+    defer a.free(event);
+    try connection.client.receive(p.header(.event, 0, event.len), event);
+    mux_ops.pumpSessionControllers(app, &app.ghostty.?);
+    return workspace;
+}
+
+test "session borrowers reclaim confirms then replaces in place or preserves the frozen view on failure" {
+    const a = std.testing.allocator;
+    for (0..4) |mode| {
+        const app = try a.create(App);
+        defer a.destroy(app);
+        app.* = App.init(a);
+        defer app.deinit();
+        app.ghostty = try @import("../term/ghostty.zig").Runtime.init(a, null);
+        app.mux = @import("../mux.zig").Mux.init(a);
+        app.cell_width_px = 8;
+        app.cell_height_px = 16;
+        const workspace = try mockTakenWorkspace(app);
+        const workspace_id = workspace.id;
+        const frozen = app.activePane().?;
+        const frozen_id = frozen.id;
+        try std.testing.expect(app.sessionBannerHeight() > 0);
+        bannerAction(app, workspace_id, .reclaim);
+        try std.testing.expectEqual(.confirming, workspace.session_reclaim);
+        try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
+        bannerAction(app, workspace_id, .cancel);
+        try std.testing.expectEqual(.idle, workspace.session_reclaim);
+        try std.testing.expect(workspace.session_controller.?.connection.client.nextWrite() == null);
+        if (mode == 3) workspace.session_controller.?.host = try a.dupe(u8, "original-host");
+        const previous_controller = workspace.session_controller.?;
+        const pending = try Pending.prepare(a, .{ .id = 0, .op = .attach, .session = "mock" }, "captured-domain", null, no_ref, 0, 77);
+        pending.replace_workspace = workspace_id;
+        pending.replace_controller = workspace.session_controller;
+        workspace.session_reclaim = .connecting;
+        const connection = try mockConnection(a);
+        pending.connection = connection;
+        pending.operation.bind(connection);
+        app.session_opens[0] = pending;
+        app.session_open_count = 1;
+        pump(app);
+        const outgoing = connection.client.nextWrite().?;
+        defer outgoing.deinit();
+        const request = try p.parse(p.Request, a, outgoing.payload);
+        defer request.deinit();
+        try std.testing.expectEqual(p.Op.attach, request.value.op);
+        try std.testing.expectEqualStrings("mock", request.value.session.?);
+        try std.testing.expectEqual(frozen, app.activePane().?);
+        if (mode == 2) {
+            bannerAction(app, workspace_id, .close);
+            try std.testing.expectEqual(@as(usize, 0), app.mux.?.workspaces.items.len);
+            try std.testing.expect(pending.state == .retiring);
+            try std.testing.expect(connection.client.nextWrite() == null);
+            continue;
+        }
+        const body = try p.stringify(a, p.Reply{
+            .id = request.value.id,
+            .ok = mode != 1,
+            .@"error" = if (mode == 1) "SessionNotFound" else null,
+            .session = if (mode == 1) null else .{
+                .id = "mock",
+                .attached = true,
+                .revision = 2,
+                .panes = &.{ .{ .id = 1, .cols = 100, .rows = 30 }, .{ .id = 2, .cols = 80, .rows = 24 } },
+            },
+        });
+        defer a.free(body);
+        try connection.client.receive(p.header(.reply, 0, body.len), body);
+        pump(app);
+        try std.testing.expectEqual(@as(usize, 1), app.mux.?.workspaces.items.len);
+        const current = app.mux.?.workspaceById(workspace_id).?;
+        if (mode == 0) {
+            try std.testing.expect(current.session_controller != previous_controller);
+            try std.testing.expectEqual(@as(usize, 2), current.tabs.items.len);
+            try std.testing.expect(app.findPaneById(frozen_id) == null);
+            try std.testing.expectEqual(@as(u32, 0), app.sessionBannerHeight());
+            // A stale Close click from the old banner cannot kill the reclaimed session.
+            bannerAction(app, workspace_id, .close);
+            try std.testing.expectEqual(@as(usize, 1), app.mux.?.workspaces.items.len);
+        } else {
+            try std.testing.expectEqual(frozen, app.activePane().?);
+            try std.testing.expectEqual(.failed, current.session_reclaim);
+            try std.testing.expect(current.session_controller.?.taken);
+            try std.testing.expect(app.sessionBannerHeight() > 0);
+            try std.testing.expectEqual(@as(?anyerror, if (mode == 1) error.Rejected else error.SessionHostChanged), current.session_reclaim_error);
+            try std.testing.expect(connection.client.nextWrite() == null);
+        }
+    }
 }
 
 test "session borrowers pending create publishes views before subsequent output dispatch" {

@@ -208,7 +208,11 @@ hollow.term.undock_pane(pane_id)
   their space back. The hidden-pane badge and the mux navigator include
   docks (navigator groups them under **Docks** and **Global docks**).
 - `undock_pane` returns the pane to the active tab as an edge split of the
-  same size. Closing a workspace closes its docks.
+  same size.
+  Undocking across persistent-session ownership boundaries is rejected.
+  This includes moves to or from a non-persistent workspace.
+  Switch to the pane's owning workspace before undocking it.
+  Closing a workspace closes its docks.
 - Saved workspaces keep docks: `export_current()` writes workspace docks to
   `docks` and global docks to `global_docks` (each entry carries `edge` and
   `size`). Bootstrapping restores them and skips a global dock whose edge is
@@ -218,6 +222,10 @@ hollow.term.undock_pane(pane_id)
   that owns their panes, and a restored global dock whose edge is occupied by
   another session's pane becomes a tab instead. Hide/show and dock/undock
   trigger a layout save.
+  Edge splits without `dock` also work in persistent workspaces.
+  They span the whole tab layout.
+  Closing a persistent workspace includes its session-owned global docks.
+  The last tab remains until those docks acknowledge closure.
 - `ui.sidebar.dock()` docks the sidebar globally (`scope` option to change),
   and `ui.pane.split({ edge = ..., dock = ... })` docks a Lua pane.
 

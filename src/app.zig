@@ -974,6 +974,10 @@ pub const App = struct {
             if (controller.host.len > 0) .{ .string = try self.allocator.dupe(u8, controller.host) } else .null
         else
             .null);
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_state"), if (workspace.session_controller) |controller|
+            .{ .string = try self.allocator.dupe(u8, controller.stateName()) }
+        else
+            .null);
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
@@ -1251,6 +1255,7 @@ pub const App = struct {
             .attach_session = lua_callbacks.luaAttachSessionCallback,
             .get_workspace_session_id = lua_callbacks.luaGetWorkspaceSessionIdCallback,
             .get_workspace_session_host = lua_callbacks.luaGetWorkspaceSessionHostCallback,
+            .get_workspace_session_state = lua_callbacks.luaGetWorkspaceSessionStateCallback,
             .job_request = lua_callbacks.luaJobRequestCallback,
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
@@ -1266,6 +1271,7 @@ pub const App = struct {
             .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
             .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
             .activate_session_notice = lua_callbacks.luaActivateSessionNoticeCallback,
+            .session_banner_action = lua_callbacks.luaSessionBannerActionCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1965,8 +1971,13 @@ pub const App = struct {
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
         const term = pane.asTerminal() orelse return false;
-        // An exited persistent pane has no process to receive keys; its
-        // placeholder footer owns Enter and Ctrl+D instead.
+        // Ctrl+D remains a local close for a taken view, without a per-pane
+        // footer or silently reclaiming its whole session.
+        if (term.pty) |pty| if (pty == .session and pty.session.taken and key == .d and mods == ghostty.Mods.ctrl) {
+            if (action == .press) mux_ops.closePaneById(self, pane.id);
+            return true;
+        };
+        // An exited pane's footer offers respawn/close.
         if (dead_pane.state(pane)) |dead| if (dead_pane.key(dead, key, mods)) |choice| {
             if (action != .press) return true;
             switch (choice) {
@@ -2361,10 +2372,18 @@ pub const App = struct {
 
     /// Height in pixels of the shared top bar. 0 when hidden.
     pub fn tabBarHeight(self: *App) u32 {
-        if (!self.shouldShowTopBar()) return 0;
-        if (self.topBarLayout()) |layout| return layout.height_px;
-        if (self.config.top_bar_height > 0) return self.config.top_bar_height;
-        return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
+        const banner = self.sessionBannerHeight();
+        if (!self.shouldShowTopBar()) return banner;
+        if (self.topBarLayout()) |layout| return banner + layout.height_px;
+        if (self.config.top_bar_height > 0) return banner + self.config.top_bar_height;
+        return banner + ((self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1));
+    }
+
+    pub fn sessionBannerHeight(self: *App) u32 {
+        const workspace = self.activeWorkspace() orelse return 0;
+        const controller = workspace.session_controller orelse return 0;
+        if (!controller.taken) return 0;
+        return @import("session/workspace_banner.zig").height(self.config.window_width, self.cell_width_px, self.cell_height_px);
     }
 
     pub fn shouldShowTopBar(self: *App) bool {

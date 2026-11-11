@@ -67,13 +67,15 @@ fn admit(app: *App, placement: Mux.SessionPlacement, cwd: ?[]const u8, requested
     if (ws.session_close_desired or controller.close_work or controller.pendingCloses() != 0 or controller.kill_request != null) return error.SessionClosing;
     if (controller.spawn_active) return error.SessionBusy;
     if (controller.layout_conflict) return error.RevisionConflict;
-    const source = mux.activePane() orelse return error.NoActivePane;
     const tab = mux.activeTab() orelse return error.NoActiveTab;
+    const active = mux.activePane() orelse return error.NoActivePane;
+    const source = if (mux.controllerForPane(active.id) == controller) active else tab.activePane() orelse return error.NoActivePane;
     if (tab.close_after_session_ack) return error.SessionClosing;
     if (placement == .split and tab.panes.items.len >= 64) return error.ResourceExhausted;
     var pane_count: usize = 0;
-    var panes = ws.paneIterator();
-    while (panes.next() != null) pane_count += 1;
+    for (controller.bindings) |slot| if (slot != null) {
+        pane_count += 1;
+    };
     if (pane_count >= 1024) return error.ResourceExhausted;
     var slot: ?usize = null;
     for (app.session_spawns, 0..) |value, index| if (value == null) {
@@ -256,7 +258,9 @@ pub fn handle(app: *App, controller: *Controller, message: transport.Message) bo
         };
         const is_tab = op.placement == .tab;
         const callback = remove(app, index);
-        if (should_close) controller.scheduleClose(pane_id) catch {};
+        if (workspace.session_close_desired) {
+            @import("session_controller.zig").scheduleSessionWorkspaceClose(app, workspace);
+        } else if (should_close) controller.scheduleClose(pane_id) catch {};
         controller.layout_dirty = true;
         controller.layout_due_ns = 0;
         @import("htp.zig").bindHtpHandlers(app);
@@ -381,6 +385,12 @@ fn mockApp() !*App {
         \\hollow = {_session_host=function() return {mode='explicit',path_style='posix',
         \\ connector={argv={'ssh','test-host'}},agent={path='/fake-agent'}} end}
     );
+    _ = try mockWorkspace(app, "mock");
+    return app;
+}
+
+fn mockWorkspace(app: *App, session_id: []const u8) !*@import("../mux/workspace.zig").Workspace {
+    const a = app.allocator;
     const connection = try a.create(transport.Connection);
     var owned = false;
     errdefer if (!owned) connection.destroy();
@@ -395,14 +405,14 @@ fn mockApp() !*App {
     defer a.free(welcome);
     try connection.client.receive(p.header(.welcome, 0, welcome.len), welcome);
     connection.poll().?.deinit();
-    const request = try connection.request(.{ .id = 0, .op = .attach, .session = "mock" });
+    const request = try connection.request(.{ .id = 0, .op = .attach, .session = session_id });
     connection.client.nextWrite().?.deinit();
-    const info: p.SessionInfo = .{ .id = "mock", .attached = true, .revision = 0, .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }} };
+    const info: p.SessionInfo = .{ .id = session_id, .attached = true, .revision = 0, .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }} };
     try mockReply(connection, .{ .id = request, .session = info });
     connection.poll().?.deinit();
-    _ = try @import("session_controller.zig").addSessionWorkspace(app, connection, info, "bound");
+    const workspace = try @import("session_controller.zig").addSessionWorkspace(app, connection, info, "bound");
     owned = true;
-    return app;
+    return workspace;
 }
 
 fn mockReply(connection: *transport.Connection, value: p.Reply) !void {
@@ -413,6 +423,207 @@ fn mockReply(connection: *transport.Connection, value: p.Reply) !void {
 
 fn mockPump(app: *App) void {
     @import("session_controller.zig").pumpSessionControllers(app, &app.ghostty.?);
+}
+
+fn mockDock(app: *App, id: u32, edge: @import("../mux.zig").PaneEdge, scope: @import("../mux.zig").DockScope) !*@import("../pane.zig").Pane {
+    const ws = app.activeWorkspace().?;
+    return app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, ws.session_controller.?, ws.id, .{ .id = id, .cols = 80, .rows = 24 }, "bound", null, .{ .dock = .{ .edge = edge, .scope = scope } });
+}
+
+test "session borrowers global dock close and respawn use its owner binding" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const controller = app.activeWorkspace().?.session_controller.?;
+    const connection = controller.connection;
+    connection.client.respawn_supported = true;
+    const pane = try mockDock(app, 2, .bottom, .global);
+    const id = pane.id;
+    try std.testing.expectEqual(controller, app.mux.?.controllerForPane(id).?);
+    pane.content.terminal.pty.?.session.status = 0;
+    try @import("session_controller.zig").respawnPane(app, id);
+    const respawn = connection.client.nextWrite().?;
+    defer respawn.deinit();
+    const parsed = try p.parse(p.Request, a, respawn.payload);
+    defer parsed.deinit();
+    try std.testing.expectEqual(p.Op.respawn, parsed.value.op);
+    try std.testing.expectEqual(@as(?u32, 2), parsed.value.pane);
+    try mockReply(connection, .{ .id = parsed.value.id, .revision = 1 });
+    mockPump(app);
+    try std.testing.expect(pane.content.terminal.pty.?.session.status == null);
+    @import("session_controller.zig").closePaneById(app, id);
+    try std.testing.expect(app.findPaneById(id) != null);
+    mockPump(app);
+    const close = connection.client.nextWrite().?;
+    defer close.deinit();
+    const request = try p.parse(p.Request, a, close.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.close, request.value.op);
+    try std.testing.expectEqual(@as(?u32, 2), request.value.pane);
+    try mockReply(connection, .{ .id = request.value.id, .revision = 2 });
+    mockPump(app);
+    try std.testing.expect(app.findPaneById(id) == null);
+    try std.testing.expectEqual(@as(usize, 1), app.mux.?.workspaces.items.len);
+}
+
+test "session borrowers workspace close acknowledges docks before removing the last tab" {
+    const a = std.testing.allocator;
+    // Explicit workspace close, last-tab close, and last-tab-pane close all
+    // remove the attachment and must include both kinds of owned dock.
+    for (0..3) |mode| {
+        const app = try mockApp();
+        defer a.destroy(app);
+        defer app.deinit();
+        const ws = app.activeWorkspace().?;
+        const original_id = ws.active_tab.?.active_pane.?.id;
+        const connection = ws.session_controller.?.connection;
+        const global_id = (try mockDock(app, 2, .bottom, .global)).id;
+        const workspace_id = (try mockDock(app, 3, .left, .workspace)).id;
+        switch (mode) {
+            0 => @import("session_controller.zig").closeWorkspace(app, null),
+            1 => @import("session_controller.zig").closeTab(app),
+            else => @import("session_controller.zig").closePaneById(app, original_id),
+        }
+        mockPump(app);
+        var requests: [2]u64 = undefined;
+        for (&requests) |*id| {
+            const message = connection.client.nextWrite().?;
+            defer message.deinit();
+            const request = try p.parse(p.Request, a, message.payload);
+            defer request.deinit();
+            try std.testing.expectEqual(p.Op.close, request.value.op);
+            try std.testing.expect(request.value.pane.? == 2 or request.value.pane.? == 3);
+            id.* = request.value.id;
+        }
+        try std.testing.expect(connection.client.nextWrite() == null);
+        // ACK in reverse order; neither view may disappear before its ACK.
+        try mockReply(connection, .{ .id = requests[1], .revision = 1 });
+        mockPump(app);
+        try std.testing.expect(app.findPaneById(original_id) != null);
+        try std.testing.expectEqual(@as(usize, 1), app.mux.?.workspaces.items.len);
+        try mockReply(connection, .{ .id = requests[0], .revision = 2 });
+        mockPump(app);
+        try std.testing.expect(app.findPaneById(global_id) == null);
+        try std.testing.expect(app.findPaneById(workspace_id) == null);
+        mockPump(app);
+        const last = connection.client.nextWrite().?;
+        defer last.deinit();
+        const request = try p.parse(p.Request, a, last.payload);
+        defer request.deinit();
+        try std.testing.expectEqual(p.Op.close, request.value.op);
+        try std.testing.expectEqual(@as(?u32, 1), request.value.pane);
+        try mockReply(connection, .{ .id = request.value.id, .revision = 3 });
+        mockPump(app);
+        try std.testing.expectEqual(@as(usize, 0), app.mux.?.workspaces.items.len);
+        try std.testing.expect(app.mux.?.global_docks.slot(.bottom).pane == null);
+    }
+}
+
+test "session borrowers undock rejects foreign workspaces without changing either layout" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const ws = app.activeWorkspace().?;
+    const pane = try mockDock(app, 2, .bottom, .global);
+    const Pane = @import("../pane.zig").Pane;
+    const other = try a.create(Pane);
+    other.* = Pane.init(a);
+    other.id = app.mux.?.reservePaneId();
+    other.content.terminal.terminal = try app.ghostty.?.createTerminal(20, 5, 10000);
+    try app.mux.?.newWorkspaceWithPane(&app.ghostty.?, other, null);
+    try std.testing.expectError(error.CrossSessionMove, app.mux.?.undockPane(pane));
+    try std.testing.expectEqual(pane, app.mux.?.dockOccupant(.global, .bottom).?);
+    try std.testing.expectEqual(@as(usize, 1), app.activeWorkspace().?.active_tab.?.panes.items.len);
+    try std.testing.expectEqual(ws.session_controller.?, app.mux.?.controllerForPane(pane.id).?);
+    const foreign = try mockWorkspace(app, "foreign");
+    const foreign_dock = try mockDock(app, 2, .top, .global);
+    const foreign_dock_id = foreign_dock.id;
+    try std.testing.expectError(error.CrossSessionMove, app.mux.?.undockPane(pane));
+    try std.testing.expectEqual(foreign.session_controller.?, app.mux.?.controllerForPane(foreign_dock_id).?);
+    const foreign_layout = try @import("../mux/session_layout.zig").capture(a, foreign, &app.mux.?.global_docks);
+    defer a.free(foreign_layout);
+    // Local removal of a detached attachment drops only its own global views.
+    foreign.session_controller.?.abort(error.Disconnected);
+    app.mux.?.switchWorkspace(0);
+    try std.testing.expect(app.mux.?.focusPaneById(foreign_dock_id));
+    @import("session_controller.zig").closeWorkspace(app, foreign.id);
+    try std.testing.expect(app.findPaneById(foreign_dock_id) == null);
+    try std.testing.expectEqual(pane, app.mux.?.dockOccupant(.global, .bottom).?);
+    app.mux.?.switchWorkspace(0);
+    try app.mux.?.undockPane(pane);
+    try std.testing.expectEqual(@as(usize, 2), ws.active_tab.?.panes.items.len);
+    const layout = try @import("../mux/session_layout.zig").capture(a, ws, &app.mux.?.global_docks);
+    defer a.free(layout);
+}
+
+test "session borrowers workspace close leaves another attachment's global dock alive" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const ws = app.activeWorkspace().?;
+    const workspace_id = ws.id;
+    const connection = ws.session_controller.?.connection;
+    const owned_id = (try mockDock(app, 2, .bottom, .global)).id;
+    const foreign = try mockWorkspace(app, "foreign");
+    const foreign_dock = try mockDock(app, 2, .top, .global);
+    const foreign_id = foreign_dock.id;
+    @import("session_controller.zig").closeWorkspace(app, workspace_id);
+    mockPump(app);
+    const dock_close = connection.client.nextWrite().?;
+    defer dock_close.deinit();
+    try mockReply(connection, .{ .id = dock_close.request_id.?, .revision = 1 });
+    mockPump(app);
+    mockPump(app);
+    const tab_close = connection.client.nextWrite().?;
+    defer tab_close.deinit();
+    try mockReply(connection, .{ .id = tab_close.request_id.?, .revision = 2 });
+    mockPump(app);
+    try std.testing.expect(app.mux.?.workspaceById(workspace_id) == null);
+    try std.testing.expect(app.findPaneById(owned_id) == null);
+    try std.testing.expectEqual(foreign_dock, app.findPaneById(foreign_id).?);
+    try std.testing.expectEqual(foreign.session_controller.?, app.mux.?.controllerForPane(foreign_id).?);
+    try std.testing.expect(foreign.session_controller.?.connection.client.nextWrite() == null);
+}
+
+test "session borrowers edge splits span the tab and save all four placements" {
+    const a = std.testing.allocator;
+    for ([_]@import("../mux.zig").PaneEdge{ .left, .right, .top, .bottom }) |edge| {
+        const app = try mockApp();
+        defer a.destroy(app);
+        defer app.deinit();
+        const ws = app.activeWorkspace().?;
+        const connection = ws.session_controller.?.connection;
+        _ = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, ws.session_controller.?, ws.id, .{ .id = 3, .cols = 80, .rows = 24 }, "bound", null, .{ .split = .{ .tab_id = ws.active_tab.?.id, .source_id = ws.active_tab.?.active_pane.?.id, .direction = .vertical, .ratio = 0.5 } });
+        @import("session_controller.zig").splitPane(app, .vertical, 0.25, null, null, null, .send, false, false, false, null, null, null, null, -1, edge, null);
+        try std.testing.expectEqual(@as(usize, 1), app.session_spawn_count);
+        try std.testing.expectEqual(@as(usize, 2), ws.active_tab.?.panes.items.len);
+        mockPump(app);
+        const spawn = connection.client.nextWrite().?;
+        defer spawn.deinit();
+        try mockReply(connection, .{ .id = spawn.request_id.?, .pane = 2, .revision = 1 });
+        mockPump(app);
+        const tab = ws.active_tab.?;
+        const root = tab.root_split.?;
+        const dock = @import("../mux/dock.zig");
+        try std.testing.expectEqual(dock.directionFor(edge), root.direction);
+        try std.testing.expectEqual(if (dock.placesFirst(edge)) @as(f32, 0.25) else @as(f32, 0.75), root.ratio);
+        const leaf = if (dock.placesFirst(edge)) root.first.? else root.second.?;
+        const existing = if (dock.placesFirst(edge)) root.second.? else root.first.?;
+        try std.testing.expectEqual(.split, existing.kind);
+        try std.testing.expectEqual(tab.active_pane.?, leaf.pane.?);
+        try std.testing.expectEqual(edge, leaf.pane.?.placed_edge.?);
+        const save = connection.client.nextWrite().?;
+        defer save.deinit();
+        const parsed = try p.parse(p.Request, a, save.payload);
+        defer parsed.deinit();
+        try std.testing.expectEqual(p.Op.layout, parsed.value.op);
+        const layout = try @import("../session/layout.zig").decode(a, parsed.value.layout.?, &.{ 1, 2, 3 });
+        defer layout.deinit();
+        try std.testing.expectEqual(@as(usize, 5), layout.value.tabs[0].nodes.len);
+    }
 }
 
 test "session borrowers owner tab spawn waits for acknowledgement and saves geometry" {
@@ -459,6 +670,70 @@ test "session borrowers owner tab spawn waits for acknowledgement and saves geom
     try mockReply(connection, .{ .id = layout_request.value.id, .revision = 2 });
     mockPump(app);
     try std.testing.expect(controller.layout_request == null and !controller.layout_dirty);
+}
+
+test "session borrowers dock split waits for acknowledgement and persists both scopes" {
+    const a = std.testing.allocator;
+    for ([_]@import("../mux.zig").DockScope{ .global, .workspace }) |scope| {
+        const app = try mockApp();
+        defer a.destroy(app);
+        defer app.deinit();
+        const ws = app.activeWorkspace().?;
+        const controller = ws.session_controller.?;
+        const connection = controller.connection;
+        // Exercise the public app path that previously rejected session docks.
+        @import("session_controller.zig").splitPane(app, .vertical, 0.25, null, null, null, .send, false, false, false, null, null, null, null, -1, .bottom, scope);
+        try std.testing.expectEqual(@as(usize, 1), app.session_spawn_count);
+        try std.testing.expect(app.mux.?.dockOccupant(scope, .bottom) == null);
+        mockPump(app);
+        const request = connection.client.nextWrite().?;
+        const id = request.request_id.?;
+        request.deinit();
+        try mockReply(connection, .{ .id = id, .pane = 2, .revision = 1 });
+        mockPump(app);
+        const pane = app.mux.?.dockOccupant(scope, .bottom).?;
+        try std.testing.expectEqual(pane, app.activePane().?);
+        try std.testing.expectEqual(@as(usize, 1), ws.tabs.items.len);
+        try std.testing.expectEqual(@as(usize, 1), ws.active_tab.?.panes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), app.session_spawn_count);
+        const save = connection.client.nextWrite().?;
+        defer save.deinit();
+        const parsed = try p.parse(p.Request, a, save.payload);
+        defer parsed.deinit();
+        try std.testing.expectEqual(p.Op.layout, parsed.value.op);
+        const layout = try @import("../session/layout.zig").decode(a, parsed.value.layout.?, &.{ 1, 2 });
+        defer layout.deinit();
+        try std.testing.expectEqual(@as(usize, 1), layout.value.docks.len);
+        try std.testing.expectEqualStrings(@tagName(scope), @tagName(layout.value.docks[0].scope));
+        try std.testing.expectEqual(.bottom, layout.value.docks[0].edge);
+        try std.testing.expectEqual(@as(f32, 0.25), layout.value.docks[0].ratio);
+    }
+}
+
+test "session borrowers acknowledged dock spawn preserves a pane when its edge becomes occupied" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const ws = app.activeWorkspace().?;
+    const controller = ws.session_controller.?;
+    const connection = controller.connection;
+    const original = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, ws.id, .{ .id = 3, .cols = 80, .rows = 24 }, "bound", null, .{ .dock = .{ .edge = .left, .scope = .global } });
+    @import("session_controller.zig").splitPane(app, .vertical, 0.25, null, null, null, .send, false, false, false, null, null, null, null, -1, .bottom, .global);
+    mockPump(app);
+    const request = connection.client.nextWrite().?;
+    const id = request.request_id.?;
+    request.deinit();
+    try app.mux.?.dockPane(original, .bottom, .global, 0.4);
+    try mockReply(connection, .{ .id = id, .pane = 2, .revision = 1 });
+    mockPump(app);
+    try std.testing.expect(!controller.detached);
+    try std.testing.expectEqual(original, app.mux.?.dockOccupant(.global, .bottom).?);
+    try std.testing.expectEqual(@as(usize, 0), app.session_spawn_count);
+    const tab = ws.active_tab.?;
+    try std.testing.expectEqual(@as(usize, 1), tab.panes.items.len);
+    try std.testing.expect(tab.panes.items[0] != original);
+    try std.testing.expect(tab.panes.items[0].content.terminal.terminal_output_ready);
 }
 
 test "session borrowers pending split coalesces layout changes behind acknowledged save" {
