@@ -5,6 +5,7 @@ const std = @import("std");
 const App = @import("../app.zig").App;
 const transport = @import("../session/transport.zig");
 const opener = @import("../session/open.zig");
+const session_notice = @import("../session/notice.zig");
 const mux_ops = @import("session_controller.zig");
 const p = transport.p;
 const no_ref: c_int = -1;
@@ -122,11 +123,49 @@ pub fn reportAdmissionFailure(app: *App, reason: anyerror, startup: bool) void {
     app.requestRedraw();
 }
 
+/// Mirrors notices into Lua notifications (and the attention history). The
+/// native panel keeps any notice Lua could not show.
+pub fn syncNotices(app: *App) void {
+    const Sink = struct {
+        app: *App,
+
+        pub fn show(self: @This(), value: session_notice.Notice) bool {
+            const lua = if (self.app.lua) |*lua| lua else return false;
+            var text: session_notice.Text = .{};
+            text.format(value);
+            var buf: [192]u8 = undefined;
+            var len: usize = 0;
+            for (text.lines[1..text.count], 0..) |line, i| {
+                const sep: []const u8 = if (i == 0) "" else "\n";
+                const piece = std.fmt.bufPrint(buf[len..], "{s}{s}", .{ sep, line }) catch break;
+                len += piece.len;
+            }
+            const level = if (value.state == .connecting) "info" else if (value.outcome == .uncertain) "warn" else "error";
+            return lua.emitBuiltInEventChecked("session:notice", .{ .session_notice = .{
+                .id = value.id,
+                .connecting = value.state == .connecting,
+                .level = level,
+                .title = text.lines[0],
+                .message = buf[0..len],
+            } });
+        }
+
+        pub fn close(self: @This(), id: u64) void {
+            if (self.app.lua) |*lua| lua.emitBuiltInEvent("session:notice", .{ .session_notice = .{ .id = id, .close = true } });
+        }
+    };
+    app.session_notices.sync(Sink{ .app = app });
+}
+
 /// A pointer click is deliberate cancellation/dismissal, never a retry. Do not
-/// silently duplicate a create whose reply might have been lost.
+/// silently duplicate a create whose reply might have been lost. Native clicks
+/// target the visible panel; Lua notifications target their own notice.
 pub fn activateNotice(app: *App, id: u64) void {
-    const current = app.session_notices.current() orelse return;
-    if (current.id != id) return;
+    const current = app.session_notices.get(id) orelse return;
+    if (!current.published) {
+        const visible = app.session_notices.currentNative() orelse return;
+        if (visible.id != id) return;
+    }
     if (current.state == .connecting) {
         _ = cancel(app, id);
     } else if (app.session_notices.clear(id)) app.requestRedraw();

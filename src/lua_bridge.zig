@@ -164,6 +164,7 @@ pub const AppCallbacks = struct {
     create_lua_pane: ?*const fn (*anyopaque, c_int, []const u8, f32, bool, []const u8) usize = null,
     get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
     invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
+    activate_session_notice: ?*const fn (*anyopaque, u64) void = null,
     title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
@@ -1430,6 +1431,11 @@ pub const Runtime = struct {
     }
 
     pub fn emitBuiltInEvent(self: *Runtime, name: []const u8, payload: BuiltInPayload) void {
+        _ = self.emitBuiltInEventChecked(name, payload);
+    }
+
+    /// Whether the Lua dispatcher ran; handler errors are logged by Lua.
+    pub fn emitBuiltInEventChecked(self: *Runtime, name: []const u8, payload: BuiltInPayload) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1437,31 +1443,32 @@ pub const Runtime = struct {
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
-            return;
+            return false;
         }
 
         api.get_field(self.state, -1, "_emit_builtin_event");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 2);
-            return;
+            return false;
         }
 
         pushOwnedString(self.allocator, api, self.state, name) catch {
             pop(api, self.state, 3);
-            return;
+            return false;
         };
         pushBuiltInPayload(self.allocator, api, self.state, payload) catch {
             pop(api, self.state, 4);
-            return;
+            return false;
         };
 
         if (api.pcall(self.state, 2, 0, 0) != 0) {
             logLuaError(api, self.state, "emit_builtin_event");
             pop(api, self.state, 1);
-            return;
+            return false;
         }
 
         pop(api, self.state, 1);
+        return true;
     }
 
     pub fn invokeOperationCallback(self: *Runtime, callback_ref: c_int, success: bool, payload: OperationCallbackPayload) void {
@@ -2455,6 +2462,9 @@ pub const Runtime = struct {
             api.push_cclosure(self.state, entry[0], 1);
             api.set_field(self.state, -2, entry[1]);
         }
+        api.push_cclosure(self.state, l_activate_session_notice, 1);
+        api.set_field(self.state, -2, "activate_session_notice");
+
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_floating, 1);
         api.set_field(self.state, -2, "set_pane_floating");
@@ -6089,6 +6099,14 @@ fn l_invalidate_lua_pane(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_activate_session_notice(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    if (cbs.activate_session_notice) |callback| callback(cbs.app, id);
+    return 0;
+}
+
 fn l_title_lua_pane(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const cbs = ctx.app_callbacks orelse return 0;
@@ -8812,12 +8830,19 @@ test "session borrowers workspace close reports session identity and startup res
     runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = "work" } });
     runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s1", .session_host = "h1", .session_ended = true } });
     runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s2" } });
+    runtime.emitBuiltInEvent("session:handoff", .{ .session_handoff = .{ .from = "0123456789ab", .to = "ba9876543210", .ok = true } });
+    try std.testing.expect(runtime.emitBuiltInEventChecked("session:notice", .{ .session_notice = .{ .id = 7, .connecting = true, .level = "info", .title = "Connecting", .message = "a\nb" } }));
+    runtime.emitBuiltInEvent("session:notice", .{ .session_notice = .{ .id = 7, .close = true, .title = "unused" } });
     try std.testing.expect(runtime.sessionStartup("main"));
     try runtime.runString(
         \\local named, ended, detached = closed[1], closed[2], closed[3]
         \\assert(named.name == "work" and named.session_id == nil and named.session_ended == nil)
         \\assert(ended.name == nil and ended.session_id == "s1" and ended.session_host == "h1" and ended.session_ended == true)
         \\assert(detached.session_id == "s2" and detached.session_host == nil and detached.session_ended == false)
+        \\assert(closed[4].from == "0123456789ab" and closed[4].to == "ba9876543210" and closed[4].ok == true)
+        \\local shown, gone = closed[5], closed[6]
+        \\assert(shown.id == 7 and shown.connecting == true and shown.level == "info" and shown.title == "Connecting" and shown.message == "a\nb")
+        \\assert(gone.id == 7 and gone.close == true and gone.title == nil)
         \\assert(startup_domain == "main")
     );
     try std.testing.expect(!runtime.sessionStartup(null));

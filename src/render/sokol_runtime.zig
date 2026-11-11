@@ -1859,7 +1859,7 @@ fn sessionNoticePanel(app: *App, line_count: usize) session_notice.Rect {
 }
 
 fn hitTestSessionNotice(app: *App, x: f32, y: f32) ?u64 {
-    const value = app.session_notices.current() orelse return null;
+    const value = app.session_notices.currentNative() orelse return null;
     // A modal owns the whole viewport, including empty space outside its panel.
     // Nonmodal overlays own their painted panels, not just clickable children.
     if (g_overlay_has_modal or hitTestOverlayWheel(x, y) != null) return null;
@@ -3692,7 +3692,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var offscreen_bar_preraster_ns: i128 = 0;
 
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
-    const notice_value = app.session_notices.current();
+    const notice_value = app.session_notices.currentNative();
     var notice_text: session_notice.Text = .{};
     if (notice_value) |value| {
         notice_text.format(value);

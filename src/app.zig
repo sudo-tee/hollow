@@ -1265,6 +1265,7 @@ pub const App = struct {
             .undock_pane = lua_callbacks.luaUndockPaneCallback,
             .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
             .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
+            .activate_session_notice = lua_callbacks.luaActivateSessionNoticeCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1489,6 +1490,7 @@ pub const App = struct {
             );
             if (self.config.debug_overlay) startup_ns = io.nanoTimestamp() - start_ns;
         }
+        session_open.syncNotices(self);
         {
             self.drainConfigWatchFlag();
         }

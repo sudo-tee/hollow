@@ -11,11 +11,17 @@ pub const Notice = struct {
     remote: [64]u8 = undefined,
     remote_len: usize = 0,
     recovery_session: ?[32]u8 = null,
+    /// Shown as a Lua notification; the native panel skips it.
+    published: bool = false,
 };
 
 pub const Notices = struct {
     entries: [max_entries]?Notice = @splat(null),
     count: usize = 0,
+    /// Published notices removed since the last sync, so Lua can close them.
+    closed: [max_entries]u64 = undefined,
+    closed_len: usize = 0,
+    dirty: bool = false,
 
     pub fn start(self: *Notices, id: u64) bool {
         return self.put(.{ .id = id });
@@ -51,6 +57,7 @@ pub const Notices = struct {
             };
             if (notice.id == value.id) {
                 self.entries[i] = value;
+                self.dirty = true;
                 return true;
             }
             if (notice.state == .failed) {
@@ -58,8 +65,9 @@ pub const Notices = struct {
             }
         }
         const index = empty orelse oldest_failure orelse return false;
-        if (self.entries[index] == null) self.count += 1;
+        if (self.entries[index]) |evicted| self.retire(evicted) else self.count += 1;
         self.entries[index] = value;
+        self.dirty = true;
         return true;
     }
 
@@ -69,9 +77,38 @@ pub const Notices = struct {
             if (value.id != id) continue;
             entry.* = null;
             self.count -= 1;
+            self.retire(value);
             return true;
         };
         return false;
+    }
+
+    pub fn get(self: *const Notices, id: u64) ?Notice {
+        for (self.entries) |entry| if (entry) |value| if (value.id == id) return value;
+        return null;
+    }
+
+    /// When full, the Lua notification stays until the user dismisses it.
+    fn retire(self: *Notices, value: Notice) void {
+        if (!value.published or self.closed_len == self.closed.len) return;
+        self.closed[self.closed_len] = value.id;
+        self.closed_len += 1;
+        self.dirty = true;
+    }
+
+    /// Hands every change since the last sync to `sink`: `show(notice)` for a
+    /// new or changed notice, which returns whether Lua displayed it, and
+    /// `close(id)` for a removed one. Notices Lua could not show stay native.
+    pub fn sync(self: *Notices, sink: anytype) void {
+        if (!self.dirty) return;
+        self.dirty = false;
+        for (self.closed[0..self.closed_len]) |id| sink.close(id);
+        self.closed_len = 0;
+        for (&self.entries) |*entry| if (entry.*) |*value| {
+            if (!value.published) value.published = sink.show(value.*);
+            // Retry once Lua can take it; until then the native panel shows it.
+            if (!value.published) self.dirty = true;
+        };
     }
 
     /// Latest operation first; older retained failures reappear after dismissal.
@@ -80,6 +117,16 @@ pub const Notices = struct {
         var result: ?Notice = null;
         for (self.entries) |entry| if (entry) |value| {
             if (result == null or value.id > result.?.id) result = value;
+        };
+        return result;
+    }
+
+    /// Like `current`, among notices Lua has not shown.
+    pub fn currentNative(self: *const Notices) ?Notice {
+        if (self.count == 0) return null;
+        var result: ?Notice = null;
+        for (self.entries) |entry| if (entry) |value| {
+            if (!value.published and (result == null or value.id > result.?.id)) result = value;
         };
         return result;
     }
@@ -187,6 +234,51 @@ test "session pane notice transitions preserve unrelated failures and bound hist
     // Old failure evicted, but never hide an in-flight operation for capacity.
     try std.testing.expect(!notices.start(max_entries + 2));
     try std.testing.expect(!notices.clear(1));
+}
+
+test "session pane notices sync to Lua, close what Lua showed, and stay native otherwise" {
+    const Sink = struct {
+        lua: bool,
+        shown: usize = 0,
+        closed: usize = 0,
+        pub fn show(self: *@This(), _: Notice) bool {
+            self.shown += 1;
+            return self.lua;
+        }
+        pub fn close(self: *@This(), id: u64) void {
+            std.debug.assert(id == 1);
+            self.closed += 1;
+        }
+    };
+    var notices: Notices = .{};
+    var sink: Sink = .{ .lua = true };
+    try std.testing.expect(notices.start(1));
+    notices.sync(&sink);
+    notices.sync(&sink);
+    try std.testing.expectEqual(@as(usize, 1), sink.shown);
+    try std.testing.expect(notices.currentNative() == null and notices.current() != null);
+    // A state change is shown again under the same ID.
+    try std.testing.expect(notices.failed(1, error.Disconnected, .not_sent));
+    notices.sync(&sink);
+    try std.testing.expectEqual(@as(usize, 2), sink.shown);
+    try std.testing.expect(notices.clear(1));
+    notices.sync(&sink);
+    try std.testing.expectEqual(@as(usize, 1), sink.closed);
+    var native: Sink = .{ .lua = false };
+    try std.testing.expect(notices.start(2));
+    notices.sync(&native);
+    try std.testing.expectEqual(@as(u64, 2), notices.currentNative().?.id);
+    // Lua that was not ready takes the notice on a later sync.
+    var late: Sink = .{ .lua = true };
+    notices.sync(&late);
+    try std.testing.expectEqual(@as(usize, 1), late.shown);
+    try std.testing.expect(notices.currentNative() == null);
+    try std.testing.expect(notices.start(3));
+    notices.sync(&native);
+    // Unshown notices are never closed in Lua.
+    try std.testing.expect(notices.clear(3));
+    notices.sync(&native);
+    try std.testing.expectEqual(@as(usize, 0), native.closed);
 }
 
 test "session pane notice text distinguishes uncertainty without implying safe replay" {

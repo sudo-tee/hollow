@@ -58,6 +58,11 @@ pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f
     return queued;
 }
 
+pub fn luaActivateSessionNoticeCallback(app_ptr: *anyopaque, id: u64) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .session_notice_activate = id });
+}
+
 pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.{ .toggle_pane_maximized = .{ .pane_id = pane_id, .show_background = show_background } });
