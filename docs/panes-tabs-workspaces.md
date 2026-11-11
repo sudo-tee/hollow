@@ -147,8 +147,9 @@ hiding the active pane; showing a pane does not automatically steal focus.
 This is *presentation visibility*, not session detach/reattach. Closing
 the pane or terminating Hollow still follows the configured session
 lifetime; the experimental agent mux alone does not retain PTYs after
-Hollow exits. A future persistent-session feature can serialize the
-`is_hidden` presentation flag independently from its durable PTY handles.
+Hollow exits. Saved workspaces and owner-backed persistent sessions
+serialize the `is_hidden` presentation flag independently from their
+durable PTY handles.
 
 The pane's `is_hidden` snapshot field reports its current visibility. From
 outside Hollow, use `hollow-cli pane hide|show [--id ID|--tag TAG]` (command
@@ -212,6 +213,11 @@ hollow.term.undock_pane(pane_id)
   `docks` and global docks to `global_docks` (each entry carries `edge` and
   `size`). Bootstrapping restores them and skips a global dock whose edge is
   already docked.
+- Owner-backed persistent sessions keep docks and hidden flags too. Workspace
+  docks restore with their workspace; global docks are saved by the session
+  that owns their panes, and a restored global dock whose edge is occupied by
+  another session's pane becomes a tab instead. Hide/show and dock/undock
+  trigger a layout save.
 - `ui.sidebar.dock()` docks the sidebar globally (`scope` option to change),
   and `ui.pane.split({ edge = ..., dock = ... })` docks a Lua pane.
 

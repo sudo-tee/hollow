@@ -232,6 +232,7 @@ excluded from layout, input hit testing and focus navigation. Tiled layouts
 expand into the freed area. Hiding the last visible pane in a tab is ignored.
 Snapshot objects include `is_hidden`. This is independent of terminal
 transport detach/reattach and does not persist the process across app exits.
+Owner-backed persistent sessions do save the hidden flag with the layout.
 `split_pane({ edge = "right", ratio = 0.3, command = "lazygit",
 command_mode = "spawn" })` creates an edge-docked PTY; edge placement
 cannot be combined with `floating = true`.
@@ -248,7 +249,9 @@ Docks keep a pane on a window edge across tab switches. `scope` is
 `"global"` (default, every workspace) or `"workspace"`; `ratio` (default
 0.3) is the dock's share of the window content. One pane per edge per
 scope; a tab's last pane and occupied slots are refused. Docked snapshots
-carry `dock = { edge, scope, workspace_id?, ratio }`. See
+carry `dock = { edge, scope, workspace_id?, ratio }`. Owner-backed
+persistent sessions save dock scope and ratio with the layout; a global
+dock is restored only in the session that owns its pane. See
 [Window docks](../../panes-tabs-workspaces.md#window-docks).
 
 ### Floating and maximized

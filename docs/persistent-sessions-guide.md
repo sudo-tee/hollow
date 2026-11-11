@@ -212,8 +212,13 @@ If you change focus while creation is pending, the new pane stays at its origina
 Floating splits and fullscreen placement use the same path.
 
 Tab order, split geometry, floating bounds, focus, maximization, and workspace names are saved through revision-checked updates.
+Hidden panes and window docks are saved too: hiding or showing a pane and docking or undocking it mark the layout dirty.
+Reattachment restores the saved structure, dock scope and ratio, hidden flags, and the original processes in its panes.
+Workspace docks belong to their workspace; global docks belong to the session that owns their panes.
+A global dock is restored only in its owning session, so another session attached to the same window keeps its own global docks.
+If a global dock's edge is already occupied by another session's pane, the restored pane becomes a tab instead of replacing the occupant.
+Creating an edge or dock split directly in a session-backed workspace is rejected; move an existing pane into a dock with `hollow.term.dock_pane` instead.
 Ordinary geometry edits settle briefly before saving rather than serializing a layout on every drag frame.
-Reattachment restores the saved structure and the original processes in its panes.
 Closing a tab or workspace waits for pending pane creation and includes the acknowledged child in the close operation.
 
 Each workspace permits one pending pane creation at a time.

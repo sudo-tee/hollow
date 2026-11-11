@@ -493,15 +493,26 @@ GUI workspace/controller wiring implemented for an already-attached session:
   addition to transport and per-job bounds.
 - `src/session/layout.zig` defines the versioned, owner-pane-ID geometry blob;
   `src/mux/session_layout.zig` captures/restores tab order, tiled split trees,
-  floating geometry/restore anchors, focus, maximization, and workspace name.
+  floating geometry/restore anchors, focus, maximization, workspace name,
+  hidden panes, and window docks (edge, scope, ratio).
   Restore validates the whole blob before publishing any views. Unknown versions,
   invalid references, cycles/shared nodes, excessive depth, nonfinite geometry,
-  and mismatched pane membership fail without overwriting owner state.
+  duplicate dock edges, hidden active panes, and mismatched pane membership fail
+  without overwriting owner state.
+- Each session blob stores its own workspace docks and the global docks whose
+  panes it owns. Global docks borrowed from another session are omitted from
+  capture because they belong in that session's blob. Restore places global
+  docks in the window; when another attachment already holds the edge, the
+  restored pane becomes a visible tab instead of replacing the occupant.
+  A fallback pane therefore cannot stay hidden, because it becomes the tab's
+  active pane.
 - Layout updates are explicit and revision-checked through the controller. Only
   an acknowledged success advances the local revision; conflicts stop further
   writes until reconciliation. No automatic per-frame serialization or replay.
   Automatic layout saving now follows geometry changes and acknowledged pane
   mutations.
+  Hide/show and dock/undock mark every attached session's layout dirty, so a
+  docked or hidden pane is saved by the session that owns it.
   Owner spawn/close keeps the opaque blob and returns an advanced revision, so
   an in-flight save is fenced but geometry survives a missed follow-up save.
 - Attach reconciles the saved blob against live owner panes

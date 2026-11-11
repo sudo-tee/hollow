@@ -616,6 +616,25 @@ Gotchas that cost time before:
 - Slice 3 validation: Lua, Linux headless, Windows suites, `./launch.sh --build-only`.
 - Slice 4 validation (Lua-only change): `zig build test-luajit test-lua -Dagent-only=false`
   passes with 965 Lua tests. Zig suites were not rerun because no Zig changed.
+- Dock/hidden persistence checkpoint (2026-11-11): rebased
+  `feat/persistent-sessions` onto `origin/main` (`257931b`), keeping the branch's
+  60 commits. The version-1 layout blob now carries bounded `docks`
+  (`pane`, `edge`, `scope`, `ratio`) and `hidden` pane IDs. Capture writes
+  workspace docks plus global docks owned by the attached session, and skips
+  docked panes borrowed from another session; tabs claim pane IDs before docks,
+  then docks before trailing tabs. Restore validates and reconciles duplicate
+  dock edges and stale hidden entries, recreates workspace/global dock views,
+  and reapplies hidden flags. A global edge already occupied by another
+  attachment turns the restored dock into a visible tab instead of replacing
+  the occupant. Hide/show and dock/undock mark every attached session's layout
+  dirty. Session-backed workspaces still reject edge/dock splits; `dock_pane`
+  moves existing panes. Also fixed `activate_session_notice` registration in
+  `src/lua_bridge.zig` (missing upvalue push consumed the `host_api` table and
+  panicked every `Runtime.init`). Validation: `zig build test` and
+  `zig build test-lua` pass; new codec tests cover dock/hidden round-trip,
+  reconcile pruning, and invalid blobs, and integration tests cover hidden +
+  workspace/global dock restore and global-edge conflict fallback with foreign
+  dock omission.
 
 ## Runtime / delegation
 
