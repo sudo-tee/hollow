@@ -230,6 +230,7 @@ fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *Sessi
         };
         defer parsed.deinit();
         if (parsed.value.event == .taken) {
+            if (parsed.value.takeover) |value| @import("../agent/session_trace.zig").logTakeover(parsed.value.session, value);
             self.markAutomationChanged();
             self.requestLayoutResize(false);
             self.requestLayoutRefresh();

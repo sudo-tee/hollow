@@ -434,8 +434,18 @@ function M.setup(hollow, host_api)
         "hollow.term.attach_session(session_id, opts) expects opts.on_complete to be a function"
       )
     end
+    if
+      opts.trace_intent ~= nil
+      and opts.trace_intent ~= "open"
+      and opts.trace_intent ~= "restore"
+    then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects opts.trace_intent to be open or restore"
+      )
+    end
     host_api.attach_session({
       session_id = session_id,
+      trace_intent = opts.trace_intent,
       domain = opts.domain,
       name = opts.name,
       on_complete = opts.on_complete,

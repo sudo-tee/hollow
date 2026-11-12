@@ -186,7 +186,7 @@ pub const AppCallbacks = struct {
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
     new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) bool,
-    attach_session: ?*const fn (app: *anyopaque, session_id: []const u8, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void = null,
+    attach_session: ?*const fn (app: *anyopaque, session_id: []const u8, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int, intent: @import("agent/session_protocol.zig").AttachIntent) void = null,
     close_workspace: *const fn (app: *anyopaque, workspace_id: ?usize) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -5891,7 +5891,9 @@ fn l_attach_session(state: *State) callconv(.c) c_int {
     const callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
     if (ctx.app_callbacks) |cbs| {
         if (cbs.attach_session) |attach| {
-            attach(cbs.app, session_id, domain_name, name, callback_ref);
+            const intent_text = luaStringField(api, state, opts_idx, "trace_intent") orelse "open";
+            const intent: @import("agent/session_protocol.zig").AttachIntent = if (std.mem.eql(u8, intent_text, "restore")) .restore else .open;
+            attach(cbs.app, session_id, domain_name, name, callback_ref, intent);
             return 0;
         }
     }

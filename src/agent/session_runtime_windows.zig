@@ -1,6 +1,7 @@
 //! Bounded Windows owner policy. Transport owns client lifetimes;
 //! this module owns processes and VT state, never GUI views or pipe handles.
 const std = @import("std");
+const trace = @import("session_trace.zig");
 const p = @import("session_protocol.zig");
 const core = @import("session_core.zig");
 const attachment = @import("session_attachment.zig");
@@ -20,6 +21,8 @@ const turn_budget = 256 * 1024;
 const exit_linger_ms = 2000;
 
 pub const Client = struct {
+    trace_identity: trace.Identity = .{},
+    attach_intent: p.AttachIntent = .unknown,
     session: ?*Session = null,
     binary: bool = false,
     foreground_events: bool = false,
@@ -142,6 +145,10 @@ pub const Owner = struct {
     }
 
     fn handleRequest(self: *Owner, client: *Client, req: *const p.Request) !void {
+        if (req.op == .attach or req.op == .create) {
+            client.attach_intent = req.attach_intent;
+            std.log.info("session.request.received connection={s} request={d} op={s} session={s} intent={s}", .{ client.trace_identity.wire().connection, req.id, @tagName(req.op), trace.token(req.session orelse ""), @tagName(req.attach_intent) });
+        }
         var arena = std.heap.ArenaAllocator.init(self.a);
         defer arena.deinit();
         const temp = arena.allocator();
@@ -154,6 +161,8 @@ pub const Owner = struct {
             },
             .create => {
                 const s = try self.create(req);
+                s.meta.creator = client.trace_identity;
+                std.log.info("session.created session={s} creator={s} creator_build={s} connection={s}", .{ &s.meta.id, s.meta.creator.wire().instance, s.meta.creator.wire().build, s.meta.creator.wire().connection });
                 self.attachCreated(client, s, req.id, temp);
             },
             .attach => {
@@ -329,7 +338,12 @@ pub const Owner = struct {
         }
         self.disconnect(client);
         s.resetDelivery(self.a);
-        if (attachment.link(client, s)) |old| self.event(old, .taken, s, null);
+        if (attachment.link(client, s)) |old| {
+            const owner_identity = trace.Identity.local("owner");
+            const value = trace.takeover(&s.meta.creator, &old.trace_identity, &client.trace_identity, &owner_identity, client.attach_intent, id);
+            trace.logTakeover(&s.meta.id, value);
+            self.control(old, .event, p.Event{ .event = .taken, .session = &s.meta.id, .takeover = value });
+        }
         for (s.panes[0..s.count]) |pane| pane.stream.attach();
         if (!client.send(.reply, 0, reply)) client.dead = true;
     }

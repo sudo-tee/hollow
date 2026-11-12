@@ -94,6 +94,7 @@ const Pane = struct {
 pub const Client = struct {
     allocator: std.mem.Allocator,
     identity: []const u8,
+    trace: p.ClientTrace = .{},
     ready: bool = false,
     ended: bool = false,
     format: ?p.SnapshotFormat = null,
@@ -137,6 +138,13 @@ pub const Client = struct {
         return self.host_buf[0..self.host_len];
     }
 
+    pub fn traceRequest(self: *const Client, id: u64) bool {
+        for (self.pending) |entry| if (entry) |pending| {
+            if (pending.id == id) return pending.op == .create or pending.op == .attach or pending.op == .hold_wsl or pending.op == .list;
+        };
+        return false;
+    }
+
     /// Always sent first, independently of queued requests.
     pub fn hello(self: *Client) ![]u8 {
         return p.stringify(self.allocator, p.Hello{
@@ -144,6 +152,7 @@ pub const Client = struct {
             .version = p.version,
             .ghostty = self.identity,
             .client = "hollow",
+            .trace = self.trace,
             .foreground_events = true,
         });
     }

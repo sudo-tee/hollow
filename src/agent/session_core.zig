@@ -25,6 +25,7 @@ pub fn findSession(sessions: anytype, id: []const u8) ?@TypeOf(sessions[0]) {
 
 pub const Metadata = struct {
     id: [32]u8,
+    creator: @import("session_trace.zig").Identity = .{},
     /// Wide cursor represents exhaustion after the last u32 wire ID.
     next_pane: u64 = 1,
     revision: u64 = 0,

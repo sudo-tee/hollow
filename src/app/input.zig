@@ -99,6 +99,7 @@ pub const PendingInputEvent = union(enum) {
     },
     attach_session: struct {
         session_id: []u8,
+        trace_intent: @import("../agent/session_protocol.zig").AttachIntent = .open,
         domain_name: ?[]u8,
         name: ?[]u8,
         callback_ref: c_int,
@@ -513,7 +514,7 @@ pub fn processInputQueue(self: *App) void {
                     @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
                     continue;
                 }
-                @import("session_domain.zig").attach(self, payload.session_id, payload.domain_name, payload.name, payload.callback_ref);
+                @import("session_domain.zig").attachWithIntent(self, payload.session_id, payload.domain_name, payload.name, payload.callback_ref, payload.trace_intent);
             },
             .close_workspace => |idx| {
                 mux_ops.closeWorkspace(self, idx);

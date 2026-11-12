@@ -31,6 +31,7 @@ pub const PaneState = struct {
 
 pub const SessionState = struct {
     id: []const u8,
+    creator: @import("session_trace.zig").Identity = .{},
     next_pane: u64,
     revision: u64,
     layout: []const u8,

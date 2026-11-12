@@ -12,11 +12,15 @@ const opens = @import("session_open.zig");
 const max_env_bytes = 64 * 1024;
 
 pub fn begin(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int, startup: bool) !u64 {
-    return open(app, cwd, domain_name, command, name, callback_ref, startup, null);
+    return open(app, cwd, domain_name, command, name, callback_ref, startup, null, .open);
 }
 
 pub fn attach(app: *App, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
-    _ = open(app, null, inheritedDomain(app, domain_name), null, name, callback_ref, false, session_id) catch |err| {
+    attachWithIntent(app, session_id, domain_name, name, callback_ref, .open);
+}
+
+pub fn attachWithIntent(app: *App, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int, intent: transport.p.AttachIntent) void {
+    _ = open(app, null, inheritedDomain(app, domain_name), null, name, callback_ref, false, session_id, intent) catch |err| {
         std.log.warn("persistent attachment admission failed: {s}", .{@errorName(err)});
         opens.reportAdmissionFailure(app, err, false);
         if (app.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
@@ -76,7 +80,7 @@ pub fn resolve(app: *App, a: std.mem.Allocator, domain_name: ?[]const u8) !Resol
     };
 }
 
-fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int, startup: bool, session_id: ?[]const u8) !u64 {
+fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int, startup: bool, session_id: ?[]const u8, intent: transport.p.AttachIntent) !u64 {
     if (session_id) |id| if (!validSessionId(id)) return error.InvalidSessionId;
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
@@ -95,7 +99,7 @@ fn open(app: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const
     }
     const options = resolved.options;
     const request: transport.p.Request = if (session_id) |id|
-        .{ .id = 0, .op = .attach, .session = id }
+        .{ .id = 0, .op = .attach, .session = id, .attach_intent = intent }
     else
         .{ .id = 0, .op = .create, .spawn = try prepareSpawn(a, app.config, host, if (host.connector.argv.len == 0) shell else configured_shell orelse "", launch_cwd, domain, command, mux.spawn_filter) };
     // Both calls copy request/options before this arena or config can disappear.

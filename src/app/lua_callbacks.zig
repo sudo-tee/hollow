@@ -283,7 +283,7 @@ test "session borrowers workspace tab and split callbacks fence inherited persis
     try std.testing.expectEqual(@as(?u64, app.lua.?.generation), split_event.split_pane.lua_generation);
 }
 
-pub fn luaAttachSessionCallback(app_ptr: *anyopaque, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
+pub fn luaAttachSessionCallback(app_ptr: *anyopaque, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int, intent: @import("../agent/session_protocol.zig").AttachIntent) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     var queued = false;
     defer if (!queued) {
@@ -291,6 +291,7 @@ pub fn luaAttachSessionCallback(app_ptr: *anyopaque, session_id: []const u8, dom
     };
     var event: input.PendingInputEvent = .{ .attach_session = .{
         .session_id = app.allocator.dupe(u8, session_id) catch return,
+        .trace_intent = intent,
         .domain_name = null,
         .name = null,
         .callback_ref = callback_ref,

@@ -9,6 +9,7 @@ extern "kernel32" fn GetStdHandle(windows.DWORD) callconv(.winapi) ?windows.HAND
 
 pub fn main(init: std.process.Init) void {
     @import("../io.zig").init(init.io, init.minimal.environ);
+    @import("diagnostics.zig").init(init.io);
     var bridge_admitted = false;
     run(init, &bridge_admitted) catch |err| {
         // Stderr may share the blocked stdout pipe. Once relaying, report
@@ -34,12 +35,20 @@ fn run(init: std.process.Init, bridge_admitted: *bool) !void {
         namespace = args.next() orelse return error.InvalidArgument;
         if (args.next() != null) return error.InvalidArgument;
     }
-    if (std.mem.eql(u8, command, "serve")) return owner.serve(init.gpa, init.io, namespace) catch |err| {
-        // Detached production owners cannot depend on stderr. Fixture errors
-        // and expected singleton losers must not replace real diagnostics.
-        if (namespace == null and err != error.OwnerExists) logFailure(init, err);
-        return err;
-    };
+    if (std.mem.eql(u8, command, "serve")) {
+        const log_file = if (namespace == null) openOwnerLog(init) else null;
+        @import("diagnostics.zig").setLogFile(log_file);
+        defer {
+            @import("diagnostics.zig").setLogFile(null);
+            if (log_file) |file| file.close(init.io);
+        }
+        return owner.serve(init.gpa, init.io, namespace) catch |err| {
+            // Detached production owners cannot depend on stderr. Fixture errors
+            // and expected singleton losers must not replace real diagnostics.
+            if (namespace == null and err != error.OwnerExists) logFailure(init, err);
+            return err;
+        };
+    }
     if (std.mem.eql(u8, command, "connect")) {
         const input = GetStdHandle(0xfffffff6) orelse return error.InvalidStdio;
         const output = GetStdHandle(0xfffffff5) orelse return error.InvalidStdio;
@@ -60,7 +69,8 @@ fn run(init: std.process.Init, bridge_admitted: *bool) !void {
     };
     var connection = try owner.Connection.init(init.gpa, handle);
     defer connection.deinit();
-    try connection.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "bootstrap-cli", .client = "hollow-agent" });
+    const client_trace = @import("session_trace.zig").Identity.local("cli");
+    try connection.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "bootstrap-cli", .client = "hollow-agent", .trace = client_trace.wire() });
     const welcome = try connection.next(5000);
     if (welcome.kind != .welcome) return error.ExpectedWelcome;
     const parsed = try p.parse(p.Welcome, init.gpa, welcome.payload);
@@ -75,6 +85,17 @@ fn run(init: std.process.Init, bridge_admitted: *bool) !void {
     try std.Io.File.stdout().writeStreamingAll(init.io, reply.payload);
     try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
     if (!result.value.ok) return error.Rejected;
+}
+
+fn openOwnerLog(init: std.process.Init) ?std.Io.File {
+    const root = init.minimal.environ.getAlloc(init.gpa, "LOCALAPPDATA") catch return null;
+    defer init.gpa.free(root);
+    const dir = std.fs.path.join(init.gpa, &.{ root, "hollow" }) catch return null;
+    defer init.gpa.free(dir);
+    std.Io.Dir.cwd().createDirPath(init.io, dir) catch return null;
+    const path = std.fs.path.join(init.gpa, &.{ dir, "session-owner.log" }) catch return null;
+    defer init.gpa.free(path);
+    return std.Io.Dir.createFileAbsolute(init.io, path, .{ .read = true, .truncate = false }) catch null;
 }
 
 fn logFailure(init: std.process.Init, err: anyerror) void {

@@ -232,6 +232,7 @@ local function restore_domain(domain, entries, fallback)
     busy(1)
     local ok = pcall(hollow.term.attach_session, entry.id, {
       domain = domain,
+      trace_intent = "restore",
       on_complete = function(result)
         inflight[entry_key] = nil
         state.pending = state.pending - 1

@@ -1,5 +1,6 @@
 //! Universal Linux agent. Stdout is exclusively framed RPC, never diagnostics.
 const std = @import("std");
+pub const std_options: std.Options = .{ .logFn = @import("diagnostics.zig").stderrLog };
 const builtin = @import("builtin");
 const p = @import("protocol.zig");
 const fs = @import("fs.zig");
@@ -290,6 +291,7 @@ const Agent = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
+    @import("diagnostics.zig").init(init.io);
     var args = init.minimal.args.iterate();
     _ = args.next();
     const mode = args.next() orelse "stdio";

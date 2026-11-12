@@ -4,6 +4,7 @@
 //! unix socket, and streams output to the attached client under per-pane
 //! credit.
 const std = @import("std");
+const trace = @import("session_trace.zig");
 const p = @import("session_protocol.zig");
 const core = @import("session_core.zig");
 const delivery = @import("session_stream.zig");
@@ -162,6 +163,8 @@ const Session = struct {
 
 const Client = struct {
     fd: c_int,
+    trace_identity: trace.Identity = .{},
+    attach_intent: p.AttachIntent = .unknown,
     reader: p.Reader = .{},
     out: Queue = .{},
     hello: bool = false,
@@ -446,11 +449,13 @@ pub const Owner = struct {
     }
 
     fn protocolError(self: *Owner, client: *Client, err: anyerror) void {
+        std.log.warn("session.client.protocol_error connection={s} reason={s}", .{ client.trace_identity.wire().connection, @errorName(err) });
         self.replyError(client, 0, err);
         client.closing = true;
     }
 
     fn dropClient(self: *Owner, client: *Client) void {
+        std.log.info("session.client.end connection={s} reason=TransportClosed", .{client.trace_identity.wire().connection});
         if (client.session) |s| self.detach(client, s);
         client.dead = true;
     }
@@ -595,7 +600,7 @@ pub const Owner = struct {
                 });
                 if (pane.master >= 0) try keep.append(arena, pane.master);
             }
-            try sessions.append(arena, .{ .id = &s.meta.id, .next_pane = s.meta.next_pane, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items });
+            try sessions.append(arena, .{ .id = &s.meta.id, .creator = s.meta.creator, .next_pane = s.meta.next_pane, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items });
         }
         var doomed: std.ArrayList(handoff.DoomedState) = .empty;
         for (self.doomed.items) |d| try doomed.append(arena, .{ .pid = d.pid, .deadline = d.deadline, .killed = d.killed });
@@ -647,6 +652,7 @@ pub const Owner = struct {
                 return err;
             };
             s.meta.layout = try self.a.dupe(u8, saved.layout);
+            s.meta.creator = saved.creator;
             for (saved.panes) |pane| try self.adoptPane(s, pane, try blobs.next());
         }
         try blobs.finish();
@@ -743,6 +749,9 @@ pub const Owner = struct {
                 client.hello = !hello.value.owner_probe;
                 client.binary = std.mem.eql(u8, hello.value.ghostty, self.identity);
                 client.foreground_events = hello.value.foreground_events;
+                client.trace_identity = trace.Identity.capture(hello.value.trace);
+                const identity = client.trace_identity.wire();
+                std.log.info("session.client.hello instance={s} build={s} connection={s} role={s} pid={d} probe={any}", .{ identity.instance, identity.build, identity.connection, identity.role, identity.pid, hello.value.owner_probe });
                 self.sendJson(client, .welcome, p.Welcome{ .ghostty = self.identity, .snapshot = if (client.binary) .binary else .vt, .owner_pid = c.getpid(), .host = self.host, .features = &p.posix_owner_features, .owner_build = self.upgrade.identity(), .retiring = (hello.value.owner_probe and self.handoff != null) or self.upgrade.ready(self.sessionsEmpty()), .handoff = self.recentHandoff() });
             },
             .request => {
@@ -783,6 +792,10 @@ pub const Owner = struct {
     }
 
     fn handleRequest(self: *Owner, client: *Client, req: p.Request) !void {
+        if (req.op == .attach or req.op == .create) {
+            client.attach_intent = req.attach_intent;
+            std.log.info("session.request.received connection={s} request={d} op={s} session={s} intent={s}", .{ client.trace_identity.wire().connection, req.id, @tagName(req.op), trace.token(req.session orelse ""), @tagName(req.attach_intent) });
+        }
         var arena_state = std.heap.ArenaAllocator.init(self.a);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
@@ -795,6 +808,8 @@ pub const Owner = struct {
             },
             .create => {
                 const s = try self.createSession(req.create_id);
+                s.meta.creator = client.trace_identity;
+                std.log.info("session.created session={s} creator={s} creator_build={s} connection={s}", .{ &s.meta.id, s.meta.creator.wire().instance, s.meta.creator.wire().build, s.meta.creator.wire().connection });
                 errdefer self.endSession(s);
                 // Copy layout before fork: allocation failure must not launch
                 // a process whose create request is then rejected.
@@ -875,7 +890,10 @@ pub const Owner = struct {
     fn attach(self: *Owner, client: *Client, s: *Session, id: u64, sizes: []const p.PaneSize) void {
         if (client.session) |old| if (old != s) self.detach(client, old);
         if (attachment.link(client, s)) |other| {
-            self.event(other, .taken, s, null);
+            const owner_identity = trace.Identity.local("owner");
+            const value = trace.takeover(&s.meta.creator, &other.trace_identity, &client.trace_identity, &owner_identity, client.attach_intent, id);
+            trace.logTakeover(&s.meta.id, value);
+            self.sendJson(other, .event, p.Event{ .event = .taken, .session = &s.meta.id, .takeover = value });
         }
         for (sizes) |size| if (s.find(size.pane)) |pane| {
             if (size.cols > 0 and size.rows > 0) resizePane(pane, size.cols, size.rows) catch {};
@@ -896,6 +914,7 @@ pub const Owner = struct {
 
     fn detach(self: *Owner, client: *Client, s: *Session) void {
         if (!attachment.unlink(client, s)) return;
+        std.log.info("session.detached session={s} connection={s}", .{ &s.meta.id, client.trace_identity.wire().connection });
         for (s.panes.items) |pane| pane.stream.detach();
         self.saveState(s);
     }

@@ -403,6 +403,8 @@ It is absent for ordinary workspaces and for owners that predate host IDs.
 Together, `session_host` and `session_id` identify one session across domains that reach the same host.
 
 `attach_session(session_id, opts)` accepts a nonempty ID and optional `{ domain, name, on_complete }` table.
+The optional `trace_intent` is `"open"` or `"restore"` for diagnostic logs.
+It does not change attachment or takeover policy.
 The domain must have persistence enabled and resolve to the host that owns the session.
 An omitted domain inherits the current terminal domain, then the configured default domain.
 Attachment is asynchronous and uses the same `{ success, workspace_index }` completion result as `new_workspace`.

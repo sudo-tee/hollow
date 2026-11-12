@@ -1143,6 +1143,7 @@ fn parseOptions(allocator: std.mem.Allocator, args: [][]u8) !Options {
 
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
+    @import("../agent/diagnostics.zig").init(init.io);
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();

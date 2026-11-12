@@ -267,6 +267,9 @@ const Owner = struct {
                 slot.greeted = !hello.value.owner_probe;
                 slot.client.binary = std.mem.eql(u8, hello.value.ghostty, vt.buildIdentity());
                 slot.client.foreground_events = hello.value.foreground_events;
+                slot.client.trace_identity = @import("session_trace.zig").Identity.capture(hello.value.trace);
+                const client_trace = slot.client.trace_identity.wire();
+                std.log.info("session.client.hello instance={s} build={s} connection={s} role={s} pid={d} probe={any}", .{ client_trace.instance, client_trace.build, client_trace.connection, client_trace.role, client_trace.pid, hello.value.owner_probe });
                 try self.queue(slot, .welcome, p.Welcome{
                     .ghostty = vt.buildIdentity(),
                     .snapshot = if (slot.client.binary) .binary else .vt,
@@ -337,6 +340,7 @@ const Owner = struct {
     }
 
     fn reset(self: *Owner, slot: *Slot) !void {
+        if (!slot.accepting) std.log.info("session.client.end connection={s}", .{slot.client.trace_identity.wire().connection});
         self.sessions.disconnect(&slot.client);
         if (slot.keeper) |entry| self.keepers.release(entry);
         slot.keeper = null;
@@ -442,7 +446,8 @@ const Owner = struct {
                 };
             }
             var more = if (self.stopping) false else self.sessions.tick(now);
-            for (&self.slots) |*slot| more = (self.pump(slot, now) catch blk: {
+            for (&self.slots) |*slot| more = (self.pump(slot, now) catch |err| blk: {
+                std.log.info("session.client.failure connection={s} reason={s}", .{ slot.client.trace_identity.wire().connection, @errorName(err) });
                 try self.reset(slot);
                 break :blk false;
             }) or more;

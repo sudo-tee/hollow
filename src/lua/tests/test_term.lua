@@ -322,6 +322,7 @@ describe("term test suite", function()
         domain = "guest",
         name = "restored",
         session_id = "ignored",
+        trace_intent = "restore",
         on_complete = function(value)
           result = value
         end,
@@ -332,6 +333,7 @@ describe("term test suite", function()
       harness.assert_equal(requests[1].session_id, "session-123")
       harness.assert_equal(requests[1].domain, "guest")
       harness.assert_equal(requests[1].name, "restored")
+      harness.assert_equal(requests[1].trace_intent, "restore")
       harness.assert_equal(result, nil)
       local completion = { success = true, workspace_index = 2 }
       requests[1].on_complete(completion)
@@ -345,6 +347,14 @@ describe("term test suite", function()
       harness.assert_equal(requests[1].session_id, string.rep("s", 128))
       harness.assert_equal(requests[1].domain, nil)
       harness.assert_equal(requests[1].on_complete, nil)
+    end)
+
+    it("rejects invalid diagnostic intent without dispatching", function()
+      harness.assert_equal(
+        pcall(hollow.term.attach_session, "session-123", { trace_intent = "reclaim" }),
+        false
+      )
+      harness.assert_equal(#requests, 0)
     end)
 
     it("rejects invalid ids before native dispatch", function()

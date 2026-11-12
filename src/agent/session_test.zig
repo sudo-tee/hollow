@@ -314,7 +314,7 @@ fn driveMonitor(owner: *Owner, monitor: *@import("session_wait.zig").Monitor, no
 test "attach after disconnect restores the screen from a binary snapshot and takes over" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();
-    const first = try Fake.open(&owner, owner.identity);
+    const first = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity, .trace = .{ .instance = "creator", .build = "aaa", .connection = "first", .role = "gui" } });
     defer first.deinit();
     const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'title\\033]0;owner-title\\007'; printf 'kept-line\\n'; read x; printf 'got-%s\\n' \"$x\"; sleep 30") }));
     defer created.deinit();
@@ -325,9 +325,10 @@ test "attach after disconnect restores the screen from a binary snapshot and tak
     try first.waitOutput(&owner, pane, "kept-line");
 
     // A second client takes the session over while the first is attached.
-    const second = try Fake.open(&owner, owner.identity);
+    const second = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity, .trace = .{ .instance = "incoming", .build = "bbb", .connection = "second", .role = "gui" } });
     defer second.deinit();
-    const attached = try second.reply(&owner, try second.request(.{ .id = 0, .op = .attach, .session = sid, .panes = &.{.{ .pane = pane, .cols = 70, .rows = 12 }} }));
+    const attach_id = try second.request(.{ .id = 0, .op = .attach, .session = sid, .attach_intent = .restore, .panes = &.{.{ .pane = pane, .cols = 70, .rows = 12 }} });
+    const attached = try second.reply(&owner, attach_id);
     defer attached.deinit();
     try std.testing.expect(attached.value.ok);
     _ = try second.wait(&owner, .snapshot_end, pane);
@@ -335,6 +336,16 @@ test "attach after disconnect restores the screen from a binary snapshot and tak
     const event = try p.parse(p.Event, a, taken.payload);
     defer event.deinit();
     try std.testing.expectEqual(p.EventKind.taken, event.value.event);
+    const ownership = event.value.takeover.?;
+    try std.testing.expectEqualStrings("creator", ownership.creator.instance);
+    try std.testing.expectEqualStrings("aaa", ownership.creator.build);
+    try std.testing.expectEqualStrings("creator", ownership.previous.instance);
+    try std.testing.expectEqualStrings("first", ownership.previous.connection);
+    try std.testing.expectEqualStrings("incoming", ownership.next.instance);
+    try std.testing.expectEqualStrings("bbb", ownership.next.build);
+    try std.testing.expectEqualStrings("second", ownership.next.connection);
+    try std.testing.expectEqual(p.AttachIntent.restore, ownership.intent);
+    try std.testing.expectEqual(attach_id, ownership.request);
 
     const snapshot = try second.bytes(.snapshot, pane);
     defer a.free(snapshot);

@@ -71,6 +71,8 @@ pub const Hello = struct {
     version: u32,
     ghostty: []const u8,
     client: []const u8 = "",
+    /// Optional diagnostics, independent of owner upgrade negotiation.
+    trace: ClientTrace = .{},
     /// Client understands the pane-bound HTP foreground sync after snapshots.
     foreground_events: bool = false,
     /// Connector-only preflight, before any application request. New owners
@@ -248,6 +250,7 @@ pub const PaneSize = struct { pane: u32, cols: u16, rows: u16 };
 pub const Request = struct {
     id: u64,
     op: Op,
+    attach_intent: AttachIntent = .unknown,
     session: ?[]const u8 = null,
     /// Optional client-reserved create identity. Requires "create-id".
     /// A collision rejects create; it never attaches or replays a spawn.
@@ -313,6 +316,26 @@ pub const Event = struct {
     event: EventKind,
     session: []const u8,
     pane: ?u32 = null,
+    takeover: ?TakeoverTrace = null,
+};
+
+pub const AttachIntent = enum { unknown, open, restore, reclaim };
+
+pub const ClientTrace = struct {
+    instance: []const u8 = "",
+    build: []const u8 = "",
+    connection: []const u8 = "",
+    role: []const u8 = "",
+    pid: u32 = 0,
+};
+
+pub const TakeoverTrace = struct {
+    creator: ClientTrace = .{},
+    previous: ClientTrace = .{},
+    next: ClientTrace = .{},
+    owner: ClientTrace = .{},
+    intent: AttachIntent = .unknown,
+    request: u64 = 0,
 };
 
 /// Exit status as one i32: >= 0 is an exit code, < 0 is a negated signal.

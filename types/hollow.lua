@@ -1840,7 +1840,7 @@ function term.new_workspace(opts) end
 
 ---Attach an existing host-owned session explicitly; completion runs asynchronously.
 ---@param session_id string Non-empty, at most 128 bytes, without NUL
----@param opts? { domain?: string, name?: string, on_complete?: fun(result: HollowWorkspaceOpenResult) }
+---@param opts? { domain?: string, name?: string, trace_intent?: 'open'|'restore', on_complete?: fun(result: HollowWorkspaceOpenResult) }
 function term.attach_session(session_id, opts) end
 
 ---@class HollowSessionPaneInfo
@@ -3287,7 +3287,7 @@ function plugins.sync() end
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
----@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, on_complete?: fun(result: HollowWorkspaceOpenResult) })
+---@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, trace_intent?: 'open'|'restore', on_complete?: fun(result: HollowWorkspaceOpenResult) })
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field schedule fun(handler: fun())
 ---@field close_workspace fun()

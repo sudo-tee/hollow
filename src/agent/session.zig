@@ -121,6 +121,9 @@ fn connectCurrent(a: std.mem.Allocator, io: std.Io, mode: Mode) !c_int {
     const build = try @import("session_upgrade.zig").current(a, io);
     var exe: [std.fs.max_path_bytes]u8 = undefined;
     var hello: p.Hello = .{ .protocol = p.protocol, .version = p.version, .ghostty = "owner-probe", .owner_probe = true };
+    const diagnostics = @import("diagnostics.zig");
+    const probe_identity = @import("session_trace.zig").Identity.capture(.{ .instance = &diagnostics.processId(), .build = &build, .connection = &diagnostics.randomId(), .pid = diagnostics.pid(), .role = "probe" });
+    hello.trace = probe_identity.wire();
     if (mode != .never) hello.owner_build = &build;
     if (mode == .handoff) {
         const n = c.readlink("/proc/self/exe", &exe, exe.len);
@@ -241,7 +244,8 @@ const Conn = struct {
     }
 
     fn hello(self: *Conn, ghostty: []const u8) !p.SnapshotFormat {
-        try self.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = ghostty, .client = "hollow-agent" });
+        const identity = @import("session_trace.zig").Identity.local("cli");
+        try self.sendJson(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = ghostty, .client = "hollow-agent", .trace = identity.wire() });
         const frame = try self.next();
         if (frame.kind != .welcome) {
             try writeAll(2, frame.payload);
@@ -316,7 +320,7 @@ fn debugAttach(a: std.mem.Allocator, session_id: ?[]const u8) !void {
             first = s.panes[0].id;
         };
         const sizes = [_]p.PaneSize{.{ .pane = first orelse 0, .cols = ws.ws_col, .rows = ws.ws_row }};
-        id = try conn.request(.{ .id = 0, .op = .attach, .session = sid, .panes = if (first != null) &sizes else &.{} });
+        id = try conn.request(.{ .id = 0, .op = .attach, .session = sid, .attach_intent = .open, .panes = if (first != null) &sizes else &.{} });
     } else {
         id = try conn.request(.{ .id = 0, .op = .create, .spawn = .{ .cols = ws.ws_col, .rows = ws.ws_row } });
     }

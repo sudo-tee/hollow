@@ -10,6 +10,8 @@ pub const p = protocol.p;
 pub const Message = protocol.Message;
 pub const RequestState = protocol.RequestState;
 const write_timeout_ns = 3 * std.time.ns_per_s;
+const trace = @import("../agent/session_trace.zig");
+const diagnostics = @import("../agent/diagnostics.zig");
 
 pub const Options = struct {
     connector: deploy.Connector = .{},
@@ -27,6 +29,7 @@ pub const Options = struct {
     /// `session connect --upgrade <mode>` for POSIX owners; null keeps the
     /// connector default (`handoff`). Native Windows owners ignore it.
     upgrade: ?[]const u8 = null,
+    trace_role: []const u8 = "gui",
 };
 
 pub const Status = struct {
@@ -59,6 +62,9 @@ pub const Connection = struct {
     watch_deadline: ?i128 = null,
     write_probe_until: ?i128 = null,
     watchdog_turns: u64 = 0,
+    trace_identity: trace.Identity = .{},
+    last_receive_ms: ?i64 = null,
+    last_send_ms: ?i64 = null,
 
     /// Copies all configuration before starting any background work.
     pub fn create(a: std.mem.Allocator, io: std.Io, options: Options) !*Connection {
@@ -85,6 +91,8 @@ pub const Connection = struct {
         };
         errdefer self.arena.deinit();
         const arena = self.arena.allocator();
+        self.trace_identity = trace.Identity.capture(.{ .instance = &diagnostics.processId(), .connection = &diagnostics.randomId(), .pid = diagnostics.pid(), .role = options.trace_role });
+        self.options.trace_role = try arena.dupe(u8, options.trace_role);
         self.options.connector = try options.connector.dupe(arena);
         self.options.agent = try options.agent.dupe(arena);
         if (options.namespace) |namespace| self.options.namespace = try arena.dupe(u8, namespace);
@@ -158,6 +166,7 @@ pub const Connection = struct {
         defer self.mutex.unlock(self.io);
         if (self.closing) return error.Disconnected;
         const id = try self.client.request(value);
+        if (self.client.traceRequest(id)) std.log.info("session.request.queued connection={s} request={d} op={s} session={s} intent={s}", .{ self.trace_identity.wire().connection, id, @tagName(value.op), trace.token(value.session orelse ""), @tagName(value.attach_intent) });
         self.changed.broadcast(self.io);
         return id;
     }
@@ -313,6 +322,7 @@ pub const Connection = struct {
         self.mutex.lockUncancelable(self.io);
         self.client.ended = true;
         self.failure = if (self.closing) null else failure;
+        std.log.info("session.connection.end connection={s} local_close={any} reason={s} last_receive_ms={any} last_send_ms={any}", .{ self.trace_identity.wire().connection, self.closing, if (self.failure) |err| @errorName(err) else "LocalClose", self.last_receive_ms, self.last_send_ms });
         self.finished = true;
         self.changed.broadcast(self.io);
         self.options.wake.signal();
@@ -320,6 +330,12 @@ pub const Connection = struct {
     }
 
     fn runInner(self: *Connection) !void {
+        const build = diagnostics.buildId();
+        self.mutex.lockUncancelable(self.io);
+        @memcpy(self.trace_identity.build[0..build.len], &build);
+        self.client.trace = self.trace_identity.wire();
+        self.mutex.unlock(self.io);
+        std.log.info("session.connection.start instance={s} build={s} connection={s} role={s} transport={s}", .{ self.client.trace.instance, self.client.trace.build, self.client.trace.connection, self.client.trace.role, if (self.options.wsl != null) "wsl" else if (self.options.connector.argv.len == 0) "local" else "remote" });
         var failure: deploy.Failure = .{};
         const arena = self.arena.allocator();
         const native = builtin.os.tag == .windows and self.options.connector.argv.len == 0;
@@ -401,6 +417,7 @@ pub const Connection = struct {
             .agent = .{ .path = self.options.wsl_owner, .timeout_ms = self.options.agent.timeout_ms },
             .namespace = self.options.wsl_namespace,
             .ghostty_identity = self.options.ghostty_identity,
+            .trace_role = "keeper",
         });
         errdefer keeper.destroy();
         const deadline = now(self.io) + @as(i128, @min(self.options.agent.timeout_ms, 40_000)) * std.time.ns_per_ms;
@@ -448,6 +465,7 @@ pub const Connection = struct {
             const message = next orelse return error.Disconnected;
             if (message.request_id) |id| {
                 self.client.submittedAt(id, now(self.io));
+                if (self.client.traceRequest(id)) std.log.info("session.request.submitted connection={s} request={d}", .{ self.trace_identity.wire().connection, id });
                 self.watch.signal(self.io);
             }
             self.mutex.unlock(self.io);
@@ -476,6 +494,9 @@ pub const Connection = struct {
         const file = self.child.?.stdin.?;
         try file.writeStreamingAll(self.io, &p.header(kind, pane, bytes.len).encode());
         try file.writeStreamingAll(self.io, bytes);
+        self.mutex.lockUncancelable(self.io);
+        self.last_send_ms = diagnostics.utcMillis();
+        self.mutex.unlock(self.io);
     }
 
     fn readLoop(self: *Connection) !void {
@@ -493,10 +514,26 @@ pub const Connection = struct {
             while (!self.closing and !self.client.incoming.fits(body.len)) try self.changed.wait(self.io, &self.mutex);
             if (self.closing) return error.Disconnected;
             try self.client.receive(header, body);
+            self.last_receive_ms = diagnostics.utcMillis();
             self.changed.broadcast(self.io);
             const kind = try p.validate(header, .to_client);
+            self.traceReceived(kind, body);
             if (kind == .welcome or kind == .reply) self.watch.signal(self.io);
             self.options.wake.signal();
+        }
+    }
+
+    /// Diagnostics are best effort and cannot fail a valid protocol exchange.
+    fn traceReceived(self: *Connection, kind: p.Kind, body: []const u8) void {
+        if (kind == .reply) {
+            const reply = p.parse(p.Reply, self.allocator, body) catch return;
+            defer reply.deinit();
+            if (self.client.traceRequest(reply.value.id)) std.log.info("session.request.reply connection={s} request={d} ok={any} error={s} session={s}", .{ self.trace_identity.wire().connection, reply.value.id, reply.value.ok, trace.token(reply.value.@"error" orelse ""), if (reply.value.session) |session| trace.token(session.id) else "" });
+        } else if (kind == .welcome) {
+            const welcome = p.parse(p.Welcome, self.allocator, body) catch return;
+            defer welcome.deinit();
+            const owner = trace.Identity.capture(.{ .build = welcome.value.owner_build });
+            std.log.info("session.connection.ready connection={s} owner_pid={d} owner_build={s}", .{ self.trace_identity.wire().connection, welcome.value.owner_pid, owner.wire().build });
         }
     }
 

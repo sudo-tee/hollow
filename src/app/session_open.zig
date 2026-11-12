@@ -127,7 +127,7 @@ pub fn beginReclaim(app: *App, workspace_id: usize) !u64 {
         domain = pane.domainName();
         break;
     };
-    const id = try begin(app, controller.connection.options, .{ .id = 0, .op = .attach, .session = controller.session_id }, domain, null, no_ref);
+    const id = try begin(app, controller.connection.options, .{ .id = 0, .op = .attach, .session = controller.session_id, .attach_intent = .reclaim }, domain, null, no_ref);
     for (app.session_opens) |slot| if (slot) |pending| if (pending.id == id) {
         pending.replace_workspace = workspace_id;
         pending.replace_controller = controller;

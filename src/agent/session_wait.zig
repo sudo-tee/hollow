@@ -79,7 +79,8 @@ pub const Monitor = struct {
 
     pub fn initMode(a: std.mem.Allocator, fd: c_int, now: i64, startup_deadline: i64, drain: bool) !Monitor {
         var self: Monitor = .{ .a = a, .fd = fd, .deadline = now + exchange_ms, .startup_deadline = startup_deadline, .drain = drain };
-        try self.queue(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "session-wait", .client = "hollow-agent-session-wait", .owner_drain = drain });
+        const identity = @import("session_trace.zig").Identity.local("keeper");
+        try self.queue(.hello, p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = "session-wait", .client = "hollow-agent-session-wait", .owner_drain = drain, .trace = identity.wire() });
         return self;
     }
 

@@ -3625,8 +3625,11 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
     }
 }
 
+var execution_gap: @import("../agent/diagnostics.zig").ExecutionGap = .{};
+
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    if (execution_gap.observe(@import("../agent/diagnostics.zig").utcMillis())) |gap| std.log.info("runtime.execution_gap wall_elapsed_ms={d} possible_sleep_or_stall=true", .{gap});
     const profile_start = app_profile.start();
     var profile_rendered = false;
     var profile_active_wall: ?i128 = null;
