@@ -672,7 +672,7 @@ pub const Owner = struct {
         } else {
             if (self.predecessor) |from| self.handoff_notice = .{ .at = nowMs(), .from = from, .to = own, .ok = true };
             const from: []const u8 = if (self.predecessor) |*b| b[0..12] else "unknown";
-            std.log.info("session handoff from build {s} complete (test): adopted {d} sessions, {d} panes", .{ from, self.sessions.items.len, panes });
+            std.log.info("session handoff from build {s} complete: adopted {d} sessions, {d} panes", .{ from, self.sessions.items.len, panes });
         }
     }
 
