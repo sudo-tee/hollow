@@ -799,16 +799,28 @@ Options:
 ```lua
 {
   level = "info" | "warn" | "error" | "success",
-  title = "Saved",
+  title = "Saved",                      -- bold heading above the message
+  icon = "notify_warn",                 -- icon name or glyph; false hides it
   ttl = 1500,                            -- ms; auto-dismiss
   id = "build",                         -- replace or clear matching toast
-  action = { label = "Undo", fn = function() end },
+  actions = {                           -- buttons on their own row
+    { label = "Undo", fn = function() end },
+    { label = "Details", kind = "default", fn = function() end },
+  },
+  action = { label = "Undo", fn = function() end }, -- shorthand for one action
   align = "top_right",
   backdrop = true | "#000000" | { color = "#000000", alpha = 72 },
   chrome = { ... },
   theme = { ... },
 }
 ```
+
+Each toast shows a level icon, the optional title, and the message.
+Action buttons sit on a separate row below the message.
+The first action defaults to the `primary` button variant.
+Set `kind` to `"default"` or `"destructive"` to override it.
+Clicking a button runs its `fn` and dismisses the toast.
+Clicking elsewhere on the toast only dismisses it.
 
 Calling `hollow.ui.notify.clear()` clears all toasts.
 Pass an ID to clear only toast with matching `id`.

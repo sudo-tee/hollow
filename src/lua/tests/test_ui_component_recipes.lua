@@ -428,7 +428,7 @@ describe("unified component styling", function()
       },
     })
     local widget = ui._overlay_state()[1]
-    assert.equals("#abcdef", clay.text_node(ui, "[WARN] message").fg)
+    assert.equals("#abcdef", clay.text_node(ui, "message").fg)
     local border
     for _, node in ipairs(clay.nodes(ui)) do
       if node.border then

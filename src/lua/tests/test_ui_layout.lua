@@ -462,8 +462,9 @@ describe("hierarchical Clay layout", function()
     end, "invalid panel inset")
   end)
 
-  it("renders toast level and action in two nodes", function()
-    local clicked = 0
+  it("renders toast icon, title, message, and action buttons on their own row", function()
+    local icons = require("hollow.ui.icons")
+    local clicked = {}
     local theme = {
       fg = "#111111",
       title = "#222222",
@@ -477,24 +478,65 @@ describe("hierarchical Clay layout", function()
         return c.toast({
           id = "toast",
           level = "warn",
+          title = "Heads up",
           text = "Warning",
           inset = "none",
-          action = {
-            label = "Open",
-            on_click = function()
-              clicked = clicked + 1
-            end,
+          on_click = function()
+            clicked[#clicked + 1] = "panel"
+          end,
+          actions = {
+            {
+              label = "Open",
+              on_click = function()
+                clicked[#clicked + 1] = "open"
+              end,
+            },
+            {
+              label = "Later",
+              fn = function()
+                clicked[#clicked + 1] = "later"
+              end,
+            },
           },
         })
       end,
     })
     local nodes = surface:snapshot()
-    assert.equals(2, #nodes)
-    assert.equals("Warning  [Open]", nodes[1].label)
-    assert.equals("Warning  [Open]", nodes[2].text)
-    assert.equals("#666666", nodes[2].fg)
+    local by_text = {}
+    for _, node in ipairs(nodes) do
+      if node.text then
+        by_text[node.text] = node
+      end
+    end
+    assert.equals("Heads up: Warning", nodes[1].label)
+    assert.equals("#666666", by_text[icons.notify_warn].fg)
+    assert.equals("#666666", by_text["Heads up"].fg)
+    assert.equals("#111111", by_text["Warning"].fg)
+    assert.is_nil(nodes[1].text)
+    for _, node in ipairs(nodes) do
+      if node.label == "Open" or node.label == "Later" then
+        surface:dispatch(node.id)
+      end
+    end
     surface:dispatch(nodes[1].id)
-    assert.equals(1, clicked)
+    assert.same({ "open", "later", "panel" }, clicked)
+  end)
+
+  it("uses the message as toast heading without a title and hides a disabled icon", function()
+    local theme = { fg = "#111111", panel_bg = "#333333", notify_levels = { info = "#555555" } }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.toast({ text = "Saved", icon = false, inset = "none" })
+      end,
+    })
+    local texts = {}
+    for _, node in ipairs(surface:snapshot()) do
+      if node.text then
+        texts[#texts + 1] = node.text .. "=" .. tostring(node.fg)
+      end
+    end
+    assert.same({ "Saved=#555555" }, texts)
   end)
 
   it("preserves notification theme sheet overrides in toast", function()
@@ -509,12 +551,17 @@ describe("hierarchical Clay layout", function()
     local surface = layout.new({
       theme = theme,
       render = function()
-        return c.toast({ text = "notice", level = "info", inset = "none" })
+        return c.toast({ text = "notice", level = "info", inset = "none", icon = false })
       end,
     })
-    local nodes = surface:snapshot()
-    assert.equals("#222222", nodes[2].fg)
-    assert.is_nil(nodes[2].bold)
+    local node
+    for _, candidate in ipairs(surface:snapshot()) do
+      if candidate.text == "notice" then
+        node = candidate
+      end
+    end
+    assert.equals("#222222", node.fg)
+    assert.is_nil(node.bold)
   end)
 
   it("wires scroll axes, gutter, reveal and scrollbar without wrappers", function()

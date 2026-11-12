@@ -1047,14 +1047,17 @@
 
 ---@class HollowUiNotifyAction
 ---@field label string
----@field fn fun()
+---@field fn fun() Runs on click; the toast is dismissed afterwards.
+---@field kind? "primary"|"default"|"destructive" Button variant; the first action defaults to `"primary"`.
 
 ---@class HollowUiNotifyOptions
 ---@field pane_id? integer Originating pane for activity history and background detection.
 ---@field level? HollowNotifyLevel
----@field title? string
+---@field title? string Bold heading above the message.
+---@field icon? string|false Icon name from `hollow.ui.icons` or a raw glyph; defaults to the level icon, `false` hides it.
 ---@field ttl? number
----@field action? HollowUiNotifyAction
+---@field action? HollowUiNotifyAction Shorthand for a single-entry `actions`.
+---@field actions? HollowUiNotifyAction[] Buttons on their own row below the message.
 ---@field id? string
 ---@field align? HollowOverlayAlign
 ---@field backdrop? HollowOverlayBackdropValue
@@ -2566,7 +2569,16 @@ local workspace = {}
 ---@field level? 'info'|'success'|'warn'|'error'|string
 ---@field text? string
 ---@field text_style? HollowUiNodeStyle
----@field action? {label: string, on_click?: fun(event: {id: string}), fn?: fun()}
+---@field title? string
+---@field icon? string|false
+---@field action? HollowUiToastAction Shorthand for a single-entry `actions`.
+---@field actions? HollowUiToastAction[]
+
+---@class HollowUiToastAction
+---@field label string
+---@field kind? "primary"|"default"|"destructive"
+---@field on_click? fun(event: {id: string})
+---@field fn? fun()
 
 --- Surface engine: mounts, invalidates and debugs Clay trees built with `hollow.ui.components`.
 ---@class HollowUiLayout
