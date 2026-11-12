@@ -165,7 +165,7 @@ pub const AppCallbacks = struct {
     get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
     invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
     activate_session_notice: ?*const fn (*anyopaque, u64) void = null,
-    session_banner_action: ?*const fn (*anyopaque, usize, @import("session/workspace_banner.zig").Action) void = null,
+    session_takeover_action: ?*const fn (*anyopaque, usize, @import("session/takeover.zig").Action) void = null,
     title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
@@ -629,7 +629,11 @@ pub const BuiltInPayload = union(enum) {
     topbar_node: BarNode,
     bottombar_node: BarNode,
     sidebar_node: BarNode,
-    session_banner_node: BarNode,
+    session_takeover: struct {
+        workspace_id: usize,
+        phase: []const u8,
+        reason: ?[]const u8,
+    },
     overlay_node: struct {
         id: []const u8,
         index: usize = 0,
@@ -2469,8 +2473,8 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_activate_session_notice, 1);
         api.set_field(self.state, -2, "activate_session_notice");
         api.push_light_userdata(self.state, self.context);
-        api.push_cclosure(self.state, l_session_banner_action, 1);
-        api.set_field(self.state, -2, "session_banner_action");
+        api.push_cclosure(self.state, l_session_takeover_action, 1);
+        api.set_field(self.state, -2, "session_takeover_action");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_floating, 1);
@@ -3266,7 +3270,18 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .files_dropped => |value| {
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
-        .topbar_node, .bottombar_node, .sidebar_node, .session_banner_node => |value| {
+        .session_takeover => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.workspace_id));
+            api.set_field(state, -2, "workspace_id");
+            try pushOwnedString(allocator, api, state, value.phase);
+            api.set_field(state, -2, "phase");
+            if (value.reason) |reason| {
+                try pushOwnedString(allocator, api, state, reason);
+                api.set_field(state, -2, "reason");
+            }
+        },
+        .topbar_node, .bottombar_node, .sidebar_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
@@ -6119,15 +6134,15 @@ fn l_activate_session_notice(state: *State) callconv(.c) c_int {
     return 0;
 }
 
-fn l_session_banner_action(state: *State) callconv(.c) c_int {
+fn l_session_takeover_action(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const cbs = ctx.app_callbacks orelse return 0;
     const id = ctx.api.to_number(state, 1);
     if (!std.math.isFinite(id) or id < 0 or id >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) return 0;
     var len: usize = 0;
     const name = (ctx.api.to_lstring(state, 2, &len) orelse return 0)[0..len];
-    const action = std.meta.stringToEnum(@import("session/workspace_banner.zig").Action, name) orelse return 0;
-    if (cbs.session_banner_action) |callback| callback(cbs.app, @intFromFloat(id), action);
+    const action = std.meta.stringToEnum(@import("session/takeover.zig").Action, name) orelse return 0;
+    if (cbs.session_takeover_action) |callback| callback(cbs.app, @intFromFloat(id), action);
     return 0;
 }
 

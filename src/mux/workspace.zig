@@ -20,7 +20,7 @@ pub const Workspace = struct {
     /// Borrowed from the app's persistent-session owner, never destroyed here.
     session_controller: ?*@import("../session/controller.zig").Controller = null,
     session_close_desired: bool = false,
-    session_reclaim: @import("../session/workspace_banner.zig").Phase = .idle,
+    session_reclaim: @import("../session/takeover.zig").Phase = .idle,
     session_reclaim_error: ?anyerror = null,
 
     pub const PaneIterator = struct {

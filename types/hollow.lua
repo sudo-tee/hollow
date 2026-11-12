@@ -176,6 +176,7 @@
 ---| "workspace:closed"
 ---| "session:handoff"
 ---| "session:notice"
+---| "session:takeover"
 ---| "term:title_changed"
 ---| "term:tab_activated"
 ---| "term:tab_closed"
@@ -231,6 +232,7 @@
 ---@field ["workspace:closed"] { name?: string, session_id?: string, session_host?: string, session_ended?: boolean } `session_ended` is true only when the owner ended the session, false when just this client's views closed
 ---@field ["session:handoff"] { from: string, to: string, ok: boolean } The persistent-session owner replaced its runtime in place (`ok`), or the attempt failed and `from` kept serving; builds are 12-digit IDs
 ---@field ["session:notice"] { id: integer, close?: boolean, connecting?: boolean, level?: HollowNotifyLevel, title?: string, message?: string } A persistent-session connect or failure notice changed; `close` events carry only `id`. Call `host_api.activate_session_notice(id)` to cancel a connect or dismiss a failure
+---@field ["session:takeover"] { workspace_id: integer, phase: "none"|"idle"|"confirming"|"connecting"|"failed", reason?: string } The active workspace's session moved to another window (`phase` other than `"none"`) and its reclaim progressed; `reason` names a failure
 ---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
@@ -1192,6 +1194,7 @@
 ---@field align? string
 ---@field center_content? boolean Balance vertical panel padding around modal content.
 ---@field backdrop? any
+---@field pass_unhandled_keys? boolean With a backdrop, return keys `keys` did not consume to the keymap instead of swallowing them.
 ---@field on_event? function
 ---@field layout_live? boolean Rebuild on every preparation; use only for providers without explicit invalidation.
 ---@field semantic_hover? boolean Invalidate the render snapshot when hover state changes; native background hover needs no rebuild.
@@ -3300,7 +3303,7 @@ function plugins.sync() end
 ---@field get_workspace_session_id fun(index: integer): string|nil
 ---@field get_workspace_session_host fun(index: integer): string|nil
 ---@field get_workspace_session_state fun(index: integer): string|nil
----@field session_banner_action fun(workspace_id: integer, action: "reclaim"|"confirm"|"cancel"|"close") Queue a native session-banner action
+---@field session_takeover_action fun(workspace_id: integer, action: "reclaim"|"confirm"|"cancel"|"close") Queue a native session takeover card action
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)

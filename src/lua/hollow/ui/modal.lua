@@ -149,6 +149,7 @@ function M.modal(spec)
   widget._theme_backdrop = spec.theme_backdrop == true
   widget._modal = true
   widget._exclusive = spec.exclusive ~= false
+  widget._pass_keys = spec.pass_unhandled_keys == true
   widget._layout_live = spec.layout_live == true
   widget._layout_surface = overlay_surface.create(widget, {
     label = spec.title or "Confirmation",

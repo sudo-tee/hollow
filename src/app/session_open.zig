@@ -135,11 +135,11 @@ pub fn beginReclaim(app: *App, workspace_id: usize) !u64 {
     };
     workspace.session_reclaim = .connecting;
     workspace.session_reclaim_error = null;
-    _ = app.session_notices.clear(id); // Progress belongs to the workspace banner.
+    _ = app.session_notices.clear(id); // Progress belongs to the takeover card.
     return id;
 }
 
-pub fn bannerAction(app: *App, workspace_id: usize, action: @import("../session/workspace_banner.zig").Action) void {
+pub fn takeoverAction(app: *App, workspace_id: usize, action: @import("../session/takeover.zig").Action) void {
     const mux = if (app.mux) |*value| value else return;
     const workspace = mux.workspaceById(workspace_id) orelse return;
     const controller = workspace.session_controller orelse return;
@@ -445,11 +445,11 @@ test "session borrowers reclaim confirms then replaces in place or preserves the
         const workspace_id = workspace.id;
         const frozen = app.activePane().?;
         const frozen_id = frozen.id;
-        try std.testing.expect(app.sessionBannerHeight() > 0);
-        bannerAction(app, workspace_id, .reclaim);
+        try std.testing.expectEqual(@as(?@import("../session/takeover.zig").Phase, .idle), app.sessionTakeoverView().phase);
+        takeoverAction(app, workspace_id, .reclaim);
         try std.testing.expectEqual(.confirming, workspace.session_reclaim);
         try std.testing.expectEqual(@as(usize, 0), app.session_open_count);
-        bannerAction(app, workspace_id, .cancel);
+        takeoverAction(app, workspace_id, .cancel);
         try std.testing.expectEqual(.idle, workspace.session_reclaim);
         try std.testing.expect(workspace.session_controller.?.connection.client.nextWrite() == null);
         if (mode == 3) workspace.session_controller.?.host = try a.dupe(u8, "original-host");
@@ -472,7 +472,7 @@ test "session borrowers reclaim confirms then replaces in place or preserves the
         try std.testing.expectEqualStrings("mock", request.value.session.?);
         try std.testing.expectEqual(frozen, app.activePane().?);
         if (mode == 2) {
-            bannerAction(app, workspace_id, .close);
+            takeoverAction(app, workspace_id, .close);
             try std.testing.expectEqual(@as(usize, 0), app.mux.?.workspaces.items.len);
             try std.testing.expect(pending.state == .retiring);
             try std.testing.expect(connection.client.nextWrite() == null);
@@ -498,15 +498,15 @@ test "session borrowers reclaim confirms then replaces in place or preserves the
             try std.testing.expect(current.session_controller != previous_controller);
             try std.testing.expectEqual(@as(usize, 2), current.tabs.items.len);
             try std.testing.expect(app.findPaneById(frozen_id) == null);
-            try std.testing.expectEqual(@as(u32, 0), app.sessionBannerHeight());
-            // A stale Close click from the old banner cannot kill the reclaimed session.
-            bannerAction(app, workspace_id, .close);
+            try std.testing.expect(app.sessionTakeoverView().phase == null);
+            // A stale Close click from the old card cannot kill the reclaimed session.
+            takeoverAction(app, workspace_id, .close);
             try std.testing.expectEqual(@as(usize, 1), app.mux.?.workspaces.items.len);
         } else {
             try std.testing.expectEqual(frozen, app.activePane().?);
             try std.testing.expectEqual(.failed, current.session_reclaim);
             try std.testing.expect(current.session_controller.?.taken);
-            try std.testing.expect(app.sessionBannerHeight() > 0);
+            try std.testing.expectEqual(@as(?@import("../session/takeover.zig").Phase, .failed), app.sessionTakeoverView().phase);
             try std.testing.expectEqual(@as(?anyerror, if (mode == 1) error.Rejected else error.SessionHostChanged), current.session_reclaim_error);
             try std.testing.expect(connection.client.nextWrite() == null);
         }

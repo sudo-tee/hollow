@@ -7,7 +7,6 @@ local events = require("hollow.ui.widgets.bars.bar_events")
 local mount = require("hollow.ui.widgets.bars.bar_mount")
 local serializer = require("hollow.ui.widgets.bars.bar_serialize")
 local sidebar = require("hollow.ui.widgets.bars.sidebar")
-require("hollow.ui.widgets.session_banner")
 local topbar = require("hollow.ui.widgets.bars.topbar")
 local function configured(surface)
   if surface == "topbar" then
@@ -86,7 +85,6 @@ function ui._register_bar_invalidation_hooks()
   end
 
   state.ui._bar_invalidation_hooks_registered = true
-  hollow.events.on("session_banner:click", ui._session_banner_click)
   local function invalidate_bars()
     ui.topbar.invalidate()
     ui.bottombar.invalidate()

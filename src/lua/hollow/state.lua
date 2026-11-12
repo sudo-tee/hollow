@@ -48,6 +48,7 @@ function M.new(host_api)
         ["workspace:closed"] = true,
         ["session:handoff"] = true,
         ["session:notice"] = true,
+        ["session:takeover"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
         ["term:tab_closed"] = true,

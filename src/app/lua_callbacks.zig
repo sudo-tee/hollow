@@ -63,9 +63,9 @@ pub fn luaActivateSessionNoticeCallback(app_ptr: *anyopaque, id: u64) void {
     _ = app.enqueueMouse(.{ .session_notice_activate = id });
 }
 
-pub fn luaSessionBannerActionCallback(app_ptr: *anyopaque, id: usize, action: @import("../session/workspace_banner.zig").Action) void {
+pub fn luaSessionTakeoverActionCallback(app_ptr: *anyopaque, id: usize, action: @import("../session/takeover.zig").Action) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    _ = app.enqueueMouse(.{ .session_banner = .{ .workspace_id = id, .action = action } });
+    _ = app.enqueueMouse(.{ .session_takeover = .{ .workspace_id = id, .action = action } });
 }
 
 pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {

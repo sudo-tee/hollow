@@ -52,7 +52,7 @@ describe("host-first workspace guests", function()
     assert.are.equal(0, #warnings)
   end)
 
-  it("marks only disconnected open workspaces offline", function()
+  it("marks only disconnected open workspaces detached", function()
     local original = hollow.term.mux_tree
     for _, state in ipairs({ "attached", "taken", "disconnected" }) do
       hollow.term.mux_tree = function()
@@ -64,7 +64,7 @@ describe("host-first workspace guests", function()
       if state == "attached" then
         assert.is_nil(result[1].session_badge)
       else
-        assert.are.equal("offline", result[1].session_badge)
+        assert.are.equal("detached", result[1].session_badge)
       end
     end
     hollow.term.mux_tree = original

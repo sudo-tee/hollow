@@ -411,6 +411,8 @@ pub const App = struct {
     session_notices: @import("session/notice.zig").Notices = .{},
     /// Last reported owner handoff; one owner serves every window's domains.
     session_handoff_seen: ?@import("session/client.zig").Client.Handoff = null,
+    /// Last takeover state reported to Lua; null forces the next report.
+    session_takeover_seen: ?@import("session/takeover.zig").View = null,
     startup_session_target: session_open.StartupTarget = .unbound,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
@@ -1271,7 +1273,7 @@ pub const App = struct {
             .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
             .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
             .activate_session_notice = lua_callbacks.luaActivateSessionNoticeCallback,
-            .session_banner_action = lua_callbacks.luaSessionBannerActionCallback,
+            .session_takeover_action = lua_callbacks.luaSessionTakeoverActionCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -2247,6 +2249,7 @@ pub const App = struct {
             };
         }
         @import("app/lua_panes.zig").restoreAll(self);
+        self.session_takeover_seen = null; // The reloaded UI has no card yet.
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
     }
@@ -2372,18 +2375,10 @@ pub const App = struct {
 
     /// Height in pixels of the shared top bar. 0 when hidden.
     pub fn tabBarHeight(self: *App) u32 {
-        const banner = self.sessionBannerHeight();
-        if (!self.shouldShowTopBar()) return banner;
-        if (self.topBarLayout()) |layout| return banner + layout.height_px;
-        if (self.config.top_bar_height > 0) return banner + self.config.top_bar_height;
-        return banner + ((self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1));
-    }
-
-    pub fn sessionBannerHeight(self: *App) u32 {
-        const workspace = self.activeWorkspace() orelse return 0;
-        const controller = workspace.session_controller orelse return 0;
-        if (!controller.taken) return 0;
-        return @import("session/workspace_banner.zig").height(self.config.window_width, self.cell_width_px, self.cell_height_px);
+        if (!self.shouldShowTopBar()) return 0;
+        if (self.topBarLayout()) |layout| return layout.height_px;
+        if (self.config.top_bar_height > 0) return self.config.top_bar_height;
+        return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
     }
 
     pub fn shouldShowTopBar(self: *App) bool {
@@ -3014,7 +3009,32 @@ pub const App = struct {
             }
         }
         if (automation_changed) self.markAutomationChanged();
+        self.syncSessionTakeover();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
+    }
+
+    pub fn sessionTakeoverView(self: *App) @import("session/takeover.zig").View {
+        const workspace = self.activeWorkspace() orelse return .{};
+        const controller = workspace.session_controller orelse return .{};
+        if (!controller.taken) return .{};
+        return .{
+            .workspace_id = workspace.id,
+            .phase = workspace.session_reclaim,
+            .reason = if (workspace.session_reclaim == .failed) workspace.session_reclaim_error orelse error.Unknown else null,
+        };
+    }
+
+    /// Lua owns the takeover card; report active-workspace changes once.
+    fn syncSessionTakeover(self: *App) void {
+        const view = self.sessionTakeoverView();
+        if (self.session_takeover_seen) |seen| if (seen.eql(view)) return;
+        self.session_takeover_seen = view;
+        self.emitLuaBuiltInEvent("session:takeover", .{ .session_takeover = .{
+            .workspace_id = view.workspace_id,
+            .phase = view.phaseName(),
+            .reason = if (view.reason) |reason| @errorName(reason) else null,
+        } });
+        self.requestRedraw();
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {

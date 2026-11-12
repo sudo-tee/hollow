@@ -653,7 +653,7 @@ local function open_workspace_items()
       session_badge = (
         workspace.session_state == "taken" or workspace.session_state == "disconnected"
       )
-          and "offline"
+          and "detached"
         or nil,
       program_status_badge = badge,
       program_status_state = status_state,

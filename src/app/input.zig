@@ -66,7 +66,7 @@ pub const PendingInputEvent = union(enum) {
     user_close_tab_at: usize,
     /// Native session notice activation, matched again on the frame thread.
     session_notice_activate: u64,
-    session_banner: struct { workspace_id: usize, action: @import("../session/workspace_banner.zig").Action },
+    session_takeover: struct { workspace_id: usize, action: @import("../session/takeover.zig").Action },
     new_tab: struct {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
@@ -379,7 +379,7 @@ pub fn processInputQueue(self: *App) void {
 
         switch (ev) {
             .session_notice_activate => |id| @import("session_open.zig").activateNotice(self, id),
-            .session_banner => |payload| @import("session_open.zig").bannerAction(self, payload.workspace_id, payload.action),
+            .session_takeover => |payload| @import("session_open.zig").takeoverAction(self, payload.workspace_id, payload.action),
             .lua_pane_pointer => |payload| @import("lua_panes.zig").pointer(self, payload),
             .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
             .invalidate_lua_pane => |id| {

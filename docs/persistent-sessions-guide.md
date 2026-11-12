@@ -153,13 +153,16 @@ hollow.term.attach_session("saved-session-id", {
 
 Attachment rebuilds terminal views without starting another shell.
 It takes over the session if another client is attached; the previous client retains a disconnected view.
-The previous window shows one banner above the affected workspace's tabs, with **Reclaim session** and **Close local view** actions.
-The actions use native Lua buttons with hover feedback and pointer cursors; reclaim is disabled while connecting.
+The previous window dims the affected workspace and shows a centred card with **Reclaim session** and **Close local view** actions.
+The card is keyboard-first: arrow keys or Tab select an action, Enter chooses it, and `r` or `c` act directly.
+It captures plain keys, while leader sequences and modified global bindings still work, so you can switch away from the frozen workspace.
 Its retained panes are frozen screens, not live read-only views: they receive no further output, and input is no longer forwarded.
-The workspace picker marks disconnected workspaces **offline**, and affected global docks show a compact **offline** indicator.
-Choose **Reclaim session**, then **Confirm reclaim**, to disconnect the other window and take control back; **Cancel** leaves it untouched.
+The workspace picker marks disconnected workspaces **detached**, and affected global docks show a compact **detached** indicator.
+Choose **Reclaim session**, then **Confirm reclaim** in the same card, to disconnect the other window and take control back.
+In the confirm step, `y` confirms, and `n`, Escape, or **Cancel** leave the other window untouched.
+Reclaim is disabled while connecting.
 Reclaim uses the original session and connection options, preserving the workspace ID while refreshing its layout from the owner without creating a shell or duplicate workspace.
-Frozen views stay visible until replacement succeeds; if reclaim fails, the banner reports the error and retains those views for an explicit retry.
+Frozen views stay visible until replacement succeeds; if reclaim fails, the card reports the error and retains those views for an explicit retry.
 Hollow never reclaims automatically.
 **Close local view** removes the disconnected workspace and its owned global docks without ending remote processes, including while reclaim is pending.
 Ctrl+D closes an individual frozen pane locally without ending its remote process.
