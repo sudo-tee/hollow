@@ -249,7 +249,10 @@ fn testPump(app: *App) !void {
 
 fn testWaitText(app: *App, needle: []const u8) !void {
     const io = @import("../io.zig");
-    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    // Native Windows fixtures can launch from a cold WSL UNC path. Allow
+    // the bridge handshake plus interactive shell startup, not just PTY I/O.
+    const timeout_s: u64 = if (builtin.os.tag == .windows) 30 else 10;
+    const deadline = io.nanoTimestamp() + timeout_s * std.time.ns_per_s;
     while (io.nanoTimestamp() < deadline) {
         try testPump(app);
         if (app.activePane()) |pane| {
@@ -501,6 +504,7 @@ test "session borrowers native Windows full App detach and attach preserve three
         var options = resolved.options;
         // Private fixture routing is internal test input, never Lua/user config.
         options.namespace = fixture.namespace;
+        options.agent.timeout_ms = 15_000;
         const spawn = try prepareSpawn(temp, app.config, resolved.host, resolved.shell, null, resolved.domain, null, app.mux.?.spawn_filter);
         try std.testing.expect(spawn.command == null);
         _ = try opens.beginWithInput(app, options, .{ .id = 0, .op = .create, .spawn = spawn }, resolved.domain, "native-app-check", -1, "$global:MY_SESSION_VALUE='kept'; $global:MY_SESSION_PID=$PID; Write-Output ('native-'+'marker')");
@@ -533,6 +537,7 @@ test "session borrowers native Windows full App detach and attach preserve three
     const resolved = try resolve(app, temp, "persistent-test");
     var options = resolved.options;
     options.namespace = fixture.namespace;
+    options.agent.timeout_ms = 15_000;
     _ = try opens.beginWithInput(app, options, .{ .id = 0, .op = .attach, .session = session_id }, resolved.domain, null, -1, null);
     try testWaitText(app, "split-marker");
     const restored = app.activeWorkspace().?;
