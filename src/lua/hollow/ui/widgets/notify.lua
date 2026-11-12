@@ -24,18 +24,6 @@ local function notification_border(theme, level)
   return string.format("#%02x%02x%02x", unpack(channels))
 end
 
----@param level string|nil
----@param title string|nil
----@param message string
----@param action HollowUiNotifyAction|nil
----@return string
-local function notify_text(level, title, message, action)
-  local prefix = "[" .. string.upper(level or "info") .. "] "
-  local title_text = title and (title .. ": ") or ""
-  local action_text = action and ("  [" .. action.label .. "]") or ""
-  return prefix .. title_text .. message .. action_text
-end
-
 -- Toasts sharing an anchor flow through one Clay column. Oldest stays nearest
 -- the anchor; notification spacing remains independent of modal positioning.
 local function toast_group(widget)
@@ -95,9 +83,30 @@ function ui.notify.show(message, opts)
   end
 
   local theme = shared.widget_theme("notify", opts.theme)
-  local action = opts.action
   local level = opts.level or "info"
   local widget
+
+  local function dismiss()
+    if widget._activity_id then
+      hollow.activity.dismiss(widget._activity_id)
+    end
+    ui.close_overlay_widget(widget)
+  end
+
+  -- Each action button runs its callback, then dismisses the toast.
+  local actions = {}
+  for index, action in ipairs(opts.actions or { opts.action }) do
+    actions[index] = {
+      label = action.label,
+      kind = action.kind,
+      on_click = function()
+        if type(action.fn) == "function" then
+          action.fn()
+        end
+        dismiss()
+      end,
+    }
+  end
 
   widget = ui.overlay.new({
     render = function(ctx)
@@ -116,10 +125,7 @@ function ui.notify.show(message, opts)
     backdrop = opts.backdrop,
     on_key = function(key)
       if key == "escape" then
-        if widget._activity_id then
-          hollow.activity.dismiss(widget._activity_id)
-        end
-        ui.close_overlay_widget(widget)
+        dismiss()
         return true
       end
 
@@ -135,29 +141,22 @@ function ui.notify.show(message, opts)
     return toast_group(widget) ~= nil
   end
   widget._toast_render = function(ctx)
-    local text = notify_text(level, opts.title, message, action)
     local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
     if not opts.chrome then
       chrome.border = notification_border(theme, level)
     end
     return ui.components.toast({
       id = "notify:" .. tostring(widget._toast_id),
-      label = text,
       theme = theme,
       ctx = ctx,
       inset = "modal",
       chrome = chrome,
       level = level,
-      text = text,
-      on_click = function()
-        if action and type(action.fn) == "function" then
-          action.fn()
-        end
-        if widget._activity_id then
-          hollow.activity.dismiss(widget._activity_id)
-        end
-        ui.close_overlay_widget(widget)
-      end,
+      title = opts.title,
+      icon = opts.icon,
+      text = message,
+      actions = actions,
+      on_click = dismiss,
     })
   end
   ui.notify._next_toast_id = (ui.notify._next_toast_id or 0) + 1

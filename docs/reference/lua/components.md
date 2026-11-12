@@ -132,9 +132,13 @@ colors. Recipe-backed atoms accept component theme overrides.
   Optional `action_padding` sets padding for all action buttons (for example,
   `{ x = 8, y = 4 }` in pixels); `false` removes padding. Defaults remain one
   cell horizontally and zero vertically.
-- **`toast`** — two nodes. Accepts `level`, `text`, and optional
-  `action = { label, on_click }`; the action shares the toast click target.
-  Notification paint uses `styles.notify.message` for compatibility.
+- **`toast`** — level icon beside a column of optional `title`, `text`, and an
+  action button row. Accepts `level`, `text`, `title`, `icon` (icon name, glyph,
+  or `false`), and `actions = { { label, kind?, on_click | fn } }`; `action`
+  is shorthand for one entry. Buttons are separate click targets from the
+  toast's own `on_click`.
+  The icon, title, and untitled message use `styles.notify.message`; a titled
+  message uses `styles.notify.body`.
 
 ## Gallery
 

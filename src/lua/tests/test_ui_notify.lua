@@ -60,11 +60,35 @@ describe("UI notify test suite", function()
       local group = clay.find(ui, ":dialog")
       assert.is_nil(group.border)
       assert.is_nil(group.bg)
-      for _, text in ipairs({ "[INFO] hello", "[ERROR] failure" }) do
+      for _, text in ipairs({ "hello", "failure" }) do
         local toast = clay.label(ui, text)
         assert.equals("#3b3f44", toast.border)
       end
       ui.notify.clear()
+    end)
+
+    it("runs an action button and dismisses; clicking the body only dismisses", function()
+      local ran = 0
+      local action = {
+        label = "Reconnect",
+        fn = function()
+          ran = ran + 1
+        end,
+      }
+      hollow.ui.notify.info("1 session is not connected.", {
+        ttl = 0,
+        title = "Remote sessions",
+        action = action,
+      })
+      harness.assert_true(clay.text_node(hollow.ui, "Remote sessions") ~= nil, "title renders")
+      hollow._emit_builtin_event("overlay:click", { id = clay.find(hollow.ui, ":action:1").id })
+      assert.equals(1, ran)
+      assert.equals(0, hollow.ui.overlay.depth())
+
+      hollow.ui.notify.info("again", { ttl = 0, action = action })
+      hollow._emit_builtin_event("overlay:click", { id = clay.label(hollow.ui, "again").id })
+      assert.equals(1, ran)
+      assert.equals(0, hollow.ui.overlay.depth())
     end)
 
     it("expires lower toasts before snapshotting and keeps draw owner indices stable", function()
