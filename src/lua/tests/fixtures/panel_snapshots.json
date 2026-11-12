@@ -194,7 +194,7 @@
         "children": 1,
         "clickable": true,
         "id": "test:notify:1",
-        "label": "[INFO] Notice",
+        "label": "Notice",
         "padding": {
           "bottom": 11,
           "left": 18,
@@ -204,10 +204,29 @@
         "radius": 5
       },
       {
+        "children": 2,
+        "gap": 10,
+        "kind": 1
+      },
+      {
+        "children": 1,
+        "width": 20
+      },
+      {
+        "fg": "#8fbcdf",
+        "kind": 2,
+        "text": "",
+        "wrap": 2
+      },
+      {
+        "children": 1,
+        "width": -1
+      },
+      {
         "bold": true,
         "fg": "#8fbcdf",
         "kind": 2,
-        "text": "[INFO] Notice",
+        "text": "Notice",
         "wrap": 2
       }
     ]
