@@ -507,7 +507,7 @@ test "session borrowers native Windows full App detach and attach preserve three
         try testWaitText(app, "native-marker");
         controller.newTab(app, null, null, "$global:TAB_VALUE='second'; Write-Output ('tab-'+'marker')", -1, false);
         try testWaitText(app, "tab-marker");
-        controller.splitPane(app, .vertical, 0.4, null, null, "$global:SPLIT_VALUE='third'; Write-Output ('split-'+'marker')", .send, false, false, false, null, null, null, null, -1);
+        controller.splitPane(app, .vertical, 0.4, null, null, "$global:SPLIT_VALUE='third'; Write-Output ('split-'+'marker')", .send, false, false, false, null, null, null, null, -1, null, null);
         try testWaitText(app, "split-marker");
         const workspace = app.activeWorkspace().?;
         try std.testing.expectEqual(@as(usize, 2), workspace.tabs.items.len);
