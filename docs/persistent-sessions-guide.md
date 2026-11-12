@@ -328,7 +328,7 @@ This is a GUI-only fix; an existing owner need not be restarted for it.
 
 ### Native Windows bundle replacement
 
-Run `zig build --build-file build-agent.zig test-session-native-windows -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary failures`.
+Run `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-session-native-windows -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary failures`.
 The private live-owner fixture now replaces its bundle with a real executable built in a different optimization mode, publishes a new checksum-addressed cache entry, and uses that executable's bridge to reattach to the original owner.
 It checks the original owner PID, host identity, shell-variable continuity, and original cached image digest.
 After explicitly ending only the fixture session and disconnecting all clients, it waits for natural owner exit, starts the replacement at the same private endpoint, and checks a fresh session works.

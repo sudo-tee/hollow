@@ -704,7 +704,7 @@ Session input is admitted without waiting for first output and overflow rejects 
 Headless Windows process-tree tests live in `test-session-windows-pty` in the standalone agent build graph.
 All 11 tests pass on real Windows through WSL in Debug, ReleaseSafe, and ReleaseFast; Windows CI now runs this target too.
 
-The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig session-owner-windows -Dtarget=x86_64-windows-gnu`.
+The Windows bootstrap is built explicitly with `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent session-owner-windows -Dtarget=x86_64-windows-gnu`.
 It installs `agents/windows-x86_64/hollow-agent.exe` without replacing the Linux agents or GUI executable.
 The executable supports `session serve|connect|list|kill-server`; protocol clients can create, list, attach, detach, and kill sessions, spawn/close/respawn individual panes, send input/resize/credit, and replace opaque layouts with revision checks.
 The welcome negotiates the real Ghostty build identity and advertises `create-id` and `respawn`.

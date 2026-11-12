@@ -138,8 +138,8 @@ agents/
 Build the bundle on its own with:
 
 ```bash
-zig build --build-file build-agent.zig agent-all
-zig build --build-file build-agent.zig cli-all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent-all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli-all
 ```
 
 Normal `zig build` also produces it under `zig-out/agents/`.

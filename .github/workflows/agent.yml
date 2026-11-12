@@ -26,31 +26,31 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pty 2>&1 | Tee-Object -FilePath session-windows-pty.log
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-session-windows-pty 2>&1 | Tee-Object -FilePath session-windows-pty.log
           exit $LASTEXITCODE
       - name: Headless Windows live session owner and isolated lifecycle
         timeout-minutes: 5
         shell: pwsh
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe session-owner-windows test-session-windows-owner 2>&1 | Tee-Object -FilePath session-windows-owner.log
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe session-owner-windows test-session-windows-owner 2>&1 | Tee-Object -FilePath session-windows-owner.log
           exit $LASTEXITCODE
       - name: Headless Windows session pane, snapshots and owner lifetime
         timeout-minutes: 5
         shell: pwsh
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-pane 2>&1 | Tee-Object -FilePath session-windows-pane.log
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-session-windows-pane 2>&1 | Tee-Object -FilePath session-windows-pane.log
           exit $LASTEXITCODE
       - name: Native-local asynchronous session transport and open lifecycle
         timeout-minutes: 5
         shell: pwsh
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-native-windows 2>&1 | Tee-Object -FilePath session-native-windows.log
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-session-native-windows 2>&1 | Tee-Object -FilePath session-native-windows.log
           exit $LASTEXITCODE
       - name: Bounded Windows WSL keeper mechanism
         timeout-minutes: 5
         shell: pwsh
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-session-windows-keepalive 2>&1 | Tee-Object -FilePath session-windows-keepalive.log
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-session-windows-keepalive 2>&1 | Tee-Object -FilePath session-windows-keepalive.log
           exit $LASTEXITCODE
       - name: Portable session metadata and admission on Windows
         shell: pwsh
@@ -81,7 +81,7 @@ jobs:
       - name: Verify real Docker daemon is available
         run: docker info
       - name: Build static agent bundle
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe agent agent-all
       - name: Independent fs/exec release checks including real Docker and non-root production bootstrap
         run: python3 scripts/agent_fs_exec_release.py --profile local docker --output fs-exec-release
       - uses: actions/upload-artifact@v4
@@ -97,10 +97,10 @@ jobs:
         with:
           version: 0.17.0
       - name: Build static agent artifacts without GUI dependencies
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-loop test-agent-fs
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-loop test-agent-fs
       - name: Shared Zig CLI transports and packaged guest binaries
         run: |
-          zig build --build-file build-agent.zig -Doptimize=ReleaseSafe cli cli-all test-cli test-cli-bundle
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe cli cli-all test-cli test-cli-bundle
           (cd zig-out/cli && sha256sum -c SHA256SUMS)
       - name: Verify bundled checksums
         working-directory: zig-out/agents
@@ -110,25 +110,25 @@ jobs:
       - name: Local subprocess conformance
         run: python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
       - name: Persistent native host transport
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-transport
       - name: Agent pane PTY client and server
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pty
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-agent-pty
       - name: Mux protocol, credits, isolation and reader lifecycle
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-mux -j1
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-agent-mux -j1
       - name: Native pane adapter benchmark smoke tests
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pane-bench
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-agent-pane-bench
       - name: Saved Windows process-group accounting tests
         run: python3 scripts/test_windows_process_group.py -v
       - name: Typed operations and HostManager lifecycle
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager test-host-local
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-operations test-host-manager test-host-local
       - name: Windows host transport compile check
         run: zig test src/host_transport.zig -target x86_64-windows-gnu -lc -fno-emit-bin
       - name: Install Podman
         run: sudo apt-get update && sudo apt-get install -y podman luajit libluajit-5.1-dev lua-busted
       - name: Native Lua host promises against real agent
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
+        run: zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
       - name: Mock socket transport independence, native Lua and link-loss probes
-        run: python3 scripts/agent_socket_tests.py --agent zig-out/bin/hollow-agent --fragment 257 --conformance -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
+        run: python3 scripts/agent_socket_tests.py --agent zig-out/bin/hollow-agent --fragment 257 --conformance -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
       - name: Windows host manager and Lua adapter compile checks
         run: |
           zig test src/host_manager_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
@@ -137,19 +137,19 @@ jobs:
           zig translate-c src/lua_bindings.h -target x86_64-windows-gnu -I /usr/include/luajit-2.1 > .zig-cache/host_lua_bindings.zig
           zig test -target x86_64-windows-gnu --dep lua_c -Mroot=src/host_lua_test.zig -target x86_64-windows-gnu -Mlua_c=.zig-cache/host_lua_bindings.zig -lc -fno-emit-bin
       - name: Same native Lua contract through rootless Podman
-        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua
       - name: Lua host promise contract
         run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua src/lua/tests/test_host_connectors.lua src/lua/tests/test_host_pty.lua src/lua/tests/test_ui_workspace_host.lua
       - name: Production Lua Podman bootstrap, reuse and repair
-        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua
       - name: Production bootstrap preserves configured container UID/GID
-        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-user 1000:1000 --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-user 1000:1000 --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua
       - name: Flat release bundle discovery through production Podman bootstrap
-        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua-flat
+        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-host-lua-flat
       - name: Rootless Podman conformance
         run: python3 scripts/agent_conformance.py --connector podman --image docker.io/library/alpine:3.21 --agent zig-out/bin/hollow-agent
       - name: Agent pane PTY through rootless Podman
-        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pty
+        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig --cache-dir .zig-cache-agent -Doptimize=ReleaseSafe test-agent-pty
       - uses: actions/upload-artifact@v4
         with:
           name: hollow-agent-linux-musl

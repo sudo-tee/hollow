@@ -114,8 +114,8 @@ Windows-owned WSL keepalive integration:
 Validation commands for this slice:
 
 ```sh
-zig build --build-file build-agent.zig test-session-windows-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all
-zig build --build-file build-agent.zig test-session-wsl-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe -Dkeepalive-test-agent=/absolute/guest/agent -Dkeepalive-test-distro=Ubuntu --summary all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-session-windows-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-session-wsl-keepalive -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe -Dkeepalive-test-agent=/absolute/guest/agent -Dkeepalive-test-distro=Ubuntu --summary all
 ```
 
 Use a freshly rebuilt guest binary and a private fixture, never the production session directory.
@@ -586,12 +586,12 @@ Gotchas that cost time before:
   appears stale (`-Dagent-only=false` for GUI graph).
 - Lua: `./scripts/test-lua.sh` (single file: `./scripts/test-lua.sh src/lua/tests/<file>.lua`);
   bundled LuaJIT syntax: `zig build test-luajit -Dagent-only=false`.
-- `zig build --build-file build-agent.zig test-session-transport test-agent-loop test-agent-pty`
+- `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-session-transport test-agent-loop test-agent-pty`
 - `HOLLOW_TEST_AGENT=$PWD/zig-out/agents/linux-x86_64/hollow-agent zig build --build-file build.zig test-session-pane test-session-snapshot test-session-client test-background test-search test-command test-lua test-luajit -Dagent-only=false --summary all`
 - Windows GUI cross-build: `./launch.sh --build-only`.
-- Windows owner-side ConPTY foundation (no GUI dependencies): `zig build --build-file build-agent.zig test-session-windows-pty -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all`.
+- Windows owner-side ConPTY foundation (no GUI dependencies): `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-session-windows-pty -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe --summary all`.
   Run on Windows or through WSL executable interop; this target creates isolated test processes, never connects to existing owners.
-- Windows bootstrap: `zig build --build-file build-agent.zig session-owner-windows test-session-windows-owner -Dtarget=x86_64-windows-gnu -Doptimize=Debug --summary all`.
+- Windows bootstrap: `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent session-owner-windows test-session-windows-owner -Dtarget=x86_64-windows-gnu -Doptimize=Debug --summary all`.
   Its protocol fixtures use unique private namespaces; successful detached startup is separately qualified only when the enclosing Windows job permits breakaway.
   Run the same target in ReleaseSafe and ReleaseFast, and report skipped startup checks rather than treating them as passes.
 - Portable metadata/admission: `zig test src/agent/session_core.zig`; Windows: add `-target x86_64-windows-gnu -lc -OReleaseSafe`.

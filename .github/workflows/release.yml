@@ -43,7 +43,7 @@ jobs:
 
       - name: Build Linux agents
         run: |
-          zig build --build-file build-agent.zig agent-all cli-all -Doptimize=ReleaseSafe
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent-all cli-all -Doptimize=ReleaseSafe
           (cd zig-out/agents && sha256sum -c SHA256SUMS)
           (cd zig-out/cli && sha256sum -c SHA256SUMS)
         env:
@@ -112,7 +112,7 @@ jobs:
 
       - name: Build Linux agents
         run: |
-          zig build --build-file build-agent.zig agent-all cli-all -Doptimize=ReleaseSafe
+          zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent-all cli-all -Doptimize=ReleaseSafe
           (cd zig-out/agents && sha256sum -c SHA256SUMS)
           (cd zig-out/cli && sha256sum -c SHA256SUMS)
         env:

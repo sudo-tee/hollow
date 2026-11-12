@@ -1,8 +1,14 @@
 # Development
 
 Build the standalone CLI without GUI dependencies with
-`zig build --build-file build-agent.zig cli cli-all`. Run its shared command and
-transport checks with `zig build --build-file build-agent.zig test-cli`.
+`zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli cli-all`.
+Run its shared command and transport checks with `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-cli`.
+
+Always give `build-agent.zig` its own cache directory.
+Zig 0.17 caches the configure result without the build file name in the key.
+`build.zig` and `build-agent.zig` share a build root, so a shared `.zig-cache` serves one file's step graph to the other.
+The symptom is `error: no such step: test-all` after an agent build, or GUI steps listed by `build-agent.zig`.
+If an old cache is already mixed up, delete `.zig-cache`.
 
 Command API checks can run without GUI libraries: `zig build test-command`.
 This covers command contracts/examples, native CLI parsing, and real loopback
