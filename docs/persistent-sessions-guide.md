@@ -229,13 +229,19 @@ Reattachment restores the saved structure, dock scope and ratio, hidden flags, a
 Workspace docks belong to their workspace; global docks belong to the session that owns their panes.
 A global dock is restored only in its owning session, so another session attached to the same window keeps its own global docks.
 If a global dock's edge is already occupied by another session's pane, the restored pane becomes a tab instead of replacing the occupant.
-Creating an edge or dock split directly in a session-backed workspace is rejected; move an existing pane into a dock with `hollow.term.dock_pane` instead.
+Creating an edge split directly in a session-backed workspace is rejected; move an existing pane into a dock with `hollow.term.dock_pane` instead.
+A global dock split on a non-persistent domain is the exception: it creates an ordinary pane straight in the global dock without touching the session.
 Ordinary geometry edits settle briefly before saving rather than serializing a layout on every drag frame.
 Closing a tab or workspace waits for pending pane creation and includes the acknowledged child in the close operation.
 
 Each workspace permits one pending pane creation at a time.
 Another request while it is busy reports an error rather than silently falling back or duplicating a spawn.
 Pane domains must remain the workspace's domain; use another workspace for another host/domain.
+The **split/new tab in domain** actions ask before crossing domains.
+The dialog is titled **Open on** the target domain.
+From a session workspace it offers **New workspace**, plus **Global dock** when that domain is not persistent.
+The dock goes on the right for vertical splits and new tabs, at the bottom for horizontal splits, or on the next free edge.
+From an ordinary workspace, choosing a persistent domain offers **New session workspace**.
 Changing a domain's host profile does not retarget an already attached session.
 
 ## Exited panes and missing sessions

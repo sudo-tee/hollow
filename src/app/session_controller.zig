@@ -945,6 +945,12 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     const snapped_ratio = if (edge != null) std.math.clamp(ratio, 0.05, 0.95) else snapSplitRatio(self, ratio, direction, split_bounds);
     if (mux.activeWorkspace()) |workspace| if (workspace.session_controller != null) {
         if (dock) |scope| {
+            // An ordinary domain's pane cannot join the session; a global
+            // dock holds it without touching the session's layout.
+            if (scope == .global and domain_name != null and !self.config.persistForDomain(domain_name)) {
+                dockOrdinaryPane(self, mux, runtime, edge.?, std.math.clamp(ratio, 0.05, 0.95), domain_name, cwd, launch_command, previous, callback_ref);
+                return;
+            }
             // The free-slot and floating checks above validated this request.
             @import("session_spawn.zig").split(self, .{ .dock = .{
                 .edge = edge.?,
@@ -1030,6 +1036,27 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     self.requestLayoutResize(false);
     std.log.info("app: splitPane total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
+}
+
+fn dockOrdinaryPane(self: *App, mux: *Mux, runtime: *GhosttyRuntime, edge: PaneEdge, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, launch_command: ?LaunchCommand, previous: ?*Pane, callback_ref: c_int) void {
+    var workspace_id_buf: [32]u8 = undefined;
+    const workspace_id = if (mux.activeWorkspace()) |ws| std.fmt.bufPrint(&workspace_id_buf, "{d}", .{ws.id}) catch null else null;
+    const pane = mux.createPane(runtime, terminal_callbacks.terminalCallbacks(), self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command, workspace_id) catch |err| {
+        std.log.err("app: dock pane failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
+        if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+        return;
+    };
+    mux.dockNewPane(pane, edge, .global, ratio) catch |err| {
+        std.log.err("app: dock pane failed: {s}", .{@errorName(err)});
+        pane.deinit(runtime);
+        mux.allocator.destroy(pane);
+        if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
+        return;
+    };
+    htp.bindHtpHandlers(self);
+    self.syncActivePaneChange(previous, mux.activePane());
+    if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .pane_id = pane.id });
+    self.requestLayoutResize(false);
 }
 
 fn nonEmptyCommand(command: ?[]const u8) ?[]const u8 {

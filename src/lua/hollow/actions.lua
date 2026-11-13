@@ -1060,10 +1060,75 @@ function M.setup(hollow, host_api)
     })
   end
 
+  local function persistent_domain(domain)
+    local domains = hollow.config.get("domains")
+    local config = type(domains) == "table" and domains[domain] or nil
+    return type(config) == "table" and config.persist == true
+  end
+
+  local function free_global_edge(preferred)
+    local taken = {}
+    for _, pane in ipairs(hollow.term.docks()) do
+      if pane.dock and pane.dock.scope == "global" then
+        taken[pane.dock.edge] = true
+      end
+    end
+    for _, edge in ipairs({ preferred, "right", "bottom", "left", "top" }) do
+      if not taken[edge] then
+        return edge
+      end
+    end
+  end
+
+  --- Run `open` when `domain` can join the current workspace. Otherwise offer
+  --- a new workspace on it, or a global dock pane for an ordinary domain.
+  local function open_in_domain(domain, edge, open)
+    local workspace = hollow.term.current_workspace()
+    local own = type(workspace) == "table"
+      and type(workspace.session_id) == "string"
+      and (workspace.domain or hollow.config.get("default_domain"))
+    local persistent = persistent_domain(domain)
+    if domain == nil or (own and domain == own) or (not own and not persistent) then
+      open()
+      return
+    end
+    local buttons = {
+      {
+        text = own and "New workspace" or "New session workspace",
+        value = "workspace",
+        style = "primary",
+      },
+    }
+    local dock_edge = own and not persistent and free_global_edge(edge)
+    if dock_edge then
+      buttons[#buttons + 1] = { text = "Global dock", value = "dock" }
+    end
+    buttons[#buttons + 1] = { text = "Cancel", value = false, style = "secondary" }
+    hollow.ui.confirm.open({
+      title = "Open on " .. domain,
+      prompt = own
+          and ("This workspace is a session on " .. own .. "; panes on " .. domain .. " cannot join it.")
+        or (domain .. " keeps its panes in session workspaces."),
+      buttons = buttons,
+      on_confirm = function(value)
+        if value == "workspace" then
+          hollow.term.new_workspace({ domain = domain })
+        elseif value == "dock" then
+          hollow.term.split_pane(
+            nil,
+            { domain = domain, dock = "global", edge = dock_edge, ratio = 0.3 }
+          )
+        end
+      end,
+    })
+  end
+
   register(hollow, "split_vertical_in_domain", {
     run = function()
       pick_domain_and_run(function(item)
-        hollow.term.split_pane("vertical", { domain = item.domain_name })
+        open_in_domain(item.domain_name, "right", function()
+          hollow.term.split_pane("vertical", { domain = item.domain_name })
+        end)
       end)
     end,
     desc = "Split pane vertically with a domain",
@@ -1073,7 +1138,9 @@ function M.setup(hollow, host_api)
   register(hollow, "split_horizontal_in_domain", {
     run = function()
       pick_domain_and_run(function(item)
-        hollow.term.split_pane("horizontal", { domain = item.domain_name })
+        open_in_domain(item.domain_name, "bottom", function()
+          hollow.term.split_pane("horizontal", { domain = item.domain_name })
+        end)
       end)
     end,
     desc = "Split pane horizontally with a domain",
@@ -1083,7 +1150,12 @@ function M.setup(hollow, host_api)
   register(hollow, "new_tab_in_domain", {
     run = function(opts)
       pick_domain_and_run(function(item)
-        host_api.new_tab({ domain = item.domain_name, insert_at_end = opts and opts.insert_at_end })
+        open_in_domain(item.domain_name, "right", function()
+          host_api.new_tab({
+            domain = item.domain_name,
+            insert_at_end = opts and opts.insert_at_end,
+          })
+        end)
       end)
     end,
     desc = "Create new tab with a domain",

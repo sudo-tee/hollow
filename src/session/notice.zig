@@ -160,6 +160,14 @@ pub const Text = struct {
             self.count = 3;
             return;
         }
+        if (notice.outcome == .not_sent and (notice.reason orelse error.Unknown) == error.CrossSessionDomain) {
+            self.lines[0] = "Pane not opened: different domain";
+            self.lines[1] = "Panes in a session workspace use its domain.";
+            self.lines[2] = "Open a new workspace on that domain instead.";
+            self.lines[3] = "Click to dismiss.";
+            self.count = 4;
+            return;
+        }
         if (notice.outcome == .rejected and std.mem.eql(u8, remote, "SessionNotFound")) {
             // The owner is alive and authoritative: the session ended or was
             // killed. Nothing was created, so starting fresh is safe.
@@ -327,6 +335,15 @@ test "session pane notice explains a missing session and how to recover" {
     try std.testing.expect(notices.failedRemote(2, error.Disconnected, .uncertain, "SessionNotFound"));
     text.format(notices.current().?);
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "Do not recreate") != null);
+}
+
+test "session pane notice explains a cross-domain pane without the raw error" {
+    var notices: Notices = .{};
+    var text: Text = .{};
+    try std.testing.expect(notices.failed(1, error.CrossSessionDomain, .not_sent));
+    text.format(notices.current().?);
+    try std.testing.expectEqualStrings("Pane not opened: different domain", text.lines[0]);
+    try std.testing.expectEqualStrings("Open a new workspace on that domain instead.", text.lines[2]);
 }
 
 test "session pane notice respawn rejection names operation without suggesting a new session" {
