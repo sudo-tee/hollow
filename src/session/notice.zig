@@ -178,6 +178,14 @@ pub const Text = struct {
             self.count = 4;
             return;
         }
+        if (notice.outcome == .not_sent and (notice.reason orelse error.Unknown) == error.Disconnected) {
+            self.lines[0] = "Session connection lost";
+            self.lines[1] = "Request was not sent. The host disconnected.";
+            self.lines[2] = "Check live sessions before reconnecting.";
+            self.lines[3] = "Click to dismiss. No automatic retry.";
+            self.count = 4;
+            return;
+        }
         self.lines[0] = std.fmt.bufPrint(&self.buffer, "Session open failed: {s}", .{if (notice.remote_len > 0) remote else if (notice.reason) |reason| @errorName(reason) else "Unknown"}) catch "Session open failed";
         switch (notice.outcome) {
             .not_sent => {
@@ -299,6 +307,18 @@ test "session pane notice text distinguishes uncertainty without implying safe r
     text.format(.{ .id = 4, .state = .failed, .reason = error.DeployFailed, .outcome = .not_sent });
     try std.testing.expectEqual(@as(usize, 3), text.count);
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "not sent") != null);
+}
+
+test "session pane notice unsent disconnect explains lost connection without blaming host settings" {
+    var notices: Notices = .{};
+    var text: Text = .{};
+    try std.testing.expect(notices.failed(1, error.Disconnected, .not_sent));
+    text.format(notices.current().?);
+    try std.testing.expectEqual(@as(usize, 4), text.count);
+    try std.testing.expectEqualStrings("Session connection lost", text.lines[0]);
+    try std.testing.expectEqualStrings("Request was not sent. The host disconnected.", text.lines[1]);
+    try std.testing.expectEqualStrings("Check live sessions before reconnecting.", text.lines[2]);
+    try std.testing.expectEqualStrings("Click to dismiss. No automatic retry.", text.lines[3]);
 }
 
 test "session pane notice geometry stays inside content viewport and clips tiny sizes" {

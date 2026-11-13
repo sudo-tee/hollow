@@ -277,7 +277,8 @@ pub fn handle(app: *App, controller: *Controller, message: transport.Message) bo
 
 fn canSave(controller: *const Controller) bool {
     return controller.layout_dirty and !controller.detached and !controller.spawn_active and !controller.close_work and
-        controller.layout_request == null and controller.kill_request == null and !controller.layout_conflict and controller.pendingCloses() == 0;
+        controller.layout_request == null and controller.kill_request == null and !controller.layout_conflict and controller.pendingCloses() == 0 and
+        controller.connection.status().phase == .ready;
 }
 
 pub fn nextLayoutWakeNs(app: *const App) i128 {
@@ -896,6 +897,34 @@ test "session borrowers workspace rename persists without another layout action"
     const layout = try @import("../session/layout.zig").decode(a, request.value.layout.?, &.{1});
     defer layout.deinit();
     try std.testing.expectEqualStrings("renamed-session", layout.value.name.?);
+}
+
+test "session borrowers disconnected layouts neither save nor schedule wakes or notices" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const controller = app.activeWorkspace().?.session_controller.?;
+    const connection = controller.connection;
+    const next_id = connection.client.next_id;
+    for ([_]bool{ false, true }) |ended| {
+        connection.closing = !ended;
+        connection.finished = ended;
+        connection.client.ended = ended;
+        // Model repeated geometry changes after the host disappears.
+        for (0..3) |_| {
+            controller.layout_dirty = true;
+            controller.layout_due_ns = 0;
+            try std.testing.expectEqual(@as(i128, 0), nextLayoutWakeNs(app));
+            saveLayouts(app);
+            flushLayouts(app, 0);
+            try std.testing.expect(controller.layout_dirty);
+            try std.testing.expect(!controller.detached);
+            try std.testing.expect(connection.client.nextWrite() == null);
+            try std.testing.expectEqual(next_id, connection.client.next_id);
+            try std.testing.expectEqual(@as(usize, 0), app.session_notices.count);
+        }
+    }
 }
 
 test "session borrowers quit flushes a debounced layout behind the in-flight save" {
