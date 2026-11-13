@@ -12,6 +12,7 @@
 --- })
 --- ```
 local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
 local ui = _G.hollow.ui
 
 ui.confirm = ui.confirm or {}
@@ -72,6 +73,15 @@ function ui.confirm.open(opts)
 
   local nav = ui.list_nav(#footer_buttons)
 
+  -- Widen past the requested width so the button row never overflows:
+  -- one cell of padding per side, two-cell gaps, and the frame's padding.
+  local width = opts.width or 50
+  local row = 6 + 2 * (#footer_buttons - 1)
+  for _, btn in ipairs(footer_buttons) do
+    row = row + util.display_width(btn.text or "") + 2
+  end
+  width = math.max(width, row)
+
   local backdrop = opts.backdrop
   if backdrop == nil then
     backdrop = true
@@ -90,7 +100,7 @@ function ui.confirm.open(opts)
         hovered = state and find_hovered_index(state.hovered_id, footer_buttons),
       })
     end,
-    width = opts.width or 50,
+    width = width,
     height = opts.height,
     chrome = opts.chrome,
     align = opts.align or "center",

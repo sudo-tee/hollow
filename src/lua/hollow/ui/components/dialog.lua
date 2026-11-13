@@ -27,6 +27,9 @@ local function actions_row(opts, theme, cell_w)
       on_click = action.on_click,
       disabled = action.disabled,
       padding = padding,
+      -- Clay shrinks a crowded row to its longest word; wrap instead of overlapping.
+      wrap = "words",
+      text_align = "center",
     })
     -- Dialog buttons follow the theme radius, square when it is unset.
     node.style.radius = theme.radius

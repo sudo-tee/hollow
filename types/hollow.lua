@@ -781,6 +781,8 @@
 ---@field theme? HollowUiTheme Select palette by default for recipe buttons; explicit partial palettes are authoritative.
 ---@field id string
 ---@field text? string
+---@field wrap? 'words'|'newlines'|'none' Label wrapping when the button is shrunk (default `none`).
+---@field text_align? 'left'|'center'|'right'
 ---@field style? HollowUiNodeStyle
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })

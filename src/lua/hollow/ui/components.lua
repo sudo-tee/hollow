@@ -163,10 +163,13 @@ function M.button(value)
   end
   opts.label = opts.label or opts.text or ""
   opts.style = style
-  return M.column(
-    { M.text(opts.text, { fg = style.fg, bold = style.bold }, { wrap = "none" }) },
-    opts
-  )
+  return M.column({
+    M.text(
+      opts.text,
+      { fg = style.fg, bold = style.bold },
+      { wrap = opts.wrap or "none", text_align = opts.text_align }
+    ),
+  }, opts)
 end
 
 function M.demo()
