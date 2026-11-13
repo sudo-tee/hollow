@@ -647,9 +647,15 @@ pub fn build(b: *std.Build) void {
     const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);
     test_step.dependOn(&renderer_bench_test_cmd.step);
 
-    const all_test_step = b.step("test-all", "Run native and Lua tests");
+    const harness_test_cmd = b.addSystemCommand(&.{ "python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-v" });
+    harness_test_cmd.setCwd(b.path("."));
+    const harness_test_step = b.step("test-harness", "Run Python harness and generated metadata checks");
+    harness_test_step.dependOn(&harness_test_cmd.step);
+
+    const all_test_step = b.step("test-all", "Run native, Lua, and Python harness tests");
     all_test_step.dependOn(test_step);
     all_test_step.dependOn(lua_test_step);
+    all_test_step.dependOn(harness_test_step);
 }
 
 fn addAgentSteps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {

@@ -248,7 +248,11 @@ luarocks --lua-version=5.1 install busted 2.3.0
 ```
 
 Use `zig build test-lua` for the same Lua suite through the Zig build, or
-`zig build test-all` to run both native and Lua tests.
+`zig build test-all` to run native, Lua, and Python harness tests.
+Use `zig build test-harness` to run only the Python tests under `scripts/tests`, including installer fixtures and generated REPL signature freshness checks.
+These tests require Python 3 and Bash; optional shell checks skip when their shell is unavailable.
+After changing `types/hollow.lua`, run `python3 scripts/generate-repl-signatures.py` and commit the generated metadata with the API change.
+Normal builds and tests never regenerate this tracked file automatically.
 The Busted runner discovers every `src/lua/tests/test_*.lua` file, and accepts
 normal Busted options such as `--filter`, `--list`, and `--output=junit`.
 
