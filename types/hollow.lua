@@ -1896,6 +1896,7 @@ function term.kill_session(session_id, opts) end
 ---@field domain string
 ---@field id string
 ---@field host? string Owner host ID when the session was recorded
+---@field name? string Workspace name when the session was recorded
 
 ---Reattach remembered persistent sessions on every restorable domain, SSH
 ---included. Never creates a fresh session. Returns the number of domains

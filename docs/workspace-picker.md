@@ -22,6 +22,8 @@ Headings and status rows cannot be renamed or closed.
 Opening, filtering, or reopening the picker does not contact SSH hosts.
 An unloaded SSH domain offers **Load sessions**, **Load projects**, or **Load sessions and projects**, depending on configuration.
 Press Enter on its load row to start the configured work without closing the picker.
+Sessions remembered from the last run appear as **not connected** rows in a **RESTORE** section below the open workspaces before loading; Enter on one connects and reattaches it.
+With two or more such rows, **Restore all** reconnects them together.
 Session listing and project discovery finish independently, so a failed session query does not hide successfully discovered projects.
 Loaded SSH results stay cached until you explicitly load or refresh them again.
 `<C-l>` refreshes local sources and previously loaded SSH domains without contacting unloaded SSH domains.

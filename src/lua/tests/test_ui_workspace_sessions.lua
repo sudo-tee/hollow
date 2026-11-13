@@ -166,6 +166,103 @@ describe("workspace switcher sessions", function()
     )
   end)
 
+  local function remember(entries)
+    env.recorded.files["/tmp/hollow-test-data/sessions.json"] =
+      hollow.json.encode({ version = 1, sessions = entries })
+  end
+
+  local function remembered_rows()
+    local out = {}
+    for _, item in ipairs(rows("session")) do
+      if item.session_remembered then
+        out[#out + 1] = item
+      end
+    end
+    return out
+  end
+
+  it("shows remembered SSH sessions without contacting the host", function()
+    remember({ { domain = "remote", id = "r1", name = "api" }, { domain = "remote", id = "r2" } })
+    open_switcher()
+    harness.assert_equal(#list_calls("remote"), 0, "remembered rows must not list the host")
+    local remembered = remembered_rows()
+    harness.assert_equal(#remembered, 2, "each remembered session gets a row")
+    harness.assert_equal(remembered[1].name, "api", "remembered name is shown")
+    harness.assert_equal(remembered[1].session_badge, "not connected", "rows say not connected")
+    harness.assert_equal(remembered[2].name, "session r2", "unnamed rows use the id")
+    local all = rows("session")[1]
+    harness.assert_equal(all.session_restore_all, true, "several rows offer restore all")
+    harness.assert_equal(load_row("remote").name, "Load sessions", "the load row stays")
+    harness.assert_equal(select_opts.group_by(all), "0:RESTORE", "restore all follows OPENED")
+    harness.assert_equal(
+      select_opts.group_by(remembered[1]),
+      "0:RESTORE",
+      "remembered rows follow OPENED"
+    )
+    harness.assert_equal(
+      select_opts.group_by(load_row("remote")),
+      "1:remote",
+      "the load row stays under its domain"
+    )
+    harness.assert_equal(select_opts.group_label("0:RESTORE"), "RESTORE", "section is labelled")
+
+    local restored
+    hollow.term.restore_sessions = function(opts)
+      restored = opts.domain
+    end
+    action("select")(all)
+    harness.assert_equal(restored, "remote", "restore all restores that domain")
+  end)
+
+  it("reconnects a remembered session after listing its host", function()
+    remember({ { domain = "remote", id = "r1" }, { domain = "remote", id = "r2" } })
+    open_switcher()
+    action("select")(remembered_rows()[1])
+    harness.assert_equal(#list_calls("remote"), 1, "reconnecting lists the host first")
+    harness.assert_equal(#calls.attach, 0, "attach waits for the list")
+    harness.assert_equal(#remembered_rows(), 0, "rows hide while the host is loading")
+    complete_list("remote", { { id = "r1", attached = false, open = false, panes = {} } })
+    harness.assert_equal(#calls.attach, 1, "the listed session attaches")
+    harness.assert_equal(calls.attach[1].id, "r1", "the chosen session attaches")
+  end)
+
+  it("asks before taking over a remembered session attached elsewhere", function()
+    remember({ { domain = "remote", id = "r1" } })
+    open_switcher()
+    action("select")(remembered_rows()[1])
+    complete_list("remote", { { id = "r1", attached = true, open = false, panes = {} } })
+    harness.assert_equal(#calls.attach, 0, "take-over must not attach without asking")
+    harness.assert_equal(#calls.confirm, 1, "take-over asks first")
+  end)
+
+  it("forgets a remembered session the host no longer has", function()
+    remember({ { domain = "remote", id = "r1" } })
+    open_switcher()
+    action("select")(remembered_rows()[1])
+    complete_list("remote", {})
+    harness.assert_equal(#calls.attach, 0, "missing sessions are not attached")
+    harness.assert_equal(#hollow.term.remembered_sessions(), 0, "missing sessions are forgotten")
+    harness.assert_equal(
+      calls.notify[#calls.notify].message,
+      "Session r1 on remote has ended.",
+      "the user is told it ended"
+    )
+  end)
+
+  it("keeps remembered rows when the host cannot be reached", function()
+    remember({ { domain = "remote", id = "r1" } })
+    open_switcher()
+    action("select")(remembered_rows()[1])
+    list_calls("remote")[1].on_complete({ success = false, error = "unreachable" })
+    harness.assert_equal(#calls.attach, 0, "an unreachable host attaches nothing")
+    harness.assert_equal(#remembered_rows(), 1, "the row comes back for a retry")
+    harness.assert_equal(
+      calls.notify[#calls.notify].message,
+      "Could not reach remote: unreachable",
+      "the failure is reported"
+    )
+  end)
+
   it("retains distinct empty and all-open states", function()
     open_switcher()
     complete_list("main", {})

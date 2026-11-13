@@ -9,8 +9,9 @@ describe("session restore", function()
   local restore
   local calls
 
-  local function remembered(entries)
-    env.recorded.files[FILE] = hollow.json.encode({ version = 1, sessions = entries })
+  local function remembered(entries, active)
+    env.recorded.files[FILE] =
+      hollow.json.encode({ version = 1, sessions = entries, active = active })
   end
 
   local function ids()
@@ -246,20 +247,67 @@ describe("session restore", function()
   end)
 
   it("offers remote sessions without contacting them at startup", function()
-    remembered({ { domain = "remote", id = "r1" }, { domain = "remote", id = "r2" } })
+    remembered(
+      { { domain = "remote", id = "r1" }, { domain = "remote", id = "r2" } },
+      { domain = "remote", id = "r2" }
+    )
     harness.assert_equal(hollow._session_startup("main"), false, "remote entries never own startup")
     harness.assert_equal(#calls.list, 0, "remote hosts must not be contacted at startup")
     env.flush_deferred()
     harness.assert_equal(#calls.notify, 1, "a restore notice should be shown")
+    local notice = calls.notify[1]
+    harness.assert_equal(notice.opts.ttl, 0, "the notice should stay until acted on")
     harness.assert_equal(
-      calls.notify[1].opts.action.label,
-      "Restore",
-      "notice should offer restore"
+      notice.message,
+      "2 sessions on remote from last time are not connected.",
+      "notice should name the domain"
     )
-    calls.notify[1].opts.action.fn()
-    harness.assert_equal(#calls.list, 1, "restore should list the remote domain")
+    harness.assert_equal(notice.opts.action.label, "Reconnect", "the notice offers reconnecting")
+    notice.opts.action.fn()
+    harness.assert_equal(#calls.confirm, 0, "reconnecting needs no second prompt")
+    harness.assert_equal(#calls.list, 1, "reconnect should list the remote domain")
     calls.list[1].on_complete({ success = true, sessions = { { id = "r1" }, { id = "r2" } } })
     harness.assert_equal(#calls.attach, 2, "remote sessions should attach on demand")
     harness.assert_equal(#calls.new, 0, "explicit restore never creates")
+  end)
+
+  it("skips the remote notice when the last focused session was local", function()
+    remembered(
+      { { domain = "main", id = "m1" }, { domain = "remote", id = "r1" } },
+      { domain = "main", id = "m1" }
+    )
+    hollow._session_startup("main")
+    env.flush_deferred()
+    for _, notice in ipairs(calls.notify) do
+      harness.assert_equal(notice.opts.id ~= restore.notice_id, true, "no remote notice")
+    end
+    harness.assert_equal(
+      #calls.list,
+      1,
+      "only the local domain is listed; the remote one is not contacted"
+    )
+  end)
+
+  it("keeps remembered names current on focus and rename", function()
+    remembered({ { domain = "remote", id = "r1" } })
+    local current = { domain = "remote", session_id = "r1", name = "old" }
+    hollow.term.workspaces = function()
+      return { current }
+    end
+    hollow._emit_builtin_event("workspace:changed", { workspace_index = 0 })
+    harness.assert_equal(hollow.term.remembered_sessions()[1].name, "old", "focus records the name")
+    hollow.term.current_workspace = function()
+      return current
+    end
+    hollow.term.set_workspace_name("api")
+    harness.assert_equal(hollow.term.remembered_sessions()[1].name, "api", "rename updates it")
+  end)
+
+  it("remembers workspace names", function()
+    hollow.term.workspaces = function()
+      return { { domain = "remote", session_id = "r1", name = "api" } }
+    end
+    hollow._emit_builtin_event("workspace:new", { workspace_index = 0 })
+    harness.assert_equal(hollow.term.remembered_sessions()[1].name, "api", "name should be kept")
   end)
 end)

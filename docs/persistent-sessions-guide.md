@@ -186,7 +186,12 @@ SSH domains are never contacted just because the switcher opened.
 Each SSH persistent domain shows an on-demand load row instead; press Enter on it or its domain heading to list that host.
 Configured SSH project sources are loaded by the same action, without connecting while the picker merely opens or filters.
 Loaded SSH results remain cached until an explicit refresh.
-Open workspaces stay in the **OPEN** section; detached sessions and projects are grouped by domain below it.
+Until an SSH domain is loaded, sessions remembered from the last run appear as **not connected** rows in a **RESTORE** section below the open workspaces, read from the local remembered-session file.
+Each row names its domain; the domain's own load row stays under its heading.
+Enter on such a row lists the host first, then attaches the session, asks before taking it over, or reports that it has ended and forgets it.
+If the host cannot be reached, a warning names the error and the row stays for a retry.
+With two or more remembered rows, a **Restore all** row reconnects every remembered session in that domain.
+Open workspaces stay in the **OPEN** section, followed by **RESTORE**; detached sessions and projects are grouped by domain below them.
 Each domain heading offers a **+** button and `<C-n>` to create in that domain.
 Loading has an elapsed indicator and a bounded timeout; empty and failed hosts keep a visible status row with a refresh/retry action.
 Once loaded, the host is listed again whenever the switcher opens.
@@ -306,7 +311,11 @@ If the host cannot be listed, or an attach may have reached the owner, startup c
 A startup command always gets its own fresh session.
 
 SSH hosts are never contacted at startup.
-A notice offers to restore remembered SSH sessions, and the `restore_sessions` action or `hollow.term.restore_sessions()` does the same at any time.
+If the session you had focused last was on an SSH domain, a notice names each SSH domain and how many of its sessions are not connected.
+Otherwise no notice is shown, and the sessions wait in the switcher.
+The notice stays until you act on it.
+Clicking it (**Reconnect**) connects and reattaches those sessions; Escape dismisses it without contacting any host.
+The switcher also lists those sessions as **not connected** rows, and the `restore_sessions` action or `hollow.term.restore_sessions()` restores them at any time.
 
 Sessions are forgotten when their last pane closes or they are killed.
 Quitting, detaching, or losing the connection keeps them.

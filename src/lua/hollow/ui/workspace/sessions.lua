@@ -1,6 +1,7 @@
 -- Persistent sessions shown in the workspace switcher. Local and WSL hosts
 -- are listed whenever the switcher opens; SSH hosts only when asked, so
--- opening the switcher never starts remote traffic.
+-- opening the switcher never starts remote traffic. Until then, SSH sessions
+-- remembered from the last run are shown as "not connected" rows.
 local M = {}
 
 ---@type Hollow
@@ -60,6 +61,8 @@ local function domain_state(name)
   return domains[name]
 end
 
+local resolve_wanted
+
 --- List one domain's sessions. A list already in flight is not repeated.
 function M.refresh(name)
   local entry = domain_state(name)
@@ -87,11 +90,13 @@ function M.refresh(name)
         entry.error = result and (result.error or result.status) or "unknown error"
       end
       changed()
+      resolve_wanted(name, entry)
     end,
   })
   if not ok or not queued then
     entry.status = "failed"
     entry.error = tostring(ok and err or queued)
+    resolve_wanted(name, entry)
   end
   changed()
 end
@@ -130,10 +135,11 @@ function M.supports(name)
 end
 
 function M.tick()
-  for _, entry in pairs(domains) do
+  for name, entry in pairs(domains) do
     if entry.status == "loading" and now() >= entry.deadline then
       entry.status, entry.error = "failed", "Connection timed out"
       changed()
+      resolve_wanted(name, entry)
     end
   end
 end
@@ -229,6 +235,69 @@ local function status_item(domain, entry)
   }
 end
 
+local remembered_items
+
+local function remembered(domain)
+  local ok, entries = pcall(function()
+    return require("hollow.session_restore").remote_entries(domain)
+  end)
+  return ok and entries or {}
+end
+
+local function open_session_ids()
+  local ids = {}
+  for _, workspace in ipairs(hollow.term.workspaces and hollow.term.workspaces() or {}) do
+    if type(workspace.session_id) == "string" then
+      ids[workspace.session_id] = true
+    end
+  end
+  return ids
+end
+
+local function remembered_item(domain, entry)
+  return {
+    id = "session-remembered:" .. domain .. ":" .. entry.id,
+    name = entry.name or ("session " .. entry.id:sub(1, 8)),
+    cwd = domain .. " · from last time; select to reconnect",
+    domain = domain,
+    source = "session",
+    is_open = false,
+    is_active = false,
+    has_bell = false,
+    session_id = entry.id,
+    session_remembered = true,
+    session_badge = "not connected",
+  }
+end
+
+-- Remembered sessions of a host that is not listed, plus "Restore all".
+remembered_items = function(items, domain, entry)
+  local open = open_session_ids()
+  local rows = {}
+  for _, remembered_entry in ipairs(remembered(domain)) do
+    if not open[remembered_entry.id] and not entry.pending[remembered_entry.id] then
+      rows[#rows + 1] = remembered_item(domain, remembered_entry)
+    end
+  end
+  if #rows > 1 then
+    items[#items + 1] = {
+      id = "session-restore-all:" .. domain,
+      name = "Restore all " .. #rows .. " sessions",
+      cwd = domain .. " · reconnect every session from last time",
+      domain = domain,
+      source = "session",
+      is_open = false,
+      is_active = false,
+      has_bell = false,
+      session_restore_all = true,
+      session_badge = "restore",
+    }
+  end
+  for _, row in ipairs(rows) do
+    items[#items + 1] = row
+  end
+end
+
 --- Switcher rows: detached sessions, then load/retry rows for hosts that are
 --- not listed yet or failed.
 function M.items()
@@ -252,6 +321,9 @@ function M.items()
         items[#items + 1] = status_item(domain.name, entry)
       end
     elseif entry.status ~= "idle" or not local_kind(domain.kind) then
+      if entry.status ~= "loading" and not local_kind(domain.kind) then
+        remembered_items(items, domain.name, entry)
+      end
       items[#items + 1] = status_item(domain.name, entry)
     end
   end
@@ -281,11 +353,31 @@ local function attach(item)
   end
 end
 
+local function notify(message, level)
+  hollow.ui.notify.show(message, { level = level or "info", title = "Session" })
+end
+
 --- Enter on a session row. Taking over another window's session asks first.
 function M.activate(item)
   if item.source == "session_load" then
     M.refresh(item.domain)
     return false
+  end
+  if item.session_restore_all then
+    require("hollow.session_restore").clear_notice()
+    hollow.term.restore_sessions({ domain = item.domain })
+    return true
+  end
+  if item.session_remembered then
+    -- List first: the host decides whether it still exists or is attached
+    -- elsewhere, and a take-over still asks.
+    local entry = domain_state(item.domain)
+    entry.wanted = item.session_id
+    entry.pending[item.session_id] = true
+    require("hollow.session_restore").clear_notice()
+    notify("Connecting to " .. item.domain .. "…")
+    M.refresh(item.domain)
+    return true
   end
   if not item.session_attached then
     attach(item)
@@ -303,8 +395,38 @@ function M.activate(item)
   return true
 end
 
+resolve_wanted = function(domain, entry)
+  local id = entry.wanted
+  if id == nil or entry.status == "loading" then
+    return
+  end
+  entry.wanted = nil
+  entry.pending[id] = nil
+  if entry.status ~= "ready" then
+    notify("Could not reach " .. domain .. ": " .. tostring(entry.error), "warn")
+    changed()
+    return
+  end
+  for _, session in ipairs(entry.sessions) do
+    if type(session) == "table" and session.id == id then
+      if not session.open then
+        M.activate(session_item(domain, session))
+      end
+      return
+    end
+  end
+  pcall(function()
+    require("hollow.session_restore").forget(domain, id)
+  end)
+  notify("Session " .. id:sub(1, 8) .. " on " .. domain .. " has ended.")
+  changed()
+end
+
 --- Kill a session row after confirmation.
 function M.kill(item)
+  if item.session_restore_all then
+    return
+  end
   hollow.ui.confirm.open({
     title = "Kill session",
     prompt = "Kill " .. item.name .. " and every process in it?",

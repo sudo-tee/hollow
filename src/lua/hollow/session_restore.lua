@@ -36,6 +36,7 @@ local function valid_entry(entry)
     and entry.id ~= ""
     and #entry.id <= 128
     and (entry.host == nil or type(entry.host) == "string")
+    and (entry.name == nil or (type(entry.name) == "string" and #entry.name <= 256))
 end
 
 -- Read failures and corrupt files only forget sessions; they never raise.
@@ -51,7 +52,8 @@ local function load()
   if ok and type(decoded) == "table" and type(decoded.sessions) == "table" then
     for _, entry in ipairs(decoded.sessions) do
       if valid_entry(entry) then
-        entries[#entries + 1] = { domain = entry.domain, id = entry.id, host = entry.host }
+        entries[#entries + 1] =
+          { domain = entry.domain, id = entry.id, host = entry.host, name = entry.name }
       end
     end
     if valid_entry(decoded.active) then
@@ -110,8 +112,12 @@ function M.enabled(domain)
   return config ~= nil and config.persist == true and config.restore ~= false
 end
 
-function M.remember(domain, id, host)
-  if not M.enabled(domain) or not valid_entry({ domain = domain, id = id, host = host }) then
+function M.remember(domain, id, host, name)
+  if name == "" then
+    name = nil
+  end
+  local remembered = { domain = domain, id = id, host = host, name = name }
+  if not M.enabled(domain) or not valid_entry(remembered) then
     return
   end
   local entries, active = load()
@@ -120,8 +126,25 @@ function M.remember(domain, id, host)
       table.remove(entries, index)
     end
   end
-  entries[#entries + 1] = { domain = domain, id = id, host = host }
+  entries[#entries + 1] = remembered
   save(entries, active)
+end
+
+--- Keep a remembered session's workspace name current, in place.
+function M.set_name(domain, id, name)
+  if type(name) ~= "string" or name == "" or #name > 256 then
+    return
+  end
+  local entries, active = load()
+  for _, entry in ipairs(entries) do
+    if entry.domain == domain and entry.id == id then
+      if entry.name ~= name then
+        entry.name = name
+        save(entries, active)
+      end
+      return
+    end
+  end
 end
 
 --- Record the focused session. Restores in progress focus their own
@@ -348,6 +371,45 @@ local function local_kind(kind)
   return kind == "local" or kind == "wsl"
 end
 
+M.notice_id = "session-restore:remote"
+
+local function plural(count, word)
+  return count .. " " .. word .. (count == 1 and "" or "s")
+end
+
+local function remote_notice_text(remote)
+  local parts = {}
+  for _, group_entry in ipairs(remote) do
+    parts[#parts + 1] = plural(group_entry.count, "session") .. " on " .. group_entry.domain
+  end
+  return table.concat(parts, ", ")
+    .. " from last time "
+    .. (#parts == 1 and remote[1].count == 1 and "is" or "are")
+    .. " not connected."
+end
+
+--- Remembered sessions in domains that are never listed at startup.
+function M.remote_entries(domain)
+  local pty = require("hollow.host.pty")
+  local out = {}
+  for _, entry in ipairs(load()) do
+    if entry.domain == domain and M.enabled(domain) then
+      local kind = pty.session_kind(domain)
+      if kind ~= nil and not local_kind(kind) then
+        out[#out + 1] = entry
+      end
+    end
+  end
+  return out
+end
+
+function M.clear_notice()
+  local ui = hollow.ui and hollow.ui.notify
+  if ui and ui.clear then
+    ui.clear(M.notice_id)
+  end
+end
+
 --- Reattach remembered sessions. Never creates a fresh session.
 --- `opts.domain` limits the restore to one domain.
 function M.restore(opts)
@@ -370,7 +432,10 @@ function M.startup(default_domain)
   local order, groups = group(entries, nil)
   focus_target = active
   local took_over = false
-  local remote = 0
+  local remote = {}
+  -- The notice is only worth interrupting for when the user was last in a
+  -- remote session; otherwise the switcher's "not connected" rows suffice.
+  local was_remote = false
   for _, domain in ipairs(order) do
     local kind = pty.session_kind(domain)
     if local_kind(kind) then
@@ -378,28 +443,27 @@ function M.startup(default_domain)
       took_over = took_over or fallback == true
       restore_domain(domain, groups[domain], fallback)
     elseif kind ~= nil then
-      remote = remote + #groups[domain]
+      remote[#remote + 1] = { domain = domain, count = #groups[domain] }
+      was_remote = was_remote or (active ~= nil and active.domain == domain)
     end
   end
-  if remote > 0 then
+  if was_remote then
     hollow.defer(function()
-      notify(
-        string.format(
-          "%d remembered remote session%s can be restored.",
-          remote,
-          remote == 1 and "" or "s"
-        ),
-        {
-          level = "info",
-          title = "Session restore",
-          action = {
-            label = "Restore",
-            fn = function()
-              M.restore()
-            end,
-          },
-        }
-      )
+      notify(remote_notice_text(remote), {
+        id = M.notice_id,
+        level = "info",
+        title = "Remote sessions",
+        ttl = 0,
+        -- One click reconnects; Escape dismisses and the switcher keeps the rows.
+        action = {
+          label = "Reconnect",
+          fn = function()
+            for _, group_entry in ipairs(remote) do
+              M.restore({ domain = group_entry.domain })
+            end
+          end,
+        },
+      })
     end)
   end
   focus_restored()
@@ -419,15 +483,30 @@ function M.setup(hollow_ref, host_api_ref)
     if type(domain) ~= "string" or domain == "" then
       domain = hollow.config.get("default_domain")
     end
-    M.remember(domain, workspace.session_id, workspace.session_host)
+    M.remember(domain, workspace.session_id, workspace.session_host, workspace.name)
   end)
 
   hollow.events.on("workspace:changed", function(event)
     local workspace = event and event.workspace
     if type(workspace) == "table" and type(workspace.session_id) == "string" then
-      M.activate(workspace.domain or hollow.config.get("default_domain"), workspace.session_id)
+      local domain = workspace.domain or hollow.config.get("default_domain")
+      M.set_name(domain, workspace.session_id, workspace.name)
+      M.activate(domain, workspace.session_id)
     end
   end)
+
+  local set_workspace_name = hollow.term.set_workspace_name
+  function hollow.term.set_workspace_name(name)
+    set_workspace_name(name)
+    local workspace = hollow.term.current_workspace()
+    if type(workspace) == "table" and type(workspace.session_id) == "string" then
+      M.set_name(
+        workspace.domain or hollow.config.get("default_domain"),
+        workspace.session_id,
+        name
+      )
+    end
+  end
 
   hollow.events.on("workspace:closed", function(event)
     if event and event.session_ended == true and type(event.session_id) == "string" then

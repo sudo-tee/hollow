@@ -582,6 +582,10 @@ function ui.workspace.open_switcher(opts)
     fuzzy = false,
     item_indent = 0,
     group_by = function(item)
+      -- Sessions remembered from the last run follow OPENED until restored.
+      if item.session_remembered or item.session_restore_all then
+        return "0:RESTORE"
+      end
       if item.is_open then
         return "0:OPENED"
       end
@@ -598,8 +602,12 @@ function ui.workspace.open_switcher(opts)
         local colors = workspace_name_color(group:sub(3))
         return { fg = colors.accent or colors.bg }
       end
+      local palette = shared.resolve_theme().palette
+      if group == "0:RESTORE" then
+        return { fg = palette.yellow or palette.bright_magenta }
+      end
       -- Keep OPENED distinct from the blue open rows beneath it.
-      return { fg = shared.resolve_theme().palette.bright_magenta }
+      return { fg = palette.bright_magenta }
     end,
     group_meta = function(group)
       local domain = group:sub(1, 2) == "1:" and group:sub(3)
