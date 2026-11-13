@@ -355,6 +355,7 @@ pub const RuntimeContext = struct {
         if (self.term.pty) |*pty| {
             const budget_start_ns = io.nanoTimestamp();
             const deadline_ns = budget_start_ns + @max(@as(i128, 0), budget_ns);
+            if (self.term.session_snapshot != null and budget_ns > 0) try self.term.pollSessionSnapshot(self.node, runtime);
             self.term.last_pty_read_ns = 0;
             self.term.last_terminal_write_ns = 0;
             self.term.last_has_pending_ns = 0;
@@ -371,8 +372,10 @@ pub const RuntimeContext = struct {
             }
 
             var wrote_terminal = false;
-            var can_read = true;
-            if (self.term.terminal_output_ready) {
+            // Post-snapshot bytes must wait for READY installation; parsing
+            // them into the old/blank terminal would lose them on replacement.
+            var can_read = !self.term.session_snapshot_waiting;
+            if (self.term.terminal_output_ready and can_read) {
                 can_read = self.writeBufferedTerminalOutput(runtime, &self.term.boot_output, deadline_ns, debug_overlay, &wrote_terminal);
                 if (can_read) can_read = self.writeBufferedTerminalOutput(runtime, &self.term.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal);
             }
@@ -391,6 +394,7 @@ pub const RuntimeContext = struct {
                 };
                 if (debug_overlay) self.term.last_pty_read_ns += io.nanoTimestamp() - read_start_ns;
                 if (count == 0) break;
+                if (pty.* == .session) self.term.session_buffered_credit += count;
                 if (self.term.automation_token != null) self.term.job_output.append(self.allocator, self.term.read_buf[0..count]);
                 read_loops += 1;
                 total_read += count;
@@ -420,6 +424,13 @@ pub const RuntimeContext = struct {
                     }
                 }
                 if (io.nanoTimestamp() >= deadline_ns) break;
+            }
+
+            if (pty.* == .session and self.term.session_buffered_credit > 0 and self.term.terminal_output_ready and
+                self.term.boot_output.items.len == 0 and self.term.pending_terminal_inject.items.len == 0)
+            {
+                try pty.parsed(self.term.session_buffered_credit);
+                self.term.session_buffered_credit = 0;
             }
 
             if (total_read > 0) self.term.last_pty_output_ns = io.nanoTimestamp();
@@ -497,7 +508,9 @@ pub const RuntimeContext = struct {
 
     fn writeTerminalChunk(self: *RuntimeContext, runtime: *GhosttyRuntime, bytes: []const u8, debug_overlay: bool) void {
         const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-        runtime.terminalWrite(self.term.terminal, bytes);
+        if (self.term.session_callbacks) |callbacks| {
+            runtime.terminalWriteMirror(self.term.terminal, bytes, callbacks.write_pty);
+        } else runtime.terminalWrite(self.term.terminal, bytes);
         if (debug_overlay) self.term.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
         self.term.last_terminal_write_bytes += bytes.len;
         self.term.last_terminal_write_chunks += 1;

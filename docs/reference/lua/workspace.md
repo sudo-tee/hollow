@@ -79,11 +79,12 @@ hollow.ui.workspace.configure({
 
   status_column_width = 2,
   name_column_width = 24,
-  column_gap = 2,
+  column_gap = 1,
 
   rename_key = "<C-r>", rename_desc = "rename",
   close_key  = "<C-w>", close_desc  = "close",
   create_key = "<C-n>", create_desc = "create",
+  refresh_key = "<C-l>", refresh_desc = "refresh",
 })
 ```
 
@@ -232,10 +233,25 @@ Custom formatters can use `workspace.program_status_attention` for this indicato
 
 `open_switcher()` shows the picker. Default actions:
 
+Open workspaces appear under **OPEN**, followed by domain sections for detached sessions and known/discovered projects.
+Search spans every loaded section, including domain names and session IDs.
+Domain headings reuse command-palette section rows; focus one and press `<C-n>`, or click its trailing **+**, to create in that domain.
+The new workspace becomes persistent only if that domain already has `persist = true`.
+Enter or click on a heading toggles collapse; search temporarily reveals matching children.
+Activate the explicit load row to load sessions and configured SSH project sources without closing the picker.
+Domain headings are flat titles in a brighter shade of their pill hue (**OPENED** uses the theme magenta), with **loading…** while the domain lists sessions or projects.
+A search whose matches all fall in one section hides that heading.
+Discovered projects whose domain and cwd match an open workspace are not repeated.
+Paths under `/home/<user>`, `/Users/<user>`, `/root` or `C:\Users\<user>` display as `~/…`; item `cwd` keeps the real path.
+Open rows use compact indentation; current/attention markers and colored work indicators share the leading column, while session badges remain beside names.
+Domain pills are retained for mixed-domain open rows; other rows inherit their heading instead of repeating the pill.
+Name/path columns truncate within reserved widths rather than pushing pills out of view.
+
 - Primary action: switch to / open the selected workspace
 - `rename_key`: rename the active workspace (default `<C-r>`)
-- `close_key`: close the active workspace (default `<C-w>`)
-- `create_key`: create a new workspace (default `<C-n>`)
+- `close_key`: close the selected open workspace (default `<C-x>`); headings and status rows are not closable
+- `create_key`: create a new workspace in the selected row/header's domain (default `<C-n>`)
+- `refresh_key`: list persistent sessions and rescan sources (default `<C-l>`); shown for persistence or configured SSH project sources
 
 Selection behaviour:
 
@@ -244,6 +260,25 @@ Selection behaviour:
 - `source = "ssh"` workspaces: open in the target domain and send a
   `cd` command
 - User-defined items with a `cwd` resend `cd` when re-activated
+- `source = "session"` rows: attach the persistent session; one attached in another window asks before taking over
+- `source = "session_load"` / `"project_load"` rows: load that domain's sessions and configured SSH projects, keeping the switcher open
+
+### Persistent sessions
+
+Domains with `persist = true` add rows for sessions not open in this window.
+Local and WSL domains are listed every time the switcher opens.
+SSH domains are contacted only by an explicit header/load-row action or refresh of a previously loaded domain; reopening the picker uses cached SSH results.
+When SSH project sources are configured, one **Load sessions and projects** action starts both independently.
+SSH project sources without persistence also get an on-demand **Load projects** action.
+Source `host` selects the discovery machine, while its `domain` independently selects where project panes open.
+Loading displays elapsed time and expires after `load_timeout_ms` (default 15000; allowed range 1000–300000), with a visible reason and explicit retry.
+Late replies cannot overwrite a timed-out or retried load.
+Empty results remain visible as **No sessions**, **All sessions already open**, or **No projects**, rather than removing the domain section.
+When the section already has other rows, loading and ready status rows are omitted; load and retry rows stay.
+Session rows carry `session_id`, `session_attached` and `session_badge`, and leave `program_status_badge` empty.
+On a session row, `close_key` kills the session after confirmation and `create_key` creates a new session in its domain; `rename_key` does nothing.
+See the [persistent sessions guide](../../persistent-sessions-guide.md#find-and-clean-up-sessions).
+To recover a lost create reply, list the original domain and attach the ID from the native warning or the `new_workspace` callback's `session_id`; never create a replacement while the result is uncertain.
 
 `open(opts)` is the programmatic entry point. Pass an item directly
 or specify `source = "..."` plus an item payload to resolve through

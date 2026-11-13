@@ -25,7 +25,8 @@ test results were reused for the performance report; no full suite was rerun.
 The product goal is a solid optional transport, not exact numerical equality
 with dedicated PTYs. Normal variation is expected; material regressions still
 need investigation. Session persistence is future motivation, not implemented
-scope: detach/reattach and crash recovery require separate design and validation.
+scope: detach/reattach and crash recovery require separate design and validation
+(see the [persistent sessions plan](persistent-sessions.md)).
 
 ## Historical investigation checkpoints
 

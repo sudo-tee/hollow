@@ -9,7 +9,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ("linux-x86_64/hollow-agent", "linux-aarch64/hollow-agent", "SHA256SUMS")
+FILES = (
+    "linux-x86_64/hollow-agent",
+    "linux-aarch64/hollow-agent",
+    "windows-x86_64/hollow-agent.exe",
+    "SHA256SUMS",
+)
 CLI_FILES = ("linux-x86_64/hollow-cli", "linux-aarch64/hollow-cli", "SHA256SUMS")
 
 
@@ -75,24 +80,40 @@ class LaunchAgentBundleTests(unittest.TestCase):
         self.assertFalse((self.install / "hollow-gui.pdb").exists())
 
     def test_missing_bundle_fails_before_overwriting_installation(self):
-        (self.bundle / FILES[1]).unlink()
         self.install.mkdir()
         previous = self.install / "hollow-native.exe"
         previous.write_bytes(b"previous executable")
-        result = self.launch()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("zig build agent-all", result.stderr)
-        self.assertEqual(previous.read_bytes(), b"previous executable")
+        for name in FILES:
+            with self.subTest(missing=name):
+                path = self.bundle / name
+                contents = path.read_bytes()
+                path.unlink()
+                try:
+                    result = self.launch()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("missing agent bundle file " + name, result.stderr)
+                    self.assertIn("zig build -Dtarget=x86_64-windows-gnu", result.stderr)
+                    self.assertEqual(previous.read_bytes(), b"previous executable")
+                finally:
+                    path.write_bytes(contents)
 
     def test_missing_cli_bundle_fails_before_overwriting_installation(self):
-        (self.cli_bundle / CLI_FILES[1]).unlink()
         self.install.mkdir()
         previous = self.install / "hollow-cli.exe"
         previous.write_bytes(b"previous cli")
-        result = self.launch()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("zig build cli-all", result.stderr)
-        self.assertEqual(previous.read_bytes(), b"previous cli")
+        for name in CLI_FILES:
+            with self.subTest(missing=name):
+                path = self.cli_bundle / name
+                contents = path.read_bytes()
+                path.unlink()
+                try:
+                    result = self.launch()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("missing CLI bundle file " + name, result.stderr)
+                    self.assertIn("zig build cli-all", result.stderr)
+                    self.assertEqual(previous.read_bytes(), b"previous cli")
+                finally:
+                    path.write_bytes(contents)
 
 
 if __name__ == "__main__":

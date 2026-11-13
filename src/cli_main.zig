@@ -6,6 +6,7 @@ pub const std_options: std.Options = .{ .log_level = .err };
 
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
+    @import("agent/diagnostics.zig").init(init.io);
     const allocator = init.gpa;
     const args = try io.argsAlloc(allocator, init.minimal.args);
     defer io.argsFree(allocator, args);

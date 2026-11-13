@@ -87,8 +87,10 @@ hollow.events.on("copy_mode:changed", function()
   hollow.keymap.cancel()
 end)
 require("hollow.activity").setup(hollow, host_api)
+require("hollow.session_restore").setup(hollow, host_api)
 copy_mode.setup()
 require("hollow.ui.widgets.clipboard").setup()
+require("hollow.ui.widgets.session_takeover").setup()
 state.quick_select = state.quick_select or { active = false, action = "open" }
 hollow.events.on("quick_select:changed", function(payload)
   state.quick_select.active = payload and payload.active == true
@@ -189,6 +191,36 @@ hollow.events.on("term:notification", function(event)
     ttl = event.ttl_ms,
     id = event.id ~= nil and (tostring(event.pane.id) .. ":" .. event.id) or nil,
     pane_id = event.pane.id,
+  })
+end)
+
+hollow.events.on("session:handoff", function(event)
+  local message = event.ok and "Owner upgraded in place (%s -> %s); sessions kept."
+    or "Upgrade from %s to %s failed; the old owner kept running. See owner.log."
+  hollow.ui.notify.show(message:format(event.from, event.to), {
+    level = event.ok and "success" or "warn",
+    title = "Session handoff",
+  })
+end)
+
+-- Native persistent-session notices; clicking cancels a connect or dismisses a failure.
+hollow.events.on("session:notice", function(event)
+  local id = "session-notice:" .. tostring(event.id)
+  if event.close then
+    hollow.ui.notify.clear(id)
+    return
+  end
+  hollow.ui.notify.show(event.message, {
+    id = id,
+    title = event.title,
+    level = event.level,
+    ttl = 0,
+    action = {
+      label = event.connecting and "Cancel" or "Dismiss",
+      fn = function()
+        host_api.activate_session_notice(event.id)
+      end,
+    },
   })
 end)
 

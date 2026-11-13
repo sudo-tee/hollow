@@ -3,7 +3,7 @@
 # Hollow Shell Integration for Bash
 
 # Only activate if running inside Hollow
-if [ -z "$HOLLOW_PANE_ID" ]; then
+if [ -z "$HOLLOW_PANE_ID" ] && [ "$HOLLOW_TRANSPORT" != osc ]; then
   return 0 2>/dev/null || exit 0
 fi
 
@@ -82,7 +82,7 @@ _hollow_preexec() {
   _hollow_restore_prompt
   _hollow_tty_printf $'\e]133;C\a'
 
-  local escaped_cmd=$(hollow_htp_json_escape "$BASH_COMMAND")
+  local escaped_cmd=$(hollow_htp_json_escape "${1:-$BASH_COMMAND}")
   local escaped_cwd=$(hollow_htp_json_escape "$PWD")
   hollow_htp_emit "command_started" "{\"command\":\"$escaped_cmd\",\"cwd\":\"$escaped_cwd\"}"
 }
@@ -100,13 +100,26 @@ _hollow_precmd() {
   hollow_htp_emit "prompt_ready" '{}'
 }
 
-trap '_hollow_preexec' DEBUG
-
-# Prepend _hollow_precmd to existing PROMPT_COMMAND
-if [[ -n "$PROMPT_COMMAND" ]]; then
-  PROMPT_COMMAND="_hollow_precmd; $PROMPT_COMMAND"
+if [[ -n "${bash_preexec_imported:-}" ]]; then
+  # Profiles may already use bash-preexec (e.g. WezTerm integration). Use its
+  # hooks rather than replacing DEBUG or reporting its prompt internals.
+  preexec_functions+=(_hollow_preexec)
+  precmd_functions=(_hollow_precmd "${precmd_functions[@]}")
+  # Finish deferred installation before Bash snapshots the first prompt's
+  # command array. Otherwise later entries (e.g. systemd's prompt hook) can
+  # disable bash-preexec again for the first user command.
+  if [[ -n "${__bp_install_string:-}" && "${PROMPT_COMMAND[*]}" == *"$__bp_install_string"* ]] && declare -F __bp_install >/dev/null; then
+    __bp_install
+  fi
 else
-  PROMPT_COMMAND="_hollow_precmd"
+  trap '_hollow_preexec' DEBUG
+
+  # Prepend _hollow_precmd to existing PROMPT_COMMAND
+  if [[ -n "$PROMPT_COMMAND" ]]; then
+    PROMPT_COMMAND="_hollow_precmd; $PROMPT_COMMAND"
+  else
+    PROMPT_COMMAND="_hollow_precmd"
+  fi
 fi
 
 # Initial report

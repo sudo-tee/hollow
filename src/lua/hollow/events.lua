@@ -77,7 +77,12 @@ function M.setup(hollow, state, term_helpers)
     return { workspace = w, index = payload.workspace_index + 1 }
   end
   local function adapt_workspace_closed(payload)
-    return { name = payload.name }
+    return {
+      name = payload.name,
+      session_id = payload.session_id,
+      session_host = payload.session_host,
+      session_ended = payload.session_id ~= nil and payload.session_ended == true or nil,
+    }
   end
   local function adapt_tab_closed(payload)
     return { tab_id = payload.tab_id }
@@ -182,6 +187,7 @@ function M.setup(hollow, state, term_helpers)
     ["term:pane_focused"] = adapt_pane_focused,
     ["term:pane_created"] = adapt_pane_focused,
     ["term:pane_exited"] = adapt_pane_exited,
+    ["term:pane_respawned"] = adapt_pane_focused,
     ["term:pane_closed"] = adapt_pane_closed,
     ["term:pane_layout_changed"] = adapt_pane_focused,
     ["term:title_changed"] = adapt_title_changed,

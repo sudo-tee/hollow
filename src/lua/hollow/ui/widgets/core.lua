@@ -220,7 +220,7 @@ function ui.dispatch_overlay_key(key, mods)
     end
 
     if shared.normalize_overlay_backdrop(widget.backdrop) ~= nil then
-      return true
+      return not widget._pass_keys
     end
   end
 

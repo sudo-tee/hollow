@@ -56,16 +56,22 @@ const selection_mod = @import("app/selection.zig");
 const copy_mode = @import("app/copy_mode.zig");
 const terminal_find = @import("app/terminal_find.zig");
 const quick_select = @import("app/quick_select.zig");
+pub const session_borrowers = @import("app/session_borrowers.zig");
 const htp = @import("app/htp.zig");
 const HtpCodec = @import("htp/codec.zig").Codec;
 const input = @import("app/input.zig");
 const PtyBudget = @import("app/pty_budget.zig").Budget;
 const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
+const SessionController = @import("session/controller.zig").Controller;
+pub const session_open = @import("app/session_open.zig");
+pub const session_query = @import("app/session_query.zig");
+pub const session_spawn = @import("app/session_spawn.zig");
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
 const mux_ops = @import("app/session_controller.zig");
+const dead_pane = @import("session/dead_pane.zig");
 const pane_lifecycle = @import("app/pane_lifecycle.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
@@ -358,6 +364,7 @@ pub const App = struct {
     selection_generation: u64 = 0,
     hovered_hyperlink: ?HoveredHyperlink = null,
     copy_mode_active: bool = false,
+    copy_mode_epoch: usize = 0,
     find: terminal_find.State = .{},
     find_epoch: usize = 0,
     find_cancelled_session: usize = 0,
@@ -377,6 +384,7 @@ pub const App = struct {
     copy_mode_block_selection: bool = false,
     copy_mode_restore_top_row: usize = 0,
     quick_select_active: bool = false,
+    quick_select_epoch: usize = 0,
     quick_select_pending_capture: bool = false,
     quick_select_input_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     quick_select_pane: ?*Pane = null,
@@ -387,6 +395,25 @@ pub const App = struct {
     quick_select_pending_inputs: [64]quick_select.Input = undefined,
     quick_select_pending_input_len: usize = 0,
     quick_select_layout_generation: u32 = 0,
+    pending_session_borrowers: session_borrowers.PendingBorrowers = .{},
+    /// App-owned session controllers outlive pane views until close replies
+    /// settle. Their connections are destroyed only after mux views unbind.
+    session_controllers: std.ArrayList(*SessionController) = .empty,
+    session_opens: [session_open.max_pending]?*session_open.Pending = @splat(null),
+    session_open_count: usize = 0,
+    session_spawns: [session_spawn.max_pending]?*session_spawn.Operation = @splat(null),
+    session_spawn_count: usize = 0,
+    session_layout_suppressed: bool = false,
+    session_open_next_id: u64 = 1,
+    session_queries: [session_query.max_pending]?*session_query.Pending = @splat(null),
+    session_query_count: usize = 0,
+    session_query_next_id: u64 = 1,
+    session_notices: @import("session/notice.zig").Notices = .{},
+    /// Last reported owner handoff; one owner serves every window's domains.
+    session_handoff_seen: ?@import("session/client.zig").Client.Handoff = null,
+    /// Last takeover state reported to Lua; null forces the next report.
+    session_takeover_seen: ?@import("session/takeover.zig").View = null,
+    startup_session_target: session_open.StartupTarget = .unbound,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
     htp_pending_message_bytes: usize = 0,
@@ -545,7 +572,7 @@ pub const App = struct {
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domainName(), name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activePane()) |pane| std.mem.eql(u8, pane.domainName(), name) else false });
         try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
@@ -941,6 +968,18 @@ pub const App = struct {
         try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(workspace.id) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
         try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_id"), if (workspace.session_controller) |controller|
+            .{ .string = try self.allocator.dupe(u8, controller.session_id) }
+        else
+            .null);
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_host"), if (workspace.session_controller) |controller|
+            if (controller.host.len > 0) .{ .string = try self.allocator.dupe(u8, controller.host) } else .null
+        else
+            .null);
+        try object.put(self.allocator, try self.allocator.dupe(u8, "session_state"), if (workspace.session_controller) |controller|
+            .{ .string = try self.allocator.dupe(u8, controller.stateName()) }
+        else
+            .null);
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
                 try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domainName()) });
@@ -1038,6 +1077,7 @@ pub const App = struct {
             self.renderer = null;
         }
 
+        session_spawn.flushLayouts(self, session_spawn.shutdown_flush_ns);
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
                 std.log.info("App.shutdownRuntime mux.deinit", .{});
@@ -1047,6 +1087,11 @@ pub const App = struct {
             runtime.deinit();
             self.ghostty = null;
         }
+
+        session_spawn.shutdown(self);
+        mux_ops.deinitSessionControllers(self);
+        session_open.shutdown(self);
+        session_query.shutdown(self);
 
         std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
@@ -1167,7 +1212,8 @@ pub const App = struct {
 
         cmd_ipc.startCommandTransport(self);
         const cbs = terminal_callbacks.terminalCallbacks();
-        try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
+        const persistent_startup = self.config.persistForDomain(null);
+        if (!persistent_startup) try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
         self.mux = mux;
         self.mux.?.pane_created = pane_lifecycle.created;
@@ -1181,6 +1227,18 @@ pub const App = struct {
         }
 
         if (self.activePane()) |pane| pane_lifecycle.created(self, pane);
+
+        // A startup command needs its own fresh pane, so it never restores into
+        // the default persistent domain; remembered extras still come back.
+        const restore_domain = if (persistent_startup and self.startup_command == null) self.config.defaultDomainName() else null;
+        const restored = if (self.lua) |*lua| lua.sessionStartup(restore_domain) else false;
+        if (persistent_startup and !(restored and restore_domain != null)) {
+            _ = @import("app/session_domain.zig").begin(self, null, self.config.defaultDomainName(), null, null, LUA_NOREF, true) catch |err| blk: {
+                std.log.warn("persistent startup admission failed: {s}", .{@errorName(err)});
+                session_open.reportAdmissionFailure(self, err, true);
+                break :blk 0;
+            };
+        }
 
         try self.tick();
         self.startConfigWatcher();
@@ -1196,6 +1254,10 @@ pub const App = struct {
 
     fn registerLuaCallbacks(self: *App, lua: *LuaRuntime) void {
         lua.registerAppCallbacks(.{
+            .attach_session = lua_callbacks.luaAttachSessionCallback,
+            .get_workspace_session_id = lua_callbacks.luaGetWorkspaceSessionIdCallback,
+            .get_workspace_session_host = lua_callbacks.luaGetWorkspaceSessionHostCallback,
+            .get_workspace_session_state = lua_callbacks.luaGetWorkspaceSessionStateCallback,
             .job_request = lua_callbacks.luaJobRequestCallback,
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
@@ -1210,6 +1272,8 @@ pub const App = struct {
             .undock_pane = lua_callbacks.luaUndockPaneCallback,
             .get_dock_pane_count = lua_callbacks.luaGetDockPaneCountCallback,
             .get_dock_pane_id_at = lua_callbacks.luaGetDockPaneIdAtCallback,
+            .activate_session_notice = lua_callbacks.luaActivateSessionNoticeCallback,
+            .session_takeover_action = lua_callbacks.luaSessionTakeoverActionCallback,
             .set_pane_floating = lua_callbacks.luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = lua_callbacks.luaSetFloatingPaneBoundsCallback,
             .set_pane_foreground_process = lua_callbacks.luaSetPaneForegroundProcessCallback,
@@ -1272,6 +1336,7 @@ pub const App = struct {
             .switch_tab_by_id = lua_callbacks.luaSwitchTabByIdCallback,
             .close_tab_by_id = lua_callbacks.luaCloseTabByIdCallback,
             .close_pane_by_id = lua_callbacks.luaClosePaneByIdCallback,
+            .respawn_pane = lua_callbacks.luaRespawnPaneCallback,
             .move_tab_to_workspace = lua_callbacks.luaMoveTabToWorkspaceCallback,
             .move_pane_to_workspace = lua_callbacks.luaMovePaneToWorkspaceCallback,
             .bell_pane = lua_callbacks.luaBellPaneCallback,
@@ -1410,6 +1475,7 @@ pub const App = struct {
         if (self.ghostty) |*runtime| {
             const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
+            self.flushPendingSessionBorrowers();
             copy_mode.tickSearch(self) catch |err| {
                 std.log.err("copy mode search failed: {s}", .{@errorName(err)});
             };
@@ -1432,6 +1498,7 @@ pub const App = struct {
             );
             if (self.config.debug_overlay) startup_ns = io.nanoTimestamp() - start_ns;
         }
+        session_open.syncNotices(self);
         {
             self.drainConfigWatchFlag();
         }
@@ -1494,6 +1561,7 @@ pub const App = struct {
 
     pub fn nextIdleWakeNs(self: *const App) i128 {
         var next_wake_ns = self.next_idle_render_poll_ns;
+        next_wake_ns = input.minWakeNs(next_wake_ns, session_spawn.nextLayoutWakeNs(self));
         if (self.leader_visual_active and self.leader_visual_expires_at_ns != 0) {
             next_wake_ns = input.minWakeNs(next_wake_ns, self.leader_visual_expires_at_ns);
         }
@@ -1600,6 +1668,7 @@ pub const App = struct {
     }
 
     pub fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
+        self.markActiveSessionLayoutDirty();
         self.pending_layout_resize = true;
         self.pending_layout_recreate_render_helpers = self.pending_layout_recreate_render_helpers or recreate_render_helpers;
         self.last_resize_activity_ns = io.nanoTimestamp();
@@ -1611,6 +1680,7 @@ pub const App = struct {
     }
 
     pub fn requestLayoutRefresh(self: *App) void {
+        self.markActiveSessionLayoutDirty();
         self.pending_layout_resize = true;
         self.pending_layout_skip_unchanged_pty = true;
         self.last_resize_activity_ns = io.nanoTimestamp();
@@ -1628,6 +1698,35 @@ pub const App = struct {
         self.signalWake();
     }
 
+    fn markActiveSessionLayoutDirty(self: *App) void {
+        if (self.session_layout_suppressed) return;
+        const mux = if (self.mux) |*value| value else return;
+        if (mux.session_workspace_count == 0) return;
+        const workspace = mux.activeWorkspace() orelse return;
+        if (workspace.session_controller) |controller| self.markControllerLayoutDirty(controller);
+    }
+
+    /// Dock and visibility edits can touch a pane whose owning session is not
+    /// the active workspace (window-global docks, cross-session workspace
+    /// docks), so refresh every attached session's captured layout.
+    pub fn markSessionLayoutsDirty(self: *App) void {
+        if (self.session_layout_suppressed) return;
+        const mux = if (self.mux) |*value| value else return;
+        if (mux.session_workspace_count == 0) return;
+        for (mux.workspaces.items) |workspace| {
+            const controller = workspace.session_controller orelse continue;
+            self.markControllerLayoutDirty(controller);
+        }
+    }
+
+    fn markControllerLayoutDirty(self: *App, controller: *SessionController) void {
+        _ = self;
+        // Membership ACKs set an immediate dirty flag; ordinary geometry
+        // edits settle for 100 ms so dragging never serializes each frame.
+        if (!controller.layout_dirty or controller.layout_due_ns != 0) controller.layout_due_ns = io.nanoTimestamp() + 100 * std.time.ns_per_ms;
+        controller.layout_dirty = true;
+    }
+
     fn invalidateCachedBarLayouts(self: *App) void {
         self.cached_bar_layouts_dirty = true;
         self.cached_sidebar_layout = null;
@@ -1643,6 +1742,7 @@ pub const App = struct {
     }
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
+        if (previous != current) self.markActiveSessionLayoutDirty();
         if (previous != current) {
             if (previous) |pane| {
                 if (pane.asTerminal()) |term| term.clipboard_read.revoke(self.allocator);
@@ -1873,6 +1973,23 @@ pub const App = struct {
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
         const term = pane.asTerminal() orelse return false;
+        // Ctrl+D remains a local close for a taken view, without a per-pane
+        // footer or silently reclaiming its whole session.
+        if (term.pty) |pty| if (pty == .session and pty.session.taken and key == .d and mods == ghostty.Mods.ctrl) {
+            if (action == .press) mux_ops.closePaneById(self, pane.id);
+            return true;
+        };
+        // An exited pane's footer offers respawn/close.
+        if (dead_pane.state(pane)) |dead| if (dead_pane.key(dead, key, mods)) |choice| {
+            if (action != .press) return true;
+            switch (choice) {
+                .respawn => mux_ops.respawnPane(self, pane.id) catch |err| {
+                    std.log.warn("pane respawn not queued: {s}", .{@errorName(err)});
+                },
+                .close => mux_ops.closePaneById(self, pane.id),
+            }
+            return true;
+        };
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
             return true;
@@ -2009,6 +2126,7 @@ pub const App = struct {
     }
 
     pub fn previewSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
+        self.markActiveSessionLayoutDirty();
         node.ratio = std.math.clamp(ratio, 0.05, 0.95);
         self.pending_drag_layout_resize = true;
         self.signalWake();
@@ -2131,6 +2249,7 @@ pub const App = struct {
             };
         }
         @import("app/lua_panes.zig").restoreAll(self);
+        self.session_takeover_seen = null; // The reloaded UI has no card yet.
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
     }
@@ -2439,6 +2558,10 @@ pub const App = struct {
         return result;
     }
 
+    pub fn flushPendingSessionBorrowers(self: *App) void {
+        session_borrowers.flush(self);
+    }
+
     fn flushPendingResize(self: *App) void {
         if (!self.pending_resize) return;
         self.pending_resize = false;
@@ -2489,6 +2612,9 @@ pub const App = struct {
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
+        session_open.pump(self);
+        session_query.pump(self);
+        mux_ops.pumpSessionControllers(self, runtime);
         var has_dead = false;
         var automation_changed = false;
         var next_idle_render_poll_ns: i128 = 0;
@@ -2858,6 +2984,10 @@ pub const App = struct {
             );
         }
 
+        // Pane parsing above may have freed queue space or completed snapshot
+        // history. Retry transport dispatch once before the next GUI frame.
+        mux_ops.pumpSessionControllers(self, runtime);
+
         if (has_dead) {
             if (self.mux) |*mux| {
                 const should_quit = mux.closeDeadPanes(runtime);
@@ -2879,7 +3009,32 @@ pub const App = struct {
             }
         }
         if (automation_changed) self.markAutomationChanged();
+        self.syncSessionTakeover();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
+    }
+
+    pub fn sessionTakeoverView(self: *App) @import("session/takeover.zig").View {
+        const workspace = self.activeWorkspace() orelse return .{};
+        const controller = workspace.session_controller orelse return .{};
+        if (!controller.taken) return .{};
+        return .{
+            .workspace_id = workspace.id,
+            .phase = workspace.session_reclaim,
+            .reason = if (workspace.session_reclaim == .failed) workspace.session_reclaim_error orelse error.Unknown else null,
+        };
+    }
+
+    /// Lua owns the takeover card; report active-workspace changes once.
+    fn syncSessionTakeover(self: *App) void {
+        const view = self.sessionTakeoverView();
+        if (self.session_takeover_seen) |seen| if (seen.eql(view)) return;
+        self.session_takeover_seen = view;
+        self.emitLuaBuiltInEvent("session:takeover", .{ .session_takeover = .{
+            .workspace_id = view.workspace_id,
+            .phase = view.phaseName(),
+            .reason = if (view.reason) |reason| @errorName(reason) else null,
+        } });
+        self.requestRedraw();
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {

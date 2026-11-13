@@ -174,12 +174,16 @@
 ---| "workspace:new"
 ---| "workspace:changed"
 ---| "workspace:closed"
+---| "session:handoff"
+---| "session:notice"
+---| "session:takeover"
 ---| "term:title_changed"
 ---| "term:tab_activated"
 ---| "term:tab_closed"
 ---| "term:pane_focused"
 ---| "term:pane_created"
 ---| "term:pane_exited"
+---| "term:pane_respawned"
 ---| "term:pane_closed"
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
@@ -225,13 +229,17 @@
 ---@field ["config:reloaded"] {}
 ---@field ["workspace:new"] { workspace: HollowWorkspace, index: integer }
 ---@field ["workspace:changed"] { workspace: HollowWorkspace, index: integer }
----@field ["workspace:closed"] { name: string }
+---@field ["workspace:closed"] { name?: string, session_id?: string, session_host?: string, session_ended?: boolean } `session_ended` is true only when the owner ended the session, false when just this client's views closed
+---@field ["session:handoff"] { from: string, to: string, ok: boolean } The persistent-session owner replaced its runtime in place (`ok`), or the attempt failed and `from` kept serving; builds are 12-digit IDs
+---@field ["session:notice"] { id: integer, close?: boolean, connecting?: boolean, level?: HollowNotifyLevel, title?: string, message?: string } A persistent-session connect or failure notice changed; `close` events carry only `id`. Call `host_api.activate_session_notice(id)` to cancel a connect or dismiss a failure
+---@field ["session:takeover"] { workspace_id: integer, phase: "none"|"idle"|"confirming"|"connecting"|"failed", reason?: string } The active workspace's session moved to another window (`phase` other than `"none"`) and its reclaim progressed; `reason` names a failure
 ---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
 ---@field ["term:pane_focused"] { pane: HollowPane }
 ---@field ["term:pane_created"] { pane: HollowPane }
 ---@field ["term:pane_exited"] { pane: HollowPane, status: integer|nil }
+---@field ["term:pane_respawned"] { pane: HollowPane } A persistent pane's exited process was restarted in place
 ---@field ["term:pane_closed"] { pane: HollowPane }
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
@@ -483,6 +491,7 @@
 ---@field window_title? string
 ---@field window_width? integer
 ---@field window_height? integer
+---@field restore_window_placement? boolean Windows: restore and save window placement (default true).
 ---@field window_titlebar_show? boolean
 ---@field top_bar_mode? HollowTopBarMode
 ---@field top_bar_height? integer
@@ -513,6 +522,9 @@
 ---@field batch_jobs? 1|2 Compatibility setting (default 2); no effect with persistent mux readers
 
 ---@class HollowDomainConfig
+---@field persist? boolean Experimental host-owned persistent workspaces; default false, Linux owner only
+---@field restore? boolean Remember this domain's persistent sessions and reattach them at startup; default true when `persist` is set
+---@field upgrade? "handoff"|"retire_empty"|"never" How a Linux/WSL session owner from an older Hollow is replaced; `handoff` (default) execs the new agent in place and keeps live panes, `retire_empty` waits until it has no sessions, `never` leaves it running
 ---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
@@ -598,6 +610,9 @@
 ---@field index integer
 ---@field name string
 ---@field domain? string
+---@field session_id? string Host-owned persistent session ID; absent for ordinary workspaces
+---@field session_host? string Stable owner host ID of a persistent workspace; absent from older owners
+---@field session_state? "attached"|"taken"|"disconnected" Local attachment status; a taken view is frozen
 ---@field is_active boolean
 
 ---@class HollowMuxWorkspace: HollowWorkspace
@@ -652,12 +667,21 @@
 ---@field height? number
 ---@field on_complete? fun(result: { success: boolean, pane_id?: integer })
 
+---@class HollowWorkspaceOpenResult
+---@field success boolean
+---@field workspace_index? integer 1-based index of the published workspace
+---@field status? "session_not_found"|"session_open_failed" Persistent open failure code
+---@field error? string Persistent open failure reason
+---@field outcome? "not_sent"|"uncertain"|"rejected" Whether the owner may have acted; never retried
+---@field remote? string Owner error text, e.g. "SessionNotFound"
+---@field session_id? string Reserved session ID for explicit recovery of an uncertain create; list/attach in original domain, never replay create
+
 ---@class HollowNewWorkspaceOpts
 ---@field cwd? string
 ---@field domain? string
 ---@field command? string
 ---@field name? string
----@field on_complete? fun(result: { success: boolean, workspace_index?: integer })
+---@field on_complete? fun(result: HollowWorkspaceOpenResult)
 
 ---@class HollowPromise<T>
 ---@field status fun(self: HollowPromise<T>): "pending"|"fulfilled"|"rejected"
@@ -757,6 +781,8 @@
 ---@field theme? HollowUiTheme Select palette by default for recipe buttons; explicit partial palettes are authoritative.
 ---@field id string
 ---@field text? string
+---@field wrap? 'words'|'newlines'|'none' Label wrapping when the button is shrunk (default `none`).
+---@field text_align? 'left'|'center'|'right'
 ---@field style? HollowUiNodeStyle
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })
@@ -1173,6 +1199,7 @@
 ---@field align? string
 ---@field center_content? boolean Balance vertical panel padding around modal content.
 ---@field backdrop? any
+---@field pass_unhandled_keys? boolean With a backdrop, return keys `keys` did not consume to the keymap instead of swallowing them.
 ---@field on_event? function
 ---@field layout_live? boolean Rebuild on every preparation; use only for providers without explicit invalidation.
 ---@field semantic_hover? boolean Invalidate the render snapshot when hover state changes; native background hover needs no rebuild.
@@ -1205,6 +1232,13 @@
 ---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field search_text? fun(item: any): string|nil
+---@field group_by? fun(item: any): string Optional lexically ordered category key; search ranks within categories
+---@field group_label? fun(group: string): string Category heading text (defaults to key)
+---@field group_item? fun(group: string): any Action payload for keyboard-focusable category headings
+---@field group_create? fun(group: string) Adds a trailing + button to headings whose payload has a domain
+---@field group_colors? fun(group: string): HollowUiColorPair|nil Category title/row paint; geometry is unaffected
+---@field group_meta? fun(group: string): string|nil Muted status text at the end of a heading
+---@field item_indent? number Item content indent in cells; defaults to 2
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string
 ---@field fuzzy? boolean
@@ -1784,6 +1818,15 @@ function term.move_pane(direction_or_opts, opts) end
 ---@param pane_id? integer
 function term.close_pane(pane_id) end
 
+--- Restarts the exited process of a persistent pane from its original spawn,
+--- keeping the screen. Asynchronous: `term:pane_respawned` fires once the
+--- owner accepted it. Returns false and a reason, e.g. "PaneAlive",
+--- "NotSessionPane", "Unsupported" (older owner), "Detached".
+---@param pane_id? integer Defaults to the active pane
+---@return boolean queued
+---@return string? reason
+function term.respawn_pane(pane_id) end
+
 ---@param direction string
 function term.focus_pane(direction) end
 
@@ -1802,6 +1845,69 @@ function term.set_workspace_default_cwd(cwd) end
 
 ---@param opts? { cwd?: string, domain?: string, command?: string, name?: string }
 function term.new_workspace(opts) end
+
+---Attach an existing host-owned session explicitly; completion runs asynchronously.
+---@param session_id string Non-empty, at most 128 bytes, without NUL
+---@param opts? { domain?: string, name?: string, trace_intent?: 'open'|'restore', on_complete?: fun(result: HollowWorkspaceOpenResult) }
+function term.attach_session(session_id, opts) end
+
+---@class HollowSessionPaneInfo
+---@field id integer Owner pane id
+---@field title string
+---@field cwd string
+---@field cols integer
+---@field rows integer
+---@field exited boolean
+---@field exit_status? integer Encoded exit status once the process exited
+
+---@class HollowSessionInfo
+---@field id string
+---@field attached boolean Some client (this GUI or another) is attached
+---@field open boolean A workspace in this GUI views the session
+---@field revision integer
+---@field name? string Saved workspace name, when the layout records one
+---@field panes HollowSessionPaneInfo[]
+
+---@class HollowSessionQueryResult
+---@field success boolean
+---@field domain? string Resolved domain
+---@field host? string Owner host ID on success, when the owner reports one
+---@field sessions? HollowSessionInfo[] `list_sessions` success
+---@field session? string `kill_session` target
+---@field status? string Failure code, e.g. "session_query_failed", "invalid_domain", "resource_exhausted"
+---@field error? string Failure reason
+---@field outcome? "not_sent"|"uncertain"|"rejected" Whether the owner may have acted; never retried
+---@field remote? string Owner's rejection text
+
+---List persistent sessions on a domain's host (default: active pane's domain).
+---Returns true when queued, else nil and an error; on_complete then never runs.
+---@param opts { domain?: string, on_complete: fun(result: HollowSessionQueryResult) }
+---@return boolean?, string?
+function term.list_sessions(opts) end
+
+---Kill one persistent session. A lost reply is reported as outcome "uncertain".
+---A successful kill also forgets the session for startup restore.
+---@param session_id string Non-empty, at most 128 bytes, without NUL
+---@param opts? { domain?: string, on_complete?: fun(result: HollowSessionQueryResult) }
+---@return boolean?, string?
+function term.kill_session(session_id, opts) end
+
+---@class HollowRememberedSession
+---@field domain string
+---@field id string
+---@field host? string Owner host ID when the session was recorded
+---@field name? string Workspace name when the session was recorded
+
+---Reattach remembered persistent sessions on every restorable domain, SSH
+---included. Never creates a fresh session. Returns the number of domains
+---queried; results arrive asynchronously as new workspaces.
+---@param opts? { domain?: string }
+---@return integer
+function term.restore_sessions(opts) end
+
+---Sessions remembered for startup restore, oldest first (at most 64).
+---@return HollowRememberedSession[]
+function term.remembered_sessions() end
 
 ---@param id? integer
 function term.close_workspace(id) end
@@ -2257,7 +2363,8 @@ function select.close() end
 ---@field name string
 ---@field cwd? string
 ---@field domain? string
----@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"
+---@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"|"session"|"session_load"|"project_load" Status rows explicitly load/retry their domain's sessions and configured SSH projects
+---@field load_state? "idle"|"loading"|"ready"|"failed" State of a session/project status row
 ---@field host_id? string Host-backed discovery identity
 ---@field is_active boolean
 ---@field is_open boolean
@@ -2268,9 +2375,15 @@ function select.close() end
 ---@field program_status_attention_level? "warn"|"error"
 ---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer
+---@field session_id? string Persistent session id on `session` rows
+---@field session_attached? boolean True when another window holds the session; activating asks before taking over
+---@field session_badge? string Session summary such as "2 panes" or "attached elsewhere", without trailing space
 
 ---@class HollowWorkspaceLocalHost
 ---@field type "local"
+---@field agent_path? string
+---@field agent_dir? string
+---@field timeout_ms? integer
 
 ---@class HollowWorkspaceWslHost: HollowWslHostOpts
 ---@field type "wsl"
@@ -2313,6 +2426,7 @@ function select.close() end
 ---@field format_item? fun(workspace: HollowUiWorkspaceItem): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field filter_item? fun(workspace: HollowUiWorkspaceItem): boolean|nil
 ---@field cache_ttl_ms? integer
+---@field load_timeout_ms? number Session/project picker loading deadline, 1000–300000 ms; default 15000
 ---@field force_refresh? boolean
 ---@field project_roots? string[] Deprecated; use sources[].roots
 ---@field status_column_width? integer
@@ -2325,6 +2439,8 @@ function select.close() end
 ---@field close_desc? string
 ---@field create_key? string
 ---@field create_desc? string
+---@field refresh_key? string Re-list persistent sessions and rescan sources (default `<C-l>`)
+---@field refresh_desc? string
 
 ---@class HollowUiWorkspaceNamespace
 ---@field configure fun(opts?: HollowUiWorkspaceSwitcherOptions)
@@ -2518,6 +2634,19 @@ local workspace = {}
 ---@field line_height fun(theme?: HollowUiTheme, ctx?: HollowUiLayoutContext): number One list line: cell height plus row indicator padding.
 ---@overload fun(props: HollowUiListItemProps): HollowUiLayoutNode
 
+---@class HollowUiCategoryProps: HollowUiListItemProps
+---@field label string Accessible category title
+---@field text? string Optional truncated display title
+---@field collapsed? boolean Disclosure arrow state
+---@field title_style? HollowUiNodeStyle
+---@field colors? HollowUiColorPair Category foreground/background
+---@field plain? boolean Simplify inline rendering
+---@field [integer] HollowUiLayoutNode|table|boolean Optional trailing controls, separate from disclosure activation
+
+---@class HollowUiCategory
+---@field height fun(theme: HollowUiTheme, ctx: HollowUiLayoutContext, title_style?: HollowUiNodeStyle): number
+---@overload fun(props: HollowUiCategoryProps): HollowUiLayoutNode
+
 ---@class HollowUiListProps: HollowUiScrollProps
 ---@field items? any[]
 ---@field render_item fun(item: any, index: integer, view: {plain: boolean}): HollowUiLayoutNode|table
@@ -2600,6 +2729,7 @@ local workspace = {}
 ---@field scroll fun(props: HollowUiScrollProps): HollowUiLayoutNode
 ---@field rich HollowUiRich
 ---@field list_item HollowUiListItem
+---@field category HollowUiCategory Shared disclosure row used by command palette and grouped selectors
 ---@field list fun(props: HollowUiListProps): HollowUiLayoutNode
 ---@field picker fun(props: HollowUiPickerProps): HollowUiLayoutNode
 ---@field toast fun(props: HollowUiToastProps): HollowUiLayoutNode
@@ -2990,7 +3120,7 @@ local fs = {}
 ---@field remote_shell? boolean The connector joins arguments for a remote shell (ssh)
 
 ---@class HollowHostAgentSource
----@field path? string Absolute preinstalled Linux executable; skips deployment
+---@field path? string Absolute preinstalled Linux executable, or native Windows executable for local Windows sessions; skips deployment
 ---@field dir? string Client-native bundle directory with SHA256SUMS
 ---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
 ---@field timeout_ms? integer Deploy deadline; default 60000, maximum 300000
@@ -3168,12 +3298,14 @@ function plugins.sync() end
 
 ---@class HollowHostBridge
 ---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
+---@field term_session_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
 ---@field list_fonts fun(): HollowFontInfo[]
 ---@field new_tab fun(opts?: table)
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
+---@field attach_session fun(opts: { session_id: string, domain?: string, name?: string, trace_intent?: 'open'|'restore', on_complete?: fun(result: HollowWorkspaceOpenResult) })
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field schedule fun(handler: fun())
 ---@field close_workspace fun()
@@ -3183,6 +3315,10 @@ function plugins.sync() end
 ---@field set_workspace_name fun(name: string)
 ---@field set_workspace_default_cwd fun(cwd: string)
 ---@field get_workspace_name fun(index: integer): string
+---@field get_workspace_session_id fun(index: integer): string|nil
+---@field get_workspace_session_host fun(index: integer): string|nil
+---@field get_workspace_session_state fun(index: integer): string|nil
+---@field session_takeover_action fun(workspace_id: integer, action: "reclaim"|"confirm"|"cancel"|"close") Queue a native session takeover card action
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)
@@ -3191,6 +3327,7 @@ function plugins.sync() end
 ---@field switch_tab_by_id fun(tab_id: integer): boolean
 ---@field close_tab_by_id fun(tab_id: integer): boolean
 ---@field close_pane_by_id fun(pane_id: integer): boolean
+---@field respawn_pane fun(pane_id?: integer): boolean, string?
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
 ---@field bell_pane fun(pane_id: integer): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean

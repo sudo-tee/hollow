@@ -640,9 +640,14 @@ function M.workspace_colors(name, custom_fn)
   end
   -- Golden angle (~222.5deg) for maximal hue distance between workspaces.
   local hue = ((hash / 2147483647) * 360 + 222.5) % 360
-  local lightness = color.hex_luminance(theme.palette.background) < 128 and 0.22 or 0.68
-  local bg = color.hex_from_hsl(hue, 0.3, lightness)
-  return { bg = bg, fg = color.contrast_hex_color(bg, 0.45, theme.palette.foreground) }
+  local dark = color.hex_luminance(theme.palette.background) < 128
+  local bg = color.hex_from_hsl(hue, 0.3, dark and 0.22 or 0.68)
+  return {
+    bg = bg,
+    fg = color.contrast_hex_color(bg, 0.45, theme.palette.foreground),
+    -- Same hue, readable as text on the theme background.
+    accent = color.hex_from_hsl(hue, 0.5, dark and 0.68 or 0.38),
+  }
 end
 
 ---@param segments HollowUiSegment[]

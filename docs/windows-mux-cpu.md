@@ -198,7 +198,7 @@ window geometry must not be pooled with this follow-up.
 ## Validation and artifacts
 
 ```sh
-zig build --build-file build-agent.zig test-agent-pty test-agent-pane-bench \
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-agent-pty test-agent-pane-bench \
   -Doptimize=Debug -j1 --prefix /tmp/opencode/hollow-watch-commit-tests --summary all
 ```
 

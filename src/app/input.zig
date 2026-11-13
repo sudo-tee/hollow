@@ -64,12 +64,16 @@ pub const PendingInputEvent = union(enum) {
     close_tab_at: usize,
     /// A tab-close button click; unlike raw operations, consults Lua action overrides.
     user_close_tab_at: usize,
+    /// Native session notice activation, matched again on the frame thread.
+    session_notice_activate: u64,
+    session_takeover: struct { workspace_id: usize, action: @import("../session/takeover.zig").Action },
     new_tab: struct {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
         command: ?[]const u8,
         callback_ref: c_int,
         insert_at_end: bool = false,
+        lua_generation: ?u64 = null,
     },
     lua_job_request: struct { request: @import("../command.zig").Request, callback_ref: c_int },
     close_tab,
@@ -91,6 +95,15 @@ pub const PendingInputEvent = union(enum) {
         name: ?[]const u8,
         callback_ref: c_int,
         queued_at_ms: i64,
+        lua_generation: ?u64 = null,
+    },
+    attach_session: struct {
+        session_id: []u8,
+        trace_intent: @import("../agent/session_protocol.zig").AttachIntent = .open,
+        domain_name: ?[]u8,
+        name: ?[]u8,
+        callback_ref: c_int,
+        lua_generation: ?u64 = null,
     },
     close_workspace: ?usize,
     next_workspace,
@@ -123,6 +136,7 @@ pub const PendingInputEvent = union(enum) {
         width: ?f32,
         height: ?f32,
         callback_ref: c_int,
+        lua_generation: ?u64 = null,
     },
     toggle_pane_maximized: struct {
         pane_id: usize,
@@ -274,6 +288,11 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
             if (payload.command) |value| allocator.free(value);
             if (payload.name) |value| allocator.free(value);
         },
+        .attach_session => |payload| {
+            allocator.free(payload.session_id);
+            if (payload.domain_name) |value| allocator.free(value);
+            if (payload.name) |value| allocator.free(value);
+        },
         .set_workspace_name, .set_workspace_default_cwd => |value| allocator.free(value),
         .split_pane => |payload| {
             if (payload.domain_name) |value| allocator.free(value);
@@ -288,13 +307,59 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
     event.* = .none;
 }
 
+fn sessionGenerationMatches(self: *const App, generation: ?u64) bool {
+    const expected = generation orelse return true;
+    return if (self.lua) |lua| lua.generation == expected else false;
+}
+
+test "session borrowers tab and split generation fences preserve replacement runtime refs" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    try std.testing.expect(sessionGenerationMatches(app, null));
+    try std.testing.expect(!sessionGenerationMatches(app, 1));
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(a, &app.config);
+    const lua = &app.lua.?;
+    const api = lua.context.api;
+    const registry_index = -10000;
+    api.push_string(lua.state, "replacement-runtime-ref");
+    const callback_ref = api.ref(lua.state, registry_index);
+    defer lua.discardOperationCallback(callback_ref);
+    try std.testing.expect(sessionGenerationMatches(app, lua.generation));
+    try std.testing.expect(sessionGenerationMatches(app, null));
+
+    const callbacks = @import("lua_callbacks.zig");
+    for ([_]bool{ false, true }) |dispatch| {
+        try std.testing.expect(callbacks.luaNewTabCallback(app, null, null, null, callback_ref, false));
+        var tab_event = app.action_queue.pop().?;
+        tab_event.new_tab.lua_generation = lua.generation - 1;
+        try std.testing.expect(callbacks.luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, callback_ref, null, null));
+        var split_event = app.action_queue.pop().?;
+        split_event.split_pane.lua_generation = lua.generation - 1;
+        try std.testing.expect(app.action_queue.push(tab_event));
+        try std.testing.expect(app.action_queue.push(split_event));
+        const next_id = app.session_open_next_id;
+        if (dispatch) processInputQueue(app) else deinitInputQueue(app);
+        try std.testing.expect(app.action_queue.isEmpty());
+        try std.testing.expectEqual(next_id + @as(u64, if (dispatch) 2 else 0), app.session_open_next_id);
+        api.rawgeti(lua.state, registry_index, callback_ref);
+        var len: usize = 0;
+        const value = api.to_lstring(lua.state, -1, &len) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqualStrings("replacement-runtime-ref", value[0..len]);
+        api.set_top(lua.state, -2);
+    }
+}
+
 pub fn deinitInputQueue(self: *App) void {
     while (self.action_queue.pop()) |queued| {
         var event = queued;
         if (self.lua) |*lua| switch (event) {
-            .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
-            .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
-            .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .new_tab => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
+            .new_workspace => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
+            .attach_session => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
+            .split_pane => |payload| if (sessionGenerationMatches(self, payload.lua_generation)) lua.discardOperationCallback(payload.callback_ref),
             .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
             .create_lua_pane => |payload| @import("lua_panes.zig").release(self, payload.ref, payload.generation),
             else => {},
@@ -313,6 +378,8 @@ pub fn processInputQueue(self: *App) void {
         defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
+            .session_notice_activate => |id| @import("session_open.zig").activateNotice(self, id),
+            .session_takeover => |payload| @import("session_open.zig").takeoverAction(self, payload.workspace_id, payload.action),
             .lua_pane_pointer => |payload| @import("lua_panes.zig").pointer(self, payload),
             .create_lua_pane => |payload| @import("lua_panes.zig").process(self, payload),
             .invalidate_lua_pane => |id| {
@@ -340,6 +407,23 @@ pub fn processInputQueue(self: *App) void {
             .lua_job_request => |payload| {
                 const jobs = @import("background_jobs.zig");
                 const command = @import("../command.zig");
+                const query: ?struct { op: @import("session_query.zig").Op, session: ?[]const u8, domain: ?[]const u8 } = switch (payload.request.data) {
+                    .session_list => |args| .{ .op = .list, .session = null, .domain = args.domain },
+                    .session_kill => |args| .{ .op = .kill, .session = args.session, .domain = args.domain },
+                    else => null,
+                };
+                if (query) |q| {
+                    // Admission transfers the callback; the result arrives on a later frame.
+                    _ = @import("session_query.zig").begin(self, q.op, q.session, q.domain, payload.callback_ref) catch |err| {
+                        if (self.lua) |*lua| lua.invokeJobCallback(payload.callback_ref, command.Response.fail(switch (err) {
+                            error.InvalidSessionId => "invalid_args",
+                            error.ResourceExhausted => "resource_exhausted",
+                            error.UnknownDomain, error.PersistenceNotEnabled => "invalid_domain",
+                            else => "session_unavailable",
+                        }, @errorName(err)));
+                    };
+                    continue;
+                }
                 var response = switch (payload.request.data) {
                     .job_spawn => |args| jobs.spawn(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
                     .job_get => |args| jobs.get(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
@@ -377,6 +461,10 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 mux_ops.newTab(self, payload.cwd, payload.domain_name, payload.command, payload.callback_ref, payload.insert_at_end);
             },
             .close_tab => {
@@ -414,8 +502,19 @@ pub fn processInputQueue(self: *App) void {
                 );
             },
             .new_workspace => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 std.log.info("app: new_workspace dispatch_lag_ms={d}", .{io.milliTimestamp() - payload.queued_at_ms});
                 mux_ops.newWorkspace(self, payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
+            },
+            .attach_session => |payload| {
+                if (!sessionGenerationMatches(self, payload.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
+                @import("session_domain.zig").attachWithIntent(self, payload.session_id, payload.domain_name, payload.name, payload.callback_ref, payload.trace_intent);
             },
             .close_workspace => |idx| {
                 mux_ops.closeWorkspace(self, idx);
@@ -446,6 +545,10 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.setWorkspaceDefaultCwd(self, cwd);
             },
             .split_pane => |split| {
+                if (!sessionGenerationMatches(self, split.lua_generation)) {
+                    @import("session_open.zig").reportAdmissionFailure(self, error.SessionConfigurationChanged, false);
+                    continue;
+                }
                 mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref, split.edge, split.dock);
             },
             .toggle_pane_maximized => |maximize| {
@@ -818,7 +921,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames) {
+    if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames and mux_ops.startupCommandHasTarget(self)) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }

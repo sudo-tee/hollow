@@ -237,6 +237,14 @@ function M.setup(hollow, host_api)
       name = host_api.get_workspace_name and host_api.get_workspace_name(index)
         or ("ws " .. tostring(index + 1)),
       domain = pane and pane.domain or nil,
+      session_id = host_api.get_workspace_session_id and host_api.get_workspace_session_id(index)
+        or nil,
+      session_host = host_api.get_workspace_session_host and host_api.get_workspace_session_host(
+        index
+      ) or nil,
+      session_state = host_api.get_workspace_session_state
+          and host_api.get_workspace_session_state(index)
+        or nil,
       is_active = is_active,
     }
   end
@@ -398,6 +406,102 @@ function M.setup(hollow, host_api)
       error("hollow.term.new_workspace(opts) expects opts.on_complete to be a function")
     end
     host_api.new_workspace(opts)
+  end
+
+  function hollow.term.attach_session(session_id, opts)
+    if
+      type(session_id) ~= "string"
+      or #session_id == 0
+      or #session_id > 128
+      or session_id:find("\0", 1, true)
+    then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects a non-empty session_id of at most 128 bytes without NUL"
+      )
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.attach_session(session_id, opts) expects opts to be a table or nil")
+    end
+    opts = opts or {}
+    if opts.domain ~= nil and type(opts.domain) ~= "string" then
+      error("hollow.term.attach_session(session_id, opts) expects opts.domain to be a string")
+    end
+    if opts.name ~= nil and type(opts.name) ~= "string" then
+      error("hollow.term.attach_session(session_id, opts) expects opts.name to be a string")
+    end
+    if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects opts.on_complete to be a function"
+      )
+    end
+    if
+      opts.trace_intent ~= nil
+      and opts.trace_intent ~= "open"
+      and opts.trace_intent ~= "restore"
+    then
+      error(
+        "hollow.term.attach_session(session_id, opts) expects opts.trace_intent to be open or restore"
+      )
+    end
+    host_api.attach_session({
+      session_id = session_id,
+      trace_intent = opts.trace_intent,
+      domain = opts.domain,
+      name = opts.name,
+      on_complete = opts.on_complete,
+    })
+  end
+
+  local function valid_session_id(session_id)
+    return type(session_id) == "string"
+      and #session_id > 0
+      and #session_id <= 128
+      and not session_id:find("\0", 1, true)
+  end
+
+  local function session_request(name, fields, opts, callback)
+    if opts.domain ~= nil and (type(opts.domain) ~= "string" or opts.domain == "") then
+      error(name .. " expects opts.domain to be a non-empty string")
+    end
+    fields.domain = opts.domain
+    -- Results arrive as a command response; flatten it for Lua callers.
+    return host_api.term_session_request(fields, function(response)
+      local result = type(response.payload) == "table" and response.payload or {}
+      result.success = response.success
+      if not response.success then
+        result.status = response.status
+        result.error = result.error or response.error
+      end
+      callback(result)
+    end)
+  end
+
+  function hollow.term.list_sessions(opts)
+    local name = "hollow.term.list_sessions(opts)"
+    if type(opts) ~= "table" or type(opts.on_complete) ~= "function" then
+      error(name .. " expects opts.on_complete to be a function")
+    end
+    return session_request(name, { kind = "session_list" }, opts, opts.on_complete)
+  end
+
+  function hollow.term.kill_session(session_id, opts)
+    local name = "hollow.term.kill_session(session_id, opts)"
+    if not valid_session_id(session_id) then
+      error(name .. " expects a non-empty session_id of at most 128 bytes without NUL")
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error(name .. " expects opts to be a table or nil")
+    end
+    opts = opts or {}
+    if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error(name .. " expects opts.on_complete to be a function")
+    end
+    return session_request(
+      name,
+      { kind = "session_kill", session = session_id },
+      opts,
+      opts.on_complete or function() end
+    )
   end
 
   function hollow.term.close_workspace(id)
@@ -1211,6 +1315,16 @@ function M.setup(hollow, host_api)
       return
     end
     host_api.close_pane()
+  end
+
+  function hollow.term.respawn_pane(pane_id)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.respawn_pane(pane_id?) expects pane_id to be a number")
+    end
+    if host_api.respawn_pane == nil then
+      return false, "unavailable"
+    end
+    return host_api.respawn_pane(pane_id)
   end
 
   function hollow.term.focus_pane(direction)

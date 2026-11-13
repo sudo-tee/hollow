@@ -148,7 +148,8 @@ fn writeLogLine(prefix: []const u8, text: []const u8) void {
         var buf: [1024]u8 = undefined;
         var w = f.writer(io.get(), &buf);
         if (!seekLogWriterToEnd(f, &w)) return;
-        w.interface.print("[{s}] {s}\n", .{ prefix, text }) catch {};
+        @import("agent/diagnostics.zig").prefix(&w.interface, prefix, "panic") catch {};
+        w.interface.print("{s}\n", .{text}) catch {};
         w.interface.flush() catch {};
         f.sync(io.get()) catch {};
     }
@@ -173,7 +174,8 @@ fn writeCurrentStackToLog(start_addr: ?usize) void {
         var w = f.writer(io.get(), &buf);
         if (!seekLogWriterToEnd(f, &w)) return;
 
-        w.interface.writeAll("[panic] stack trace:\n") catch {};
+        @import("agent/diagnostics.zig").prefix(&w.interface, "panic", "stack") catch {};
+        w.interface.writeAll("stack trace:\n") catch {};
         std.debug.writeCurrentStackTrace(.{ .first_address = start_addr }, .{ .writer = &w.interface, .mode = .no_color }) catch |err| {
             w.interface.print("[panic] unable to write stack trace: {s}\n", .{@errorName(err)}) catch {};
         };
@@ -189,12 +191,12 @@ fn fileLogFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    _ = scope;
     if (g_log_file == null) return;
     const prefix = comptime level.asText();
-    var buf: [1024]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    w.print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
+    @import("agent/diagnostics.zig").prefix(&w, prefix, @tagName(scope)) catch {};
+    w.print(format ++ "\n", args) catch {};
     appendLogBytes(w.buffered());
 }
 
@@ -260,6 +262,7 @@ pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ra: ?usize) noret
 
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
+    @import("agent/diagnostics.zig").init(init.io);
     if (build_options.launcher_mode) {
         return try launcherMain(init.minimal.args);
     }
@@ -626,6 +629,12 @@ fn windowsStdHandle(stream_id: win32.DWORD) ?std.Io.File {
 }
 
 test {
+    _ = @import("app/session_controller.zig");
+    _ = @import("app/session_open.zig");
+    _ = @import("app/session_query.zig");
+    _ = @import("app/session_domain.zig");
+    _ = @import("app/session_spawn.zig");
+    _ = @import("app/session_borrowers.zig");
     _ = @import("ipc.zig");
     _ = @import("process_jobs.zig");
     _ = @import("app/pty_budget.zig");
@@ -636,6 +645,7 @@ test {
     if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");
     _ = @import("platform.zig");
+    _ = @import("window_placement_test.zig");
     _ = @import("lua_bridge.zig");
     _ = @import("render/color_math.zig");
     _ = @import("render/text_util.zig");

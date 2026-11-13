@@ -14,8 +14,12 @@ The is the main entry point for Hollow's documentation.
 
 - [Getting started](getting-started.md) — install, first run, mental model
 - [Configuration](configuration.md) — config model, defaults, overrides
+- [Window size and position](window-placement.md) — restore Windows window placement on reopen
 - [Keybindings](keybindings.md) — default keymaps, modal bindings, the leader key
 - [Panes, tabs, workspaces](panes-tabs-workspaces.md) — the three layout primitives
+- [Workspace picker](workspace-picker.md) — domain categories, SSH project/session loading, and creation actions
+- [Persistent sessions](persistent-sessions-guide.md) — experimental host-owned terminals and explicit reattachment
+- [Session diagnostics](session-diagnostics.md) — ownership tracing
 - [Themes](themes.md) — built-in themes, custom themes, palette overrides
 - [Custom UI](custom-ui.md) — top bar, sidebars, overlays, Lua panes, and the widget runtime
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment

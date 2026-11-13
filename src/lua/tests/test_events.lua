@@ -36,6 +36,7 @@ describe("events test suite", function()
         "term:command_finished",
         "term:pane_created",
         "term:pane_exited",
+        "term:pane_respawned",
         "term:pane_closed",
       }) do
         local built_in_error = pcall(function()

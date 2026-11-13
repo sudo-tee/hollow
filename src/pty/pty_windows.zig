@@ -5,6 +5,7 @@ const windows = std.os.windows;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
 const build_options = @import("build_options");
+const Job = @import("windows_job.zig").Job;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
@@ -14,6 +15,9 @@ const PTY_READER_IO_BUFFER_SIZE: usize = 64 * 1024;
 extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn GetExitCodeProcess(hProcess: windows.HANDLE, lpExitCode: *windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn ResumeThread(hThread: windows.HANDLE) callconv(.winapi) windows.DWORD;
+extern "kernel32" fn RegisterWaitForSingleObject(*?windows.HANDLE, windows.HANDLE, *const fn (?*anyopaque, windows.BOOLEAN) callconv(.winapi) void, ?*anyopaque, windows.DWORD, windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn UnregisterWaitEx(windows.HANDLE, windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn ReadFile(hFile: windows.HANDLE, lpBuffer: ?*anyopaque, nNumberOfBytesToRead: windows.DWORD, lpNumberOfBytesRead: *windows.DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn WriteFile(hFile: windows.HANDLE, lpBuffer: ?*const anyopaque, nNumberOfBytesToWrite: windows.DWORD, lpNumberOfBytesWritten: *windows.DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) windows.BOOL;
 
@@ -40,10 +44,12 @@ extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: windo
 extern "kernel32" fn InitializeProcThreadAttributeList(lpAttributeList: ?*anyopaque, dwAttributeCount: windows.DWORD, dwFlags: windows.DWORD, lpSize: *usize) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn UpdateProcThreadAttribute(lpAttributeList: ?*anyopaque, dwFlags: windows.DWORD, attribute: usize, lpValue: ?*const anyopaque, cbSize: usize, lpPreviousValue: ?*anyopaque, lpReturnSize: ?*usize) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: ?*anyopaque) callconv(.winapi) void;
-extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) [*:0]u16;
+extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*:0]u16;
 extern "kernel32" fn FreeEnvironmentStringsW(lpszEnvironmentBlock: [*:0]u16) callconv(.winapi) windows.BOOL;
 const EXTENDED_STARTUPINFO_PRESENT: windows.DWORD = 0x00080000;
 const CREATE_UNICODE_ENVIRONMENT: windows.DWORD = 0x00000400;
+const CREATE_SUSPENDED: windows.DWORD = 0x00000004;
+const STARTF_USESTDHANDLES: windows.DWORD = 0x00000100;
 
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 const WRITER_HIGH_WATER_BYTES = 1024 * 1024;
@@ -79,6 +85,7 @@ const WriterState = struct {
     closing: bool = false,
     failed: bool = false,
     operation_active: bool = false,
+    wake: Wake = .{},
 };
 
 pub const WindowsPty = struct {
@@ -99,9 +106,19 @@ pub const WindowsPty = struct {
     alive: bool = true,
     exit_status: ?u32 = null,
     closed: bool = false,
+    /// Only session owners own process trees; ordinary GUI PTYs stay unchanged.
+    job: ?Job = null,
+    exit_wait: ?windows.HANDLE = null,
 
     pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
         return spawnWithShell(allocator, shell, cols, rows, cwd, env_block, launch_command, wake);
+    }
+
+    /// Session owner primitive. Destroying this PTY kills its entire process
+    /// tree; a GUI must borrow it through the session owner, never own it.
+    pub fn spawnSession(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
+        if (cols == 0 or rows == 0 or cols > std.math.maxInt(i16) or rows > std.math.maxInt(i16)) return error.InvalidSize;
+        return spawnConfigured(allocator, shell, cols, rows, cwd, env_block, launch_command, wake, true);
     }
 
     pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, fallbacks: []const []const u8, wake: Wake) !WindowsPty {
@@ -129,16 +146,23 @@ pub const WindowsPty = struct {
     }
 
     fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
+        return spawnConfigured(allocator, shell, cols, rows, cwd, env_block, launch_command, wake, false);
+    }
+
+    fn spawnConfigured(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake, session_owner: bool) !WindowsPty {
+        // Raw resources transfer together to `pty`, whose close handles partial
+        // worker startup too. No error path may free a worker's state early.
+        var raw_owned = true;
         var input_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var input_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var output_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var output_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         try createPipe(&input_read, &input_write);
-        errdefer closeHandleIfValid(input_read);
-        errdefer closeHandleIfValid(input_write);
+        errdefer if (raw_owned) closeHandleIfValid(input_read);
+        errdefer if (raw_owned) closeHandleIfValid(input_write);
         try createPipe(&output_read, &output_write);
-        errdefer closeHandleIfValid(output_read);
-        errdefer closeHandleIfValid(output_write);
+        errdefer if (raw_owned) closeHandleIfValid(output_read);
+        errdefer if (raw_owned) closeHandleIfValid(output_write);
 
         if (SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
         if (SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
@@ -150,7 +174,12 @@ pub const WindowsPty = struct {
             return error.CreatePseudoConsoleFailed;
         }
         std.log.info("conpty CreatePseudoConsole ok hpc={*}", .{hpc.?});
-        errdefer ClosePseudoConsole(hpc.?);
+        errdefer if (raw_owned) ClosePseudoConsole(hpc.?);
+
+        var job: ?Job = if (session_owner) try Job.create() else null;
+        errdefer if (raw_owned) {
+            if (job) |*owned| owned.close();
+        };
 
         var attr_size: usize = 0;
         _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
@@ -173,10 +202,12 @@ pub const WindowsPty = struct {
 
         var si = std.mem.zeroes(STARTUPINFOEXW);
         si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
-        // Do NOT set STARTF_USESTDHANDLES for a ConPTY process — the ConPTY
-        // owns the child's stdio.  Setting it (even with null handles) causes
-        // some shells (notably wsl.exe) to ignore the pseudoconsole entirely.
+        // Preserve the ordinary GUI path, including its WSL launcher behavior.
         si.lpAttributeList = attr_mem.ptr;
+        // A console-mode owner may have redirected stdio (e.g. a connector).
+        // Explicit null standard handles let ConPTY supply the child's console
+        // handles instead of leaking output into the owner's framed transport.
+        if (session_owner) si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
 
         var pi = std.mem.zeroes(windows.PROCESS.INFORMATION);
         const spec = try buildCommandSpec(allocator, shell, cwd, launch_command);
@@ -187,7 +218,7 @@ pub const WindowsPty = struct {
 
         // Build the environment block for the process
         const shell_name = std.fs.path.basename(shellProgram(shell));
-        const env_block_utf16 = try buildEnvironmentBlock(allocator, env_block, shell_name);
+        const env_block_utf16 = try buildEnvironmentBlock(allocator, env_block, shell_name, session_owner);
         defer if (env_block_utf16) |block| freeSentinelU16(allocator, block);
 
         if (CreateProcessW(
@@ -195,8 +226,8 @@ pub const WindowsPty = struct {
             spec.command_line_utf16.ptr,
             null,
             null,
-            .TRUE, // inherit handles (reverted to test if FALSE was causing input issues)
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            if (session_owner) .FALSE else .TRUE,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | @as(windows.DWORD, if (session_owner) CREATE_SUSPENDED else 0),
             if (env_block_utf16) |block| @as(?*anyopaque, @ptrCast(block.ptr)) else null,
             if (spec.cwd_utf16) |value| value.ptr else null,
             &si.StartupInfo,
@@ -205,12 +236,13 @@ pub const WindowsPty = struct {
             std.log.err("conpty CreateProcessW failed err={d}", .{windows.GetLastError()});
             return error.CreateProcessFailed;
         }
-        var process_owned = true;
-        errdefer if (process_owned) {
+        errdefer if (raw_owned) {
             _ = TerminateProcess(pi.hProcess, 0);
             closeHandleIfValid(pi.hThread);
             closeHandleIfValid(pi.hProcess);
         };
+        // Fail closed: an unassigned child never gets to execute or escape.
+        if (job) |*owned| try owned.assign(pi.hProcess);
         std.log.info("conpty spawned process pid={d} shell={s}", .{ pi.dwProcessId, spec.log_command });
 
         // Non-blocking check for immediate spawn failure (bad args, missing exe, etc.).
@@ -228,14 +260,15 @@ pub const WindowsPty = struct {
         // closing it here has been observed to silently break ConPTY input on some
         // WSL / Windows 11 configurations.
         closeHandleIfValid(output_write);
+        output_write = windows.INVALID_HANDLE_VALUE;
         std.log.info("conpty: closed output_write (kept input_read open)", .{});
 
         const reader_state = try allocator.create(ReaderState);
         reader_state.* = .{ .wake = wake };
-        errdefer allocator.destroy(reader_state);
+        errdefer if (raw_owned) allocator.destroy(reader_state);
         const writer_state = try allocator.create(WriterState);
-        writer_state.* = .{ .allocator = allocator, .hpc = hpc.?, .write_pipe = input_write };
-        errdefer allocator.destroy(writer_state);
+        writer_state.* = .{ .allocator = allocator, .hpc = hpc.?, .write_pipe = input_write, .wake = if (session_owner) wake else .{} };
+        errdefer if (raw_owned) allocator.destroy(writer_state);
 
         var pty = WindowsPty{
             .allocator = allocator,
@@ -251,22 +284,20 @@ pub const WindowsPty = struct {
             .reader_thread = null,
             .writer_state = writer_state,
             .writer_thread = null,
+            .job = job,
         };
-        process_owned = false;
+        raw_owned = false;
+        errdefer pty.close();
 
-        pty.writer_thread = std.Thread.spawn(.{}, writerLoop, .{pty.writer_state}) catch |err| {
-            _ = TerminateProcess(pi.hProcess, 0);
-            closeHandleIfValid(pi.hThread);
-            closeHandleIfValid(pi.hProcess);
-            return err;
-        };
-        pty.reader_thread = std.Thread.spawn(.{}, readerLoop, .{ pty.read_pipe, pty.reader_state }) catch |err| {
-            stopWriterThread(&pty);
-            _ = TerminateProcess(pi.hProcess, 0);
-            closeHandleIfValid(pi.hThread);
-            closeHandleIfValid(pi.hProcess);
-            return err;
-        };
+        pty.writer_thread = try std.Thread.spawn(.{}, writerLoop, .{pty.writer_state});
+        pty.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{ pty.read_pipe, pty.reader_state });
+        if (session_owner) {
+            // Register before resume: resource failure must not execute the child.
+            // Context is heap-backed ReaderState, never this movable Pty value.
+            if (RegisterWaitForSingleObject(&pty.exit_wait, pi.hProcess, notifyProcessExit, reader_state, std.math.maxInt(windows.DWORD), 0x00000008) == .FALSE)
+                return error.RegisterProcessWaitFailed; // WT_EXECUTEONLYONCE
+            if (ResumeThread(pi.hThread) == std.math.maxInt(windows.DWORD)) return error.ResumeProcessFailed;
+        }
 
         return pty;
     }
@@ -332,6 +363,19 @@ pub const WindowsPty = struct {
         return self.exit_status;
     }
 
+    /// Owners observe process exit independently of final output/PTY EOF.
+    pub fn pollExitStatus(self: *WindowsPty) ?u32 {
+        if (!self.closed) self.captureExitStatus();
+        return self.exit_status;
+    }
+
+    pub fn outputEnded(self: *WindowsPty) bool {
+        if (self.closed) return true;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.eof and self.reader_state.start == self.reader_state.buf.items.len;
+    }
+
     pub fn read(self: *WindowsPty, buffer: []u8) !usize {
         if (buffer.len == 0) return 0;
         try self.flushPendingInputIfReady();
@@ -383,8 +427,8 @@ pub const WindowsPty = struct {
     }
 
     pub fn writeAll(self: *WindowsPty, bytes: []const u8) !void {
-        if (!self.shellProducedOutput()) {
-            try self.pending_input.appendSlice(self.allocator, bytes);
+        if (self.job == null and !self.shellProducedOutput()) {
+            try appendPendingInput(self.allocator, &self.pending_input, bytes);
             return;
         }
         try self.flushPendingInputIfReady();
@@ -393,8 +437,8 @@ pub const WindowsPty = struct {
 
     pub fn writeAllUntil(self: *WindowsPty, bytes: []const u8, deadline_ns: i128) !usize {
         if (io.nanoTimestamp() >= deadline_ns) return 0;
-        if (!self.shellProducedOutput()) {
-            try self.pending_input.appendSlice(self.allocator, bytes);
+        if (self.job == null and !self.shellProducedOutput()) {
+            try appendPendingInput(self.allocator, &self.pending_input, bytes);
             return bytes.len;
         }
         try self.flushPendingInputIfReady();
@@ -403,19 +447,22 @@ pub const WindowsPty = struct {
     }
 
     fn queueInput(self: *WindowsPty, bytes: []const u8) !void {
-        const owned = try self.allocator.dupe(u8, bytes);
-        errdefer self.allocator.free(owned);
         self.writer_state.mutex.lock();
         defer self.writer_state.mutex.unlock();
         if (self.writer_state.closing) return error.WriteFailed;
-        if (self.writer_state.queued_input_bytes + owned.len > WRITER_HIGH_WATER_BYTES or
+        if (bytes.len > WRITER_HIGH_WATER_BYTES - self.writer_state.queued_input_bytes or
             self.writer_state.commands.items.len - self.writer_state.command_start >= WRITER_MAX_COMMANDS)
         {
+            // Owner can reject admission without killing a healthy pane or
+            // replaying partially queued input. Ordinary GUI behavior is kept.
+            if (self.job != null) return error.ResourceExhausted;
             self.writer_state.failed = true;
             self.writer_state.closing = true;
             self.writer_state.ready.broadcast();
             return error.WriteFailed;
         }
+        const owned = try self.allocator.dupe(u8, bytes);
+        errdefer self.allocator.free(owned);
         try self.writer_state.commands.append(self.allocator, .{ .input = owned });
         self.writer_state.queued_input_bytes += owned.len;
         self.writer_state.ready.signal();
@@ -434,9 +481,20 @@ pub const WindowsPty = struct {
     }
 
     pub fn resize(self: *WindowsPty, cols: u16, rows: u16) void {
+        if (self.closed) return;
+        self.queueResize(cols, rows) catch {};
+    }
+
+    pub fn resizeSession(self: *WindowsPty, cols: u16, rows: u16) !void {
+        if (self.closed or self.job == null) return error.WriteFailed;
+        if (cols == 0 or rows == 0 or cols > std.math.maxInt(i16) or rows > std.math.maxInt(i16)) return error.InvalidSize;
+        try self.queueResize(cols, rows);
+    }
+
+    fn queueResize(self: *WindowsPty, cols: u16, rows: u16) !void {
         self.writer_state.mutex.lock();
         defer self.writer_state.mutex.unlock();
-        if (self.writer_state.closing) return;
+        if (self.writer_state.closing) return error.WriteFailed;
         if (self.writer_state.commands.items.len > self.writer_state.command_start) {
             switch (self.writer_state.commands.items[self.writer_state.commands.items.len - 1]) {
                 .resize => {
@@ -446,7 +504,8 @@ pub const WindowsPty = struct {
                 else => {},
             }
         }
-        self.writer_state.commands.append(self.allocator, .{ .resize = .{ .cols = cols, .rows = rows } }) catch return;
+        if (self.writer_state.commands.items.len - self.writer_state.command_start >= WRITER_MAX_COMMANDS) return error.ResourceExhausted;
+        try self.writer_state.commands.append(self.allocator, .{ .resize = .{ .cols = cols, .rows = rows } });
         self.writer_state.ready.signal();
     }
 
@@ -461,6 +520,14 @@ pub const WindowsPty = struct {
         self.reader_state.closing = true;
         self.reader_state.ready.broadcast();
         self.reader_state.mutex.unlock();
+        if (self.exit_wait) |wait| {
+            // Drain callbacks before destroying their ReaderState/wake context.
+            _ = UnregisterWaitEx(wait, windows.INVALID_HANDLE_VALUE);
+            self.exit_wait = null;
+        }
+        // Kill descendants before waiting on workers or closing ConPTY. They
+        // may hold console/pipe resources after the original shell has exited.
+        if (self.job) |*owned| owned.close();
         stopWriterThread(self);
         // Terminate the child process if still alive.
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
@@ -490,6 +557,23 @@ pub const WindowsPty = struct {
         self.alive = false;
     }
 };
+
+fn appendPendingInput(allocator: std.mem.Allocator, pending: *std.ArrayList(u8), bytes: []const u8) !void {
+    if (bytes.len > WRITER_HIGH_WATER_BYTES - pending.items.len) return error.ResourceExhausted;
+    try pending.appendSlice(allocator, bytes);
+}
+
+test "pre-output input admission is bounded and preserves accepted bytes" {
+    const a = std.testing.allocator;
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(a);
+    try pending.resize(a, WRITER_HIGH_WATER_BYTES - 1);
+    @memset(pending.items, 'x');
+    try std.testing.expectError(error.ResourceExhausted, appendPendingInput(a, &pending, "yz"));
+    try std.testing.expectEqual(WRITER_HIGH_WATER_BYTES - 1, pending.items.len);
+    try appendPendingInput(a, &pending, "y");
+    try std.testing.expectEqual(@as(u8, 'y'), pending.items[pending.items.len - 1]);
+}
 
 fn writerLoop(state: *WriterState) void {
     while (true) {
@@ -538,6 +622,7 @@ fn writerLoop(state: *WriterState) void {
         state.operation_active = false;
         state.ready.broadcast();
         state.mutex.unlock();
+        state.wake.signal();
     }
 }
 
@@ -547,6 +632,12 @@ fn markWriterFailed(state: *WriterState) void {
     state.closing = true;
     state.ready.broadcast();
     state.mutex.unlock();
+    state.wake.signal();
+}
+
+fn notifyProcessExit(context: ?*anyopaque, _: windows.BOOLEAN) callconv(.winapi) void {
+    const state: *ReaderState = @ptrCast(@alignCast(context orelse return));
+    state.wake.signal();
 }
 
 fn stopWriterThread(pty: *WindowsPty) void {
@@ -820,7 +911,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
             try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
             try argv.append(allocator, try allocator.dupe(u8, "-Command"));
-            const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'; {s}", .{ profile_path, trimmed });
+            const wrapped = try powershellProfileCommand(allocator, profile_path, trimmed);
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
             if (shell_wraps_ssh) {
@@ -863,15 +954,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, wrapped);
         }
     } else if (isPowershell(shell_name)) {
-        const profile_path = try writePowershellProfile(allocator);
-        defer allocator.free(profile_path);
-        try argv.append(allocator, try allocator.dupe(u8, "-NoLogo"));
-        try argv.append(allocator, try allocator.dupe(u8, "-NoExit"));
-        try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
-        try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
-        try argv.append(allocator, try allocator.dupe(u8, "-Command"));
-        const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'", .{profile_path});
-        try argv.append(allocator, wrapped);
+        try appendPowershellIntegration(allocator, &argv);
     } else if ((std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))) {
         try argv.append(allocator, try allocator.dupe(u8, "/Q"));
         try argv.append(allocator, try allocator.dupe(u8, "/K"));
@@ -882,6 +965,46 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     }
 
     return try argv.toOwnedSlice(allocator);
+}
+
+/// Session-only interactive launch preparation. Configured argv stays literal;
+/// callers classify interactive PowerShell before requesting this wrapper.
+/// Every returned string and the slice are owned by the caller.
+pub fn sessionInteractiveArgv(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        freeArgvOwnedStrings(allocator, argv.items);
+        argv.deinit(allocator);
+    }
+    try argv.ensureUnusedCapacity(allocator, args.len);
+    for (args) |arg| argv.appendAssumeCapacity(try allocator.dupe(u8, arg));
+    try appendPowershellIntegration(allocator, &argv);
+    return argv.toOwnedSlice(allocator);
+}
+
+fn appendPowershellIntegration(allocator: std.mem.Allocator, argv: *std.ArrayList([]const u8)) !void {
+    const profile_path = try writePowershellProfile(allocator);
+    defer allocator.free(profile_path);
+    try argv.ensureUnusedCapacity(allocator, 6);
+    inline for (.{ "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command" }) |arg|
+        argv.appendAssumeCapacity(try allocator.dupe(u8, arg));
+    argv.appendAssumeCapacity(try powershellProfileCommand(allocator, profile_path, null));
+}
+
+fn powershellProfileCommand(allocator: std.mem.Allocator, path: []const u8, command: ?[]const u8) ![]u8 {
+    const quoted = try std.mem.replaceOwned(u8, allocator, path, "'", "''");
+    defer allocator.free(quoted);
+    return if (command) |text|
+        std.fmt.allocPrint(allocator, ". '{s}'; {s}", .{ quoted, text })
+    else
+        std.fmt.allocPrint(allocator, ". '{s}'", .{quoted});
+}
+
+test "PowerShell profile paths with apostrophes stay literal" {
+    const a = std.testing.allocator;
+    const command = try powershellProfileCommand(a, "C:\\Users\\O'Connor\\powershell.ps1", null);
+    defer a.free(command);
+    try std.testing.expectEqualStrings(". 'C:\\Users\\O''Connor\\powershell.ps1'", command);
 }
 
 fn isPowershell(shell_name: []const u8) bool {
@@ -1072,8 +1195,9 @@ fn windowsCreateCommandLine(allocator: std.mem.Allocator, argv: []const []const 
 /// The env_block format is: "KEY1=value1\0KEY2=value2\0\0"
 /// Returns a UTF-16 environment block suitable for CreateProcessW, or null if env_block is null.
 /// Caller must free the returned memory with freeSentinelU16.
-fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, shell_name: []const u8) !?[:0]u16 {
-    if (env_block == null or env_block.?.len == 0) return null;
+fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, shell_name: []const u8, session_owner: bool) !?[:0]u16 {
+    if (!session_owner and (env_block == null or env_block.?.len == 0)) return null;
+    const supplied = env_block orelse "";
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1081,7 +1205,7 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
 
     // Start by inheriting the parent environment from Windows
     var vars: std.ArrayListUnmanaged(struct { key: []const u8, value: []const u8 }) = .empty;
-    const parent_env = GetEnvironmentStringsW();
+    const parent_env = GetEnvironmentStringsW() orelse return error.ResourceExhausted;
     defer _ = FreeEnvironmentStringsW(parent_env);
     var idx: usize = 0;
     while (parent_env[idx] != 0) {
@@ -1093,6 +1217,7 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
         // Skip Windows-internal vars that start with '='
         if (entry_utf8.len == 0 or entry_utf8[0] == '=') continue;
         if (std.mem.indexOfScalar(u8, entry_utf8, '=')) |eq_pos| {
+            if (session_owner and sessionOwnedEnv(entry_utf8[0..eq_pos])) continue;
             try vars.append(temp_alloc, .{ .key = entry_utf8[0..eq_pos], .value = entry_utf8[eq_pos + 1 ..] });
         }
     }
@@ -1100,13 +1225,17 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
 
     // Parse and override/add custom vars from env_block
     var i: usize = 0;
-    while (i < env_block.?.len) {
+    while (i < supplied.len) {
         const entry_start = i;
-        while (i < env_block.?.len and env_block.?[i] != 0) : (i += 1) {}
+        while (i < supplied.len and supplied[i] != 0) : (i += 1) {}
         if (i > entry_start) {
-            const entry = env_block.?[entry_start..i];
+            const entry = supplied[entry_start..i];
             if (std.mem.indexOfScalar(u8, entry, '=')) |eq_pos| {
                 const key = entry[0..eq_pos];
+                if (session_owner and sessionOwnedEnv(key)) {
+                    i += 1;
+                    continue;
+                }
                 const value = entry[eq_pos + 1 ..];
                 var found = false;
                 for (vars.items) |*v| {
@@ -1120,22 +1249,23 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
             }
         }
         i += 1;
-        if (i < env_block.?.len and env_block.?[i] == 0) break;
+        if (i < supplied.len and supplied[i] == 0) break;
     }
+    if (session_owner) try vars.append(temp_alloc, .{ .key = "HOLLOW_TRANSPORT", .value = "osc" });
 
     // For WSL: append HOLLOW_* vars to WSLENV so they cross the boundary
     const is_wsl = std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl");
     if (is_wsl) {
         var wslenv_additions: std.ArrayListUnmanaged(u8) = .empty;
         var j: usize = 0;
-        while (j < env_block.?.len) {
+        while (j < supplied.len) {
             const entry_start = j;
-            while (j < env_block.?.len and env_block.?[j] != 0) : (j += 1) {}
+            while (j < supplied.len and supplied[j] != 0) : (j += 1) {}
             if (j > entry_start) {
-                const entry = env_block.?[entry_start..j];
+                const entry = supplied[entry_start..j];
                 if (std.mem.indexOfScalar(u8, entry, '=')) |eq_pos| {
                     const key = entry[0..eq_pos];
-                    if (std.mem.startsWith(u8, key, "HOLLOW_")) {
+                    if (std.mem.startsWith(u8, key, "HOLLOW_") and !(session_owner and sessionOwnedEnv(key))) {
                         if (wslenv_additions.items.len > 0) try wslenv_additions.append(temp_alloc, ':');
                         try wslenv_additions.appendSlice(temp_alloc, key);
                         if (std.mem.indexOf(u8, key, "DIR") != null) {
@@ -1147,7 +1277,11 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
                 }
             }
             j += 1;
-            if (j < env_block.?.len and env_block.?[j] == 0) break;
+            if (j < supplied.len and supplied[j] == 0) break;
+        }
+        if (session_owner) {
+            if (wslenv_additions.items.len > 0) try wslenv_additions.append(temp_alloc, ':');
+            try wslenv_additions.appendSlice(temp_alloc, "HOLLOW_TRANSPORT/u");
         }
 
         if (wslenv_additions.items.len > 0) {
@@ -1184,6 +1318,13 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
     try utf16_block.append(allocator, 0); // final double-null
 
     return try allocator.dupeSentinel(u16, utf16_block.items, 0);
+}
+
+fn sessionOwnedEnv(key: []const u8) bool {
+    inline for (.{ "HOLLOW_PANE_ID", "HOLLOW_WORKSPACE_ID", "HOLLOW_COMMAND_ADDR", "HOLLOW_TRANSPORT" }) |owned| {
+        if (std.ascii.eqlIgnoreCase(key, owned)) return true;
+    }
+    return false;
 }
 
 threadlocal var preview_buf: [48]u8 = undefined;

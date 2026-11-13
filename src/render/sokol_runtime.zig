@@ -3,6 +3,7 @@ const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
+const window_placement = if (builtin.os.tag == .windows) @import("window_placement_windows.zig") else struct {};
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
@@ -30,6 +31,8 @@ const selection_mod = @import("../app/selection.zig");
 const mux_ops = @import("../app/session_controller.zig");
 const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
+const session_notice = @import("../session/notice.zig");
+const dead_pane = @import("../session/dead_pane.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
@@ -810,6 +813,7 @@ var g_bottom_bar_cache: BarCache = .{};
 // retained layouts instead of copying hit geometry each frame.
 var g_overlay_surfaces: [MAX_OVERLAY_SURFACES]*ClaySurface = undefined;
 var g_overlay_surface_count: usize = 0;
+var g_overlay_has_modal: bool = false;
 
 var g_sidebar_hovered = false;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
@@ -1850,6 +1854,100 @@ fn hitTestOverlayWheel(mouse_x: f32, mouse_y: f32) ?OverlayHit {
     return null;
 }
 
+fn sessionNoticePanel(app: *App, line_count: usize) session_notice.Rect {
+    return session_notice.panel(app.activeLayoutBounds(), @floatFromInt(app.cell_width_px), @floatFromInt(app.cell_height_px), line_count);
+}
+
+fn hitTestSessionNotice(app: *App, x: f32, y: f32) ?u64 {
+    const value = app.session_notices.currentNative() orelse return null;
+    // A modal owns the whole viewport, including empty space outside its panel.
+    // Nonmodal overlays own their painted panels, not just clickable children.
+    if (g_overlay_has_modal or hitTestOverlayWheel(x, y) != null) return null;
+    var text: session_notice.Text = .{};
+    text.format(value);
+    return if (sessionNoticePanel(app, text.count).contains(x, y)) value.id else null;
+}
+
+fn drawSessionNotice(app: *App, renderer: *FtRenderer, value: session_notice.Notice, text: *const session_notice.Text) void {
+    const panel = sessionNoticePanel(app, text.count);
+    if (panel.width <= 0 or panel.height <= 0) return;
+    const theme = &app.config.terminal_theme;
+    const fg = theme.foreground;
+    const bg = theme.background;
+    const muted: ghostty.ColorRgb = .{
+        .r = @intCast((@as(u16, fg.r) + bg.r) / 2),
+        .g = @intCast((@as(u16, fg.g) + bg.g) / 2),
+        .b = @intCast((@as(u16, fg.b) + bg.b) / 2),
+    };
+    const accent = if (value.state == .failed) theme.palette[1] else muted;
+    c.sgl_scissor_rect(@intFromFloat(panel.x), @intFromFloat(panel.y), @intFromFloat(panel.width), @intFromFloat(panel.height), true);
+    defer {
+        c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+        c.sgl_load_default_pipeline();
+    }
+    drawBorderRect(panel.x, panel.y, panel.width, panel.height, bg.r, bg.g, bg.b, 255);
+    drawBorderRect(panel.x, panel.y, panel.width, 2, accent.r, accent.g, accent.b, 255);
+    const x = panel.x + renderer.cell_w;
+    var y = panel.y + renderer.cell_h * 0.5;
+    for (text.lines[0..text.count], 0..) |line, index| {
+        const color = if (index == 0) accent else fg;
+        renderer.drawLabel(x, y, line, color.r, color.g, color.b);
+        y += renderer.cell_h;
+    }
+}
+
+fn bannerLabel(renderer: *FtRenderer, rect: session_notice.Rect, text: []const u8, color: ghostty.ColorRgb) void {
+    if (rect.width < 1 or rect.height < 1) return;
+    c.sgl_scissor_rect(@intFromFloat(rect.x), @intFromFloat(rect.y), @intFromFloat(rect.width), @intFromFloat(rect.height), true);
+    renderer.drawLabel(rect.x + renderer.cell_w * 0.25, rect.y + (rect.height - renderer.cell_h) / 2, text, color.r, color.g, color.b);
+    c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+}
+
+fn takenGlobalDock(app: *App, pane: *Pane) bool {
+    const term = pane.asTerminal() orelse return false;
+    const pty = term.pty orelse return false;
+    if (pty != .session or !pty.session.taken) return false;
+    const mux = if (app.mux) |*value| value else return false;
+    const location = mux.paneDock(pane) orelse return false;
+    return location.scope == .global;
+}
+
+fn drawTakenDockBadge(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf) void {
+    const width = @min(@as(f32, @floatFromInt(leaf.bounds.width)), renderer.cell_w * 10);
+    const rect: session_notice.Rect = .{
+        .x = @as(f32, @floatFromInt(leaf.bounds.x + leaf.bounds.width)) - width,
+        .y = @floatFromInt(leaf.bounds.y),
+        .width = width,
+        .height = renderer.cell_h * 1.25,
+    };
+    const bg = app.config.terminal_theme.background;
+    drawBorderRect(rect.x, rect.y, rect.width, rect.height, bg.r, bg.g, bg.b, 230);
+    bannerLabel(renderer, rect, "detached", app.config.terminal_theme.palette[3]);
+}
+
+/// One-line placeholder for an exited process.
+fn drawDeadPaneFooter(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf, value: dead_pane.State) void {
+    const x: f32 = @floatFromInt(leaf.bounds.x);
+    const w: f32 = @floatFromInt(leaf.bounds.width);
+    const h: f32 = @floatFromInt(leaf.bounds.height);
+    const row = renderer.cell_h * 1.25;
+    if (w <= renderer.cell_w * 2 or h < row) return;
+    const y = @as(f32, @floatFromInt(leaf.bounds.y)) + h - row;
+    const theme = &app.config.terminal_theme;
+    const fg = theme.foreground;
+    const bg = theme.background;
+    const accent = if (value.status orelse 0 == 0) theme.palette[4] else theme.palette[1];
+    c.sgl_scissor_rect(@intFromFloat(x), @intFromFloat(y), @intFromFloat(w), @intFromFloat(row), true);
+    defer {
+        c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+        c.sgl_load_default_pipeline();
+    }
+    drawBorderRect(x, y, w, row, bg.r, bg.g, bg.b, 255);
+    drawBorderRect(x, y, w, 1, accent.r, accent.g, accent.b, 255);
+    var buf: [dead_pane.max_text]u8 = undefined;
+    renderer.drawLabel(x + renderer.cell_w * 0.5, y + renderer.cell_h * 0.125, dead_pane.format(&buf, value), fg.r, fg.g, fg.b);
+}
+
 /// Topmost scrollbar under the pointer, unless a higher overlay's clickable
 /// node covers it.
 fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?OverlayScrollbar {
@@ -2706,6 +2804,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_surface_count = 0;
+    g_overlay_has_modal = false;
     g_sidebar_bounds = null;
     const ctx = g_widget_render_ctx orelse return;
     const scratch = &g_bar_widget_scratch;
@@ -2812,6 +2911,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             }
             if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                 const overlay_idx = absoluteIndex(api, state, -1);
+                if (ctx.app.session_notices.count != 0) {
+                    api.get_field(state, overlay_idx, "stack_context");
+                    var context_len: usize = 0;
+                    if (api.to_lstring(state, -1, &context_len)) |context| {
+                        if (std.mem.eql(u8, context[0..context_len], "modal")) g_overlay_has_modal = true;
+                    }
+                    pop(api, state, 1);
+                }
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
                 var backdrop_alpha: u8 = 0;
@@ -3391,6 +3498,9 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
+    if (builtin.os.tag == .windows and app.config.restore_window_placement) {
+        if (c.sapp_win32_get_hwnd()) |hwnd| window_placement.restore(@ptrCast(@constCast(hwnd)));
+    }
     rebuildFtRenderer(app);
 
     _ = app.enqueueMouse(.{ .focus = true });
@@ -3463,8 +3573,11 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
     }
 }
 
+var execution_gap: @import("../agent/diagnostics.zig").ExecutionGap = .{};
+
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    if (execution_gap.observe(@import("../agent/diagnostics.zig").utcMillis())) |gap| std.log.info("runtime.execution_gap wall_elapsed_ms={d} possible_sleep_or_stall=true", .{gap});
     const profile_start = app_profile.start();
     var profile_rendered = false;
     var profile_active_wall: ?i128 = null;
@@ -3611,6 +3724,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var offscreen_bar_preraster_ns: i128 = 0;
 
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
+    const notice_value = app.session_notices.currentNative();
+    var notice_text: session_notice.Text = .{};
+    if (notice_value) |value| {
+        notice_text.format(value);
+        if (g_ft_renderer) |*renderer| {
+            for (notice_text.lines[0..notice_text.count]) |line| renderer.preRasterizeLabel(line);
+        }
+    }
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
             for (leaves) |leaf| {
@@ -4246,8 +4367,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
         // pass(es) — needed before the swapchain pass uses the atlas.
-        // Skip for direct render mode (already flushed above).
-        if (!use_direct_render) {
+        // Native notice glyphs also need uploading in the direct-render path.
+        if (!use_direct_render or notice_value != null) {
             renderer.flushAtlasIfDirty();
         }
     }
@@ -4540,10 +4661,32 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
 
+        // Keep native notices and the Lua UI above direct terminal glyphs.
+        // Their order within this layer leaves Lua overlays above the card.
+        var any_dead = false;
+        if (app.mux) |*mux| if (mux.session_workspace_count != 0) {
+            for (leaves) |leaf| if (dead_pane.state(leaf.pane) != null or takenGlobalDock(app, leaf.pane)) {
+                any_dead = true;
+                break;
+            };
+        };
+        if (notice_value != null or any_dead) c.sgl_layer(1);
+        defer c.sgl_layer(0);
+        if (any_dead) for (leaves) |leaf| {
+            if (dead_pane.state(leaf.pane)) |value| drawDeadPaneFooter(app, renderer, leaf, value);
+            if (takenGlobalDock(app, leaf.pane)) drawTakenDockBadge(app, renderer, leaf);
+        };
+        if (notice_value) |value| drawSessionNotice(app, renderer, value, &notice_text);
+
         if (app.lua) |*lua| {
             g_widget_render_ctx = .{ .app = app, .renderer = renderer, .width = width, .height = height };
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
+        } else {
+            // A failed Lua reload must not leave stale modal hit ownership
+            // blocking this native fallback.
+            g_overlay_surface_count = 0;
+            g_overlay_has_modal = false;
         }
         if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false);
         drawGridDebug(app, renderer, width, height);
@@ -4958,6 +5101,9 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
         // after it. Hide it so slow teardown cannot show a white
         // "Not Responding" window.
         if (c.sapp_win32_get_hwnd()) |hwnd_raw| {
+            if (appFromUserData(user_data)) |app| {
+                if (app.config.restore_window_placement) window_placement.save(@ptrCast(@constCast(hwnd_raw)));
+            }
             _ = win32.ShowWindow(@ptrCast(@constCast(hwnd_raw)), win32.SW_HIDE);
         }
     }
@@ -5497,6 +5643,9 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         _ = updateBarHover(app, g_mouse_x, g_mouse_y, c.sapp_widthf(), event.modifiers);
     }
 
+    // Windows closes the window on Alt+F4; the pane must not also get F4.
+    if (builtin.os.tag == .windows and isWindowCloseChord(key, mods)) return;
+
     if (quick_select.inputActive(app)) {
         if (key == .escape) {
             enqueueQuickSelectInput(app, .cancel);
@@ -5869,6 +6018,18 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 .id = hit.id,
                 .index = hit.stack_index,
             } });
+            return;
+        }
+    }
+
+    // Route only after suppression, bars and overlay clicks. Queue the stable
+    // notice ID; cancellation/dismissal belongs to the frame-thread lifecycle.
+    if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (hitTestSessionNotice(app, event.mouse_x, event.mouse_y)) |id| {
+            _ = app.enqueueMouse(.{ .session_notice_activate = id });
+            g_block_left_mouse_until_up = true;
+            g_mouse_button_down = null;
+            c.sapp_consume_event();
             return;
         }
     }
@@ -6490,6 +6651,10 @@ fn modifierBitForKey(key: ghostty.Key) u32 {
     };
 }
 
+fn isWindowCloseChord(key: ghostty.Key, mods: u32) bool {
+    return key == .f4 and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0;
+}
+
 /// Strips the synthetic Ctrl+Alt bits that Windows reports while AltGr is
 /// held (and the Alt bit some X11 layouts put on ISO_Level3_Shift), so
 /// AltGr-produced characters are delivered as plain text.  Only applies
@@ -6703,6 +6868,13 @@ fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) vo
     c.sgl_v2f(x, y + h);
     c.sgl_end();
     c.sgl_load_default_pipeline();
+}
+
+test "Alt+F4 is the window close chord, not pane input" {
+    try std.testing.expect(isWindowCloseChord(.f4, ghostty.Mods.alt));
+    try std.testing.expect(isWindowCloseChord(.f4, ghostty.Mods.alt | ghostty.Mods.shift));
+    try std.testing.expect(!isWindowCloseChord(.f4, ghostty.Mods.none));
+    try std.testing.expect(!isWindowCloseChord(.f4, ghostty.Mods.ctrl | ghostty.Mods.alt));
 }
 
 test "altGrAdjustedModsFor strips synthetic ctrl+alt only while right alt is down" {

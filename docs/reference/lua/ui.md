@@ -933,6 +933,21 @@ processes from them.
 The first action is the primary action bound to `Enter` (or whatever
 key you put in `actions[1].key`).
 
+Optional `group_by(item)` returns a category key, ordered lexically; filtering remains global and ranks matches within each category.
+`group_label(key)` supplies its heading, and `group_item(key)` supplies the payload passed to actions when that heading is focused.
+Headings use shared `c.category` disclosure rows and participate in keyboard navigation.
+Primary activation toggles collapse; secondary actions still receive the `group_item` payload.
+Search exposes matching children without changing saved collapse choices.
+When every match falls in one category, search hides that heading and shows a flat list.
+Select headings are flat titles without a section fill.
+`group_colors(key)` supplies the category title color (`fg`), and `item_indent` sets child indentation in cells (default 2).
+`group_meta(key)` returns optional muted status text shown at the end of a heading.
+`c.category({ label, collapsed, colors, flat, on_activate, ... })` accepts optional trailing controls independent of disclosure activation; `flat = true` drops the section fill.
+`c.category.height(theme, ctx, title_style?)` measures its padded title height for list navigation.
+Search initially selects the first matching child rather than its heading.
+For domain-style groups, `group_create(key)` adds a trailing **+** button when the heading payload has a `domain` field; clicking it does not activate the parent row.
+Grouped live providers preserve selection by item `id` when available.
+
 ## Workspace switcher
 
 See [`hollow.ui.workspace`](workspace.md).

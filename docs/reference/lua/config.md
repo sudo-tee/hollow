@@ -35,6 +35,7 @@ in the shipped base config.
 | `cols`, `rows`                                                                    | integer                        | Initial grid size                                               |
 | `padding`                                                                         | integer                        | Cell padding in pixels                                          |
 | `window_title`, `window_width`, `window_height`                                   | string, integer                | Window title; window size at startup only                       |
+| `restore_window_placement`                                                       | boolean                        | Restore/save Windows placement; default `true`; see [guide](../../window-placement.md) |
 | `window_titlebar_show`                                                            | boolean                        | Show the OS title bar                                           |
 | `top_bar_mode`                                                                    | `"always"` \| `"tabs"`         | When to show the top bar                                        |
 | `top_bar_height`, `top_bar_bg`                                                    | integer, color                 | Top bar geometry                                                |
@@ -169,6 +170,17 @@ hollow.config.set({
   },
 })
 ```
+
+### Persistent domains (experimental)
+
+Set `domains.<name>.persist = true` to create host-owned persistent workspaces on that domain.
+The default is `false`; existing workspaces are not converted.
+Supported owners run on Linux, including WSL and SSH hosts.
+Native Windows owners are not implemented yet.
+Failed persistent host resolution never falls back to a native ordinary shell.
+An opted-in default domain also uses asynchronous owner creation at startup, with a visible connecting or failure card.
+Automatic startup reattachment is not implemented yet.
+See the [persistent sessions guide](../../persistent-sessions-guide.md) before opting in.
 
 ### WSL domains
 

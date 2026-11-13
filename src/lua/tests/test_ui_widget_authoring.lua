@@ -67,8 +67,9 @@ describe("built-in declarative authoring parity", function()
     local source = require("hollow.ui.workspace.source")
     source.items = function()
       return {
-        { name = "one", domain = "local", cwd = "/local", workspace_id = 1 },
-        { name = "two", domain = "remote", cwd = "/remote", workspace_id = 2 },
+        { name = "one", domain = "local", cwd = "/local", workspace_id = 1, is_open = true },
+        { name = "two", domain = "remote", cwd = "/remote", workspace_id = 2, is_open = true },
+        { name = "project", domain = "remote", cwd = "/remote/project", is_open = false },
       }
     end
     local colors =
@@ -90,6 +91,14 @@ describe("built-in declarative authoring parity", function()
       end
     end
     assert.is_true(found)
+    local category = assert(clay.find(ui, ":select:item:group:1:remote"))
+    -- Headers are flat: the domain color paints the title, not a fill.
+    assert.is_nil(category.bg)
+    assert.is_truthy(
+      clay.text_node(ui, require("hollow.ui.icons").expanded .. " remote", function(node)
+        return node.fg == "#234567"
+      end)
+    )
     assert.equals(99, colors.radius)
     assert.equals(42, colors.padding)
   end)
@@ -112,5 +121,41 @@ describe("built-in declarative authoring parity", function()
       end
     end
     assert.equals(1, details)
+  end)
+
+  it("reserves fixed badge and pill widths before truncating workspace paths", function()
+    local source = require("hollow.ui.workspace.source")
+    source.items = function()
+      return {
+        {
+          id = "one",
+          name = "one",
+          domain = "local",
+          cwd = "/a/very/long/path/that/must/not/push/the/domain/pill",
+          is_open = true,
+        },
+        {
+          id = "two",
+          name = "two",
+          domain = "remote",
+          cwd = "/another/very/long/path",
+          is_open = true,
+        },
+      }
+    end
+    ui.workspace.open_switcher()
+    local viewport = assert(clay.find(ui, ":select:viewport"))
+    ui._layout_measure(ui._layout_surface_id, viewport.id, 320, 200)
+    local cwd = assert(clay.find(ui, ":select:item:1:cwd"))
+    assert.is_true(cwd.width >= 0 and cwd.width < 320)
+    local nodes = clay.nodes(ui)
+    local pill
+    for index, node in ipairs(nodes) do
+      if node.text == " remote " then
+        pill = nodes[index - 1]
+      end
+    end
+    assert.is_truthy(pill)
+    assert.is_true(pill.width > 0 and pill.width < 320)
   end)
 end)

@@ -96,6 +96,65 @@ describe("term test suite", function()
   end)
 
   describe("workspace snapshots", function()
+    it("forwards local persistent attachment state when available", function()
+      local old = env.host_api.get_workspace_session_state
+      for _, state in ipairs({ "attached", "taken", "disconnected" }) do
+        env.host_api.get_workspace_session_state = function(index)
+          harness.assert_equal(index, 0)
+          return state
+        end
+        harness.assert_equal(hollow.term.current_workspace().session_state, state)
+      end
+      env.host_api.get_workspace_session_state = nil
+      harness.assert_equal(hollow.term.current_workspace().session_state, nil)
+      env.host_api.get_workspace_session_state = old
+    end)
+    it("exposes persistent session ids without changing ordinary snapshots", function()
+      local old = env.host_api.get_workspace_session_id
+      env.host_api.get_workspace_session_id = function(index)
+        harness.assert_equal(index, 0, "session lookup uses native workspace index")
+        return "session-123"
+      end
+      harness.assert_equal(hollow.term.current_workspace().session_id, "session-123")
+      env.host_api.get_workspace_session_id = nil
+      harness.assert_equal(hollow.term.current_workspace().session_id, nil)
+      env.host_api.get_workspace_session_id = function()
+        return nil
+      end
+      harness.assert_equal(hollow.term.current_workspace().session_id, nil)
+      env.host_api.get_workspace_session_id = old
+    end)
+
+    it("respawns a pane through the host and reports refusals", function()
+      harness.assert_true(hollow.term.respawn_pane(), "active pane respawn is queued")
+      harness.assert_equal(recorded.respawn_pane, "active")
+      hollow.action.respawn_pane()
+      harness.assert_equal(recorded.respawn_pane, "active", "action targets the active pane")
+      harness.assert_true(hollow.term.respawn_pane(101))
+      harness.assert_equal(recorded.respawn_pane, 101)
+      local old = env.host_api.respawn_pane
+      env.host_api.respawn_pane = function()
+        return false, "PaneAlive"
+      end
+      local ok, reason = hollow.term.respawn_pane(101)
+      harness.assert_true(not ok)
+      harness.assert_equal(reason, "PaneAlive")
+      env.host_api.respawn_pane = old
+      harness.assert_true(not pcall(hollow.term.respawn_pane, "101"))
+    end)
+
+    it("exposes the owner host id of persistent workspaces", function()
+      local old = env.host_api.get_workspace_session_host
+      env.host_api.get_workspace_session_host = function(index)
+        harness.assert_equal(index, 0, "host lookup uses native workspace index")
+        return "host-abc"
+      end
+      harness.assert_equal(hollow.term.current_workspace().session_host, "host-abc")
+      env.host_api.get_workspace_session_host = nil
+      harness.assert_equal(hollow.term.current_workspace().session_host, nil)
+      env.host_api.get_workspace_session_host = old
+    end)
+
     it("snapshots workspace state", function()
       harness.assert_equal(
         hollow.term.current_workspace().name,
@@ -230,6 +289,178 @@ describe("term test suite", function()
       harness.assert_equal(recorded.split_pane.dock, "workspace", "dock should be forwarded")
       harness.assert_true(not pcall(hollow.term.split_pane, { dock = "global" }))
       harness.assert_true(not pcall(hollow.term.split_pane, { edge = "left", dock = "tab" }))
+    end)
+
+    it("split_pane forwards a global scratch dock and tags the created pane", function()
+      hollow.term.split_pane({ edge = "bottom", dock = "global", ratio = 0.25, tag = "scratch" })
+      harness.assert_equal(recorded.split_pane.edge, "bottom", "edge should be forwarded")
+      harness.assert_equal(recorded.split_pane.dock, "global", "scope should be forwarded")
+      harness.assert_equal(recorded.split_pane.ratio, 0.25, "ratio should be forwarded")
+      assert.same({ "scratch" }, hollow.term.get_pane_tags(hollow.term.current_pane().id))
+    end)
+  end)
+
+  describe("attach_session", function()
+    local requests
+    local old_attach
+
+    before_each(function()
+      requests = {}
+      old_attach = env.host_api.attach_session
+      env.host_api.attach_session = function(opts)
+        requests[#requests + 1] = opts
+      end
+    end)
+
+    after_each(function()
+      env.host_api.attach_session = old_attach
+    end)
+
+    it("copies request fields and dispatches completion unchanged", function()
+      local result
+      local opts = {
+        domain = "guest",
+        name = "restored",
+        session_id = "ignored",
+        trace_intent = "restore",
+        on_complete = function(value)
+          result = value
+        end,
+      }
+      hollow.term.attach_session("session-123", opts)
+      harness.assert_true(requests[1] ~= opts)
+      harness.assert_equal(opts.session_id, "ignored")
+      harness.assert_equal(requests[1].session_id, "session-123")
+      harness.assert_equal(requests[1].domain, "guest")
+      harness.assert_equal(requests[1].name, "restored")
+      harness.assert_equal(requests[1].trace_intent, "restore")
+      harness.assert_equal(result, nil)
+      local completion = { success = true, workspace_index = 2 }
+      requests[1].on_complete(completion)
+      harness.assert_equal(result, completion)
+      requests[1].on_complete({ success = false })
+      harness.assert_equal(result.success, false)
+    end)
+
+    it("accepts omitted options and the maximum id length", function()
+      hollow.term.attach_session(string.rep("s", 128))
+      harness.assert_equal(requests[1].session_id, string.rep("s", 128))
+      harness.assert_equal(requests[1].domain, nil)
+      harness.assert_equal(requests[1].on_complete, nil)
+    end)
+
+    it("rejects invalid diagnostic intent without dispatching", function()
+      harness.assert_equal(
+        pcall(hollow.term.attach_session, "session-123", { trace_intent = "reclaim" }),
+        false
+      )
+      harness.assert_equal(#requests, 0)
+    end)
+
+    it("rejects invalid ids before native dispatch", function()
+      for _, id in ipairs({ false, 1, {}, "", "bad\0id", string.rep("s", 129) }) do
+        harness.assert_equal(pcall(hollow.term.attach_session, id), false)
+      end
+      harness.assert_equal(pcall(hollow.term.attach_session), false)
+      harness.assert_equal(#requests, 0)
+    end)
+
+    it("rejects invalid options before native dispatch", function()
+      for _, opts in ipairs({
+        false,
+        1,
+        "guest",
+        { domain = false },
+        { name = 1 },
+        { on_complete = true },
+      }) do
+        harness.assert_equal(pcall(hollow.term.attach_session, "session-123", opts), false)
+      end
+      harness.assert_equal(#requests, 0)
+    end)
+  end)
+
+  describe("session discovery", function()
+    local requests
+    local old_request
+
+    before_each(function()
+      requests = {}
+      old_request = env.host_api.term_session_request
+      env.host_api.term_session_request = function(fields, callback)
+        requests[#requests + 1] = { fields = fields, callback = callback }
+        return true
+      end
+    end)
+
+    after_each(function()
+      env.host_api.term_session_request = old_request
+    end)
+
+    it("lists sessions and flattens the native response", function()
+      local result
+      local queued = hollow.term.list_sessions({
+        domain = "guest",
+        on_complete = function(value)
+          result = value
+        end,
+      })
+      harness.assert_true(queued)
+      harness.assert_equal(requests[1].fields.kind, "session_list")
+      harness.assert_equal(requests[1].fields.domain, "guest")
+      requests[1].callback({
+        success = true,
+        status = "ok",
+        payload = { domain = "guest", sessions = { { id = "s1", open = false } } },
+      })
+      harness.assert_true(result.success)
+      harness.assert_equal(result.domain, "guest")
+      harness.assert_equal(result.sessions[1].id, "s1")
+      harness.assert_equal(result.status, nil)
+    end)
+
+    it("reports failure outcomes and admission errors", function()
+      local result
+      hollow.term.kill_session("s1", {
+        on_complete = function(value)
+          result = value
+        end,
+      })
+      harness.assert_equal(requests[1].fields.kind, "session_kill")
+      harness.assert_equal(requests[1].fields.session, "s1")
+      harness.assert_equal(requests[1].fields.domain, nil)
+      requests[1].callback({
+        success = false,
+        status = "session_query_failed",
+        error = "Disconnected",
+        payload = { outcome = "uncertain", error = "Disconnected", session = "s1" },
+      })
+      harness.assert_equal(result.success, false)
+      harness.assert_equal(result.outcome, "uncertain")
+      harness.assert_equal(result.status, "session_query_failed")
+      requests[1].callback({ success = false, status = "invalid_domain", error = "UnknownDomain" })
+      harness.assert_equal(result.error, "UnknownDomain")
+      harness.assert_equal(result.outcome, nil)
+      hollow.term.kill_session(string.rep("s", 128))
+      requests[2].callback({ success = true, payload = {} })
+    end)
+
+    it("rejects invalid arguments before native dispatch", function()
+      harness.assert_equal(pcall(hollow.term.list_sessions), false)
+      for _, opts in ipairs({
+        {},
+        { on_complete = true },
+        { on_complete = function() end, domain = "" },
+      }) do
+        harness.assert_equal(pcall(hollow.term.list_sessions, opts), false)
+      end
+      for _, id in ipairs({ false, "", "bad\0id", string.rep("s", 129) }) do
+        harness.assert_equal(pcall(hollow.term.kill_session, id), false)
+      end
+      for _, opts in ipairs({ 1, { domain = 1 }, { on_complete = 1 } }) do
+        harness.assert_equal(pcall(hollow.term.kill_session, "s1", opts), false)
+      end
+      harness.assert_equal(#requests, 0)
     end)
   end)
 

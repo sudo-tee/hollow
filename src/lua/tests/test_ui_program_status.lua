@@ -98,6 +98,14 @@ describe("program status in navigation overlays", function()
     })
     local initial = discoveries
     assert.is_truthy(overlay_text(hollow):find("⠹ 25%", 1, true))
+    local leading = require("tests.clay_helpers").children(hollow.ui, ":select:item:1:status")
+    local found = false
+    for _, node in ipairs(leading) do
+      if node.text == "⠹ 25%" then
+        found = true
+      end
+    end
+    assert.is_true(found)
     local palette = hollow.theme.current().palette
     local function indicator_color(text)
       for _, segment in ipairs(overlay_segments(hollow)) do
@@ -106,20 +114,20 @@ describe("program status in navigation overlays", function()
         end
       end
     end
-    assert.equals(palette.bright_blue, indicator_color("⠹ 25% "))
+    assert.equals(palette.bright_blue, indicator_color("⠹ 25%"))
     env.recorded.now_ms = env.recorded.now_ms + 100
     env.flush_deferred()
     assert.is_truthy(overlay_text(hollow):find("⠸ 25%", 1, true))
     assert.equals(initial, discoveries)
     working[1] = { state = "done" }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
-    assert.equals(palette.bright_green, indicator_color("✓ "))
+    assert.equals(palette.bright_green, indicator_color("✓"))
     working[1] = { state = "error" }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
-    assert.equals(palette.bright_red, indicator_color("✗ "))
+    assert.equals(palette.bright_red, indicator_color("✗"))
     working[1] = { state = "blocked", kind = "auth" }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
-    assert.equals(palette.bright_yellow, indicator_color("󰌾 "))
+    assert.equals(palette.bright_yellow, indicator_color("󰌾"))
     working[1] = { state = "idle" }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     assert.is_nil(overlay_text(hollow):find("󰌾", 1, true))
@@ -287,7 +295,7 @@ describe("program status in navigation overlays", function()
     env.get_key_handler()("arrow_down", 0)
     local before = overlay_text(hollow)
     assert.is_truthy(before:find("Filter: m", 1, true))
-    assert.is_truthy(before:find("2/2", 1, true))
+    assert.is_truthy(before:find("3/4", 1, true)) -- Category headers participate in navigation.
     failed[1].attention = false
     failed[1].state = "done"
     hollow.config.set({
@@ -295,7 +303,7 @@ describe("program status in navigation overlays", function()
     })
     local after = overlay_text(hollow)
     assert.is_truthy(after:find("Filter: m", 1, true))
-    assert.is_truthy(after:find("2/2", 1, true))
+    assert.is_truthy(after:find("3/4", 1, true))
     assert.is_nil(after:find("✗", 1, true))
     assert.same({ "#123456" }, bell_colors(hollow))
   end)

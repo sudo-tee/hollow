@@ -65,6 +65,7 @@ const Fixture = struct {
 
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
+    @import("agent/diagnostics.zig").init(init.io);
     var args = init.minimal.args.iterate();
     _ = args.next();
     const iterations = if (args.next()) |text| try std.fmt.parseInt(usize, text, 10) else 2000;

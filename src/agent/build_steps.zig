@@ -52,10 +52,160 @@ fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     module.addImport("posix_c", shell.import_table.get("posix_c").?);
     // glibc keeps forkpty in libutil; musl has it in libc.
     if (target.result.abi != .musl) module.linkSystemLibrary("util", .{});
+    addSessionVt(b, module, target, optimize);
     return module;
 }
 
+fn addSessionVt(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    // Headless VT for persistent sessions. ghostty is a URL dependency in
+    // build.zig.zon (no submodules), shared with the GUI build.
+    const ghostty = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = if (optimize == .debug) .fast else optimize,
+        .simd = true,
+        .@"emit-lib-vt" = true,
+    });
+    const vt = ghostty.artifact("ghostty-vt-static");
+    module.linkLibrary(vt);
+    const translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/term/ghostty_bindings.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translate.addIncludePath(vt.getEmittedIncludeTree());
+    translate.defineCMacro("GHOSTTY_STATIC", "");
+    module.addImport("ghostty_c", translate.createModule());
+    // Binary snapshots are only exchanged between identical ghostty packages;
+    // the version string alone does not change between dev builds.
+    @import("../c_build.zig").addSessionIdentity(b, module, ghostty.builder);
+}
+
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const windows_owner_step = b.step("session-owner-windows", "Build the headless Windows session owner");
+    const keepalive_tests = b.step("test-session-windows-keepalive", "Run bounded Windows WSL keeper mechanism tests");
+    const wsl_keepalive_tests = b.step("test-session-wsl-keepalive", "Qualify Windows-owned keepalives against an explicitly supplied private WSL fixture");
+    const windows_owner_tests = b.step("test-session-windows-owner", "Run isolated Windows named-pipe session owner lifecycle tests");
+    const native_windows_tests = b.step("test-session-native-windows", "Run native-local asynchronous Windows session transport and open tests");
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        const keeper_module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_keepalive_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        keeper_module.linkSystemLibrary("advapi32", .{});
+        const keeper_run = b.addRunArtifact(b.addTest(.{ .root_module = keeper_module }));
+        keeper_run.has_side_effects = true;
+        keepalive_tests.dependOn(&keeper_run.step);
+        const owner_module = b.createModule(.{
+            .root_source_file = b.path("src/session_owner_windows.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        owner_module.linkSystemLibrary("advapi32", .{});
+        const owner_options = b.addOptions();
+        owner_options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        owner_module.addOptions("build_options", owner_options);
+        addSessionVt(b, owner_module, target, optimize);
+        const owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = owner_module });
+        b.addNamedLazyPath("windows_session_owner", owner.getEmittedBin());
+        const install_owner = b.addInstallArtifact(owner, .{
+            .dest_dir = .{ .override = .{ .custom = "agents/windows-x86_64" } },
+        });
+        windows_owner_step.dependOn(&install_owner.step);
+        b.getInstallStep().dependOn(&install_owner.step);
+        const options = b.addOptions();
+        options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        const keepalive_test_agent = b.option([]const u8, "keepalive-test-agent", "Absolute guest agent for isolated Windows-to-WSL keeper qualification");
+        const keepalive_test_distro = b.option([]const u8, "keepalive-test-distro", "Explicit distro for isolated Windows-to-WSL keeper qualification");
+        options.addOption(?[]const u8, "keepalive_test_agent", keepalive_test_agent);
+        options.addOption(?[]const u8, "keepalive_test_distro", keepalive_test_distro);
+        options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        const module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_owner_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        module.linkSystemLibrary("advapi32", .{});
+        module.addOptions("build_options", options);
+        addSessionVt(b, module, target, optimize);
+        const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
+        run.has_side_effects = true;
+        windows_owner_tests.dependOn(&run.step);
+        const native_module = b.createModule(.{
+            .root_source_file = b.path("src/session_native_windows_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        native_module.linkSystemLibrary("advapi32", .{});
+        // A real, same-protocol replacement image for live-owner upgrade tests.
+        const upgrade_optimize: std.builtin.OptimizeMode = if (optimize == .fast) .safe else .fast;
+        const upgrade_module = b.createModule(.{
+            .root_source_file = b.path("src/session_owner_windows.zig"),
+            .target = target,
+            .optimize = upgrade_optimize,
+            .link_libc = true,
+        });
+        upgrade_module.linkSystemLibrary("advapi32", .{});
+        upgrade_module.addOptions("build_options", owner_options);
+        addSessionVt(b, upgrade_module, target, upgrade_optimize);
+        const upgrade_owner = b.addExecutable(.{ .name = "hollow-agent", .root_module = upgrade_module });
+        const native_options = b.addOptions();
+        native_options.addOptionPath("windows_owner_exe", owner.getEmittedBin());
+        native_options.addOptionPath("upgrade_owner_exe", upgrade_owner.getEmittedBin());
+        native_options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        native_options.addOption(?[]const u8, "keepalive_test_agent", keepalive_test_agent);
+        native_options.addOption(?[]const u8, "keepalive_test_distro", keepalive_test_distro);
+        native_module.addOptions("build_options", native_options);
+        addSessionVt(b, native_module, target, optimize);
+        const native_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module }));
+        native_run.has_side_effects = true;
+        native_windows_tests.dependOn(&native_run.step);
+        const wsl_run = b.addRunArtifact(b.addTest(.{ .root_module = native_module, .filters = &.{ "WSL keepalive", "WSL keeper failure" } }));
+        wsl_run.has_side_effects = true;
+        wsl_keepalive_tests.dependOn(&wsl_run.step);
+    } else {
+        const fail = b.addFail("Windows session owner requires -Dtarget=x86_64-windows-gnu (or native x86_64 Windows)");
+        windows_owner_step.dependOn(&fail.step);
+        keepalive_tests.dependOn(&fail.step);
+        wsl_keepalive_tests.dependOn(&fail.step);
+        windows_owner_tests.dependOn(&fail.step);
+        native_windows_tests.dependOn(&fail.step);
+    }
+    const windows_pty_step = b.step("test-session-windows-pty", "Run headless Windows ConPTY session job lifecycle tests");
+    const windows_pane_step = b.step("test-session-windows-pane", "Run headless Windows owner pane and terminal snapshot tests");
+    if (target.result.os.tag == .windows) {
+        const options = b.addOptions();
+        options.addOption([]const u8, "embedded_powershell_integration", @embedFile("../../shell-integration/powershell.ps1"));
+        const module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_pty_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        module.addOptions("build_options", options);
+        const run = b.addRunArtifact(b.addTest(.{ .root_module = module }));
+        run.has_side_effects = true;
+        windows_pty_step.dependOn(&run.step);
+        const pane_module = b.createModule(.{
+            .root_source_file = b.path("src/session_windows_pane_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        pane_module.addOptions("build_options", options);
+        addSessionVt(b, pane_module, target, optimize);
+        const pane_run = b.addRunArtifact(b.addTest(.{ .root_module = pane_module }));
+        pane_run.has_side_effects = true;
+        windows_pane_step.dependOn(&pane_run.step);
+    } else {
+        windows_pty_step.dependOn(&b.addFail("test-session-windows-pty requires a Windows target (-Dtarget=x86_64-windows-gnu from WSL)").step);
+        windows_pane_step.dependOn(&b.addFail("test-session-windows-pane requires a Windows target (-Dtarget=x86_64-windows-gnu from WSL)").step);
+    }
     const agent_step = b.step("agent", "Build the standalone Linux musl agent for the selected architecture");
     if (target.result.cpu.arch != .x86_64 and target.result.cpu.arch != .aarch64) {
         agent_step.dependOn(&b.addFail("hollow-agent supports only x86_64 and aarch64 Linux targets").step);
@@ -81,6 +231,9 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     all_step.dependOn(&install_manifest.step);
     // Guest management is a default capability, not a separately prepared add-on.
     b.getInstallStep().dependOn(all_step);
+    // The remaining tests construct POSIX-only native agent modules. Windows
+    // can run the independent ConPTY target without constructing those modules.
+    if (b.graph.host.result.os.tag == .windows) return;
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/protocol.zig"),
         .target = b.graph.host,
@@ -97,6 +250,12 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
     }) });
     protocol_step.dependOn(&b.addRunArtifact(pty_protocol_tests).step);
+    const session_protocol_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent/session_protocol.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    }) });
+    protocol_step.dependOn(&b.addRunArtifact(session_protocol_tests).step);
     const loop_tests = b.addTest(.{ .root_module = agentModule(b, b.graph.host, optimize) });
     b.step("test-agent-loop", "Run agent RPC loop and PTY helper unit tests").dependOn(&b.addRunArtifact(loop_tests).step);
     const fs_tests = b.addTest(.{ .root_module = b.createModule(.{
@@ -136,6 +295,18 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     setPathEnvironmentVariable(run_pty_tests, "HOLLOW_TEST_AGENT", b.graph.path(.install_prefix, "host-test/hollow-agent-test"));
     run_pty_tests.step.dependOn(&install_test_agent.step);
     b.step("test-agent-pty", "Run agent PTY client tests against a native Linux agent").dependOn(&run_pty_tests.step);
+    const session_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/session_transport_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    @import("../c_build.zig").addPosix(b, session_tests.root_module, b.graph.host, optimize);
+    const run_session_tests = b.addRunArtifact(session_tests);
+    run_session_tests.has_side_effects = true;
+    setPathEnvironmentVariable(run_session_tests, "HOLLOW_TEST_AGENT", b.graph.path(.install_prefix, "host-test/hollow-agent-test"));
+    run_session_tests.step.dependOn(&install_test_agent.step);
+    b.step("test-session-transport", "Run bounded session client and connector lifecycle tests").dependOn(&run_session_tests.step);
     const pane_bench = b.addExecutable(.{ .name = "hollow-agent-pane-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent_pane_bench.zig"),
         .target = b.graph.host,

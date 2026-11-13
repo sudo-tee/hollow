@@ -1,5 +1,6 @@
 # Zig build artifacts
 .zig-cache/
+.zig-cache-agent/
 .zig-local-cache/
 .zig-cache-local/
 .zig-global-cache/

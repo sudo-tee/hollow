@@ -1,0 +1,830 @@
+//! In-process session owner tests: a fake client on a socketpair drives
+//! `Owner.step` directly (no socket path, no daemon).
+const std = @import("std");
+const p = @import("session_protocol.zig");
+const vt = @import("session_vt.zig");
+const Owner = @import("session_posix.zig").Owner;
+const nowMs = @import("session_posix.zig").nowMs;
+const c = @import("posix_c");
+
+const a = std.testing.allocator;
+
+test {
+    _ = @import("session_handoff.zig");
+    _ = @import("session_wait.zig");
+    _ = @import("session_hold.zig");
+    _ = @import("session_core.zig");
+    _ = @import("session_stream.zig");
+    _ = @import("session_attachment.zig");
+}
+
+const Frame = struct { kind: p.Kind, stream: u32, payload: []u8 };
+
+const Fake = struct {
+    fd: c_int,
+    reader: p.Reader = .{},
+    frames: std.ArrayList(Frame) = .empty,
+    next_id: u64 = 1,
+
+    fn open(owner: *Owner, identity: []const u8) !*Fake {
+        return openHello(owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = identity, .foreground_events = true });
+    }
+
+    fn openHello(owner: *Owner, hello: p.Hello) !*Fake {
+        var pair: [2]c_int = undefined;
+        if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM | c.SOCK_CLOEXEC | c.SOCK_NONBLOCK, 0, &pair) != 0) return error.SocketFailed;
+        _ = try owner.addClient(pair[0]);
+        const self = try a.create(Fake);
+        self.* = .{ .fd = pair[1] };
+        try self.send(.hello, 0, try json(hello));
+        _ = try self.wait(owner, .welcome, 0);
+        return self;
+    }
+
+    fn close(self: *Fake) void {
+        if (self.fd >= 0) _ = c.close(self.fd);
+        self.fd = -1;
+    }
+
+    fn deinit(self: *Fake) void {
+        self.close();
+        self.clear();
+        self.frames.deinit(a);
+        self.reader.deinit(a);
+        a.destroy(self);
+    }
+
+    fn clear(self: *Fake) void {
+        for (self.frames.items) |f| a.free(f.payload);
+        self.frames.clearRetainingCapacity();
+    }
+
+    fn send(self: *Fake, kind: p.Kind, stream: u32, payload: []const u8) !void {
+        defer if (stream == 0) a.free(payload);
+        var wire: std.ArrayList(u8) = .empty;
+        defer wire.deinit(a);
+        try wire.appendSlice(a, &p.header(kind, stream, payload.len).encode());
+        try wire.appendSlice(a, payload);
+        if (c.write(self.fd, wire.items.ptr, wire.items.len) != @as(isize, @intCast(wire.items.len))) return error.WriteFailed;
+    }
+
+    fn request(self: *Fake, req: p.Request) !u64 {
+        var copy = req;
+        copy.id = self.next_id;
+        self.next_id += 1;
+        try self.send(.request, 0, try json(copy));
+        return copy.id;
+    }
+
+    fn sendBytes(self: *Fake, kind: p.Kind, stream: u32, data: []const u8) !void {
+        var wire: std.ArrayList(u8) = .empty;
+        defer wire.deinit(a);
+        try wire.appendSlice(a, &p.header(kind, stream, data.len).encode());
+        try wire.appendSlice(a, data);
+        if (c.write(self.fd, wire.items.ptr, wire.items.len) != @as(isize, @intCast(wire.items.len))) return error.WriteFailed;
+    }
+
+    fn drain(self: *Fake) !void {
+        var buf: [64 * 1024]u8 = undefined;
+        while (true) {
+            const n = c.read(self.fd, &buf, buf.len);
+            if (n <= 0) break;
+            try self.reader.push(a, buf[0..@intCast(n)]);
+            while (try self.reader.next()) |f| try self.frames.append(a, .{
+                .kind = try p.validate(f.header, .to_client),
+                .stream = f.header.stream,
+                .payload = try a.dupe(u8, f.payload),
+            });
+        }
+    }
+
+    /// Steps the owner until a frame of `kind` on `stream` arrives.
+    fn wait(self: *Fake, owner: *Owner, kind: p.Kind, stream: u32) !Frame {
+        const deadline = nowMs() + 5000;
+        var seen: usize = 0;
+        while (nowMs() < deadline) {
+            try owner.step(10);
+            try self.drain();
+            while (seen < self.frames.items.len) : (seen += 1) {
+                const f = self.frames.items[seen];
+                if (f.kind == kind and f.stream == stream) return f;
+            }
+        }
+        return error.Timeout;
+    }
+
+    fn reply(self: *Fake, owner: *Owner, id: u64) !std.json.Parsed(p.Reply) {
+        const deadline = nowMs() + 5000;
+        var seen: usize = 0;
+        while (nowMs() < deadline) {
+            try owner.step(10);
+            try self.drain();
+            while (seen < self.frames.items.len) : (seen += 1) {
+                const f = self.frames.items[seen];
+                if (f.kind != .reply) continue;
+                const parsed = try p.parse(p.Reply, a, f.payload);
+                if (parsed.value.id == id) return parsed;
+                parsed.deinit();
+            }
+        }
+        return error.Timeout;
+    }
+
+    /// Concatenated output (and optionally snapshot) bytes for `pane`.
+    fn bytes(self: *Fake, kind: p.Kind, pane: u32) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        for (self.frames.items) |f| if (f.kind == kind and f.stream == pane) try out.appendSlice(a, f.payload);
+        return out.toOwnedSlice(a);
+    }
+
+    /// Steps until output for `pane` contains `needle`, granting credit.
+    fn waitOutput(self: *Fake, owner: *Owner, pane: u32, needle: []const u8) !void {
+        const deadline = nowMs() + 5000;
+        var granted: usize = 0;
+        while (nowMs() < deadline) {
+            try owner.step(10);
+            try self.drain();
+            while (granted < self.frames.items.len) : (granted += 1) {
+                const f = self.frames.items[granted];
+                if (f.kind != .output or f.payload.len == 0) continue;
+                var grant: [4]u8 = undefined;
+                std.mem.writeInt(u32, &grant, @intCast(f.payload.len), .little);
+                try self.sendBytes(.credit, f.stream, &grant);
+            }
+            const out = try self.bytes(.output, pane);
+            defer a.free(out);
+            if (std.mem.indexOf(u8, out, needle) != null) return;
+        }
+        return error.Timeout;
+    }
+};
+
+fn json(value: anytype) ![]u8 {
+    return p.stringify(a, value);
+}
+
+fn shell(comptime script: []const u8) p.Spawn {
+    return .{ .cols = 60, .rows = 10, .argv = &.{ "/bin/sh", "-c", script }, .shell_integration = false };
+}
+
+fn sessionId(buf: *[32]u8, reply: p.Reply) []const u8 {
+    @memcpy(buf, reply.session.?.id[0..32]);
+    return buf;
+}
+
+test "outdated empty owner retires despite idle clients and refuses a racing create" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const idle = try Fake.open(&owner, owner.identity);
+    defer idle.deinit();
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('b'))) });
+    defer probe.deinit();
+    const welcome = try p.parse(p.Welcome, a, probe.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(welcome.value.retiring);
+    try std.testing.expect(owner.done());
+    const result = try idle.reply(&owner, try idle.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer result.deinit();
+    try std.testing.expectEqualStrings("OwnerRetiring", result.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+}
+
+test "outdated owner preserves sessions then retires atomically after the last close" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('b'))) });
+    defer probe.deinit();
+    try std.testing.expect(owner.upgrade.pending);
+    try std.testing.expect(!owner.done());
+    try std.testing.expect(owner.sessions.items[0].panes.items[0].status == null);
+    // A supported preflight leaves this same socket available for the GUI.
+    try probe.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity }));
+    try owner.step(0);
+    try std.testing.expect(owner.clients.items[1].hello);
+    const closing = try client.request(.{ .id = 0, .op = .close, .pane = pane });
+    const racing = try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") });
+    const closed = try client.reply(&owner, closing);
+    defer closed.deinit();
+    const rejected = try client.reply(&owner, racing);
+    defer rejected.deinit();
+    try std.testing.expect(closed.value.ok);
+    try std.testing.expectEqualStrings("OwnerRetiring", rejected.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+}
+
+test "WSL holder drain seals guest create admission without a runtime mismatch" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const drain = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "holder", .owner_drain = true });
+    defer drain.deinit();
+    try std.testing.expect(owner.upgrade.pending);
+    const welcome = try p.parse(p.Welcome, a, drain.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(welcome.value.retiring);
+    const result = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer result.deinit();
+    try std.testing.expectEqualStrings("OwnerRetiring", result.value.@"error".?);
+    try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
+    // Hold the empty admission barrier until Windows commits retirement;
+    // otherwise a connector could start a fresh owner before keeper teardown.
+    try std.testing.expect(!owner.done());
+    drain.close();
+    try owner.step(0);
+    try std.testing.expect(owner.done());
+}
+
+test "matching owner probes retain an empty owner for the next GUI hello" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    owner.upgrade.build = @splat('a');
+    const probe = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = "probe", .owner_probe = true, .owner_build = &(@as([64]u8, @splat('a'))) });
+    defer probe.deinit();
+    try std.testing.expect(!owner.upgrade.pending);
+    try std.testing.expect(!owner.done());
+    try std.testing.expect(!owner.clients.items[0].hello);
+    try probe.send(.hello, 0, try json(p.Hello{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity }));
+    try owner.step(0);
+    try std.testing.expect(owner.clients.items[0].hello);
+}
+
+test "session wait observes real owner lifetime without taking over or mutating panes" {
+    const Monitor = @import("session_wait.zig").Monitor;
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    var pair: [2]c_int = undefined;
+    if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM | c.SOCK_CLOEXEC | c.SOCK_NONBLOCK, 0, &pair) != 0) return error.SocketFailed;
+    defer _ = c.close(pair[1]);
+    _ = try owner.addClient(pair[0]);
+    var monitor = try Monitor.init(a, pair[1], 0, 30_000);
+    defer monitor.deinit();
+    try driveMonitor(&owner, &monitor, 0);
+    try std.testing.expect(!monitor.seen_sessions);
+
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'watcher-kept\\n'; read x; sleep 30") }));
+    defer created.deinit();
+    try std.testing.expect(created.value.ok);
+    const info = created.value.session.?;
+    try client.waitOutput(&owner, info.panes[0].id, "watcher-kept");
+    try std.testing.expect(!try monitor.step(1000));
+    try driveMonitor(&owner, &monitor, 1000);
+    try std.testing.expect(monitor.seen_sessions);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), listed.value.sessions.?.len);
+    try std.testing.expect(listed.value.sessions.?[0].attached);
+    try std.testing.expectEqual(info.revision, listed.value.sessions.?[0].revision);
+    try std.testing.expectEqual(info.panes[0].id, listed.value.sessions.?[0].panes[0].id);
+
+    // GUI/client teardown is not a signal to stop holding the guest alive.
+    client.close();
+    try std.testing.expect(!try monitor.step(31_000));
+    try driveMonitor(&owner, &monitor, 31_000);
+    try std.testing.expectEqual(.idle, monitor.phase);
+    const killer = try Fake.open(&owner, owner.identity);
+    defer killer.deinit();
+    const killed = try killer.reply(&owner, try killer.request(.{ .id = 0, .op = .kill, .session = info.id }));
+    defer killed.deinit();
+    try std.testing.expect(killed.value.ok);
+    try std.testing.expect(!try monitor.step(32_000));
+    try driveMonitor(&owner, &monitor, 32_000);
+    try std.testing.expectEqual(.done, monitor.phase);
+}
+
+fn driveMonitor(owner: *Owner, monitor: *@import("session_wait.zig").Monitor, now: i64) !void {
+    const deadline = nowMs() + 5000;
+    while (nowMs() < deadline) {
+        _ = try monitor.step(now);
+        try owner.step(0);
+        if (monitor.phase == .idle or monitor.phase == .done) return;
+    }
+    return error.Timeout;
+}
+
+test "attach after disconnect restores the screen from a binary snapshot and takes over" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity, .trace = .{ .instance = "creator", .build = "aaa", .connection = "first", .role = "gui" } });
+    defer first.deinit();
+    const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'title\\033]0;owner-title\\007'; printf 'kept-line\\n'; read x; printf 'got-%s\\n' \"$x\"; sleep 30") }));
+    defer created.deinit();
+    try std.testing.expect(created.value.ok);
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const pane = created.value.session.?.panes[0].id;
+    try first.waitOutput(&owner, pane, "kept-line");
+
+    // A second client takes the session over while the first is attached.
+    const second = try Fake.openHello(&owner, .{ .protocol = p.protocol, .version = p.version, .ghostty = owner.identity, .trace = .{ .instance = "incoming", .build = "bbb", .connection = "second", .role = "gui" } });
+    defer second.deinit();
+    const attach_id = try second.request(.{ .id = 0, .op = .attach, .session = sid, .attach_intent = .restore, .panes = &.{.{ .pane = pane, .cols = 70, .rows = 12 }} });
+    const attached = try second.reply(&owner, attach_id);
+    defer attached.deinit();
+    try std.testing.expect(attached.value.ok);
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    const taken = try first.wait(&owner, .event, 0);
+    const event = try p.parse(p.Event, a, taken.payload);
+    defer event.deinit();
+    try std.testing.expectEqual(p.EventKind.taken, event.value.event);
+    const ownership = event.value.takeover.?;
+    try std.testing.expectEqualStrings("creator", ownership.creator.instance);
+    try std.testing.expectEqualStrings("aaa", ownership.creator.build);
+    try std.testing.expectEqualStrings("creator", ownership.previous.instance);
+    try std.testing.expectEqualStrings("first", ownership.previous.connection);
+    try std.testing.expectEqualStrings("incoming", ownership.next.instance);
+    try std.testing.expectEqualStrings("bbb", ownership.next.build);
+    try std.testing.expectEqualStrings("second", ownership.next.connection);
+    try std.testing.expectEqual(p.AttachIntent.restore, ownership.intent);
+    try std.testing.expectEqual(attach_id, ownership.request);
+
+    const snapshot = try second.bytes(.snapshot, pane);
+    defer a.free(snapshot);
+    const restored = try vt.restore(snapshot, 1 << 20);
+    defer vt.freeTerminal(restored);
+    const text = try vt.plain(restored, a);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "kept-line") != null);
+
+    // Disconnect entirely, reattach, and the shell is still reading input.
+    second.close();
+    try owner.step(10);
+    const third = try Fake.open(&owner, owner.identity);
+    defer third.deinit();
+    const again = try third.reply(&owner, try third.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer again.deinit();
+    try std.testing.expectEqual(@as(u16, 70), again.value.session.?.panes[0].cols);
+    _ = try third.wait(&owner, .snapshot_end, pane);
+    try third.sendBytes(.input, pane, "abc\n");
+    try third.waitOutput(&owner, pane, "got-abc");
+}
+
+test "detached owner answers VT queries and snapshots the resulting output" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell(
+        "stty raw -echo; printf ready; dd bs=1 count=1 of=/dev/null 2>/dev/null; " ++
+            "printf '\\033[6n'; reply=$(dd bs=1 count=6 2>/dev/null); " ++
+            "if [ \"$reply\" = \"$(printf '\\033[1;6R')\" ]; then printf reply-ok; fi; sleep 30",
+    ) }));
+    defer created.deinit();
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const pane_id = created.value.session.?.panes[0].id;
+    try client.waitOutput(&owner, pane_id, "ready");
+    const detached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .detach }));
+    defer detached.deinit();
+    const session = owner.sessions.items[0];
+    const pane = session.panes.items[0];
+    try std.testing.expect(session.client == null);
+    try std.testing.expectEqual(@as(isize, 1), c.write(pane.master, "g", 1));
+    const deadline = nowMs() + 5000;
+    while (true) {
+        const text = try vt.plain(pane.vt.terminal, a);
+        defer a.free(text);
+        if (std.mem.indexOf(u8, text, "reply-ok") != null) break;
+        if (nowMs() >= deadline) return error.Timeout;
+        try owner.step(10);
+    }
+    try std.testing.expectEqual(@as(usize, 0), pane.stream.unsent.len());
+    client.clear();
+    const attached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expect(attached.value.ok);
+    _ = try client.wait(&owner, .snapshot_end, pane_id);
+    const snapshot = try client.bytes(.snapshot, pane_id);
+    defer a.free(snapshot);
+    const restored = try vt.restore(snapshot, 1 << 20);
+    defer vt.freeTerminal(restored);
+    const text = try vt.plain(restored, a);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "reply-ok") != null);
+}
+
+test "host id is created once, persisted, and sent in every welcome" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(dir);
+
+    var first = Owner.init(a, std.testing.io);
+    defer first.deinit();
+    try std.testing.expectEqualStrings("", first.host);
+    first.loadHost(dir);
+    try std.testing.expectEqual(@as(usize, 32), first.host.len);
+    try std.testing.expect(p.validHost(first.host));
+
+    var second = Owner.init(a, std.testing.io);
+    defer second.deinit();
+    second.loadHost(dir);
+    try std.testing.expectEqualStrings(first.host, second.host);
+
+    const client = try Fake.open(&second, second.identity);
+    defer client.deinit();
+    const welcome = try p.parse(p.Welcome, a, client.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expectEqualStrings(second.host, welcome.value.host);
+
+    // A corrupt file is replaced rather than trusted.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "host-id", .data = "not-a-host-id!" });
+    var third = Owner.init(a, std.testing.io);
+    defer third.deinit();
+    third.loadHost(dir);
+    try std.testing.expect(p.validHost(third.host));
+    try std.testing.expect(!std.mem.eql(u8, first.host, third.host));
+}
+
+test "pane without a shell-reported cwd reports its spawn cwd" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    var spawn = shell("sleep 30");
+    spawn.cwd = "/tmp";
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = spawn }));
+    defer created.deinit();
+    try std.testing.expectEqualStrings("/tmp", created.value.session.?.panes[0].cwd);
+}
+
+test "shell-reported OSC 7 cwd is reported as a bare path" {
+    const osc7Path = @import("session_posix.zig").osc7Path;
+    try std.testing.expectEqualStrings("/home/user", osc7Path("file://host/home/user"));
+    try std.testing.expectEqualStrings("/srv", osc7Path("file:///srv"));
+    try std.testing.expectEqualStrings("/tmp", osc7Path("cwd;/tmp"));
+    try std.testing.expectEqualStrings("", osc7Path("file://host"));
+    try std.testing.expectEqualStrings("/plain", osc7Path("/plain"));
+}
+
+test "attach restores foreground command reported while detached and completion clears it" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.open(&owner, owner.identity);
+    defer first.deinit();
+    const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .spawn = shell(
+        "printf 'ready\\n'; read x; " ++
+            "printf '\\033]1337;Hollow;{\"kind\":\"event\",\"name\":\"command_started\",\"payload\":{\"command\":\"nvim\"}}\\007'; " ++
+            "read x; printf '\\033]1337;Hollow;{\"kind\":\"event\",\"name\":\"command_ended\",\"payload\":{\"exit_code\":0}}\\007done\\n'; sleep 30",
+    ) }));
+    defer created.deinit();
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const pane = created.value.session.?.panes[0].id;
+    try first.waitOutput(&owner, pane, "ready");
+    first.close();
+    try owner.step(10);
+    const remote = owner.sessions.items[0].panes.items[0];
+    try std.testing.expectEqual(@as(isize, 3), c.write(remote.master, "go\n", 3));
+    const deadline = nowMs() + 5000;
+    while (remote.vt.shell_command.value().len == 0 and nowMs() < deadline) try owner.step(10);
+    try std.testing.expectEqualStrings("nvim", remote.vt.shell_command.value());
+
+    const second = try Fake.open(&owner, owner.identity);
+    defer second.deinit();
+    const attached = try second.reply(&owner, try second.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expectEqualStrings("nvim", attached.value.session.?.panes[0].foreground_process);
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.waitOutput(&owner, pane, "\"command\":\"nvim\"");
+    try second.sendBytes(.input, pane, "end\n");
+    try second.waitOutput(&owner, pane, "done");
+    const listed = try second.reply(&owner, try second.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("", listed.value.sessions.?[0].panes[0].foreground_process);
+
+    // A subsequent snapshot must also clear the client's old command value.
+    second.clear();
+    remote.stream.snapshot_pending = true;
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.waitOutput(&owner, pane, "\"command\":\"\"");
+}
+
+test "foreign ghostty identity gets a VT formatter snapshot" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, "some-other-build");
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'vt-fallback\\n'; sleep 30") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    try client.waitOutput(&owner, pane, "vt-fallback");
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    client.clear();
+    const attached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    _ = try client.wait(&owner, .snapshot_end, pane);
+    const snapshot = try client.bytes(.snapshot, pane);
+    defer a.free(snapshot);
+    const copy = try vt.Vt.create(a, 60, 10, 1 << 20);
+    defer copy.destroy();
+    copy.write(snapshot);
+    const text = try vt.plain(copy.terminal, a);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "vt-fallback") != null);
+}
+
+test "reserved create identity recovers original process without replay or implicit takeover" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.open(&owner, owner.identity);
+    defer first.deinit();
+    const sid = "0123456789abcdef0123456789abcdef";
+    const created = try first.reply(&owner, try first.request(.{ .id = 0, .op = .create, .create_id = sid, .spawn = shell("read x; printf 'recovered-%s\\n' \"$x\"; sleep 30") }));
+    defer created.deinit();
+    try std.testing.expectEqualStrings(sid, created.value.session.?.id);
+    const pane = created.value.session.?.panes[0].id;
+    // Ignore the original create reply, as though the GUI never received it.
+    const second = try Fake.open(&owner, owner.identity);
+    defer second.deinit();
+    const listed = try second.reply(&owner, try second.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), listed.value.sessions.?.len);
+    try std.testing.expectEqualStrings(sid, listed.value.sessions.?[0].id);
+    try std.testing.expect(listed.value.sessions.?[0].attached);
+    const collision = try second.reply(&owner, try second.request(.{ .id = 0, .op = .create, .create_id = sid, .spawn = shell("exit 99") }));
+    defer collision.deinit();
+    try std.testing.expectEqualStrings("SessionExists", collision.value.@"error".?);
+    // Collision does not attach or replace the original process.
+    const invalid = try second.reply(&owner, try second.request(.{ .id = 0, .op = .create, .create_id = "invalid", .spawn = .{} }));
+    defer invalid.deinit();
+    try std.testing.expectEqualStrings("InvalidSessionId", invalid.value.@"error".?);
+    const attached = try second.reply(&owner, try second.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    try std.testing.expectEqual(@as(usize, 1), attached.value.session.?.panes.len);
+    try std.testing.expectEqual(pane, attached.value.session.?.panes[0].id);
+    _ = try second.wait(&owner, .snapshot_end, pane);
+    try second.sendBytes(.input, pane, "original\n");
+    try second.waitOutput(&owner, pane, "recovered-original");
+}
+
+test "dead pane keeps output and exit status across reattach" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'last-words\\n'; exit 3") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    try std.testing.expect(!created.value.session.?.panes[0].close_on_exit);
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    const exit = try client.wait(&owner, .exit, pane);
+    try std.testing.expectEqual(@as(i32, 3), try p.decodeExit(exit.payload));
+    const out = try client.bytes(.output, pane);
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "last-words") != null);
+
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(?i32, 3), listed.value.sessions.?[0].panes[0].exit);
+
+    client.clear();
+    const again = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer again.deinit();
+    _ = try client.wait(&owner, .snapshot_end, pane);
+    const exit_again = try client.wait(&owner, .exit, pane);
+    try std.testing.expectEqual(@as(i32, 3), try p.decodeExit(exit_again.payload));
+
+    // Closing the last pane ends the session.
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = pane }));
+    defer closed.deinit();
+    try std.testing.expect(closed.value.ok);
+    const ended = try client.wait(&owner, .event, 0);
+    const event = try p.parse(p.Event, a, ended.payload);
+    defer event.deinit();
+    try std.testing.expectEqual(p.EventKind.session_end, event.value.event);
+}
+
+test "interactive shell Ctrl+D exit carries auto-close policy through reattach" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = .{ .argv = &.{ "/bin/sh", "-i" }, .shell_integration = false } }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    try std.testing.expect(created.value.session.?.panes[0].close_on_exit);
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    _ = try client.wait(&owner, .snapshot_end, pane);
+    try client.sendBytes(.input, pane, "\x04");
+    const exit = try client.wait(&owner, .exit, pane);
+    try std.testing.expectEqual(@as(i32, 0), try p.decodeExit(exit.payload));
+    const again = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer again.deinit();
+    try std.testing.expect(again.value.session.?.panes[0].close_on_exit);
+    try std.testing.expectEqual(@as(?i32, 0), again.value.session.?.panes[0].exit);
+    // GUI uses the ordinary acknowledged close; owner does not race its view.
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = pane }));
+    defer closed.deinit();
+    try std.testing.expect(closed.value.ok);
+}
+
+test "respawn restarts an exited pane from its spawn and keeps its screen" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    defer a.free(dir);
+    const script = try std.fmt.allocPrint(a, "f='{s}/ran'; if [ -e \"$f\" ]; then printf 'second-run\\n'; read x; printf 'got-%s\\n' \"$x\"; sleep 30; fi; touch \"$f\"; printf 'first-run\\n'; exit 3", .{dir});
+    defer a.free(script);
+
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const welcome = try p.parse(p.Welcome, a, client.frames.items[0].payload);
+    defer welcome.deinit();
+    try std.testing.expect(p.hasFeature(welcome.value.features, "respawn"));
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = .{ .cols = 60, .rows = 10, .argv = &.{ "/bin/sh", "-c", script }, .shell_integration = false } }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    var id_buf: [32]u8 = undefined;
+    const sid = sessionId(&id_buf, created.value);
+    _ = try client.wait(&owner, .exit, pane);
+
+    const respawned = try client.reply(&owner, try client.request(.{ .id = 0, .op = .respawn, .pane = pane }));
+    defer respawned.deinit();
+    try std.testing.expect(respawned.value.ok);
+    try std.testing.expectEqual(@as(?u32, pane), respawned.value.pane);
+    try client.waitOutput(&owner, pane, "second-run");
+    try client.sendBytes(.input, pane, "abc\n");
+    try client.waitOutput(&owner, pane, "got-abc");
+
+    // A live pane cannot be respawned.
+    const alive = try client.reply(&owner, try client.request(.{ .id = 0, .op = .respawn, .pane = pane }));
+    defer alive.deinit();
+    try std.testing.expect(!alive.value.ok);
+    try std.testing.expectEqualStrings("PaneAlive", alive.value.@"error".?);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqual(@as(?i32, null), listed.value.sessions.?[0].panes[0].exit);
+
+    // The old screen is still in the owner VT under the new output.
+    const other = try Fake.open(&owner, "some-other-build");
+    defer other.deinit();
+    const attached = try other.reply(&owner, try other.request(.{ .id = 0, .op = .attach, .session = sid }));
+    defer attached.deinit();
+    _ = try other.wait(&owner, .snapshot_end, pane);
+    const snapshot = try other.bytes(.snapshot, pane);
+    defer a.free(snapshot);
+    const first = std.mem.indexOf(u8, snapshot, "first-run") orelse return error.TestUnexpectedResult;
+    const second = std.mem.indexOf(u8, snapshot, "second-run") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(first < second);
+}
+
+test "exit follows output even when a background job keeps the PTY open" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 5 & printf 'fg-done'; exit 2") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    const started = nowMs();
+    const exit = try client.wait(&owner, .exit, pane);
+    try std.testing.expectEqual(@as(i32, 2), try p.decodeExit(exit.payload));
+    try std.testing.expect(nowMs() - started < 2000);
+    var saw_output = false;
+    for (client.frames.items) |f| {
+        if (f.kind == .output and std.mem.indexOf(u8, f.payload, "fg-done") != null) saw_output = true;
+        if (f.kind == .exit) break;
+    }
+    try std.testing.expect(saw_output);
+}
+
+test "idle shutdown is cancelled by a new client" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const first = try Fake.open(&owner, owner.identity);
+    first.deinit();
+    try owner.step(10);
+    try owner.step(10);
+    try std.testing.expect(owner.done());
+    const second = try Fake.open(&owner, owner.identity);
+    defer second.deinit();
+    try std.testing.expect(!owner.done());
+}
+
+test "layout writes are revision checked" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const ok = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 0, .layout = "{\"split\":1}" }));
+    defer ok.deinit();
+    try std.testing.expect(ok.value.ok);
+    try std.testing.expectEqual(@as(?u64, 1), ok.value.revision);
+    const stale = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 0, .layout = "{}" }));
+    defer stale.deinit();
+    try std.testing.expect(!stale.value.ok);
+    try std.testing.expectEqualStrings("RevisionConflict", stale.value.@"error".?);
+    try std.testing.expectEqual(@as(?u64, 1), stale.value.revision);
+    const missing = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .layout = "missing-revision" }));
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("RevisionConflict", missing.value.@"error".?);
+    try std.testing.expectEqual(@as(?u64, 1), missing.value.revision);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    try std.testing.expectEqualStrings("{\"split\":1}", listed.value.sessions.?[0].layout);
+}
+
+test "pane membership changes keep opaque layout and advance revision" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const saved = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 0, .layout = "old-membership" }));
+    defer saved.deinit();
+    const spawned = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = shell("sleep 30") }));
+    defer spawned.deinit();
+    try std.testing.expectEqual(@as(?u64, 2), spawned.value.revision);
+    const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
+    defer listed.deinit();
+    // Kept for client-side reconciliation; the stale revision is fenced.
+    try std.testing.expectEqualStrings("old-membership", listed.value.sessions.?[0].layout);
+    const saved_again = try client.reply(&owner, try client.request(.{ .id = 0, .op = .layout, .revision = 2, .layout = "two-panes" }));
+    defer saved_again.deinit();
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = spawned.value.pane.? }));
+    defer closed.deinit();
+    try std.testing.expectEqual(@as(?u64, 4), closed.value.revision);
+    const attached = try client.reply(&owner, try client.request(.{ .id = 0, .op = .attach, .session = created.value.session.?.id }));
+    defer attached.deinit();
+    try std.testing.expectEqualStrings("two-panes", attached.value.session.?.layout);
+    try std.testing.expectEqual(@as(usize, 1), attached.value.session.?.panes.len);
+    try std.testing.expectEqual(@as(u64, 4), attached.value.session.?.revision);
+}
+
+test "failed spawn admission preserves metadata and process membership" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30"), .layout = "kept" }));
+    defer created.deinit();
+    const s = owner.sessions.items[0];
+    const pid = s.panes.items[0].pid;
+    const rejected = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = .{ .cols = 0 } }));
+    defer rejected.deinit();
+    try std.testing.expectEqualStrings("InvalidSize", rejected.value.@"error".?);
+    try std.testing.expectEqual(@as(u64, 2), s.meta.next_pane);
+    try std.testing.expectEqual(@as(u64, 0), s.meta.revision);
+    try std.testing.expectEqualStrings("kept", s.meta.layout);
+    try std.testing.expectEqual(@as(usize, 1), s.panes.items.len);
+    try std.testing.expectEqual(pid, s.panes.items[0].pid);
+
+    // Neither spawn nor explicit close may mutate at revision exhaustion.
+    // Owner.deinit must still terminate the process without incrementing it.
+    s.meta.revision = std.math.maxInt(u64);
+    const overflow = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = shell("exit 99") }));
+    defer overflow.deinit();
+    try std.testing.expectEqualStrings("ResourceExhausted", overflow.value.@"error".?);
+    const closed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .close, .pane = s.panes.items[0].id }));
+    defer closed.deinit();
+    try std.testing.expectEqualStrings("ResourceExhausted", closed.value.@"error".?);
+    try std.testing.expect(!s.panes.items[0].removed);
+    try std.testing.expectEqual(@as(usize, 0), owner.doomed.items.len);
+    try std.testing.expectEqual(@as(u64, 2), s.meta.next_pane);
+    try std.testing.expectEqual(@as(usize, 1), s.panes.items.len);
+    try std.testing.expectEqualStrings("kept", s.meta.layout);
+}
+
+test "a client that stops granting credit is resynced with a snapshot" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const client = try Fake.open(&owner, owner.identity);
+    defer client.deinit();
+    const created = try client.reply(&owner, try client.request(.{ .id = 0, .op = .create, .spawn = shell("head -c 6000000 /dev/zero | tr '\\000' x; printf 'tail-marker'; sleep 30") }));
+    defer created.deinit();
+    const pane = created.value.session.?.panes[0].id;
+    const deadline = nowMs() + 10000;
+    while (nowMs() < deadline and !owner.sessions.items[0].panes.items[0].stream.stale) try owner.step(10);
+    try std.testing.expect(owner.sessions.items[0].panes.items[0].stream.stale);
+    try client.drain();
+    const sent = try client.bytes(.output, pane);
+    defer a.free(sent);
+    // Nothing beyond the credit window was sent while starved.
+    try std.testing.expectEqual(@as(usize, p.window), sent.len);
+    var grant: [4]u8 = undefined;
+    std.mem.writeInt(u32, &grant, p.window, .little);
+    try client.sendBytes(.credit, pane, &grant);
+    const ev = try client.wait(&owner, .event, 0);
+    const event = try p.parse(p.Event, a, ev.payload);
+    defer event.deinit();
+    try std.testing.expectEqual(p.EventKind.resync, event.value.event);
+    _ = try client.wait(&owner, .snapshot_end, pane);
+}

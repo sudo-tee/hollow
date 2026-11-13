@@ -10,10 +10,12 @@ const NativePty = switch (builtin.os.tag) {
 };
 pub const agent = @import("agent.zig");
 const AgentPty = agent.AgentPty;
+pub const SessionPty = @import("session.zig").SessionPty;
 
 pub const Pty = union(enum) {
     native: NativePty,
     agent: AgentPty,
+    session: SessionPty,
 
     /// Swap an agent PTY whose implicit host proved unavailable for the
     /// native launch it replaced. Safe to call every tick.
@@ -82,6 +84,7 @@ pub const Pty = union(enum) {
         return switch (self.*) {
             .native => |*p| if (comptime builtin.os.tag == .windows) p.hasPendingOutput() else !p.outputDrained(),
             .agent => |*p| p.hasPendingOutput(),
+            .session => |*p| p.hasPendingOutput(),
         };
     }
     pub fn pendingOutputBytes(self: *Pty) usize {
@@ -110,10 +113,15 @@ pub const Pty = union(enum) {
             inline else => |*p| p.resize(cols, rows),
         }
     }
+
+    /// Session reads do not grant credit until terminal parsing caught up.
+    pub fn parsed(self: *Pty, count: usize) !void {
+        if (self.* == .session) try self.session.parsed(count);
+    }
 };
 
 pub fn usesAgent(pty: *const Pty) bool {
-    return pty.* == .agent;
+    return pty.* == .agent or pty.* == .session;
 }
 
 pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !NativePty {

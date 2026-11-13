@@ -10,7 +10,8 @@ class ReplSignaturesTest(unittest.TestCase):
     def test_checked_in_metadata_is_current(self):
         source = (ROOT / "types/hollow.lua").read_text()
         self.assertEqual(
-            (ROOT / "src/lua/hollow/ui/widgets/lua_repl/signatures.lua").read_text(), generate(source)
+            (ROOT / "src/lua/hollow/ui/widgets/lua_repl/signatures.lua").read_text(), generate(source),
+            "REPL signatures stale; run python3 scripts/generate-repl-signatures.py",
         )
 
     def test_core_and_nested_namespace_signatures(self):

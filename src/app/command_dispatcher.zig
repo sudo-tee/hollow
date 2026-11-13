@@ -704,6 +704,13 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .job_get => |args| try @import("background_jobs.zig").get(self, args),
         .job_output => |args| try @import("background_jobs.zig").output(self, args),
         .job_cleanup => |args| @import("background_jobs.zig").cleanup(self, args),
+        .session_list => |args| try startSessionQuery(self, .list, null, args.domain),
+        .session_kill => |args| try startSessionQuery(self, .kill, args.session, args.domain),
+        .session_result => |args| try app_mod.session_query.fetch(self, args.query),
+        .session_attach => |args| blk: {
+            @import("session_domain.zig").attach(self, args.session, args.domain, args.name, LUA_NOREF);
+            break :blk okNull();
+        },
         .focus => |args| execFocus(self, args),
         .scroll => |args| execScroll(self, args),
         .get_htp => |args| execGetHtp(self, request.ctx, args),
@@ -718,6 +725,17 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         },
         .capabilities => .ok(try command_mod.contract.capabilitiesValue(self.allocator)),
     };
+}
+
+fn startSessionQuery(self: *App, op: app_mod.session_query.Op, session: ?[]const u8, domain: ?[]const u8) !command_mod.Response {
+    const id = app_mod.session_query.begin(self, op, session, domain, LUA_NOREF) catch |err| return switch (err) {
+        error.OutOfMemory => err,
+        error.InvalidSessionId => .fail("invalid_args", "session must be 1 to 128 bytes without NUL"),
+        error.ResourceExhausted => .fail("resource_exhausted", "too many session queries in flight; read their results first"),
+        error.UnknownDomain, error.PersistenceNotEnabled => .fail("invalid_domain", if (err == error.UnknownDomain) "unknown domain" else "domain does not enable persistent sessions"),
+        else => .fail("session_unavailable", @errorName(err)),
+    };
+    return app_mod.session_query.started(self, id);
 }
 
 /// Called on the frame thread by the HTP/file compatibility bridge. Never wait

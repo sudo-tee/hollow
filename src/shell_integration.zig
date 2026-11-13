@@ -22,6 +22,7 @@ pub const Shell = enum { bash, zsh, fish };
 pub const Bundle = struct {
     root: []const u8,
     shell: Shell,
+    bash_login: bool = false,
 };
 
 pub fn detect(shell_path: []const u8) ?Shell {
@@ -41,6 +42,9 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, build_options.embedded_fish_integration);
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, embedded_cli);
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, embedded_python);
+    inline for (.{ bashRc, bashLogin, zshEnv, zshProfile, zshRc, zshLogin, zshLogout, fishRc }) |contents| {
+        bundle_hash = std.hash.Wyhash.hash(bundle_hash, contents);
+    }
     const root = try std.fmt.allocPrint(allocator, "/tmp/hollow-{d}/shell-{x}", .{ c.getuid(), bundle_hash });
     errdefer allocator.free(root);
     const root_z = try allocator.dupeSentinel(u8, root, 0);
@@ -67,8 +71,12 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     try writeFile(allocator, bin, "hollow-cli", embedded_cli, .fromMode(0o700));
     if (embedded_python.len != 0) try writeFile(allocator, bin, "hollow-cli.py", embedded_python, .fromMode(0o700));
     try writeFile(allocator, root, "bashrc", bashRc, .fromMode(0o600));
+    try writeFile(allocator, root, "bash-login", bashLogin, .fromMode(0o600));
     try writeFile(allocator, zsh_dir, ".zshenv", zshEnv, .fromMode(0o600));
+    try writeFile(allocator, zsh_dir, ".zprofile", zshProfile, .fromMode(0o600));
     try writeFile(allocator, zsh_dir, ".zshrc", zshRc, .fromMode(0o600));
+    try writeFile(allocator, zsh_dir, ".zlogin", zshLogin, .fromMode(0o600));
+    try writeFile(allocator, zsh_dir, ".zlogout", zshLogout, .fromMode(0o600));
     try writeFile(allocator, fish_vendor, "hollow.fish", fishRc, .fromMode(0o600));
     try writeFile(allocator, root, ".ready", "", .fromMode(0o600));
 
@@ -95,7 +103,15 @@ pub fn setupEnv(allocator: std.mem.Allocator, bundle: Bundle) !void {
             defer allocator.free(fish_dir);
             try prependPath(allocator, "XDG_DATA_DIRS", fish_dir, ':');
         },
-        .bash => {},
+        .bash => if (bundle.bash_login) {
+            const original = c.getenv("ENV");
+            try setEnv(allocator, "HOLLOW_BASH_ENV_SET", if (original != null) "1" else "0");
+            try setEnv(allocator, "HOLLOW_BASH_ENV", if (original) |value| std.mem.span(value) else "");
+            try setEnv(allocator, "HOLLOW_BASH_HISTFILE_SET", if (c.getenv("HISTFILE") != null) "1" else "0");
+            const bootstrap = try std.fs.path.join(allocator, &.{ bundle.root, "bash-login" });
+            defer allocator.free(bootstrap);
+            try setEnv(allocator, "ENV", bootstrap);
+        },
     }
 }
 
@@ -107,10 +123,16 @@ pub fn argv(allocator: std.mem.Allocator, bundle: Bundle, command: ?[]const u8, 
     }
     switch (bundle.shell) {
         .bash => {
-            const rcfile = try std.fs.path.join(allocator, &.{ bundle.root, "bashrc" });
-            defer allocator.free(rcfile);
-            try result.append(allocator, try allocator.dupe(u8, "--rcfile"));
-            try result.append(allocator, try allocator.dupe(u8, rcfile));
+            if (bundle.bash_login) {
+                // POSIX startup reads ENV even for a login shell. The bootstrap
+                // immediately restores Bash mode before reading normal profiles.
+                try result.append(allocator, try allocator.dupe(u8, "--posix"));
+            } else {
+                const rcfile = try std.fs.path.join(allocator, &.{ bundle.root, "bashrc" });
+                defer allocator.free(rcfile);
+                try result.append(allocator, try allocator.dupe(u8, "--rcfile"));
+                try result.append(allocator, try allocator.dupe(u8, rcfile));
+            }
         },
         .zsh, .fish => {},
     }
@@ -162,11 +184,38 @@ const bashRc =
     "[ -f /etc/bash.bashrc ] && source /etc/bash.bashrc\n" ++
     "[ -f \"$HOME/.bashrc\" ] && source \"$HOME/.bashrc\"\n" ++
     "source \"$HOLLOW_SHELL_INTEGRATION_DIR/bash.sh\"\n";
+const bashLogin =
+    "set +o posix\n" ++
+    // Bash initializes this default before reading ENV, while still in POSIX
+    // mode. Restore the Bash default, but preserve an explicit inherited value.
+    "if [ \"$HOLLOW_BASH_HISTFILE_SET\" = 0 ]; then HISTFILE=\"$HOME/.bash_history\"; fi\n" ++
+    "if [ \"$HOLLOW_BASH_ENV_SET\" = 1 ]; then\n" ++
+    "  export ENV=\"$HOLLOW_BASH_ENV\"\n" ++
+    "else\n" ++
+    "  unset ENV\n" ++
+    "fi\n" ++
+    "unset HOLLOW_BASH_ENV_SET HOLLOW_BASH_ENV HOLLOW_BASH_HISTFILE_SET\n" ++
+    "[ -r /etc/profile ] && source /etc/profile\n" ++
+    "if [ -r \"$HOME/.bash_profile\" ]; then\n" ++
+    "  source \"$HOME/.bash_profile\"\n" ++
+    "elif [ -r \"$HOME/.bash_login\" ]; then\n" ++
+    "  source \"$HOME/.bash_login\"\n" ++
+    "elif [ -r \"$HOME/.profile\" ]; then\n" ++
+    "  source \"$HOME/.profile\"\n" ++
+    "fi\n" ++
+    "source \"$HOLLOW_SHELL_INTEGRATION_DIR/bash.sh\"\n";
 const zshEnv =
     "[ -n \"$HOLLOW_ORIGINAL_ZDOTDIR\" ] || HOLLOW_ORIGINAL_ZDOTDIR=\"$HOME\"\n" ++
     "export HOLLOW_ORIGINAL_ZDOTDIR\n" ++
     "[ -f \"$HOLLOW_ORIGINAL_ZDOTDIR/.zshenv\" ] && source \"$HOLLOW_ORIGINAL_ZDOTDIR/.zshenv\"\n";
 const zshRc =
-    "[ -f \"$HOLLOW_ORIGINAL_ZDOTDIR/.zshrc\" ] && source \"$HOLLOW_ORIGINAL_ZDOTDIR/.zshrc\"\n" ++
-    "source \"$HOLLOW_SHELL_INTEGRATION_DIR/zsh.zsh\"\n";
+    // Do not export the private wrapper directory to applications that start
+    // their own shells (or strip Hollow's environment, such as other terminals).
+    "export ZDOTDIR=\"$HOLLOW_ORIGINAL_ZDOTDIR\"\n" ++
+    "unset HOLLOW_ORIGINAL_ZDOTDIR\n" ++
+    "[ -f \"$ZDOTDIR/.zshrc\" ] && source \"$ZDOTDIR/.zshrc\"\n" ++
+    "source \"${${(%):-%x}:A:h:h}/zsh.zsh\"\n";
+const zshProfile = "[ -f \"$HOLLOW_ORIGINAL_ZDOTDIR/.zprofile\" ] && source \"$HOLLOW_ORIGINAL_ZDOTDIR/.zprofile\"\n";
+const zshLogin = "[ -f \"$HOLLOW_ORIGINAL_ZDOTDIR/.zlogin\" ] && source \"$HOLLOW_ORIGINAL_ZDOTDIR/.zlogin\"\n";
+const zshLogout = "[ -f \"$HOLLOW_ORIGINAL_ZDOTDIR/.zlogout\" ] && source \"$HOLLOW_ORIGINAL_ZDOTDIR/.zlogout\"\n";
 const fishRc = "source \"$HOLLOW_SHELL_INTEGRATION_DIR/fish.fish\"\n";

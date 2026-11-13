@@ -93,7 +93,7 @@
         "fg": "#d8dee9",
         "kind": 2,
         "text": "Yes",
-        "wrap": 2
+        "text_align": 1
       },
       {
         "children": 1,
@@ -114,7 +114,7 @@
         "fg": "#d8dee9",
         "kind": 2,
         "text": "No",
-        "wrap": 2
+        "text_align": 1
       }
     ]
   },

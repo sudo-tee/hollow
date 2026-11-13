@@ -64,6 +64,7 @@ pub fn start(self: *App, action: Action) void {
         return disarmInput(self);
     };
     if (!pane.isTerminal()) return disarmInput(self);
+    self.quick_select_epoch +%= 1;
     std.log.info("quick-select: start action={s} pane={x}", .{ @tagName(action), pane.id });
     self.quick_select_pane = pane;
     self.quick_select_action = action;

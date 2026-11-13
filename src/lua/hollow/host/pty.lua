@@ -5,7 +5,9 @@ local M = {}
 local options = require("hollow.host.options")
 
 local function message(err)
-  if type(err) == "table" then return tostring(err.message or err.code or "host unavailable") end
+  if type(err) == "table" then
+    return tostring(err.message or err.code or "host unavailable")
+  end
   return (tostring(err):gsub("^.-:%d+: ", ""))
 end
 
@@ -13,42 +15,63 @@ local function words(command)
   local result, current, quote, in_word = {}, {}, nil, false
   for ch in command:gmatch(".") do
     if quote then
-      if ch == quote then quote = nil else current[#current + 1] = ch end
+      if ch == quote then
+        quote = nil
+      else
+        current[#current + 1] = ch
+      end
     elseif ch == '"' or ch == "'" then
       quote, in_word = ch, true
     elseif ch:match("%s") then
-      if in_word then result[#result + 1] = table.concat(current); current = {} end
+      if in_word then
+        result[#result + 1] = table.concat(current)
+        current = {}
+      end
       in_word = false
     else
       current[#current + 1] = ch
       in_word = true
     end
   end
-  if in_word then result[#result + 1] = table.concat(current) end
+  if in_word then
+    result[#result + 1] = table.concat(current)
+  end
   return result
 end
 
 local function wsl_launcher(shell)
-  if type(shell) ~= "string" then return nil end
+  if type(shell) ~= "string" then
+    return nil
+  end
   local argv = words(shell)
   local program = (argv[1] or ""):match("[^/\\]*$"):lower()
-  if program ~= "wsl" and program ~= "wsl.exe" then return nil end
+  if program ~= "wsl" and program ~= "wsl.exe" then
+    return nil
+  end
   local result = { type = "wsl" }
-  if argv[1] ~= "wsl.exe" then result.wsl = argv[1] end
+  if argv[1] ~= "wsl.exe" then
+    result.wsl = argv[1]
+  end
   local i = 2
   while argv[i] do
     local arg = argv[i]
-    if arg ~= "~" and (arg == "-e" or arg == "--exec" or arg == "--" or arg:sub(1, 1) ~= "-") then break end
+    if arg ~= "~" and (arg == "-e" or arg == "--exec" or arg == "--" or arg:sub(1, 1) ~= "-") then
+      break
+    end
     if arg == "-d" or arg == "--distribution" or arg == "-u" or arg == "--user" then
       local value = argv[i + 1]
-      if not value or value == "" then return nil end
+      if not value or value == "" then
+        return nil
+      end
       result[(arg == "-d" or arg == "--distribution") and "distro" or "user"] = value
       i = i + 1
     elseif arg:match("^%-%-distribution=") then
       result.distro = arg:sub(16)
     elseif arg:match("^%-%-user=") then
       result.user = arg:sub(8)
-    elseif arg == "--cd" or arg == "--shell-type" then i = i + 1 end
+    elseif arg == "--cd" or arg == "--shell-type" then
+      i = i + 1
+    end
     i = i + 1
   end
   return result
@@ -67,12 +90,22 @@ function M.descriptor(domain, shell)
   local domains = get("domains") or {}
   domain = domain or get("default_domain")
   local config = domain and domains[domain]
-  if type(config) ~= "table" then config = {} end
-  if config.host == false then return nil end
-  if type(config.host) == "table" and config.host.type ~= nil then return config.host, "explicit" end
-  if not (_G.hollow.platform or {}).is_windows then return nil end
+  if type(config) ~= "table" then
+    config = {}
+  end
+  if config.host == false then
+    return nil
+  end
+  if type(config.host) == "table" and config.host.type ~= nil then
+    return config.host, "explicit"
+  end
+  if not (_G.hollow.platform or {}).is_windows then
+    return nil
+  end
   local launcher = wsl_launcher(shell)
-  local distro = type(config.wsl_distro) == "string" and config.wsl_distro ~= "" and config.wsl_distro
+  local distro = type(config.wsl_distro) == "string"
+      and config.wsl_distro ~= ""
+      and config.wsl_distro
     or (launcher and launcher.distro)
   if distro then
     local spec = launcher or { type = "wsl" }
@@ -83,7 +116,9 @@ function M.descriptor(domain, shell)
 end
 
 local function path_style(spec)
-  if spec.path_style ~= nil then return spec.path_style end
+  if spec.path_style ~= nil then
+    return spec.path_style
+  end
   return spec.type == "wsl" and "wsl" or "posix"
 end
 
@@ -91,16 +126,26 @@ local function terminal_options(domain)
   local get = _G.hollow.config.get
   local config = (get("domains") or {})[domain or get("default_domain")] or {}
   local pty = config.pty
-  if pty == nil then return nil end
-  if type(pty) ~= "table" then error("domain.pty must be a table", 0) end
-  if pty.mode == nil or pty.mode == "dedicated" then return nil end
-  if pty.mode ~= "mux" then error("domain.pty.mode must be dedicated or mux", 0) end
+  if pty == nil then
+    return nil
+  end
+  if type(pty) ~= "table" then
+    error("domain.pty must be a table", 0)
+  end
+  if pty.mode == nil or pty.mode == "dedicated" then
+    return nil
+  end
+  if pty.mode ~= "mux" then
+    error("domain.pty.mode must be dedicated or mux", 0)
+  end
   local workers = pty.read_workers == nil and 4 or pty.read_workers
   local jobs = pty.batch_jobs == nil and 2 or pty.batch_jobs
   if type(workers) ~= "number" or workers % 1 ~= 0 or workers < 0 or workers > 4 then
     error("domain.pty.read_workers must be an integer from 0 to 4", 0)
   end
-  if jobs ~= 1 and jobs ~= 2 then error("domain.pty.batch_jobs must be 1 or 2", 0) end
+  if jobs ~= 1 and jobs ~= 2 then
+    error("domain.pty.batch_jobs must be 1 or 2", 0)
+  end
   return { read_workers = workers, batch_jobs = jobs }
 end
 
@@ -113,20 +158,97 @@ function M.request(domain, shell)
     _G.hollow.log("pty host descriptor failed", spec)
     return nil
   end
-  if not spec then return nil end
+  if not spec then
+    return nil
+  end
   local built, host = pcall(options.target, spec.type, spec)
-  if not built then return { mode = mode, error = message(host) } end
+  if not built then
+    return { mode = mode, error = message(host) }
+  end
   local valid, multiplex = pcall(terminal_options, domain)
-  if not valid then return { mode = "explicit", error = message(multiplex) } end
+  if not valid then
+    return { mode = "explicit", error = message(multiplex) }
+  end
   host.multiplex = multiplex
   host.mode = mode
   host.path_style = path_style(spec)
   return host
 end
 
+--- Persistent sessions must never turn failed resolution into native fallback.
+function M.session_request(domain, shell)
+  local ok, host = pcall(function()
+    local get = _G.hollow.config.get
+    local domains = get("domains") or {}
+    if type(domains) ~= "table" then
+      error("domains must be a table", 0)
+    end
+    local config = domains[domain or get("default_domain")]
+    if config ~= nil and type(config) ~= "table" then
+      error("domain must be a table", 0)
+    end
+    config = config or {}
+    local spec = config.host
+    if spec ~= nil and spec ~= false then
+      if type(spec) ~= "table" then
+        error("domain.host must be a table or false", 0)
+      end
+      options.string(spec.type, "domain.host.type")
+    else
+      if config.ssh ~= nil and config.ssh ~= false then
+        error("legacy domain.ssh requires an explicit session host", 0)
+      end
+      spec = M.descriptor(domain, shell)
+    end
+    spec = spec or { type = "local" }
+    if spec.type == "local" and (_G.hollow.platform or {}).is_windows then
+      local program = (words(shell)[1] or ""):match("[^/\\]*$"):lower()
+      if program == "wsl" or program == "wsl.exe" then
+        error("WSL launcher requires a WSL session host", 0)
+      end
+    end
+    local style = path_style(spec)
+    if style ~= "posix" and style ~= "wsl" then
+      error("invalid session host path_style", 0)
+    end
+    local target = options.session_target(spec.type, spec)
+    target.mode = "explicit"
+    target.path_style = style
+    return target
+  end)
+  if not ok then
+    return { mode = "explicit", error = message(host) }
+  end
+  return host
+end
+
+--- Host kind ("local", "wsl", "ssh", ...) that owns a domain's persistent
+--- sessions, or nil when the domain cannot host them.
+function M.session_kind(domain)
+  local ok, kind = pcall(function()
+    local config = (_G.hollow.config.get("domains") or {})[domain]
+    local shell = type(config) == "string" and config
+      or type(config) == "table" and config.shell
+      or nil
+    config = type(config) == "table" and config or {}
+    if type(config.host) == "table" then
+      return config.host.type
+    end
+    if config.host ~= false and config.ssh ~= nil and config.ssh ~= false then
+      return nil -- Legacy SSH domains cannot own sessions.
+    end
+    local spec = M.descriptor(domain, shell)
+    return spec and spec.type or "local"
+  end)
+  return ok and type(kind) == "string" and kind or nil
+end
+
 function M.setup(hollow)
   function hollow._pty_host(domain, shell)
     return M.request(domain, shell)
+  end
+  function hollow._session_host(domain, shell)
+    return M.session_request(domain, shell)
   end
 end
 
