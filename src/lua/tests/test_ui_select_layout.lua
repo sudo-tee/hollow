@@ -55,6 +55,62 @@ describe("Clay selectable list", function()
     return values
   end
 
+  it(
+    "uses section list items for groups and keeps creation separate from row activation",
+    function()
+      local created, selected
+      ui.select.open({
+        items = { { name = "alpha", domain = "remote" }, { name = "beta", domain = "local" } },
+        label = function(item)
+          return item.name
+        end,
+        group_by = function(item)
+          return item.domain
+        end,
+        group_item = function(group)
+          return { domain = group, header = true }
+        end,
+        group_create = function(group)
+          created = group
+        end,
+        actions = {
+          {
+            fn = function(item)
+              selected = item
+            end,
+          },
+        },
+      })
+      local header = assert(row("group:remote"))
+      assert.equals("remote", header.label)
+      ui.dispatch_widget_event("overlay:click", { id = header.id, index = 1 })
+      assert.is_nil(row(1)) -- The remote category is collapsed, not activated.
+      local button
+      for _, node in ipairs(prepare()) do
+        if node.id and node.id:match("group:remote:create$") then
+          button = node
+        end
+      end
+      assert.is_truthy(button)
+      ui.dispatch_widget_event("overlay:click", { id = button.id, index = 1 })
+      assert.equals("remote", created)
+      assert.is_nil(selected)
+      assert.is_nil(row(1)) -- Its + button does not toggle the category.
+      -- Search selects the matching child; a single matching group drops its header.
+      ui.dispatch_overlay_key("a", 0)
+      ui.dispatch_overlay_key("l", 0)
+      assert.is_nil(row("group:remote"))
+      assert.is_nil(row("group:local"))
+      ui.dispatch_overlay_key("enter", 0)
+      assert.equals("alpha", selected.name)
+      ui.dispatch_overlay_key("backspace", 0)
+      ui.dispatch_overlay_key("backspace", 0)
+      assert.is_nil(row(1)) -- Clearing search restores the saved collapsed state.
+      ui.dispatch_widget_event("overlay:click", { id = assert(row("group:remote")).id, index = 1 })
+      assert.is_truthy(row(1))
+    end
+  )
+
   it("insets accents without moving select or list item content", function()
     ui.select.open({ items = { "one", "two" } })
     local tree = prepare()

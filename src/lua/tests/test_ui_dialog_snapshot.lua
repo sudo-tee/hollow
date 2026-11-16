@@ -128,7 +128,7 @@ describe("dialog component snapshot", function()
         radius = 3,
         padding = padding,
       },
-      { wrap = 2, kind = 2, bold = true, fg = "#ffffff", text = "Accept" },
+      { text_align = 1, kind = 2, bold = true, fg = "#ffffff", text = "Accept" },
       {
         id = "test:delete",
         hover_bg = "#777777",
@@ -140,7 +140,7 @@ describe("dialog component snapshot", function()
         radius = 3,
         padding = padding,
       },
-      { wrap = 2, kind = 2, bold = true, fg = "#dddddd", text = "Delete" },
+      { text_align = 1, kind = 2, bold = true, fg = "#dddddd", text = "Delete" },
       {
         id = "test:cancel",
         padding = padding,
@@ -151,7 +151,7 @@ describe("dialog component snapshot", function()
         hover_bg = "#808080",
         hover_fg = "#eeeeee",
       },
-      { wrap = 2, kind = 2, fg = "#111111", text = "Cancel" },
+      { text_align = 1, kind = 2, fg = "#111111", text = "Cancel" },
     }, nodes)
   end)
 

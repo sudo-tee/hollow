@@ -54,8 +54,8 @@ pending describe that checkpoint; the current status above supersedes them.
 ## Build, test, compare
 
 ```sh
-zig build --build-file build-agent.zig agent -Doptimize=ReleaseFast
-zig build --build-file build-agent.zig test-agent-mux test-agent-loop test-agent-pty
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent -Doptimize=ReleaseFast
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-agent-mux test-agent-loop test-agent-pty
 python3 scripts/agent_mux.py --mode both --panes 1 4 16 32 --runs 3 --build-mode ReleaseFast
 ```
 
@@ -610,9 +610,9 @@ The wire client drains continuously; GUI panes consume output on UI turns.
 continuous drains with frame-paced queue snapshots without loading VT/rendering:
 
 ```sh
-zig build --build-file build-agent.zig agent agent-pane-bench -Doptimize=ReleaseFast
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent agent-pane-bench -Doptimize=ReleaseFast
 python3 scripts/agent_pane_bench.py --panes 1 4 16 32 --runs 3 --build-mode ReleaseFast
-zig build --build-file build-agent.zig test-agent-pane-bench
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-agent-pane-bench
 ```
 
 Children run deterministic raw-mode Python, report one ready byte, wait for a

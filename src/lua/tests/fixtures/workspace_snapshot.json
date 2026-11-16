@@ -52,7 +52,7 @@
   {
     "fg": "#81a1c1",
     "kind": 2,
-    "text": "   1/1",
+    "text": "   2/2",
     "wrap": 2
   },
   {
@@ -117,7 +117,7 @@
     "wrap": 2
   },
   {
-    "children": 1,
+    "children": 2,
     "height": -1,
     "id": "test:select:viewport",
     "measure": true,
@@ -127,6 +127,56 @@
     "width": -1
   },
   {
+    "children": 2,
+    "clickable": true,
+    "hover_bg": "#2a2d38",
+    "id": "test:select:item:group:0:OPENED",
+    "kind": 1,
+    "label": "OPENED",
+    "list_item": true,
+    "radius": 4,
+    "width": -1
+  },
+  {
+    "height": -1,
+    "padding": {
+      "bottom": 4,
+      "left": 0,
+      "right": 0,
+      "top": 4
+    },
+    "width": 2
+  },
+  {
+    "align_y": 1,
+    "children": 1,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "height": 28,
+    "kind": 1,
+    "width": -1
+  },
+  {
+    "children": 1,
+    "label": "▼ OPENED",
+    "padding": {
+      "bottom": 4,
+      "left": 4,
+      "right": 4,
+      "top": 4
+    }
+  },
+  {
+    "bold": true,
+    "fg": "#c895bf",
+    "kind": 2,
+    "text": "▼ OPENED",
+    "wrap": 2
+  },
+  {
     "bg": "#3b4252",
     "children": 2,
     "clickable": true,
@@ -134,7 +184,7 @@
     "hover_bg": "#3b4252",
     "id": "test:select:item:1",
     "kind": 1,
-    "label": "•   main                      /tmp/project                                            ",
+    "label": "•  main                     /tmp/project                                              ",
     "list_item": true,
     "radius": 4,
     "width": -1
@@ -160,7 +210,7 @@
     "children": 1,
     "padding": {
       "bottom": 0,
-      "left": 22,
+      "left": 2,
       "right": 0,
       "top": 0
     },
@@ -185,7 +235,10 @@
     "width": -1
   },
   {
+    "align_y": 1,
     "children": 1,
+    "id": "test:select:item:1:status",
+    "kind": 1,
     "width": 20
   },
   {
@@ -196,7 +249,7 @@
     "wrap": 2
   },
   {
-    "width": 20
+    "width": 10
   },
   {
     "align_y": 1,
@@ -215,7 +268,7 @@
     "wrap": 2
   },
   {
-    "width": 20
+    "width": 10
   },
   {
     "align_y": 1,
@@ -224,7 +277,7 @@
     "id": "test:select:item:1:cwd",
     "kind": 1,
     "scroll_x": true,
-    "width": -1
+    "width": 480
   },
   {
     "fg": "#6d7178",

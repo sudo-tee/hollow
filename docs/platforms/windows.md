@@ -19,11 +19,20 @@ A release zip contains:
 | `hollow.exe`            | CLI launcher and `hollow cli …` host       |
 | `hollow-native.exe`     | Actual GUI process                         |
 | `hollow-cli`            | Python HTP client (optional, OSC over tty) |
-| `agents/`               | Static Linux `hollow-agent` + `SHA256SUMS` |
+| `agents/`               | Linux guest agents plus the native session owner |
 
 Debug symbols (`.pdb` files) are not bundled in releases.
 For crash symbolication, see
 [Packaging → Crash reports](../packaging.md#crash-reports).
+
+## Persistent native workspaces
+
+Windows x86_64 local domains support experimental opt-in persistent workspaces with `persist = true` and `host = { type = "local" }`.
+The bundled `agents/windows-x86_64/hollow-agent.exe` owns ConPTY processes and terminal state independently of the GUI.
+Managed owners run from an immutable per-user cache, so replacing the installed GUI bundle does not overwrite a running owner image.
+Missing helpers, invalid hosts, or denied job breakaway fail visibly rather than falling back to nonpersistent panes.
+Persistence remains off by default, and `wsl.exe` shells must use a WSL host instead of a native-local owner.
+See [Persistent sessions](../persistent-sessions-guide.md) for configuration, limits, and explicit recovery.
 
 ## Runtime layout
 

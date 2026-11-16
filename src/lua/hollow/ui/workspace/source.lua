@@ -149,7 +149,13 @@ local function configured_sources()
   for _, value in ipairs(raw) do
     if type(value) == "table" then
       local source, err = compat.source(value)
-      if source then sources[#sources + 1] = source else compat.warn_invalid(value, err) end
+      if source then
+        if type(source.host) == "table" and source.host.type == "ssh" then
+          source._ssh_spec = source.host
+          source._host_deferred = true
+        end
+        sources[#sources + 1] = source
+      else compat.warn_invalid(value, err) end
     end
   end
   if switcher.known_workspaces == nil and #normalized_list(switcher.project_roots) > 0 then
@@ -244,7 +250,7 @@ local function start_host_scan(sources, signature)
   local generation = switcher.host_scan_generation or 0
   local scans = {}
   for index, source in ipairs(sources) do
-    if source.default ~= false and explicit_host(source) and not source._host_pending and #normalized_list(source.roots) > 0 then
+    if source.default ~= false and not source._host_deferred and explicit_host(source) and not source._host_pending and #normalized_list(source.roots) > 0 then
       scans[#scans + 1] = { source = source, key = host_key(source), index = index }
     end
   end
@@ -459,8 +465,23 @@ local function source_workspace_item(raw, source, resolved_domain)
   return normalize_possible_workspace(raw)
 end
 
+--- Same domain and directory means same workspace, whatever source found it.
+local function cwd_key(item)
+  local cwd = trim_string(item.cwd):gsub("[/\\]+$", "")
+  if cwd == "" then
+    return nil
+  end
+  return "cwd:" .. (normalize_domain(item.domain) or current_domain_name() or "default") .. ":" .. cwd
+end
+
 local function append_unique(items, seen, item)
   if item == nil or item.id == "" or seen[item.id] or not include_workspace_item(item) then
+    return
+  end
+  -- Only open workspaces register cwd keys: discovered rows from distinct
+  -- hosts stay separate, but never duplicate something already open.
+  local key = cwd_key(item)
+  if key and seen[key] then
     return
   end
 
@@ -548,7 +569,7 @@ local function cached_known_workspaces(force_refresh)
   local signature = host_signature(sources)
   local has_host_source = false
   for _, source in ipairs(sources) do
-    if explicit_host(source) and source.default ~= false then has_host_source = true; break end
+    if explicit_host(source) and source.default ~= false and not source._host_deferred then has_host_source = true; break end
   end
   if switcher.host_signature ~= signature then
     invalidate_host_scan()
@@ -580,7 +601,7 @@ local function cached_known_workspaces(force_refresh)
   local seen = {}
   if #sources > 0 and not host_fresh then start_host_scan(sources, signature) end
   for source_index, source in ipairs(sources) do
-    if source.default ~= false then
+    if source.default ~= false and not source._host_deferred then
       local resolved_domain = source_domain_name(source)
 
       for _, raw in ipairs(safe_table_result(source.items) or {}) do
@@ -628,6 +649,12 @@ local function open_workspace_items()
       source = "open",
       is_active = workspace.is_active == true,
       is_open = true,
+      session_state = workspace.session_state,
+      session_badge = (
+        workspace.session_state == "taken" or workspace.session_state == "disconnected"
+      )
+          and "detached"
+        or nil,
       program_status_badge = badge,
       program_status_state = status_state,
       program_status_attention = program_status.workspace_needs_attention(workspace),
@@ -682,10 +709,22 @@ local function merged_workspace_items(force_refresh)
     merged[#merged + 1] = workspace
     seen[workspace.id] = workspace
     seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
+    local key = cwd_key(workspace)
+    if key then
+      seen[key] = workspace
+    end
+  end
+
+  for _, item in ipairs(require("hollow.ui.workspace.sessions").items()) do
+    merged[#merged + 1] = item
   end
 
   for _, workspace in ipairs(cached_known_workspaces(force_refresh)) do
     local existing = seen[workspace.id]
+    local key = cwd_key(workspace)
+    if existing == nil and key then
+      existing = seen[key]
+    end
     if existing == nil and workspace.host_id == nil then
       existing = seen[workspace_identity(workspace.name, nil, workspace.domain)]
     end
@@ -701,7 +740,34 @@ local function merged_workspace_items(force_refresh)
     end
   end
 
-  return merged
+  local projects = require("hollow.ui.workspace.projects")
+  for _, item in ipairs(projects.items()) do append_unique(merged, seen, item) end
+  for _, item in ipairs(projects.status_items()) do
+    local combined = false
+    if item.load_state == "idle" or item.load_state == "loading" then
+      for _, other in ipairs(merged) do
+        if other.source == "session_load" and other.domain == item.domain and other.load_state == item.load_state then
+          other.name = item.load_state == "idle" and "Load sessions and projects" or "Loading sessions and projects…"
+          combined = true
+          break
+        end
+      end
+    end
+    if not combined then merged[#merged + 1] = item end
+  end
+
+  -- Loading and ready states move to the domain header once the group has
+  -- real rows; idle (load) and failed (retry) rows stay actionable.
+  local populated = {}
+  for _, item in ipairs(merged) do
+    if not item.is_open and item.load_state == nil then
+      populated[normalize_domain(item.domain) or ""] = true
+    end
+  end
+  return hollow.tbl(merged):filter(function(item)
+    return not (populated[normalize_domain(item.domain) or ""]
+      and (item.load_state == "ready" or item.load_state == "loading"))
+  end):get()
 end
 
 ---@param value any
@@ -747,6 +813,17 @@ function M.find_source(name)
   return nil
 end
 
+function M.remote_sources()
+  local out = {}
+  for _, source in ipairs(configured_sources()) do
+    if source._ssh_spec and source.default ~= false then
+      source.domain = source_domain_name(source) or "default"
+      out[#out + 1] = source
+    end
+  end
+  return out
+end
+
 function M.ensure_last_opened(name, timestamp)
   ensure_last_opened(name, timestamp)
 end
@@ -758,12 +835,17 @@ end
 ---@param opts? HollowUiWorkspaceSwitcherOptions
 function M.configure(opts)
   opts = opts or {}
+  if opts.load_timeout_ms ~= nil and (type(opts.load_timeout_ms) ~= "number"
+    or opts.load_timeout_ms ~= opts.load_timeout_ms or opts.load_timeout_ms < 1000 or opts.load_timeout_ms > 300000) then
+    error("load_timeout_ms must be between 1000 and 300000")
+  end
   local switcher = switcher_state()
   local invalidate = util.has_any_key(opts, { "known_workspaces", "sources", "project_roots" })
   util.merge_tables(switcher, opts)
   if type(opts.sources) == "table" then switcher.sources = opts.sources end
   if type(opts.project_roots) == "table" then switcher.project_roots = opts.project_roots end
   if invalidate then
+    require("hollow.ui.workspace.projects").reset()
     invalidate_host_scan()
     switcher.cached_items = nil
     switcher.cache_loaded_at_ms = 0
@@ -787,7 +869,9 @@ end
 ---@param force_refresh? boolean
 ---@return HollowUiWorkspaceItem[]
 function M.known_workspaces(force_refresh)
-  return cached_known_workspaces(force_refresh == true)
+  local items = cached_known_workspaces(force_refresh == true)
+  for _, item in ipairs(require("hollow.ui.workspace.projects").items()) do items[#items + 1] = item end
+  return items
 end
 
 ---@param force_refresh? boolean

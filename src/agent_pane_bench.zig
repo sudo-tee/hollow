@@ -157,6 +157,7 @@ fn mixed(panes: []agent.AgentPty, mode: []const u8, startup_ms: []const f64, con
 
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
+    @import("agent/diagnostics.zig").init(init.io);
     var args = init.minimal.args.iterate();
     _ = args.next();
     const path = args.next() orelse return error.MissingAgent;

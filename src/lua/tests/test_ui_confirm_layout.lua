@@ -38,6 +38,43 @@ describe("Clay confirmation overlay", function()
     assert.equals(revision, ui._layout_revision)
   end)
 
+  it("widens to fit long button labels", function()
+    ui.confirm.open({
+      prompt = "Restore?",
+      buttons = {
+        { text = "Restore 1 session", value = 1 },
+        { text = "Show in switcher", value = 2 },
+        { text = "Not now", value = false },
+      },
+    })
+    prepare()
+    -- 3 labels (17 + 16 + 7) with padding, gaps and frame padding.
+    assert.equals(56, ui._layout_frame.width)
+  end)
+
+  it("word-wraps button labels instead of overlapping when the row is too narrow", function()
+    ui.confirm.open({
+      prompt = "Open on pwsh",
+      buttons = {
+        { text = "New workspace on pwsh", value = 1 },
+        { text = "Global dock on pwsh", value = 2 },
+        { text = "Cancel", value = false },
+      },
+    })
+    local tree = prepare()
+    for index, node in ipairs(tree) do
+      if node.clickable and node.label == "Global dock on pwsh" then
+        local text = tree[index + 1]
+        assert.equals("Global dock on pwsh", text.text)
+        -- Words mode serializes as the default (nil); "none" would be 2.
+        assert.is_nil(text.wrap)
+        assert.equals(1, text.text_align)
+        return
+      end
+    end
+    error("button not found")
+  end)
+
   it("preserves navigation, Enter values and cancellation", function()
     local value, cancelled
     ui.confirm.open({

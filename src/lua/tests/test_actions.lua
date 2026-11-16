@@ -250,4 +250,102 @@ describe("actions test suite", function()
       )
     end)
   end)
+
+  describe("cross-domain panes", function()
+    local dialog, workspace, docks, originals
+
+    before_each(function()
+      dialog, docks = nil, {}
+      recorded.split_pane, recorded.new_tab, recorded.new_workspace = nil, nil, nil
+      originals = {
+        current_workspace = hollow.term.current_workspace,
+        docks = hollow.term.docks,
+        confirm = hollow.ui.confirm.open,
+        entries = hollow.ui.command_palette.build_domain_entries,
+      }
+      hollow.config.set({
+        default_domain = "wsl",
+        domains = { wsl = { persist = true }, remote = { persist = true }, pwsh = {} },
+      })
+      hollow.term.current_workspace = function()
+        return workspace
+      end
+      hollow.term.docks = function()
+        return docks
+      end
+      hollow.ui.confirm.open = function(opts)
+        dialog = opts
+      end
+    end)
+
+    after_each(function()
+      hollow.term.current_workspace = originals.current_workspace
+      hollow.term.docks = originals.docks
+      hollow.ui.confirm.open = originals.confirm
+      hollow.ui.command_palette.build_domain_entries = originals.entries
+    end)
+
+    local function target(domain)
+      hollow.ui.command_palette.build_domain_entries = function()
+        return { { domain_name = domain } }
+      end
+    end
+
+    local function labels()
+      local result = {}
+      for _, button in ipairs(dialog.buttons) do
+        result[#result + 1] = button.text
+      end
+      return table.concat(result, " | ")
+    end
+
+    it("splits directly when the domain matches the session", function()
+      workspace = { session_id = "s1", domain = "wsl" }
+      target("wsl")
+      hollow.action.split_vertical_in_domain()
+      harness.assert_equal(dialog, nil, "no dialog")
+      harness.assert_equal(recorded.split_pane.domain, "wsl", "split sent")
+    end)
+
+    it("offers a workspace or a global dock for an ordinary domain", function()
+      workspace = { session_id = "s1", domain = "wsl" }
+      target("pwsh")
+      hollow.action.split_horizontal_in_domain()
+      harness.assert_equal(recorded.split_pane, nil, "nothing sent before choosing")
+      harness.assert_equal(labels(), "New workspace | Global dock | Cancel", "both choices offered")
+      dialog.on_confirm("dock")
+      harness.assert_equal(recorded.split_pane.dock, "global", "global dock")
+      harness.assert_equal(recorded.split_pane.edge, "bottom", "edge follows the split")
+      harness.assert_equal(recorded.split_pane.domain, "pwsh", "target domain kept")
+    end)
+
+    it("moves to a free edge when the preferred dock edge is taken", function()
+      workspace = { session_id = "s1", domain = "wsl" }
+      docks = { { dock = { scope = "global", edge = "right" } } }
+      target("pwsh")
+      hollow.action.split_vertical_in_domain()
+      dialog.on_confirm("dock")
+      harness.assert_equal(recorded.split_pane.edge, "bottom", "next free edge")
+    end)
+
+    it("offers only a new workspace for another persistent domain", function()
+      workspace = { session_id = "s1", domain = "wsl" }
+      target("remote")
+      hollow.action.new_tab_in_domain()
+      harness.assert_equal(labels(), "New workspace | Cancel", "no dock for sessions")
+      dialog.on_confirm("workspace")
+      harness.assert_equal(recorded.new_workspace.domain, "remote", "workspace on the target")
+      harness.assert_equal(recorded.new_tab, nil, "no tab sent")
+    end)
+
+    it("offers a session workspace for a persistent domain from an ordinary workspace", function()
+      workspace = { domain = "pwsh" }
+      target("remote")
+      hollow.action.split_vertical_in_domain()
+      harness.assert_equal(labels(), "New session workspace | Cancel", "session choice")
+      dialog.on_confirm(false)
+      harness.assert_equal(recorded.split_pane, nil, "cancel sends nothing")
+      harness.assert_equal(recorded.new_workspace, nil, "cancel creates nothing")
+    end)
+  end)
 end)

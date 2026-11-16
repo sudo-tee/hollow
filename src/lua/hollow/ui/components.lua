@@ -9,6 +9,7 @@ local M = {}
 -- Composites require this module, so they load on first access.
 local lazy = {
   badge = "hollow.ui.components.badge",
+  category = "hollow.ui.components.category",
   dialog = "hollow.ui.components.dialog",
   empty = "hollow.ui.components.empty",
   header = "hollow.ui.components.header",
@@ -162,10 +163,13 @@ function M.button(value)
   end
   opts.label = opts.label or opts.text or ""
   opts.style = style
-  return M.column(
-    { M.text(opts.text, { fg = style.fg, bold = style.bold }, { wrap = "none" }) },
-    opts
-  )
+  return M.column({
+    M.text(
+      opts.text,
+      { fg = style.fg, bold = style.bold },
+      { wrap = opts.wrap or "none", text_align = opts.text_align }
+    ),
+  }, opts)
 end
 
 function M.demo()

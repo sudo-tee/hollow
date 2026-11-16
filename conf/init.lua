@@ -46,6 +46,7 @@ hollow.config.set({
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,
+  restore_window_placement = true, -- Windows: remember window size, position, and maximized state
   top_bar_mode = "always",
   split_width = 1,
   unfocused_pane = {

@@ -48,6 +48,10 @@ pub const Activity = struct {
     cwd: ?[]const u8 = null,
     tab_title: ?[]const u8 = null,
 };
+pub const SessionQuery = struct { query: u64, state: []const u8, revision: u64 };
+/// `result` is `{domain, sessions}` (list), `{domain, session}` (kill), or
+/// `{domain, outcome, error, remote?}` when `state` is `failed`.
+pub const SessionResult = struct { query: u64, op: []const u8, state: []const u8, revision: u64, result: ?std.json.Value = null };
 pub const Screenshot = struct { path: []const u8, width: usize, height: usize };
 const Point = struct { row: usize, col: usize };
 const Cursor = struct { position: ?Point, visible: bool, blinking: bool, password_input: bool, wide_tail: bool, style: []const u8 };

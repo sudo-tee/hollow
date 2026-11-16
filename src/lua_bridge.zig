@@ -164,6 +164,8 @@ pub const AppCallbacks = struct {
     create_lua_pane: ?*const fn (*anyopaque, c_int, []const u8, f32, bool, []const u8) usize = null,
     get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
     invalidate_lua_pane: ?*const fn (*anyopaque, usize) void = null,
+    activate_session_notice: ?*const fn (*anyopaque, u64) void = null,
+    session_takeover_action: ?*const fn (*anyopaque, usize, @import("session/takeover.zig").Action) void = null,
     title_lua_pane: ?*const fn (*anyopaque, usize, []const u8) void = null,
     job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
@@ -184,6 +186,7 @@ pub const AppCallbacks = struct {
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
     new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) bool,
+    attach_session: ?*const fn (app: *anyopaque, session_id: []const u8, domain: ?[]const u8, name: ?[]const u8, callback_ref: c_int, intent: @import("agent/session_protocol.zig").AttachIntent) void = null,
     close_workspace: *const fn (app: *anyopaque, workspace_id: ?usize) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -210,6 +213,9 @@ pub const AppCallbacks = struct {
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
     get_workspace_id: *const fn (app: *anyopaque, index: usize) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
+    get_workspace_session_id: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
+    get_workspace_session_host: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
+    get_workspace_session_state: ?*const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8 = null,
     get_workspace_tab_count: *const fn (app: *anyopaque, workspace_index: usize) usize,
     get_workspace_tab_id_at: *const fn (app: *anyopaque, workspace_index: usize, tab_index: usize) usize,
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -247,6 +253,8 @@ pub const AppCallbacks = struct {
     move_tab_to_workspace: *const fn (app: *anyopaque, tab_id: usize, workspace_index: usize) bool,
     move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
+    /// Pane 0 is the active pane. Returns null once queued, else the reason.
+    respawn_pane: ?*const fn (app: *anyopaque, pane_id: usize) ?[:0]const u8 = null,
     bell_pane: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     send_key_to_pane: *const fn (app: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool,
@@ -621,6 +629,11 @@ pub const BuiltInPayload = union(enum) {
     topbar_node: BarNode,
     bottombar_node: BarNode,
     sidebar_node: BarNode,
+    session_takeover: struct {
+        workspace_id: usize,
+        phase: []const u8,
+        reason: ?[]const u8,
+    },
     overlay_node: struct {
         id: []const u8,
         index: usize = 0,
@@ -663,8 +676,24 @@ pub const BuiltInPayload = union(enum) {
         action: []const u8,
         pattern_index: ?usize = null,
     },
+    session_handoff: struct {
+        from: []const u8,
+        to: []const u8,
+        ok: bool,
+    },
+    session_notice: struct {
+        id: u64,
+        close: bool = false,
+        connecting: bool = false,
+        level: []const u8 = "",
+        title: []const u8 = "",
+        message: []const u8 = "",
+    },
     workspace_closed: struct {
-        name: []const u8,
+        name: ?[]const u8 = null,
+        session_id: ?[]const u8 = null,
+        session_host: ?[]const u8 = null,
+        session_ended: bool = false,
     },
 };
 
@@ -760,6 +789,8 @@ pub const OperationCallbackPayload = union(enum) {
     pane_id: usize,
     tab_id: usize,
     workspace_index: usize,
+    /// Persistent open failure. `remote` is the owner's error text, if any.
+    failure: struct { reason: []const u8, outcome: []const u8, remote: ?[]const u8 = null, session_id: ?[]const u8 = null },
 };
 
 pub const HtpDispatchResult = struct {
@@ -827,6 +858,15 @@ pub const Runtime = struct {
     mutex: io.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
+        return initWithDiscovery(allocator, cfg, true);
+    }
+
+    pub fn initForTests(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
+        if (!@import("builtin").is_test) @compileError("initForTests is only available in test builds");
+        return initWithDiscovery(allocator, cfg, false);
+    }
+
+    fn initWithDiscovery(allocator: std.mem.Allocator, cfg: *config.Config, discover_platform: bool) !Runtime {
         const api = Api{
             .new_state = luaL_newstate,
             .close = lua_close,
@@ -891,7 +931,7 @@ pub const Runtime = struct {
             .lua_sources = lua_sources,
         };
 
-        wsl_distro_cache.ensureStarted();
+        if (discover_platform) wsl_distro_cache.ensureStarted();
 
         try runtime.exposeHollowTable();
         try runtime.preloadLuaModules();
@@ -1164,9 +1204,99 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, mode, "implicit")) {
             host.fallback = true;
         } else if (!std.mem.eql(u8, mode, "explicit")) return null;
-        parsePtyHost(api, self.state, idx, arena, &host) catch |err| {
+        parsePtyHost(api, self.state, idx, arena, &host, false) catch |err| {
             std.log.warn("invalid pty host descriptor: {s}", .{@errorName(err)});
             host = .{ .fallback = host.fallback, .error_message = "invalid PTY host descriptor" };
+        };
+        return host;
+    }
+
+    /// Runs once at startup so Lua can restore remembered sessions.
+    /// `persistent_domain` is the default domain when startup would create a
+    /// persistent session; true means Lua took over that creation.
+    pub fn sessionStartup(self: *Runtime, persistent_domain: ?[]const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return false;
+        api.get_field(self.state, -1, "_session_startup");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.function)) return false;
+        if (persistent_domain) |name| api.push_lstring(self.state, name.ptr, name.len) else api.push_nil(self.state);
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "session startup");
+            return false;
+        }
+        return api.value_type(self.state, -1) == @backingInt(LuaType.boolean) and api.to_boolean(self.state, -1) != 0;
+    }
+
+    /// Strict, synchronous session host resolution. No deployment or network I/O.
+    pub fn sessionHost(self: *Runtime, arena: std.mem.Allocator, domain: ?[]const u8, shell: []const u8) !@import("pty/agent.zig").Host {
+        if (std.mem.indexOfScalar(u8, shell, 0) != null) return error.InvalidSessionHost;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+        api.get_field(self.state, -1, "_session_host");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.function)) return error.InvalidSessionHost;
+        if (domain) |name| api.push_lstring(self.state, name.ptr, name.len) else api.push_nil(self.state);
+        api.push_lstring(self.state, shell.ptr, shell.len);
+        if (api.pcall(self.state, 2, 1, 0) != 0) return error.InvalidSessionHost;
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+        const idx = absoluteIndex(api, self.state, -1);
+        const mode = luaStringField(api, self.state, idx, "mode") orelse return error.InvalidSessionHost;
+        if (!std.mem.eql(u8, mode, "explicit")) return error.InvalidSessionHost;
+        api.get_field(self.state, idx, "error");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.nil_type)) return error.InvalidSessionHost;
+        pop(api, self.state, 1);
+        api.get_field(self.state, idx, "path_style");
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.string)) return error.InvalidSessionHost;
+        pop(api, self.state, 1);
+        var host: @import("pty/agent.zig").Host = .{};
+        parsePtyHost(api, self.state, idx, arena, &host, true) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSessionHost,
+        };
+        api.get_field(self.state, idx, "wsl");
+        const wsl_type = api.value_type(self.state, -1);
+        if (wsl_type != @backingInt(LuaType.nil_type)) {
+            if (wsl_type != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+            const wsl_idx = absoluteIndex(api, self.state, -1);
+            const distro = luaStringField(api, self.state, wsl_idx, "distro") orelse return error.InvalidSessionHost;
+            const launcher = luaStringField(api, self.state, wsl_idx, "launcher") orelse return error.InvalidSessionHost;
+            api.get_field(self.state, wsl_idx, "user");
+            const user_type = api.value_type(self.state, -1);
+            if (user_type != @backingInt(LuaType.nil_type) and user_type != @backingInt(LuaType.string)) return error.InvalidSessionHost;
+            pop(api, self.state, 1);
+            const value: @import("agent/session_protocol.zig").WslHold = .{
+                .distro = distro,
+                .launcher = launcher,
+                .user = luaStringField(api, self.state, wsl_idx, "user"),
+                .agent = "/pending-deploy",
+            };
+            value.validate(false) catch return error.InvalidSessionHost;
+            if (!value.matchesConnector(host.connector.argv, host.connector.remote_shell)) return error.InvalidSessionHost;
+            host.wsl = try value.dupe(arena);
+        }
+        pop(api, self.state, 1);
+        const native_windows = @import("builtin").os.tag == .windows and host.connector.argv.len == 0;
+        if (native_windows and @import("pty/spawn_spec.zig").isWsl(shell)) return error.InvalidSessionHost;
+        if (host.agent.path) |path| {
+            const absolute = if (native_windows) windowsSessionPath(path) else path.len > 0 and path[0] == '/';
+            if (!absolute or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidSessionHost;
+        }
+        if (host.agent.dir) |dir| {
+            if (!std.fs.path.isAbsolute(dir) or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidSessionHost;
+        }
+        for (host.agent.artifacts.values) |item| if (item) |artifact| {
+            if (!std.fs.path.isAbsolute(artifact.path) or std.mem.indexOfScalar(u8, artifact.path, 0) != null) return error.InvalidSessionHost;
+            if (artifact.sha256.len != 64) return error.InvalidSessionHost;
+            for (artifact.sha256) |ch| if (!std.ascii.isHex(ch)) return error.InvalidSessionHost;
         };
         return host;
     }
@@ -1308,6 +1438,11 @@ pub const Runtime = struct {
     }
 
     pub fn emitBuiltInEvent(self: *Runtime, name: []const u8, payload: BuiltInPayload) void {
+        _ = self.emitBuiltInEventChecked(name, payload);
+    }
+
+    /// Whether the Lua dispatcher ran; handler errors are logged by Lua.
+    pub fn emitBuiltInEventChecked(self: *Runtime, name: []const u8, payload: BuiltInPayload) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1315,31 +1450,32 @@ pub const Runtime = struct {
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
-            return;
+            return false;
         }
 
         api.get_field(self.state, -1, "_emit_builtin_event");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 2);
-            return;
+            return false;
         }
 
         pushOwnedString(self.allocator, api, self.state, name) catch {
             pop(api, self.state, 3);
-            return;
+            return false;
         };
         pushBuiltInPayload(self.allocator, api, self.state, payload) catch {
             pop(api, self.state, 4);
-            return;
+            return false;
         };
 
         if (api.pcall(self.state, 2, 0, 0) != 0) {
             logLuaError(api, self.state, "emit_builtin_event");
             pop(api, self.state, 1);
-            return;
+            return false;
         }
 
         pop(api, self.state, 1);
+        return true;
     }
 
     pub fn invokeOperationCallback(self: *Runtime, callback_ref: c_int, success: bool, payload: OperationCallbackPayload) void {
@@ -1374,6 +1510,23 @@ pub const Runtime = struct {
                 api.push_number(self.state, @floatFromInt(workspace_index + 1));
                 api.set_field(self.state, -2, "workspace_index");
             },
+            .failure => |failure| {
+                api.push_lstring(self.state, failure.reason.ptr, failure.reason.len);
+                api.set_field(self.state, -2, "error");
+                api.push_lstring(self.state, failure.outcome.ptr, failure.outcome.len);
+                api.set_field(self.state, -2, "outcome");
+                if (failure.remote) |remote| {
+                    api.push_lstring(self.state, remote.ptr, remote.len);
+                    api.set_field(self.state, -2, "remote");
+                }
+                if (failure.session_id) |sid| {
+                    api.push_lstring(self.state, sid.ptr, sid.len);
+                    api.set_field(self.state, -2, "session_id");
+                }
+                const status = if (failure.remote) |remote| (if (std.mem.eql(u8, remote, "SessionNotFound")) "session_not_found" else "session_open_failed") else "session_open_failed";
+                api.push_lstring(self.state, status.ptr, status.len);
+                api.set_field(self.state, -2, "status");
+            },
         }
 
         if (api.pcall(self.state, 1, 0, 0) != 0) {
@@ -1386,6 +1539,12 @@ pub const Runtime = struct {
         if (callback_ref == LUA_NOREF) return;
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+    }
+
+    /// For synchronous native callbacks entered from Lua, with mutex already held.
+    pub fn discardOperationCallbackFromLua(self: *Runtime, callback_ref: c_int) void {
+        if (callback_ref == LUA_NOREF) return;
         self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
     }
 
@@ -2255,6 +2414,9 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_term_job_request, 1);
         api.set_field(self.state, -2, "term_job_request");
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_term_session_request, 1);
+        api.set_field(self.state, -2, "term_session_request");
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_process_poll, 1);
         api.set_field(self.state, -2, "process_poll");
         api.push_light_userdata(self.state, self.context);
@@ -2308,6 +2470,13 @@ pub const Runtime = struct {
             api.set_field(self.state, -2, entry[1]);
         }
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_activate_session_notice, 1);
+        api.set_field(self.state, -2, "activate_session_notice");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_session_takeover_action, 1);
+        api.set_field(self.state, -2, "session_takeover_action");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_pane_floating, 1);
         api.set_field(self.state, -2, "set_pane_floating");
 
@@ -2347,6 +2516,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_new_workspace, 1);
         api.set_field(self.state, -2, "new_workspace");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_attach_session, 1);
+        api.set_field(self.state, -2, "attach_session");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_close_workspace, 1);
@@ -2443,6 +2615,15 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_name, 1);
         api.set_field(self.state, -2, "get_workspace_name");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_session_id, 1);
+        api.set_field(self.state, -2, "get_workspace_session_id");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_session_host, 1);
+        api.set_field(self.state, -2, "get_workspace_session_host");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_session_state, 1);
+        api.set_field(self.state, -2, "get_workspace_session_state");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_tab_count, 1);
@@ -2703,6 +2884,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_close_pane_by_id, 1);
         api.set_field(self.state, -2, "close_pane_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_respawn_pane, 1);
+        api.set_field(self.state, -2, "respawn_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_move_tab_to_workspace, 1);
@@ -3085,6 +3270,17 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .files_dropped => |value| {
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
+        .session_takeover => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.workspace_id));
+            api.set_field(state, -2, "workspace_id");
+            try pushOwnedString(allocator, api, state, value.phase);
+            api.set_field(state, -2, "phase");
+            if (value.reason) |reason| {
+                try pushOwnedString(allocator, api, state, reason);
+                api.set_field(state, -2, "reason");
+            }
+        },
         .topbar_node, .bottombar_node, .sidebar_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
@@ -3188,10 +3384,49 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             }
             api.set_field(state, -2, "pattern_index");
         },
+        .session_handoff => |value| {
+            api.create_table(state, 0, 3);
+            try pushOwnedString(allocator, api, state, value.from);
+            api.set_field(state, -2, "from");
+            try pushOwnedString(allocator, api, state, value.to);
+            api.set_field(state, -2, "to");
+            api.push_boolean(state, if (value.ok) 1 else 0);
+            api.set_field(state, -2, "ok");
+        },
+        .session_notice => |value| {
+            api.create_table(state, 0, 6);
+            api.push_number(state, @floatFromInt(value.id));
+            api.set_field(state, -2, "id");
+            if (value.close) {
+                api.push_boolean(state, 1);
+                api.set_field(state, -2, "close");
+                return;
+            }
+            api.push_boolean(state, if (value.connecting) 1 else 0);
+            api.set_field(state, -2, "connecting");
+            try pushOwnedString(allocator, api, state, value.level);
+            api.set_field(state, -2, "level");
+            try pushOwnedString(allocator, api, state, value.title);
+            api.set_field(state, -2, "title");
+            try pushOwnedString(allocator, api, state, value.message);
+            api.set_field(state, -2, "message");
+        },
         .workspace_closed => |value| {
-            api.create_table(state, 0, 1);
-            try pushOwnedString(allocator, api, state, value.name);
-            api.set_field(state, -2, "name");
+            api.create_table(state, 0, 4);
+            if (value.name) |name| {
+                try pushOwnedString(allocator, api, state, name);
+                api.set_field(state, -2, "name");
+            }
+            if (value.session_id) |id| {
+                try pushOwnedString(allocator, api, state, id);
+                api.set_field(state, -2, "session_id");
+                if (value.session_host) |host| {
+                    try pushOwnedString(allocator, api, state, host);
+                    api.set_field(state, -2, "session_host");
+                }
+                api.push_boolean(state, if (value.session_ended) 1 else 0);
+                api.set_field(state, -2, "session_ended");
+            }
         },
     }
 }
@@ -3704,12 +3939,12 @@ fn l_list_fonts(state: *State) callconv(.c) c_int {
 }
 
 /// Copies a `hollow.host.pty` descriptor table into `host`.
-fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, host: *@import("pty/agent.zig").Host) !void {
+fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, host: *@import("pty/agent.zig").Host, session: bool) !void {
     if (luaStringField(api, state, idx, "error")) |text| {
         host.error_message = try arena.dupe(u8, text);
         return;
     }
-    const target = try host_lua.readTarget(arena, api, state, idx);
+    const target = if (session) try readSessionTarget(api, state, idx, arena) else try host_lua.readTarget(arena, api, state, idx);
     host.connector = target.connector;
     host.agent = target.agent;
     api.get_field(state, idx, "multiplex");
@@ -3733,6 +3968,47 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
     if (luaStringField(api, state, idx, "path_style")) |style| {
         host.path_style = std.meta.stringToEnum(@import("pty/agent.zig").PathStyle, style) orelse return error.InvalidPathStyle;
     }
+}
+
+fn windowsSessionPath(path: []const u8) bool {
+    return (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/')) or
+        std.mem.startsWith(u8, path, "\\\\");
+}
+
+/// readTarget requires a process argv. For native sessions, use its agent
+/// validator on a temporary descriptor, then discard the placeholder connector.
+fn readSessionTarget(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator) !host_lua.Target {
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    api.get_field(state, idx, "connector");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+    const connector = absoluteIndex(api, state, -1);
+    api.get_field(state, connector, "remote_shell");
+    const remote_type = api.value_type(state, -1);
+    if (remote_type != @backingInt(LuaType.nil_type) and remote_type != @backingInt(LuaType.boolean)) return error.InvalidSessionHost;
+    const remote = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+    api.get_field(state, connector, "argv");
+    if (api.value_type(state, -1) != @backingInt(LuaType.table)) return error.InvalidSessionHost;
+    const argv = absoluteIndex(api, state, -1);
+    api.push_nil(state);
+    if (api.next(state, argv) != 0) return host_lua.readTarget(arena, api, state, idx);
+    const build_target = @import("builtin");
+    const native_supported = build_target.os.tag == .linux or (build_target.os.tag == .windows and build_target.cpu.arch == .x86_64);
+    if (remote or !native_supported) return error.InvalidSessionHost;
+    api.create_table(state, 0, 2);
+    const descriptor = absoluteIndex(api, state, -1);
+    api.get_field(state, idx, "agent");
+    api.set_field(state, descriptor, "agent");
+    api.create_table(state, 0, 1);
+    api.create_table(state, 1, 0);
+    api.push_string(state, "native-session");
+    api.rawseti(state, -2, 1);
+    api.set_field(state, -2, "argv");
+    api.set_field(state, descriptor, "connector");
+    var target = try host_lua.readTarget(arena, api, state, descriptor);
+    target.connector = .{};
+    return target;
 }
 
 fn l_run_child_process(state: *State) callconv(.c) c_int {
@@ -4711,6 +4987,10 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
 }
 
 fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
+    if (std.mem.eql(u8, key, "restore_window_placement")) {
+        cfg.restore_window_placement = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "font_lcd")) {
         cfg.fonts.smoothing = if (value) .subpixel else .grayscale;
         return;
@@ -4882,6 +5162,11 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
 
         const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
+        if (std.mem.eql(u8, key, "persist") and value_type == .boolean) {
+            try cfg.setDomainPersist(domain_name, api.to_boolean(state, -1) != 0);
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "ssh") and value_type == .table) {
             const ssh_idx = absoluteIndex(api, state, -1);
             try applyDomainSshTable(cfg, api, state, domain_name, ssh_idx);
@@ -4907,6 +5192,11 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
 
         if (std.mem.eql(u8, key, "default_cwd")) {
             try cfg.setDomainDefaultCwd(domain_name, value);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "upgrade")) {
+            if (std.meta.stringToEnum(config.Config.SessionUpgrade, value)) |upgrade| try cfg.setDomainUpgrade(domain_name, upgrade);
             continue;
         }
     }
@@ -5604,6 +5894,28 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_attach_session(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table) return 0;
+    const opts_idx = absoluteIndex(api, state, 1);
+    const session_id = luaStringField(api, state, opts_idx, "session_id") orelse return 0;
+    if (session_id.len == 0 or session_id.len > 128 or std.mem.indexOfScalar(u8, session_id, 0) != null) return 0;
+    const domain_name = luaStringField(api, state, opts_idx, "domain");
+    const name = luaStringField(api, state, opts_idx, "name");
+    const callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
+    if (ctx.app_callbacks) |cbs| {
+        if (cbs.attach_session) |attach| {
+            const intent_text = luaStringField(api, state, opts_idx, "trace_intent") orelse "open";
+            const intent: @import("agent/session_protocol.zig").AttachIntent = if (std.mem.eql(u8, intent_text, "restore")) .restore else .open;
+            attach(cbs.app, session_id, domain_name, name, callback_ref, intent);
+            return 0;
+        }
+    }
+    if (callback_ref != LUA_NOREF) api.unref(state, LUA_REGISTRYINDEX, callback_ref);
+    return 0;
+}
+
 fn l_close_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -5811,6 +6123,26 @@ fn l_invalidate_lua_pane(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
     const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
     if (cbs.invalidate_lua_pane) |callback| callback(cbs.app, id);
+    return 0;
+}
+
+fn l_activate_session_notice(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    if (cbs.activate_session_notice) |callback| callback(cbs.app, id);
+    return 0;
+}
+
+fn l_session_takeover_action(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const id = ctx.api.to_number(state, 1);
+    if (!std.math.isFinite(id) or id < 0 or id >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) return 0;
+    var len: usize = 0;
+    const name = (ctx.api.to_lstring(state, 2, &len) orelse return 0)[0..len];
+    const action = std.meta.stringToEnum(@import("session/takeover.zig").Action, name) orelse return 0;
+    if (cbs.session_takeover_action) |callback| callback(cbs.app, @intFromFloat(id), action);
     return 0;
 }
 
@@ -6406,6 +6738,36 @@ fn l_get_workspace_name(state: *State) callconv(.c) c_int {
 
     const title = cbs.get_workspace_name(cbs.app, idx, &out_buf);
     api.push_lstring(state, title.ptr, title.len);
+    return 1;
+}
+
+fn l_get_workspace_session_id(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_id");
+}
+
+fn l_get_workspace_session_host(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_host");
+}
+
+fn l_get_workspace_session_state(state: *State) callconv(.c) c_int {
+    return workspaceSessionString(state, "get_workspace_session_state");
+}
+
+fn workspaceSessionString(state: *State, comptime field: []const u8) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    blk: {
+        const cbs = ctx.app_callbacks orelse break :blk;
+        const get = @field(cbs, field) orelse break :blk;
+        const index = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number) api.to_number(state, 1) else 0;
+        if (!std.math.isFinite(index) or index < 0 or index >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) break :blk;
+        var out_buf: [128]u8 = undefined;
+        const value = get(cbs.app, @intFromFloat(index), &out_buf);
+        if (value.len == 0) break :blk;
+        api.push_lstring(state, value.ptr, value.len);
+        return 1;
+    }
+    api.push_nil(state);
     return 1;
 }
 
@@ -7252,6 +7614,29 @@ fn l_send_text_to_pane(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_respawn_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const reason: [:0]const u8 = blk: {
+        const cbs = ctx.app_callbacks orelse break :blk "unavailable";
+        const respawn = cbs.respawn_pane orelse break :blk "unavailable";
+        var pane_id: usize = 0;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number) {
+            const value = api.to_number(state, 1);
+            if (!std.math.isFinite(value) or value < 1 or value >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) break :blk "PaneNotFound";
+            pane_id = @intFromFloat(value);
+        }
+        const failure = respawn(cbs.app, pane_id) orelse {
+            api.push_boolean(state, 1);
+            return 1;
+        };
+        break :blk failure;
+    };
+    api.push_boolean(state, 0);
+    api.push_lstring(state, reason.ptr, reason.len);
+    return 2;
+}
+
 fn l_close_pane_by_id(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -7924,9 +8309,17 @@ fn l_process_start(state: *State) callconv(.c) c_int {
 }
 
 fn l_term_job_request(state: *State) callconv(.c) c_int {
+    return termRequest(state, &.{ "job_spawn", "job_get", "job_output", "job_cleanup" });
+}
+
+fn l_term_session_request(state: *State) callconv(.c) c_int {
+    return termRequest(state, &.{ "session_list", "session_kill" });
+}
+
+fn termRequest(state: *State, kinds: []const []const u8) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    queueTermJobRequest(ctx, state) catch |err| {
+    queueTermJobRequest(ctx, state, kinds) catch |err| {
         api.push_nil(state);
         const name = @errorName(err);
         api.push_lstring(state, name.ptr, name.len);
@@ -7936,13 +8329,15 @@ fn l_term_job_request(state: *State) callconv(.c) c_int {
     return 1;
 }
 
-fn queueTermJobRequest(ctx: *BridgeContext, state: *State) !void {
+fn queueTermJobRequest(ctx: *BridgeContext, state: *State, kinds: []const []const u8) !void {
     const command = @import("command.zig");
     const api = ctx.api;
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table or @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .function) return error.InvalidArgumentType;
-    // Scope this bridge to job operations, not arbitrary command dispatch.
+    // Scope each bridge to its operations, not arbitrary command dispatch.
     const kind = luaStringField(api, state, 1, "kind") orelse return error.InvalidArgumentType;
-    if (!(std.mem.eql(u8, kind, "job_spawn") or std.mem.eql(u8, kind, "job_get") or std.mem.eql(u8, kind, "job_output") or std.mem.eql(u8, kind, "job_cleanup"))) return error.UnsupportedJobOperation;
+    for (kinds) |allowed| {
+        if (std.mem.eql(u8, kind, allowed)) break;
+    } else return error.UnsupportedJobOperation;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -8023,6 +8418,192 @@ test "pane host API callbacks retain Lua bridge context" {
     );
 }
 
+test "session borrowers host resolution is strict and preserves the Lua stack" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initWithDiscovery(std.testing.allocator, &cfg, false);
+    defer runtime.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const top = runtime.context.api.get_top(runtime.state);
+    for ([_][:0]const u8{
+        "hollow = nil",
+        "hollow = {}",
+        "hollow = {_session_host = false}",
+        "hollow = {_session_host = function() error('unavailable') end}",
+        "hollow = {_session_host = function() return nil end}",
+        "hollow = {_session_host = function() return false end}",
+        "hollow = {_session_host = function() return 'local' end}",
+        "hollow = {_session_host = function() return {} end}",
+        "hollow = {_session_host = function() return {mode='implicit'} end}",
+        "hollow = {_session_host = function() return {mode='explicit', error='unavailable'} end}",
+        "hollow = {_session_host = function() return {mode='explicit', error=false} end}",
+    }) |script| {
+        try runtime.runString(script);
+        try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), "box", "sh"));
+        try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+    }
+    for ([_][:0]const u8{
+        "{}", "{argv=false}", "{argv={'ssh'},remote_shell='yes'}", "{argv={false}}", "{argv={'ssh', [3]='box'}}", "{argv={'sh\\0bad'}}",
+    }) |connector| {
+        const script = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit', path_style='posix', connector={s}}} end}}", .{connector}, 0);
+        try runtime.runString(script);
+        try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+    }
+    for ([_][:0]const u8{
+        "path_style=false", "path_style='invalid'", "agent=false", "agent={timeout_ms=0}", "agent={timeout_ms=1.5}", "agent={path=false}", "agent={path='relative'}", "agent={path='/bad\\0path'}", "agent={dir='relative'}", "agent={artifacts=false}", "agent={artifacts={x86_64={path='/agent',sha256='bad'}}}", "multiplex=false",
+    }) |field| {
+        const script = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit', path_style='posix', connector={{argv={{'ssh','box'}}}}, {s}}} end}}", .{field}, 0);
+        try runtime.runString(script);
+        try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+    }
+    try runtime.runString(
+        \\hollow = {_session_host = function(domain, shell)
+        \\  assert(domain == 'box' and shell == '/bin/sh')
+        \\  return {mode='explicit', path_style='wsl', connector={argv={'wsl.exe','--exec'}}, agent={path='/opt/agent',timeout_ms=5000}}
+        \\end}
+    );
+    const host = try runtime.sessionHost(arena.allocator(), "box", "/bin/sh");
+    try std.testing.expect(!host.fallback);
+    try std.testing.expect(host.error_message == null);
+    try std.testing.expectEqual(.wsl, host.path_style);
+    try std.testing.expectEqualStrings("wsl.exe", host.connector.argv[0]);
+    try std.testing.expectEqualStrings("/opt/agent", host.agent.path.?);
+    try std.testing.expectEqual(@as(u32, 5000), host.agent.timeout_ms);
+    try runtime.runString("hollow = nil");
+    try std.testing.expectEqualStrings("/opt/agent", host.agent.path.?);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
+test "session borrowers WSL host identity is copied and cannot disagree with its connector" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\hollow = {_session_host = function() return {
+        \\mode='explicit',path_style='wsl',
+        \\connector={argv={'wsl.exe','--distribution','Guest Distro','--user','alice','--cd','/','--exec'}},
+        \\wsl={distro='Guest Distro',user='alice',launcher='wsl.exe'}} end}
+    ;
+    try runtime.runString(source);
+    const top = runtime.context.api.get_top(runtime.state);
+    const host = try runtime.sessionHost(arena.allocator(), null, "/bin/sh");
+    try std.testing.expectEqualStrings("Guest Distro", host.wsl.?.distro);
+    try std.testing.expectEqualStrings("alice", host.wsl.?.user.?);
+    try runtime.runString("hollow._session_host=function() return {mode='explicit',path_style='wsl',connector={argv={'ssh','box'}},wsl={distro='Guest Distro',launcher='wsl.exe'}} end");
+    try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "/bin/sh"));
+    try runtime.runString("hollow=nil;collectgarbage('collect')");
+    try std.testing.expectEqualStrings("Guest Distro", host.wsl.?.distro);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
+test "session borrowers host native connector accepts only supported local platforms" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initWithDiscovery(std.testing.allocator, &cfg, false);
+    defer runtime.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={},remote_shell=false}} end}");
+    const target = @import("builtin");
+    const supported = target.os.tag == .linux or (target.os.tag == .windows and target.cpu.arch == .x86_64);
+    if (supported) {
+        const host = try runtime.sessionHost(arena.allocator(), null, "sh");
+        try std.testing.expectEqual(@as(usize, 0), host.connector.argv.len);
+        try std.testing.expect(!host.fallback);
+    } else {
+        try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+    }
+    try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={},remote_shell=true}} end}");
+    try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+    for ([_][:0]const u8{ "'/opt/agent'", "'C:\\\\Program Files\\\\Hollow\\\\agent.exe'", "'\\\\\\\\server\\\\share\\\\agent.exe'", "'C:agent.exe'", "'C:\\\\bad\\0agent.exe'" }, 0..) |path, i| {
+        const script = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit',path_style='posix',connector={{argv={{}}}},agent={{path={s}}}}} end}}", .{path}, 0);
+        try runtime.runString(script);
+        const valid = supported and (if (target.os.tag == .windows) i == 1 or i == 2 else i == 0);
+        if (valid) {
+            const host = try runtime.sessionHost(arena.allocator(), null, "sh");
+            try std.testing.expect(host.agent.path != null);
+        } else {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        }
+        // Guest paths remain Linux paths on every client platform.
+        const guest = try std.fmt.allocPrintSentinel(arena.allocator(), "hollow = {{_session_host = function() return {{mode='explicit',path_style='posix',connector={{argv={{'ssh','box'}}}},agent={{path={s}}}}} end}}", .{path}, 0);
+        try runtime.runString(guest);
+        if (i == 0) {
+            _ = try runtime.sessionHost(arena.allocator(), null, "sh");
+        } else {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, "sh"));
+        }
+    }
+    if (target.os.tag == .windows) {
+        try runtime.runString("hollow = {_session_host = function() return {mode='explicit',path_style='posix',connector={argv={}}} end}");
+        for ([_][]const u8{ "wsl.exe", "\"C:\\Windows\\System32\\WSL.EXE\" -d Ubuntu", "pwsh.exe\x00bad" }) |shell| {
+            try std.testing.expectError(error.InvalidSessionHost, runtime.sessionHost(arena.allocator(), null, shell));
+        }
+    }
+}
+
+test "session borrowers config parses persistence without requiring a domain shell" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initWithDiscovery(std.testing.allocator, &cfg, false);
+    defer runtime.deinit();
+    const top = runtime.context.api.get_top(runtime.state);
+    try runtime.runString(
+        \\host_api.set_config({ default_domain = 'persist_only', domains = {
+        \\  ordinary = '/bin/sh',
+        \\  persist_only = { persist = true },
+        \\  disabled = { persist = false },
+        \\  hosted = { host = { type = 'local' }, persist = true },
+        \\  shell = { shell = '/bin/zsh', persist = true },
+        \\} })
+    );
+    try std.testing.expect(cfg.persistForDomain(null));
+    try std.testing.expect(cfg.persistForDomain("persist_only"));
+    try std.testing.expect(cfg.domainByName("persist_only").?.shell == null);
+    try std.testing.expect(cfg.persistForDomain("hosted"));
+    try std.testing.expect(cfg.domainByName("hosted").?.shell == null);
+    try std.testing.expect(cfg.domainByName("disabled") != null);
+    try std.testing.expect(!cfg.persistForDomain("disabled"));
+    try std.testing.expect(!cfg.persistForDomain("ordinary"));
+    try std.testing.expect(cfg.persistForDomain("shell"));
+    try std.testing.expectEqualStrings("/bin/zsh", cfg.domainByName("shell").?.shell.?);
+    try std.testing.expectEqual(config.Config.SessionUpgrade.handoff, cfg.domainByName("persist_only").?.upgrade);
+    try runtime.runString("host_api.set_config({ domains = { pinned = { persist = true, upgrade = 'retire_empty' }, typo = { persist = true, upgrade = 'sometimes' } } })");
+    try std.testing.expectEqual(config.Config.SessionUpgrade.retire_empty, cfg.domainByName("pinned").?.upgrade);
+    try std.testing.expectEqual(config.Config.SessionUpgrade.handoff, cfg.domainByName("typo").?.upgrade);
+    try runtime.runString("host_api.set_config({ domains = { persist_only = { persist = false } } })");
+    try std.testing.expect(!cfg.persistForDomain(null));
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
+test "session borrowers config ignores nonboolean persistence values" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initWithDiscovery(std.testing.allocator, &cfg, false);
+    defer runtime.deinit();
+    try cfg.setDomainPersist("enabled", true);
+    const top = runtime.context.api.get_top(runtime.state);
+    try runtime.runString(
+        \\for _, value in ipairs({ 'true', 'false', 0, 1, {}, function() end }) do
+        \\  host_api.set_config({ domains = {
+        \\    enabled = { persist = value },
+        \\    ordinary = { shell = '/bin/sh', persist = value },
+        \\    invalid_only = { persist = value },
+        \\  } })
+        \\end
+    );
+    try std.testing.expect(cfg.persistForDomain("enabled"));
+    try std.testing.expect(!cfg.persistForDomain("ordinary"));
+    try std.testing.expect(cfg.domainByName("invalid_only") == null);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
 test "set_config ignores window size once the GUI is ready" {
     var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
@@ -8038,6 +8619,19 @@ test "set_config ignores window size once the GUI is ready" {
     try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
     try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
     try std.testing.expectEqual(@as(u16, 90), cfg.cols);
+}
+
+test "set_config toggles window placement restoration" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(cfg.restore_window_placement);
+    try runtime.runString("host_api.set_config({ restore_window_placement = false })");
+    try std.testing.expect(!cfg.restore_window_placement);
+    runtime.markGuiReady();
+    try runtime.runString("host_api.set_config({ restore_window_placement = true })");
+    try std.testing.expect(cfg.restore_window_placement);
 }
 
 test "spawn filter bridge commits valid results atomically and preserves stack" {
@@ -8239,6 +8833,64 @@ test "overlay segment padding parses and contributes to row insets" {
     const truncated = parseSegmentArray(api, runtime.state, segments[0..1], &text, -1);
     try std.testing.expectEqual(@as(usize, 1), truncated.len);
     try std.testing.expectEqual(stack_top, api.get_top(runtime.state));
+}
+
+test "session borrowers operation callback reports persistent open failure and recovery details" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("results = {}; function record(value) results[#results + 1] = value end");
+    const api = runtime.context.api;
+    inline for (.{
+        OperationCallbackPayload{ .failure = .{ .reason = "Rejected", .outcome = "rejected", .remote = "SessionNotFound" } },
+        OperationCallbackPayload{ .failure = .{ .reason = "Disconnected", .outcome = "uncertain", .session_id = "0123456789abcdef0123456789abcdef" } },
+    }) |payload| {
+        api.get_field(runtime.state, LUA_GLOBALSINDEX, "record");
+        runtime.invokeOperationCallback(api.ref(runtime.state, LUA_REGISTRYINDEX), false, payload);
+    }
+    try runtime.runString(
+        \\local missing, lost = results[1], results[2]
+        \\assert(missing.success == false and missing.status == "session_not_found")
+        \\assert(missing.error == "Rejected" and missing.outcome == "rejected" and missing.remote == "SessionNotFound")
+        \\assert(lost.status == "session_open_failed" and lost.outcome == "uncertain" and lost.remote == nil)
+        \\assert(missing.session_id == nil and lost.session_id == "0123456789abcdef0123456789abcdef")
+    );
+}
+
+test "session borrowers workspace close reports session identity and startup restore" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.initForTests(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\closed = {}
+        \\hollow = {
+        \\  _emit_builtin_event = function(name, payload) closed[#closed + 1] = payload end,
+        \\  _session_startup = function(domain) startup_domain = domain; return domain == "main" end,
+        \\}
+    );
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = "work" } });
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s1", .session_host = "h1", .session_ended = true } });
+    runtime.emitBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .session_id = "s2" } });
+    runtime.emitBuiltInEvent("session:handoff", .{ .session_handoff = .{ .from = "0123456789ab", .to = "ba9876543210", .ok = true } });
+    try std.testing.expect(runtime.emitBuiltInEventChecked("session:notice", .{ .session_notice = .{ .id = 7, .connecting = true, .level = "info", .title = "Connecting", .message = "a\nb" } }));
+    runtime.emitBuiltInEvent("session:notice", .{ .session_notice = .{ .id = 7, .close = true, .title = "unused" } });
+    try std.testing.expect(runtime.sessionStartup("main"));
+    try runtime.runString(
+        \\local named, ended, detached = closed[1], closed[2], closed[3]
+        \\assert(named.name == "work" and named.session_id == nil and named.session_ended == nil)
+        \\assert(ended.name == nil and ended.session_id == "s1" and ended.session_host == "h1" and ended.session_ended == true)
+        \\assert(detached.session_id == "s2" and detached.session_host == nil and detached.session_ended == false)
+        \\assert(closed[4].from == "0123456789ab" and closed[4].to == "ba9876543210" and closed[4].ok == true)
+        \\local shown, gone = closed[5], closed[6]
+        \\assert(shown.id == 7 and shown.connecting == true and shown.level == "info" and shown.title == "Connecting" and shown.message == "a\nb")
+        \\assert(gone.id == 7 and gone.close == true and gone.title == nil)
+        \\assert(startup_domain == "main")
+    );
+    try std.testing.expect(!runtime.sessionStartup(null));
+    try runtime.runString("hollow._session_startup = nil");
+    try std.testing.expect(!runtime.sessionStartup("main"));
 }
 
 test "HTP bridge forwards receipt timestamp and cwd" {

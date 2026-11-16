@@ -25,10 +25,33 @@ const PaneEdge = types.PaneEdge;
 
 pub const Mux = struct {
     pub const PaneSplitInfo = Tab.PaneSplitInfo;
+    pub const SessionPlacement = union(enum) {
+        tab: struct { after_tab_id: ?usize = null, insert_at_end: bool = false },
+        split: struct {
+            tab_id: usize,
+            source_id: usize,
+            direction: SplitDirection,
+            ratio: f32,
+            edge: ?PaneEdge = null,
+            floating: bool = false,
+            x: ?f32 = null,
+            y: ?f32 = null,
+            width: ?f32 = null,
+            height: ?f32 = null,
+            fullscreen: bool = false,
+        },
+        /// New pane appears directly in a dock slot of the admitting workspace.
+        dock: struct {
+            edge: PaneEdge,
+            scope: DockScope,
+            ratio: f32 = 0.3,
+        },
+    };
 
     allocator: std.mem.Allocator,
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
+    session_workspace_count: usize = 0,
     next_id: usize = 1,
     next_pane_id: std.atomic.Value(usize) = .init(1),
     host_context: ?*anyopaque = null,
@@ -44,6 +67,8 @@ pub const Mux = struct {
     global_docks: Docks = .{},
     /// Focused dock pane; overrides the active tab's pane while it is shown.
     focused_dock: ?*Pane = null,
+    /// Persistent identity of that workspace, consumed and freed alongside it.
+    last_removed_session: ?RemovedSession = null,
 
     pub const DockLocation = struct {
         scope: DockScope,
@@ -53,6 +78,25 @@ pub const Mux = struct {
         /// The dock's share of its carved region.
         ratio: f32 = 0,
     };
+
+    pub const RemovedSession = struct {
+        id: []u8,
+        host: ?[]u8,
+        /// The owner acknowledged closing every pane, so the session is gone.
+        /// False when only local views closed (detach, take-over, lost link).
+        ended: bool,
+
+        pub fn deinit(self: RemovedSession, allocator: std.mem.Allocator) void {
+            allocator.free(self.id);
+            if (self.host) |host| allocator.free(host);
+        }
+    };
+
+    pub fn takeRemovedSession(self: *Mux) ?RemovedSession {
+        const value = self.last_removed_session;
+        self.last_removed_session = null;
+        return value;
+    }
 
     pub const PaneIterator = struct {
         mux: *Mux,
@@ -107,6 +151,7 @@ pub const Mux = struct {
         self.workspaces.deinit(self.allocator);
         self.global_docks.deinit(self.allocator, runtime);
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
+        if (self.last_removed_session) |value| value.deinit(self.allocator);
         self.* = Mux.init(self.allocator);
     }
 
@@ -147,6 +192,427 @@ pub const Mux = struct {
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
         self.notifyCreated(self.activePane().?);
+    }
+
+    /// Publish views for an attached owner session without running a local
+    /// shell. Validate saved geometry before allocating or binding views.
+    /// Sessions with no GUI layout get
+    /// one tab per owner pane in owner order. No owner state is overwritten.
+    pub fn addSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Workspace {
+        return self.addSessionWorkspaceNamed(runtime, callbacks, cfg, controller, info, domain, before_replace, null);
+    }
+
+    pub fn addSessionWorkspaceNamed(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, name: ?[]const u8) !*Workspace {
+        return self.buildSessionWorkspace(runtime, callbacks, cfg, controller, info, domain, before_replace, name, null);
+    }
+
+    pub fn replaceSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, workspace_id: usize) !*Workspace {
+        const old = self.workspaceById(workspace_id) orelse return error.WorkspaceNotFound;
+        const previous = old.session_controller orelse return error.NotSessionWorkspace;
+        if (!previous.detached and previous.connection.status().phase != .ended) return error.SessionStillAttached;
+        if (!std.mem.eql(u8, previous.session_id, info.id)) return error.WrongSession;
+        if (previous.host.len > 0 and !std.mem.eql(u8, previous.host, controller.host)) return error.SessionHostChanged;
+        return self.buildSessionWorkspace(runtime, callbacks, cfg, controller, info, domain, before_replace, null, old);
+    }
+
+    fn buildSessionWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, info: @import("../agent/session_protocol.zig").SessionInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, name: ?[]const u8, replacement: ?*Workspace) !*Workspace {
+        const codec = @import("../session/layout.zig");
+        const geometry = @import("session_layout.zig");
+        if (info.panes.len == 0) return error.EmptySession;
+        if (info.panes.len > codec.max_panes) return error.InvalidSessionLayout;
+        if (!std.mem.eql(u8, controller.session_id, info.id)) return error.WrongSession;
+        var ids: [codec.max_panes]u32 = undefined;
+        for (info.panes, 0..) |remote, i| {
+            if (remote.id == 0) return error.InvalidSessionLayout;
+            for (ids[0..i]) |id| if (id == remote.id) return error.InvalidSessionLayout;
+            ids[i] = remote.id;
+        }
+        const reconciled: ?codec.Reconciled = if (info.layout.len == 0) null else codec.decodeReconciled(self.allocator, info.layout, ids[0..info.panes.len]) catch |err| switch (err) {
+            error.InvalidSessionLayout, error.SessionLayoutTooLarge => blk: {
+                std.log.warn("session layout unusable ({s}); restoring one tab per pane", .{@errorName(err)});
+                break :blk null;
+            },
+            else => return err,
+        };
+        defer if (reconciled) |value| value.deinit();
+        const saved = if (reconciled) |value| value.parsed else null;
+        // Temporarily free only this attachment's global slots. No callbacks
+        // run before commit, and failure restores every frozen view and ratio.
+        var displaced: Docks = .{};
+        var committed = false;
+        if (replacement) |old| {
+            var global = self.global_docks.iterator();
+            while (global.next()) |pane| {
+                if (self.controllerForPane(pane.id) != old.session_controller) continue;
+                const edge = self.global_docks.edgeOf(pane).?;
+                const ratio = self.global_docks.size(edge);
+                _ = self.global_docks.remove(pane);
+                displaced.place(edge, pane, ratio) catch unreachable;
+            }
+        }
+        defer if (!committed) {
+            var restore = displaced.iterator();
+            while (restore.next()) |pane| {
+                const edge = displaced.edgeOf(pane).?;
+                self.global_docks.place(edge, pane, displaced.size(edge)) catch unreachable;
+            }
+        };
+        const workspace = try self.createWorkspace();
+        errdefer {
+            workspace.deinit(runtime);
+            self.allocator.destroy(workspace);
+        }
+        workspace.session_controller = controller;
+        if (replacement) |old| try workspace.setDefaultCwd(old.default_cwd);
+        if (name) |value| {
+            try workspace.setName(value);
+        } else if (saved) |value| {
+            if (value.value.name) |saved_name| try workspace.setName(saved_name);
+        }
+        const tab_count = if (saved) |value| value.value.tabs.len else info.panes.len;
+        var restored_ids: [codec.max_panes]u32 = undefined;
+        var restored_panes: [codec.max_panes]*Pane = undefined;
+        var restored_count: usize = 0;
+        var restored_global: [4]*Pane = undefined;
+        var restored_global_count: usize = 0;
+        // Global docks outlive this workspace's failure cleanup.
+        errdefer for (restored_global[0..restored_global_count]) |pane| {
+            _ = self.global_docks.remove(pane);
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        };
+        for (0..tab_count) |index| {
+            const tab = try self.createTab();
+            var tab_owned = false;
+            defer if (!tab_owned) {
+                tab.deinit(runtime);
+                self.allocator.destroy(tab);
+            };
+            if (saved) |value| {
+                const layout_tab = value.value.tabs[index];
+                for (layout_tab.nodes) |node| if (node.pane) |id| {
+                    for (info.panes) |remote| if (remote.id == id) {
+                        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                        break;
+                    };
+                };
+                for (layout_tab.floating) |floating| {
+                    for (info.panes) |remote| if (remote.id == floating.pane) {
+                        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                        break;
+                    };
+                }
+                try geometry.restoreTab(tab, layout_tab);
+            } else {
+                try self.appendSessionView(tab, runtime, callbacks, cfg, controller, info.panes[index], domain, before_replace);
+                const root = try self.allocator.create(SplitNode);
+                root.* = SplitNode.initPane(tab.panes.items[0]);
+                tab.root_split = root;
+                tab.active_pane = tab.panes.items[0];
+            }
+            try workspace.appendTab(tab);
+            tab_owned = true;
+            try recordSessionPanes(tab, &restored_ids, &restored_panes, &restored_count);
+        }
+        if (saved) |value| {
+            for (value.value.docks) |dock| {
+                const remote = for (info.panes) |item| {
+                    if (item.id == dock.pane) break item;
+                } else return error.InvalidSessionLayout;
+                const edge: PaneEdge = @fromBackingInt(@intCast(@backingInt(dock.edge)));
+                if (dock.scope == .global and self.global_docks.slot(edge).pane != null) {
+                    // A window dock already holds a pane from another
+                    // attachment: publish this one as an ordinary tab instead.
+                    const tab = try self.appendSessionPaneTab(workspace, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                    try recordSessionPanes(tab, &restored_ids, &restored_panes, &restored_count);
+                    continue;
+                }
+                const pane = try self.createSessionDockView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+                var placed = false;
+                errdefer if (!placed) {
+                    pane.deinit(runtime);
+                    self.allocator.destroy(pane);
+                };
+                if (dock.scope == .global) {
+                    self.global_docks.place(edge, pane, dock.ratio) catch |err| return err;
+                    restored_global[restored_global_count] = pane;
+                    restored_global_count += 1;
+                } else {
+                    workspace.docks.place(edge, pane, dock.ratio) catch |err| return err;
+                }
+                placed = true;
+                if (restored_count == codec.max_panes) return error.InvalidSessionLayout;
+                restored_ids[restored_count] = dock.pane;
+                restored_panes[restored_count] = pane;
+                restored_count += 1;
+            }
+            workspace.active_tab = workspace.tabs.items[value.value.active_tab];
+            for (value.value.hidden) |id| {
+                var target: ?*Pane = null;
+                for (restored_ids[0..restored_count], restored_panes[0..restored_count]) |owner, pane| {
+                    if (owner == id) {
+                        target = pane;
+                        break;
+                    }
+                }
+                const pane = target orelse continue;
+                // A hidden pane cannot be its tab's active pane. Global-dock
+                // fallback tabs keep that pane visible instead. The workspace
+                // is not in `self.workspaces` yet, so scan it directly.
+                var active = false;
+                for (workspace.tabs.items) |tab| {
+                    if (tab.active_pane == pane) {
+                        active = true;
+                        break;
+                    }
+                }
+                if (active) continue;
+                pane.is_hidden = true;
+            }
+        }
+        if (replacement) |old| {
+            workspace.id = old.id;
+            for (self.workspaces.items) |*item| if (item.* == old) {
+                item.* = workspace;
+                break;
+            };
+            if (self.active_workspace == old) self.active_workspace = workspace;
+            for (old.tabs.items) |tab| self.notifyTabClosing(tab);
+            var local_docks = old.docks.iterator();
+            while (local_docks.next()) |pane| {
+                self.notifyClosing(pane);
+                if (self.focused_dock == pane) self.focused_dock = null;
+            }
+            var global = displaced.iterator();
+            while (global.next()) |pane| {
+                self.notifyClosing(pane);
+                if (self.focused_dock == pane) self.focused_dock = null;
+            }
+            displaced.deinit(self.allocator, runtime);
+            old.deinit(runtime);
+            self.allocator.destroy(old);
+        } else {
+            try self.workspaces.append(self.allocator, workspace);
+            self.active_workspace = workspace;
+            self.session_workspace_count += 1;
+        }
+        committed = true;
+        var panes = workspace.paneIterator();
+        while (panes.next()) |pane| self.notifyCreated(pane);
+        for (restored_global[0..restored_global_count]) |pane| self.notifyCreated(pane);
+        return workspace;
+    }
+
+    fn recordSessionPanes(tab: *Tab, ids: *[@import("../session/layout.zig").max_panes]u32, panes: *[@import("../session/layout.zig").max_panes]*Pane, count: *usize) !void {
+        const max_panes = @import("../session/layout.zig").max_panes;
+        for (tab.panes.items) |pane| {
+            if (count.* == max_panes) return error.InvalidSessionLayout;
+            ids[count.*] = try @import("session_layout.zig").ownerId(pane);
+            panes[count.*] = pane;
+            count.* += 1;
+        }
+    }
+
+    fn createSessionDockView(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Pane {
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        errdefer {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        }
+        try controller.bind(pane);
+        return pane;
+    }
+
+    fn appendSessionPaneTab(self: *Mux, workspace: *Workspace, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Tab {
+        const tab = try self.createTab();
+        errdefer {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        }
+        try self.appendSessionView(tab, runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        const root = try self.allocator.create(SplitNode);
+        root.* = SplitNode.initPane(tab.panes.items[0]);
+        tab.root_split = root;
+        tab.active_pane = tab.panes.items[0];
+        try workspace.appendTab(tab);
+        return tab;
+    }
+
+    fn appendSessionView(self: *Mux, tab: *Tab, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !void {
+        try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        errdefer {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        }
+        try controller.bind(pane);
+        tab.panes.appendAssumeCapacity(pane);
+    }
+
+    fn allocateSessionView(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void) !*Pane {
+        const pane = try self.allocator.create(Pane);
+        pane.* = Pane.init(self.allocator);
+        errdefer {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        }
+        pane.id = self.reservePaneId();
+        pane.host_context = self.host_context;
+        const term = &pane.content.terminal;
+        term.host_wake = self.host_wake;
+        var pane_cfg = cfg;
+        pane_cfg.cols = remote.cols;
+        pane_cfg.rows = remote.rows;
+        try term.bootstrapSession(pane, runtime, callbacks, pane_cfg, @import("../pty/session.zig").SessionPty.init(self.allocator, controller.connection, remote.id, controller.generation, remote.exit));
+        term.pty.?.session.close_on_exit = remote.close_on_exit;
+        term.session_before_replace = before_replace;
+        if (domain) |name| term.domain_name = try self.allocator.dupe(u8, name);
+        if (remote.cwd.len > 0) pane.cwd = try self.allocator.dupe(u8, remote.cwd);
+        if (remote.foreground_process.len > 0) pane.foreground_process = try self.allocator.dupe(u8, remote.foreground_process);
+        pane.cols = remote.cols;
+        pane.rows = remote.rows;
+        return pane;
+    }
+
+    /// Publish an acknowledged owner spawn at its captured destination, never
+    /// launching a local process or borrowing global focus during allocation.
+    pub fn addSessionPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, controller: *@import("../session/controller.zig").Controller, workspace_id: usize, remote: @import("../agent/session_protocol.zig").PaneInfo, domain: ?[]const u8, before_replace: ?*const fn (*Pane) void, placement: SessionPlacement) !*Pane {
+        const ws = self.workspaceById(workspace_id) orelse return error.WorkspaceNotFound;
+        if (ws.session_controller != controller) return error.WrongSession;
+        if (remote.id == 0 or remote.cols == 0 or remote.rows == 0) return error.InvalidSessionLayout;
+        var count: usize = 0;
+        for (controller.bindings) |slot| if (slot != null) {
+            count += 1;
+        };
+        if (count >= @import("../session/layout.zig").max_panes) return error.ResourceExhausted;
+
+        const pane = try self.allocateSessionView(runtime, callbacks, cfg, controller, remote, domain, before_replace);
+        var published = false;
+        defer if (!published) {
+            pane.deinit(runtime);
+            self.allocator.destroy(pane);
+        };
+        // Spawn replies have no snapshot; live output may be parsed immediately.
+        pane.content.terminal.terminal_output_ready = true;
+
+        if (placement == .dock) {
+            const spec = placement.dock;
+            const docks = try self.dockTarget(spec.scope, ws);
+            if (docks.slot(spec.edge).pane == null) {
+                try controller.bind(pane);
+                docks.place(spec.edge, pane, spec.ratio) catch unreachable;
+                pane.is_floating = false;
+                pane.placed_edge = null;
+                pane.is_hidden = false;
+                published = true;
+                if (self.active_workspace == ws) self.focused_dock = pane;
+                self.notifyCreated(pane);
+                return pane;
+            }
+            // Another session may have claimed the shared global edge while this
+            // spawn was in flight. Keep the acknowledged pane as a tab rather
+            // than aborting an otherwise healthy attachment.
+        }
+
+        if (placement == .split) {
+            const spec = placement.split;
+            if (ws.tabById(spec.tab_id)) |tab| {
+                var source: ?*Pane = null;
+                for (tab.panes.items) |candidate| if (candidate.id == spec.source_id) {
+                    source = candidate;
+                    break;
+                };
+                if (source) |anchor| {
+                    if (tab.panes.items.len >= 64) return error.ResourceExhausted;
+                    const old_active = tab.active_pane;
+                    const old_maximized = tab.maximized_pane;
+                    const old_background = tab.maximized_show_background;
+                    const activate = self.active_workspace == ws and ws.active_tab == tab and old_active == anchor;
+                    try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+                    try controller.bind(pane);
+                    tab.active_pane = anchor;
+                    defer if (!published or !activate) {
+                        tab.active_pane = old_active;
+                        tab.maximized_pane = old_maximized;
+                        tab.maximized_show_background = old_background;
+                    };
+                    if (spec.edge) |edge| {
+                        try tab.splitEdge(pane, dock_mod.directionFor(edge), spec.ratio, dock_mod.placesFirst(edge));
+                    } else if (spec.floating) {
+                        tab.panes.appendAssumeCapacity(pane);
+                        _ = tab.setPaneFloating(pane, true);
+                        var restore_anchor: ?*Pane = if (!anchor.is_floating) anchor else null;
+                        if (restore_anchor == null) for (tab.panes.items) |candidate| {
+                            if (candidate != pane and !candidate.is_floating) {
+                                restore_anchor = candidate;
+                                break;
+                            }
+                        };
+                        if (restore_anchor) |value| pane.restore_anchor_id = value.id;
+                        pane.restore_ratio = std.math.clamp(spec.ratio, 0.05, 0.95);
+                        pane.restore_split_horizontal = spec.direction == .horizontal;
+                        _ = tab.setFloatingPaneBounds(pane, spec.x orelse pane.floating_x, spec.y orelse pane.floating_y, spec.width orelse pane.floating_width, spec.height orelse pane.floating_height);
+                    } else {
+                        const was_floating = anchor.is_floating;
+                        if (anchor.is_floating and (if (tab.root_split) |root| layout.findPaneLeafNode(root, anchor) == null else true)) {
+                            try tab.splitFloatingSessionPane(anchor, pane, spec.direction, spec.ratio);
+                        } else {
+                            try tab.splitActivePane(pane, spec.direction, spec.ratio);
+                        }
+                        if (was_floating) {
+                            anchor.floating_x = 0.15;
+                            anchor.floating_y = 0.1;
+                            anchor.floating_width = 0.7;
+                            anchor.floating_height = 0.75;
+                        }
+                    }
+                    if (spec.fullscreen and activate) _ = tab.setPaneMaximized(pane, true, false);
+                    published = true;
+                    // Restore non-activating focus before observers run.
+                    if (!activate) {
+                        tab.active_pane = old_active;
+                        tab.maximized_pane = old_maximized;
+                        tab.maximized_show_background = old_background;
+                    }
+                    self.notifyCreated(pane);
+                    return pane;
+                }
+            }
+        }
+
+        const tab = try self.createTab();
+        defer if (!published) {
+            tab.deinit(runtime);
+            self.allocator.destroy(tab);
+        };
+        // Keep pane ownership here until binding and all layout/list allocations
+        // succeed, so failure never needs an allocating layout rollback.
+        try ws.tabs.ensureUnusedCapacity(self.allocator, 1);
+        try tab.panes.ensureUnusedCapacity(self.allocator, 1);
+        const root = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(root);
+        root.* = SplitNode.initPane(pane);
+        var insert_at = ws.tabs.items.len;
+        var activate = false;
+        if (placement == .tab) {
+            const spec = placement.tab;
+            if (spec.after_tab_id) |id| for (ws.tabs.items, 0..) |existing, index| {
+                if (existing.id == id) {
+                    if (!spec.insert_at_end) insert_at = index + 1;
+                    activate = self.active_workspace == ws and ws.active_tab == existing;
+                    break;
+                }
+            };
+        }
+        try controller.bind(pane);
+        tab.root_split = root;
+        tab.panes.appendAssumeCapacity(pane);
+        tab.active_pane = pane;
+        ws.tabs.insertAssumeCapacity(insert_at, tab);
+        if (activate) ws.active_tab = tab;
+        published = true;
+        self.notifyCreated(pane);
+        return pane;
     }
 
     fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !*Workspace {
@@ -190,6 +656,19 @@ pub const Mux = struct {
 
     pub fn activeWorkspace(self: *Mux) ?*Workspace {
         return self.active_workspace;
+    }
+
+    pub fn controllerForPane(self: *Mux, id: usize) ?*@import("../session/controller.zig").Controller {
+        if (self.session_workspace_count == 0) return null;
+        for (self.workspaces.items) |workspace| {
+            const controller = workspace.session_controller orelse continue;
+            // Bindings retain ownership when a view moves out of its tab into
+            // a global or borrowed workspace dock.
+            for (controller.bindings) |slot| if (slot) |entry| {
+                if (entry.node != null and entry.local_id == id) return controller;
+            };
+        }
+        return null;
     }
 
     pub fn activeTab(self: *Mux) ?*Tab {
@@ -389,6 +868,8 @@ pub const Mux = struct {
     /// Return a docked pane to the active tab along the same edge and size.
     pub fn undockPane(self: *Mux, pane: *Pane) !void {
         const location = self.paneDock(pane) orelse return error.PaneNotDocked;
+        const workspace = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (self.controllerForPane(pane.id) != workspace.session_controller) return error.CrossSessionMove;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const docks = self.docksFor(location);
         const size = docks.size(location.edge);
@@ -521,6 +1002,7 @@ pub const Mux = struct {
     }
 
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
+        if (cfg.persistForDomain(domain_name)) return error.PersistentDomainRequiresWorkspace;
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         pane.id = self.reservePaneId();
@@ -567,6 +1049,7 @@ pub const Mux = struct {
     /// Nonactivating creation retains the pane and drains output without focus.
     pub fn newTabWithFocus(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool, activate: bool) !*Tab {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse if (current_pane) |pane|
             if (pane.domainName().len > 0) pane.domainName() else cfg.defaultDomainName()
@@ -622,6 +1105,7 @@ pub const Mux = struct {
     /// transfers only after all fallible allocations have succeeded.
     pub fn newTabWithPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = try self.createTab();
         errdefer {
             tab.deinit(runtime);
@@ -809,6 +1293,7 @@ pub const Mux = struct {
     }
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand) !*Pane {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         return self.splitActivePanePlaced(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, direction, ratio, domain_name, cwd, floating, launch_command, null);
     }
 
@@ -857,6 +1342,7 @@ pub const Mux = struct {
     /// Insert any content kind using the same split/floating layout path.
     /// Ownership transfers to the tab only on success.
     pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         self.focused_dock = null;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
@@ -888,6 +1374,7 @@ pub const Mux = struct {
 
     /// Insert `new_pane` along a window edge of the active tab's tiled layout.
     pub fn splitEdgeWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, place_first: bool) !void {
+        if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = self.activeTab() orelse return error.NoActiveTab;
         try tab.splitEdge(new_pane, direction, ratio, place_first);
         self.focused_dock = null;
@@ -1013,6 +1500,7 @@ pub const Mux = struct {
         const t = tab orelse return false;
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target = self.workspaces.items[target_workspace_index];
+        if (src.session_controller != null or target.session_controller != null) return false;
         if (target == src) return false;
         const insert_at = if (target.active_tab) |_| target.activeTabIndex() + 1 else target.tabs.items.len;
         target.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
@@ -1049,6 +1537,7 @@ pub const Mux = struct {
         const src_ws = source_ws orelse return false;
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target_ws = self.workspaces.items[target_workspace_index];
+        if (src_ws.session_controller != null or target_ws.session_controller != null) return false;
         if (target_ws == src_ws) return false;
         const insert_at = if (target_ws.active_tab) |_| target_ws.activeTabIndex() + 1 else target_ws.tabs.items.len;
         target_ws.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
@@ -1153,6 +1642,15 @@ pub const Mux = struct {
         return false;
     }
 
+    fn removedSession(allocator: std.mem.Allocator, controller: *@import("../session/controller.zig").Controller) !RemovedSession {
+        const id = try allocator.dupe(u8, controller.session_id);
+        errdefer allocator.free(id);
+        const host = if (controller.host.len > 0) try allocator.dupe(u8, controller.host) else null;
+        // Only owner-acknowledged closes remove a live attachment's last pane.
+        const ended = !controller.detached and controller.connection.status().phase != .ended;
+        return .{ .id = id, .host = host, .ended = ended };
+    }
+
     fn removeWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace: *Workspace) bool {
         var idx: ?usize = null;
         for (self.workspaces.items, 0..) |ws, i| {
@@ -1166,7 +1664,18 @@ pub const Mux = struct {
 
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
         self.last_removed_workspace_name = if (workspace.name) |n| self.allocator.dupe(u8, n) catch null else null;
+        if (self.last_removed_session) |value| value.deinit(self.allocator);
+        self.last_removed_session = if (workspace.session_controller) |controller| removedSession(self.allocator, controller) catch null else null;
 
+        // Global is a visibility scope, not ownership independent of the
+        // persistent attachment. Detached/local workspace removal drops its
+        // global views too; live removal is gated by close acknowledgements.
+        if (workspace.session_controller) |controller| {
+            var global = self.global_docks.iterator();
+            while (global.next()) |pane| {
+                if (self.controllerForPane(pane.id) == controller) self.destroyDockPane(runtime, pane);
+            }
+        }
         for (workspace.tabs.items) |tab| self.notifyTabClosing(tab);
         var docked = workspace.docks.iterator();
         while (docked.next()) |pane| {
@@ -1174,6 +1683,7 @@ pub const Mux = struct {
             if (self.focused_dock == pane) self.focused_dock = null;
         }
         _ = self.workspaces.orderedRemove(remove_idx);
+        if (workspace.session_controller != null) self.session_workspace_count -= 1;
         workspace.deinit(runtime);
         self.allocator.destroy(workspace);
 

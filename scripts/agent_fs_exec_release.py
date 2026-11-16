@@ -19,7 +19,7 @@ PROFILES = ("local", "podman", "ssh", "docker", "socket", "wsl")
 
 def commands(args):
     python = sys.executable
-    build = [args.zig, "build", "--build-file", "build-agent.zig", "-Doptimize=ReleaseSafe", *args.build_option]
+    build = [args.zig, "build", "--build-file", "build-agent.zig", "--cache-dir", ".zig-cache-agent", "-Doptimize=ReleaseSafe", *args.build_option]
     agent = str(ROOT / "zig-out/bin/hollow-agent")
     native = [*build, "test-host-lua", "test-host-lua-flat"]
     checks = [

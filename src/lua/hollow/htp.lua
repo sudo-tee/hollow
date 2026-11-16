@@ -139,6 +139,15 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       payload = util.clone_value(payload),
     }
 
+    -- Owner snapshot metadata, not a replayed command lifecycle event.
+    if channel == "session_foreground_process" then
+      local command = event_payload(ctx).command
+      if ctx.pane and type(command) == "string" then
+        hollow.term.set_pane_foreground_process(pane_id, command ~= "" and command or nil)
+      end
+      return true
+    end
+
     local is_command_lifecycle = channel == "command_started"
       or channel == "command_ended"
       or channel == "prompt_ready"

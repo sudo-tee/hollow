@@ -3,7 +3,7 @@
 # Reports cwd via OSC 7 and updates the window title via OSC 0 so the
 # host gets the same ambient metadata it receives from bash/zsh/fish.
 
-if (-not $env:HOLLOW_PANE_ID) { return }
+if (-not $env:HOLLOW_PANE_ID -and $env:HOLLOW_TRANSPORT -ne 'osc') { return }
 if ($global:_HOLLOW_PS_LOADED) { return }
 $global:_HOLLOW_PS_LOADED = $true
 

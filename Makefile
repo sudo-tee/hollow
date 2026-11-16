@@ -26,7 +26,7 @@ help:
 	  '  make launch       Windows cross-build and launch' \
 	  '  make bench        List or run benchmarks' \
 	  '  make test         Run Zig unit tests' \
-	  '  make test-all     Run native and Lua tests' \
+	  '  make test-all     Run native, Lua, and Python harness tests' \
 	  '  make test-lua     Run Lua tests' \
 	  '  make test-launch  Run launch script tests' \
 	  '' \

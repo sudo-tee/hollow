@@ -26,6 +26,19 @@ pub const TerminalPane = struct {
     spawn_filter: @import("../pty/spawn_spec.zig").Filter = .{},
     pty_host: @import("../pty/spawn_spec.zig").HostResolver = .{},
     pty: ?Pty = null,
+    session_callbacks: ?ghostty.TerminalCallbacks = null,
+    /// Controller-owned borrowers (e.g. search handles) must be released here,
+    /// while the old terminal is still alive. Must not reenter pane mutation.
+    session_before_replace: ?*const fn (*Pane) void = null,
+    session_view: ?struct {
+        context: *anyopaque,
+        id: usize,
+        unbind: *const fn (*anyopaque, usize) void,
+    } = null,
+    session_snapshot: ?*@import("session_snapshot_job.zig").Job = null,
+    session_snapshot_waiting: bool = false,
+    session_scrollback: usize = 0,
+    session_buffered_credit: usize = 0,
     terminal: ?*anyopaque = null,
     terminal_runtime: ?*ghostty.Runtime = null,
     render_state: ?*anyopaque = null,
@@ -124,6 +137,24 @@ pub const TerminalPane = struct {
         try context.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);
     }
 
+    /// Bind an already attached owner pane without spawning a local shell.
+    /// SessionPty ownership transfers only on success; live panes cannot convert.
+    pub fn bootstrapSession(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, callbacks: ghostty.TerminalCallbacks, cfg: Config, pty: @import("../pty/session.zig").SessionPty) !void {
+        try @import("session_pane.zig").bootstrap(self, node, runtime, callbacks, cfg, pty);
+    }
+
+    pub fn beginSessionSnapshot(self: *TerminalPane, node: *Pane, format: @import("../agent/session_protocol.zig").SnapshotFormat) !void {
+        try @import("session_pane.zig").beginSnapshot(self, node, format);
+    }
+
+    pub fn reviveSession(self: *TerminalPane, node: *Pane) void {
+        @import("session_pane.zig").revive(self, node);
+    }
+
+    pub fn pollSessionSnapshot(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime) !void {
+        try @import("session_pane.zig").pollSnapshot(self, node, runtime);
+    }
+
     pub fn pollPty(self: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, max_read_loops: usize, max_total_read: usize, budget_ns: i128, parse_chunk_bytes: usize, debug_overlay: bool) !usize {
         var context = self.runtimeContext(node);
         return context.pollPty(runtime, max_read_loops, max_total_read, budget_ns, parse_chunk_bytes, debug_overlay);
@@ -209,6 +240,11 @@ pub const TerminalPane = struct {
     }
 
     pub fn deinit(self: *TerminalPane, runtime: *ghostty.Runtime, allocator: std.mem.Allocator) void {
+        if (self.session_view) |view| view.unbind(view.context, view.id);
+        self.session_view = null;
+        // Decoder borrows this terminal after READY. Join and free it first.
+        if (self.session_snapshot) |job| job.destroy();
+        self.session_snapshot = null;
         self.deinitBuffers(allocator);
         self.deinitInput(runtime);
         self.freeRenderHandles(runtime);

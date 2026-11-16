@@ -62,6 +62,40 @@ pub const Spawn = struct {
     user_shell: bool = false,
 };
 
+/// Session exit policy follows the launched process, never an input key.
+pub fn sessionCloseOnExit(spawn: Spawn) bool {
+    if (spawn.close_on_exit) return true;
+    if (spawn.one_shot or spawn.command != null) return false;
+    if (spawn.argv.len == 0) return true;
+    const name = std.fs.path.basename(spawn.argv[0]);
+    const shell = blk: {
+        inline for (.{ "sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "mksh", "tcsh", "csh", "nu", "pwsh" }) |known| {
+            if (std.mem.eql(u8, name, known)) break :blk true;
+        }
+        break :blk false;
+    };
+    if (!shell) return false;
+    // Only login/interactive flags are unambiguously interactive launches.
+    for (spawn.argv[1..]) |arg| {
+        if (!std.mem.eql(u8, arg, "-i") and !std.mem.eql(u8, arg, "-l") and
+            !std.mem.eql(u8, arg, "-il") and !std.mem.eql(u8, arg, "-li") and
+            !std.mem.eql(u8, arg, "--login") and !std.mem.eql(u8, arg, "--interactive")) return false;
+    }
+    return true;
+}
+
+test "session exit policy distinguishes interactive shells from launched commands" {
+    try std.testing.expect(sessionCloseOnExit(.{}));
+    try std.testing.expect(sessionCloseOnExit(.{ .argv = &.{ "/bin/bash", "-l" } }));
+    try std.testing.expect(sessionCloseOnExit(.{ .argv = &.{"/usr/bin/fish"} }));
+    try std.testing.expect(!sessionCloseOnExit(.{ .argv = &.{"/usr/bin/htop"} }));
+    try std.testing.expect(!sessionCloseOnExit(.{ .argv = &.{ "/bin/sh", "-c", "exit 0" } }));
+    try std.testing.expect(!sessionCloseOnExit(.{ .argv = &.{ "/bin/bash", "script.sh" } }));
+    try std.testing.expect(!sessionCloseOnExit(.{ .command = "htop" }));
+    try std.testing.expect(!sessionCloseOnExit(.{ .one_shot = true, .command = "exit 7" }));
+    try std.testing.expect(sessionCloseOnExit(.{ .command = "htop", .close_on_exit = true }));
+}
+
 pub fn encodeResize(cols: u16, rows: u16) [4]u8 {
     var out: [4]u8 = undefined;
     std.mem.writeInt(u16, out[0..2], cols, .little);

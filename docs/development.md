@@ -1,8 +1,14 @@
 # Development
 
 Build the standalone CLI without GUI dependencies with
-`zig build --build-file build-agent.zig cli cli-all`. Run its shared command and
-transport checks with `zig build --build-file build-agent.zig test-cli`.
+`zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli cli-all`.
+Run its shared command and transport checks with `zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-cli`.
+
+Always give `build-agent.zig` its own cache directory.
+Zig 0.17 caches the configure result without the build file name in the key.
+`build.zig` and `build-agent.zig` share a build root, so a shared `.zig-cache` serves one file's step graph to the other.
+The symptom is `error: no such step: test-all` after an agent build, or GUI steps listed by `build-agent.zig`.
+If an old cache is already mixed up, delete `.zig-cache`.
 
 Command API checks can run without GUI libraries: `zig build test-command`.
 This covers command contracts/examples, native CLI parsing, and real loopback
@@ -80,7 +86,19 @@ installation are needed for `--build-only`, so it also works on Linux CI.
 Use `--install` from WSL to copy executables, available debug symbols,
 helpers, Lua files, and config to `C:\Applications\Hollow`. With this flag,
 the installed executable runs unless `--build-only` is also set.
+PDB files are copied only with `--pdb`, including when using `--no-build`; existing installed PDB files are otherwise left untouched.
 Combine `--install --no-build --build-only` to install an existing build.
+If the installed Hollow is running, `--install` restarts it, even with `--build-only`.
+It closes the app like the window close button, copies the files, and reopens it.
+The app stays closed during copying, and Windows may reopen it in the background.
+The reopened app is detached from the terminal, so the script exits and its log output is not shown.
+Restarts launch `hollow-native.exe` directly to avoid opening a console window for `hollow.exe`.
+Persistent sessions detach on close and are restored on reopen.
+It keeps going if closing Hollow hangs up the terminal running the install, and writes its output to `zig-out/install.log`.
+If Hollow does not exit within 3 seconds, installation stops without changing installed files or forcibly killing the app.
+The 3-second limit covers shutdown waiting only, not the build, PowerShell startup, copying, or app startup.
+The script reports close-check, copy, and launch-request timings separately and skips Lua/config files whose installed timestamps are already current.
+Dev copies running from `zig-out/bin` are left alone.
 Pass `--app-arg=...` to forward args the wrapper does not understand.
 
 Lua dev loop: after one build, Lua files under `src/lua/` are loaded
@@ -230,7 +248,11 @@ luarocks --lua-version=5.1 install busted 2.3.0
 ```
 
 Use `zig build test-lua` for the same Lua suite through the Zig build, or
-`zig build test-all` to run both native and Lua tests.
+`zig build test-all` to run native, Lua, and Python harness tests.
+Use `zig build test-harness` to run only the Python tests under `scripts/tests`, including installer fixtures and generated REPL signature freshness checks.
+These tests require Python 3 and Bash; optional shell checks skip when their shell is unavailable.
+After changing `types/hollow.lua`, run `python3 scripts/generate-repl-signatures.py` and commit the generated metadata with the API change.
+Normal builds and tests never regenerate this tracked file automatically.
 The Busted runner discovers every `src/lua/tests/test_*.lua` file, and accepts
 normal Busted options such as `--filter`, `--list`, and `--output=junit`.
 

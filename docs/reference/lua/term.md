@@ -232,6 +232,7 @@ excluded from layout, input hit testing and focus navigation. Tiled layouts
 expand into the freed area. Hiding the last visible pane in a tab is ignored.
 Snapshot objects include `is_hidden`. This is independent of terminal
 transport detach/reattach and does not persist the process across app exits.
+Owner-backed persistent sessions do save the hidden flag with the layout.
 `split_pane({ edge = "right", ratio = 0.3, command = "lazygit",
 command_mode = "spawn" })` creates an edge-docked PTY; edge placement
 cannot be combined with `floating = true`.
@@ -248,7 +249,9 @@ Docks keep a pane on a window edge across tab switches. `scope` is
 `"global"` (default, every workspace) or `"workspace"`; `ratio` (default
 0.3) is the dock's share of the window content. One pane per edge per
 scope; a tab's last pane and occupied slots are refused. Docked snapshots
-carry `dock = { edge, scope, workspace_id?, ratio }`. See
+carry `dock = { edge, scope, workspace_id?, ratio }`. Owner-backed
+persistent sessions save dock scope and ratio with the layout; a global
+dock is restored only in the session that owns its pane. See
 [Window docks](../../panes-tabs-workspaces.md#window-docks).
 
 ### Floating and maximized
@@ -362,6 +365,11 @@ state and readiness survive reloads.
 
 ```lua
 hollow.term.new_workspace(opts)         -- create
+hollow.term.attach_session(id, opts)    -- experimental persistent attachment
+hollow.term.list_sessions(opts)         -- discover persistent sessions on a host
+hollow.term.kill_session(id, opts?)     -- end one persistent session
+hollow.term.restore_sessions(opts?)     -- reattach remembered persistent sessions
+hollow.term.remembered_sessions()       -- sessions remembered for restore
 hollow.term.close_workspace(id?)
 hollow.term.next_workspace()
 hollow.term.prev_workspace()
@@ -384,6 +392,85 @@ hollow.term.set_theme(name)             -- switch active theme
   on_complete = function(result) ... end,  -- result.success, result.workspace_index
 }
 ```
+
+### Persistent workspaces
+
+For a domain with `persist = true`, `new_workspace` admits asynchronous owner creation instead of spawning an ordinary pane.
+Its completion callback runs after the workspace is published, not when the request is merely queued.
+`workspace.session_id` is the host-owned ID for a persistent workspace and is absent for an ordinary workspace.
+`workspace.session_host` is the owner's stable host ID, kept in the owner's state directory across restarts.
+It is absent for ordinary workspaces and for owners that predate host IDs.
+Together, `session_host` and `session_id` identify one session across domains that reach the same host.
+
+`attach_session(session_id, opts)` accepts a nonempty ID and optional `{ domain, name, on_complete }` table.
+The optional `trace_intent` is `"open"` or `"restore"` for diagnostic logs.
+It does not change attachment or takeover policy.
+The domain must have persistence enabled and resolve to the host that owns the session.
+An omitted domain inherits the current terminal domain, then the configured default domain.
+Attachment is asynchronous and uses the same `{ success, workspace_index }` completion result as `new_workspace`.
+It takes over any existing attachment without creating another shell.
+No create or attach request is automatically replayed after connection loss.
+A failed persistent open reports `status`, `error`, and `outcome`, plus `remote` when the owner answered.
+`status = "session_not_found"` means the owner is reachable and the session no longer exists, so opening a fresh workspace is safe.
+Any other failure has `status = "session_open_failed"`.
+An `outcome` of `"uncertain"` means the owner may have acted, so do not create a replacement.
+An uncertain create also includes `session_id` when the owner supports reserved create IDs.
+Use `list_sessions` in the original domain to check whether that ID exists, then explicitly call `attach_session`; never replay `new_workspace` or its startup command automatically.
+The ID is a recovery hint, not proof of success, and is absent for older owners and failed attaches.
+
+`respawn_pane(pane_id?)` restarts the exited process of a persistent pane from its original command, cwd, and environment.
+The old screen stays, and the new process writes below it.
+It returns `true` once queued; otherwise it returns `false, reason`, for example `"PaneAlive"`, `"NotSessionPane"`, or `"Unsupported"` for an owner that predates respawn.
+`term:pane_respawned` fires with `{ pane }` when the owner accepts; a rejection shows a native notice.
+A lost reply is never retried, and the pane stays exited until you respawn it again.
+While a persistent pane is exited, a footer shows its exit code, and Enter respawns it and Ctrl+D closes it.
+The `respawn_pane` action binds the same behavior to any key.
+
+`list_sessions({ domain?, on_complete })` asks the domain's host owner for its sessions without attaching to any of them.
+`kill_session(session_id, { domain?, on_complete? })` ends one session and all of its panes.
+Both resolve the domain like `attach_session` and open a short-lived connection of their own.
+They return `true` once queued; otherwise they return `nil, err` and the callback never runs.
+At most eight discovery queries run at once.
+
+```lua
+hollow.term.list_sessions({
+  domain = "persistent_test",
+  on_complete = function(result)
+    if not result.success then
+      print("list failed: " .. result.error)
+      return
+    end
+    for _, session in ipairs(result.sessions) do
+      -- session.id, .name?, .attached, .open, .revision
+      -- session.panes[i]: { id, title, cwd, cols, rows, exited, exit_status? }
+      print(session.id, session.name or "", session.open and "open here" or "")
+    end
+  end,
+})
+```
+
+`attached` means some client is attached, possibly another GUI.
+`open` means a workspace in this GUI shows the session.
+`name` is the saved workspace name, when the saved layout records one.
+A successful kill result is `{ success = true, domain, session }`.
+A failure carries `status` and `error`, and when the owner was contacted, `outcome` and an optional owner message in `remote`.
+An `outcome` of `"uncertain"` means the kill may have happened: list again rather than retrying it.
+A successful kill also forgets the session for startup restore.
+
+### Remembered sessions
+
+Hollow remembers each persistent session opened in a domain with `persist = true`, unless the domain sets `restore = false`.
+The list lives in `sessions.json` in the user data directory and keeps at most 64 entries, dropping the oldest.
+A session is forgotten when its owner ends it, when it is killed, or when a reachable host no longer has it.
+Closing the GUI or losing the connection keeps it remembered.
+
+`remembered_sessions()` returns the entries, oldest first, as `{ domain, id, host? }`.
+`restore_sessions({ domain? })` lists each remembered domain's host, SSH included, and reattaches the sessions it still has.
+It returns the number of domains it queried, and never creates a fresh session.
+Sessions already open here are skipped, and sessions attached by another client ask before taking them over.
+Startup does the same for local and WSL domains only; see the [guide](../../persistent-sessions-guide.md#persistent-startup).
+
+See the [persistent sessions guide](../../persistent-sessions-guide.md) for configuration, cleanup, and current limitations.
 
 ## Run a process in a domain
 

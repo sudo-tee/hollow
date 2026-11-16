@@ -107,6 +107,15 @@ You can register your own channels from Lua with
 
 ## Built-in shell integration scripts
 
+Agent-backed panes install shell integration automatically for bare Bash, Zsh, and Fish launches.
+Explicit interactive flags (`-i`, `--interactive`) also retain integration.
+Bash, Zsh, and Fish also support login flags (`-l`, `--login`), including combined short flags such as `-il`.
+Bash login shells read `/etc/profile` and the first readable user login profile (`.bash_profile`, `.bash_login`, or `.profile`), then load Hollow's hooks automatically.
+Bash retains login-shell behavior, including `.bash_logout`, without modifying user files.
+Zsh login shells retain the user's `.zprofile`, `.zshrc`, `.zlogin`, and `.zlogout` startup order.
+Before loading the user's `.zshrc`, Hollow restores the user's Zsh startup directory so child applications do not inherit its private wrapper directory.
+Commands (`-c`), script paths, and other options run unchanged without automatic integration.
+
 Hollow ships snippets for the major shells under
 [`shell-integration/`](../shell-integration):
 

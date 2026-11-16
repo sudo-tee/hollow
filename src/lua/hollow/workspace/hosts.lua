@@ -30,6 +30,9 @@ local function copy(value)
   return result
 end
 
+-- Internal, byte-preserving identity for discovery configuration generations.
+M._key = encode
+
 local function retire(entry)
   entry.retired = true
   if entry.owned and entry.host then entry.host:close()
@@ -84,7 +87,7 @@ function M.prepare(sources)
       if not ok then
         source.host = false
         require("hollow.ui.workspace.compat").warn_invalid(source, "invalid host descriptor")
-      elseif source.default ~= false and type(source.roots) == "table" and #source.roots > 0 then
+      elseif not source._host_deferred and source.default ~= false and type(source.roots) == "table" and #source.roots > 0 then
         used[key] = true
         local entry = pool[key]
         if not entry then entry = connect(spec); pool[key] = entry end
@@ -136,9 +139,10 @@ function M.acquire(spec)
 end
 
 -- Explicit retry only. Never reconnect/replay work just because a picker polls.
-function M.retry()
+function M.retry(spec)
+  local target = spec and encode(spec)
   for key, entry in pairs(pool) do
-    if entry.error or (entry.host and (entry.host.closed or entry.host:status() ~= "ready")) then
+    if (target == nil or target == key) and (entry.error or (entry.host and (entry.host.closed or entry.host:status() ~= "ready"))) then
       retire(entry)
       pool[key] = nil
     end

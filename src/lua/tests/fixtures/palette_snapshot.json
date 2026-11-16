@@ -133,7 +133,7 @@
     "hover_bg": "#3b4252",
     "id": "test:palette:item:section:1",
     "kind": 1,
-    "label": "  ▼ General",
+    "label": "General",
     "list_item": true,
     "radius": 4,
     "width": -1
@@ -156,35 +156,19 @@
     "width": 2
   },
   {
-    "children": 2,
-    "height": 35,
+    "children": 1,
+    "height": 27,
     "kind": 1,
     "width": -1
   },
   {
     "children": 1,
-    "label": "  ",
-    "padding": {
-      "bottom": 2,
-      "left": 4,
-      "right": 8,
-      "top": 8
-    }
-  },
-  {
-    "fg": "#b48ead",
-    "kind": 2,
-    "text": "  ",
-    "wrap": 2
-  },
-  {
-    "children": 1,
     "label": "▼ General",
     "padding": {
-      "bottom": 8,
-      "left": 8,
-      "right": 8,
-      "top": 8
+      "bottom": 4,
+      "left": 4,
+      "right": 4,
+      "top": 4
     }
   },
   {

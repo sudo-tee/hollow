@@ -115,6 +115,88 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
+    const ghostty_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/term/ghostty_bindings.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ghostty_translate.addIncludePath(ghostty_dep.artifact("ghostty-vt-static").getEmittedIncludeTree());
+    // Define this before optional GUI dependencies: snapshot tests need no
+    // window, fonts, Lua or renderer, including on a cold dependency cache.
+    const snapshot_module = b.createModule(.{
+        .root_source_file = b.path("src/session_snapshot_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    snapshot_module.addImport("ghostty_c", ghostty_translate.createModule());
+    snapshot_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addSessionIdentity(b, snapshot_module, ghostty_dep.builder);
+    const snapshot_tests = b.addTest(.{ .root_module = snapshot_module, .filters = &.{"session "} });
+    const snapshot_run = b.addRunArtifact(snapshot_tests);
+    b.step("test-session-snapshot", "Run GUI session mirror snapshot contracts").dependOn(&snapshot_run.step);
+    const session_client_module = b.createModule(.{
+        .root_source_file = b.path("src/session_transport_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addPosix(b, session_client_module, target, optimize);
+    const session_client_tests = b.addTest(.{ .root_module = session_client_module, .filters = &.{"session client"} });
+    const session_client_run = b.addRunArtifact(session_client_tests);
+    b.step("test-session-client", "Run portable session protocol client contracts").dependOn(&session_client_run.step);
+    const connector_test_module = b.createModule(.{
+        .root_source_file = b.path("src/session_connector_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addPosix(b, connector_test_module, target, optimize);
+    const connector_test_options = b.addOptions();
+    connector_test_options.addOption(?[]const u8, "wsl", b.option([]const u8, "session-test-wsl", "WSL distro for opt-in session connector checks"));
+    connector_test_options.addOption(?[]const u8, "agent", b.option([]const u8, "session-test-agent", "Preinstalled guest Linux agent for session connector checks"));
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        connector_test_options.addOptionPath("native_owner", b.named_lazy_paths.get("windows_session_owner").?);
+    } else connector_test_options.addOption(?[]const u8, "native_owner", null);
+    connector_test_module.addOptions("session_test_options", connector_test_options);
+    const connector_tests = b.addTest(.{ .root_module = connector_test_module, .filters = &.{"session connector"} });
+    const connector_run = b.addRunArtifact(connector_tests);
+    connector_run.has_side_effects = true;
+    b.step("test-session-connector", "Run opt-in WSL session connector lifecycle check").dependOn(&connector_run.step);
+    const session_pane_module = b.createModule(.{
+        .root_source_file = b.path("src/session_pane_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const session_pane_options = b.addOptions();
+    session_pane_options.addOption(bool, "headless", true);
+    addShellIntegrationOptions(b, target, optimize, session_pane_options, session_pane_module);
+    session_pane_module.addOptions("build_options", session_pane_options);
+    session_pane_module.addOptions("session_test_options", connector_test_options);
+    session_pane_module.addImport("ghostty_c", ghostty_translate.createModule());
+    session_pane_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addSessionIdentity(b, session_pane_module, ghostty_dep.builder);
+    @import("src/c_build.zig").addPosix(b, session_pane_module, target, optimize);
+    const session_pane_tests = b.addTest(.{ .root_module = session_pane_module, .filters = &.{"session pane"} });
+    const session_pane_run = b.addRunArtifact(session_pane_tests);
+    session_pane_run.has_side_effects = true;
+    b.step("test-session-pane", "Run headless session-backed terminal pane contracts").dependOn(&session_pane_run.step);
+    // Temporary Phase 0 spike for persistent sessions (docs/persistent-sessions.md).
+    {
+        const spike_mod = b.createModule(.{ .target = target, .optimize = ghostty_optimize, .link_libc = true, .strip = true });
+        spike_mod.addCSourceFiles(.{ .root = b.path("spikes/session-snapshot/src"), .files = &.{"main.c"} });
+        spike_mod.addCMacro("GHOSTTY_STATIC", "");
+        spike_mod.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+        const spike_exe = b.addExecutable(.{
+            .name = "session-snapshot-spike",
+            .root_module = spike_mod,
+            .linkage = if (target.result.abi == .musl) .static else null,
+        });
+        b.step("spike-session-snapshot", "Build the persistent-session snapshot spike")
+            .dependOn(&b.addInstallArtifact(spike_exe, .{}).step);
+    }
     // fontdeps is lazy because it bundles libpng_upstream (also lazy); on a
     // cold cache the first configure pass can't satisfy that chain, so the
     // vendored build silently returns without installing the freetype/
@@ -194,13 +276,6 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     @import("src/c_build.zig").addPosix(b, root_module, target, optimize);
     @import("src/c_build.zig").addClay(b, root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
-    const ghostty_translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/term/ghostty_bindings.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    ghostty_translate.addIncludePath(ghostty_dep.artifact("ghostty-vt-static").getEmittedIncludeTree());
     root_module.addImport("ghostty_c", ghostty_translate.createModule());
 
     const translate = b.addTranslateC(.{
@@ -278,9 +353,12 @@ pub fn build(b: *std.Build) void {
     bench_root_module.addImport("ft_c", ft_translate.createModule());
     @import("src/c_build.zig").addTextWidth(b, bench_root_module, ghostty_dep.artifact("ghostty-vt-static"));
 
-    // Only the app executables; skips the standalone CLI and guest agent
-    // bundles that the install step also cross-builds.
-    const gui_step = b.step("gui", "Build and install only the app executables (no CLI/agent bundles)");
+    // App executables plus their native Windows session helper; skip standalone
+    // CLI and Linux guest bundles that the install step also cross-builds.
+    const gui_step = b.step("gui", "Build and install app executables and native session helper");
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        gui_step.dependOn(&b.top_level_steps.get("session-owner-windows").?.step);
+    }
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
         const res_obj = b.addSystemCommand(&.{
@@ -398,6 +476,10 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+    const borrower_tests = b.addTest(.{ .root_module = root_module, .filters = &.{"session borrowers"} });
+    if (target.result.os.tag == .windows) root_module.linkSystemLibrary("advapi32", .{});
+    root_module.addOptions("session_test_options", connector_test_options);
+    b.step("test-session-borrowers", "Run app session terminal borrower invalidation tests").dependOn(&b.addRunArtifact(borrower_tests).step);
     const clay_test_module = b.createModule(.{
         .root_source_file = b.path("src/ui/clay_test.zig"),
         .target = target,
@@ -489,6 +571,9 @@ pub fn build(b: *std.Build) void {
     const mux_visibility_test_step = b.step("test-mux-visibility", "Run headless hidden-pane mux regressions");
     mux_visibility_test_step.dependOn(&mux_visibility_run.step);
     test_step.dependOn(&mux_visibility_run.step);
+    test_step.dependOn(&snapshot_run.step);
+    test_step.dependOn(&session_client_run.step);
+    test_step.dependOn(&session_pane_run.step);
 
     const search_module = b.createModule(.{
         .root_source_file = b.path("src/terminal_search_test.zig"),
@@ -562,9 +647,15 @@ pub fn build(b: *std.Build) void {
     const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);
     test_step.dependOn(&renderer_bench_test_cmd.step);
 
-    const all_test_step = b.step("test-all", "Run native and Lua tests");
+    const harness_test_cmd = b.addSystemCommand(&.{ "python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-v" });
+    harness_test_cmd.setCwd(b.path("."));
+    const harness_test_step = b.step("test-harness", "Run Python harness and generated metadata checks");
+    harness_test_step.dependOn(&harness_test_cmd.step);
+
+    const all_test_step = b.step("test-all", "Run native, Lua, and Python harness tests");
     all_test_step.dependOn(test_step);
     all_test_step.dependOn(lua_test_step);
+    all_test_step.dependOn(harness_test_step);
 }
 
 fn addAgentSteps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {

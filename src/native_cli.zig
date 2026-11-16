@@ -222,6 +222,7 @@ const Runner = struct {
         if (std.mem.eql(u8, command_name, "api")) return try self.executeApi(args);
         if (std.mem.eql(u8, command_name, "events")) return try self.executeEvents(args, false);
         if (std.mem.eql(u8, command_name, "job")) return try self.executeJob(args);
+        if (std.mem.eql(u8, command_name, "session")) return try self.executeSession(args);
         if (std.mem.eql(u8, command_name, "capabilities")) {
             if (args.len != 0) return self.fail("capabilities takes no arguments", "invalid_args", 2);
             return self.printQuery(.{ .data = .{ .capabilities = .{} } });
@@ -357,6 +358,59 @@ const Runner = struct {
             else => unreachable,
         } };
         return self.printQuery(request);
+    }
+
+    fn executeSession(self: *Runner, args: []const []const u8) !void {
+        const usage = "usage: session list [--domain NAME] | kill <id> [--domain NAME] | attach <id> [--domain NAME] [--name NAME]";
+        const parsed = parseSessionArgs(args) catch return self.fail(usage, "invalid_args", 2);
+        const request: command.Request = .{ .ctx = .{ .origin = .cli }, .data = switch (parsed.op) {
+            .list => .{ .session_list = .{ .domain = parsed.domain } },
+            .kill => .{ .session_kill = .{ .session = parsed.session.?, .domain = parsed.domain } },
+            .attach => return self.printQuery(.{ .ctx = .{ .origin = .cli }, .data = .{ .session_attach = .{ .session = parsed.session.?, .domain = parsed.domain, .name = parsed.name } } }),
+        } };
+        var started = try self.sendRequest(request);
+        defer started.deinit(self.allocator);
+        if (!started.success) return self.failFmt("{s}: {s}", .{ started.status, started.error_message orelse "session query failed" }, started.status, 1);
+        const payload = started.payload orelse return error.InvalidCommandEnvelope;
+        const query: u64 = @intCast(payload.object.get("query").?.integer);
+        var revision: u64 = @intCast(payload.object.get("revision").?.integer);
+        // Connector startup (e.g. a cold WSL distro) can exceed the reply timeout.
+        const deadline = io.nanoTimestamp() + @as(i128, @max(self.options.timeout_ms, 10_000) *| std.time.ns_per_ms);
+        var revision_waits = true;
+        while (true) {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var reply = try self.sendRequest(.{ .ctx = .{ .origin = .cli }, .data = .{ .session_result = .{ .query = query } } });
+            defer reply.deinit(self.allocator);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "session query failed" }, reply.status, 1);
+            const object = (reply.payload orelse return error.InvalidCommandEnvelope).object;
+            const state = object.get("state").?.string;
+            if (!std.mem.eql(u8, state, "running")) {
+                var result: Reply = .{ .payload = if (object.get("result")) |value| try command.cloneJsonValue(a, value) else null };
+                if (std.mem.eql(u8, state, "done")) return self.emitOutput(&result, true);
+                // Failure details go to stdout too: an uncertain kill needs a re-list.
+                try self.emitOutput(&result, true);
+                const detail = if (result.payload) |value| value.object else return self.fail("session query failed", "session_query_failed", 1);
+                const outcome = if (detail.get("outcome")) |value| value.string else "unknown";
+                const reason = if (detail.get("remote")) |value| value.string else if (detail.get("error")) |value| value.string else "unknown";
+                return self.failFmt("session {s} failed ({s}): {s}", .{ @tagName(parsed.op), outcome, reason }, "session_query_failed", 1);
+            }
+            revision = @intCast(object.get("revision").?.integer);
+            const now = io.nanoTimestamp();
+            if (now >= deadline) return self.failFmt("timed out waiting for session query {d}; its outcome is unknown", .{query}, "timeout", 1);
+            if (revision_waits) {
+                const remaining_ms: u64 = @intCast(@max(1, @divFloor(deadline - now, std.time.ns_per_ms)));
+                var waited = transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .wait_revision = .{ .revision = revision, .timeout_ms = @min(remaining_ms, 250) } } }, self.options.transport, @max(self.options.timeout_ms, 1000)) catch null;
+                if (waited) |*value| {
+                    defer value.deinit(a);
+                    // Only socket transport can wait; others poll.
+                    if (std.mem.eql(u8, value.status, "unsupported_transport")) revision_waits = false;
+                } else revision_waits = false;
+                if (revision_waits) continue;
+            }
+            std.Io.sleep(io.get(), .fromMilliseconds(50), .awake) catch {};
+        }
     }
 
     fn waitJob(self: *Runner, handle: command.JobHandle, spawn: ?std.json.Value, auto_close: bool) !void {
@@ -1535,7 +1589,7 @@ test "program status CLI builds owned shared commands and validates arguments" {
 fn helpText() []const u8 {
     return "usage: hollow-cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto|socket|file|osc] <command>\n" ++
         "       hollow cli <same options and commands>\n" ++
-        "commands: api, capabilities, events, job, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+        "commands: api, capabilities, events, job, session, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
         "get activities [--view inbox|history|running] [--pane ID] [--workspace NAME] [--kind notification|bell|program] [--severity info|warn|error|success]\n" ++
         "get panes [--tag TAG] [--scope all|workspace|tab] [--workspace ID | --tab ID]\n" ++
@@ -1544,9 +1598,53 @@ fn helpText() []const u8 {
         "job spawn [--user-shell] [--wait [--auto-close]] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND\n" ++
         "job get|output|wait|cleanup --id ID --token TOKEN\n" ++
         "job wait --id ID --token TOKEN [--auto-close]\n" ++
+        "session list [--domain NAME] | kill <id> [--domain NAME] | attach <id> [--domain NAME] [--name NAME]\n" ++
         "wait <revision> | command|process-exit|status-change --after N --pane ID [--command-id N]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
         "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";
+}
+
+const SessionArgs = struct { op: enum { list, kill, attach }, session: ?[]const u8 = null, domain: ?[]const u8 = null, name: ?[]const u8 = null };
+
+fn parseSessionArgs(args: []const []const u8) !SessionArgs {
+    if (args.len == 0) return error.MissingSubcommand;
+    var parsed: SessionArgs = .{ .op = std.meta.stringToEnum(@FieldType(SessionArgs, "op"), args[0]) orelse return error.UnknownSubcommand };
+    var i: usize = 1;
+    if (parsed.op != .list) {
+        if (args.len < 2 or std.mem.startsWith(u8, args[1], "--")) return error.MissingSession;
+        parsed.session = args[1];
+        i = 2;
+    }
+    while (i < args.len) : (i += 2) {
+        if (i + 1 >= args.len) return error.MissingFlagValue;
+        const field: *?[]const u8 = if (std.mem.eql(u8, args[i], "--domain")) &parsed.domain else if (std.mem.eql(u8, args[i], "--name") and parsed.op == .attach) &parsed.name else return error.UnknownFlag;
+        if (field.* != null) return error.DuplicateFlag;
+        field.* = args[i + 1];
+    }
+    switch (parsed.op) {
+        .list => try command.validate(.{ .session_list = .{ .domain = parsed.domain } }),
+        .kill => try command.validate(.{ .session_kill = .{ .session = parsed.session.?, .domain = parsed.domain } }),
+        .attach => try command.validate(.{ .session_attach = .{ .session = parsed.session.?, .domain = parsed.domain, .name = parsed.name } }),
+    }
+    return parsed;
+}
+
+test "session CLI arguments share typed contracts" {
+    const listed = try parseSessionArgs(&.{ "list", "--domain", "wsl" });
+    try std.testing.expect(listed.op == .list and listed.session == null);
+    try std.testing.expectEqualStrings("wsl", listed.domain.?);
+    const attached = try parseSessionArgs(&.{ "attach", "s1", "--name", "work", "--domain", "wsl" });
+    try std.testing.expectEqualStrings("s1", attached.session.?);
+    try std.testing.expectEqualStrings("work", attached.name.?);
+    try std.testing.expectError(error.MissingSession, parseSessionArgs(&.{"kill"}));
+    try std.testing.expectError(error.MissingSession, parseSessionArgs(&.{ "kill", "--domain", "x" }));
+    try std.testing.expectError(error.UnknownFlag, parseSessionArgs(&.{ "kill", "s1", "--name", "x" }));
+    try std.testing.expectError(error.UnknownFlag, parseSessionArgs(&.{ "list", "extra", "x" }));
+    try std.testing.expectError(error.DuplicateFlag, parseSessionArgs(&.{ "list", "--domain", "a", "--domain", "b" }));
+    try std.testing.expectError(error.MissingFlagValue, parseSessionArgs(&.{ "list", "--domain" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseSessionArgs(&.{ "kill", "bad\x00id" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseSessionArgs(&.{ "list", "--domain", "" }));
+    try std.testing.expectError(error.UnknownSubcommand, parseSessionArgs(&.{"show"}));
 }
 
 fn parseActivityArgs(args: []const []const u8) !command.Args(.get_activities) {

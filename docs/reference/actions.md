@@ -20,6 +20,7 @@ The full list, grouped by intent:
 | `float_pane` | Make the active pane floating |
 | `tile_pane` | Return a floating pane to the tiled layout |
 | `close_pane` | Close the active pane |
+| `respawn_pane` | Restart the exited process of the active persistent pane, keeping its screen |
 
 ## Focus
 
@@ -64,8 +65,9 @@ The full list, grouped by intent:
 | Action | What it does |
 | --- | --- |
 | `new_workspace` | Create a new workspace |
+| `restore_sessions` | Reattach remembered persistent sessions, including SSH ones |
 | `save_workspace` | Save the current workspace layout to the project directory |
-| `workspace_switcher` | Open the workspace switcher picker |
+| `workspace_switcher` | Open the workspace switcher picker, including persistent sessions not open in this window |
 | `create_workspace` | Create a workspace via the input prompt |
 | `rename_workspace` | Rename the active workspace |
 | `close_workspace` | Close the active workspace |

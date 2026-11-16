@@ -30,6 +30,7 @@ A Windows release zip should contain:
 | `agents/SHA256SUMS`                         | Checksums for the bundled guest agents      |
 | `agents/linux-x86_64/hollow-agent`           | Static Linux x86_64 guest agent             |
 | `agents/linux-aarch64/hollow-agent`          | Static Linux aarch64 guest agent            |
+| `agents/windows-x86_64/hollow-agent.exe`    | Native Windows persistent-session owner    |
 | `README.md`, `LICENSE`                       | Standard release files                       |
 
 The `agents/` bundle is auto-deployed by Hollow into WSL distros, SSH
@@ -61,6 +62,7 @@ After a user unpacks a release and runs `hollow.exe` once:
     SHA256SUMS
     linux-x86_64/hollow-agent
     linux-aarch64/hollow-agent
+    windows-x86_64/hollow-agent.exe
   conf/
     init.lua                  # shipped base, if shipped
   %APPDATA%\hollow\
@@ -112,6 +114,14 @@ Guest connections verify/deploy the selected bundled binary automatically; there
 is no network download. See [`hollow.host`](reference/lua/host.md) for trusted
 bundle overrides, guest prerequisites and platform qualification.
 
+Windows x86_64 builds also install the session-only owner under `zig-out/agents/windows-x86_64/`, including development `gui` builds.
+`launch.sh --install` requires and copies that helper before reopening the GUI; an incomplete bundle fails preflight before closing the running application.
+The Linux `SHA256SUMS` format is unchanged and does not list the Windows executable.
+For managed native session bundles, Hollow hashes the owner and copies at most 64 MiB into `%LOCALAPPDATA%\hollow\session-owners\<sha256>\hollow-agent.exe` before execution.
+Cache publication is exclusive, synced, and atomic; an existing mismatched image fails closed rather than being overwritten.
+Older cached images are retained because live owners may still execute them, allowing installed bundle replacement without terminating their sessions.
+Explicit `agent_path` overrides bypass managed caching and must be kept immutable by the caller while an owner is running.
+
 ## Linux agents
 
 `hollow-agent` is a static Linux binary that serves both fs/exec RPCs
@@ -128,8 +138,8 @@ agents/
 Build the bundle on its own with:
 
 ```bash
-zig build --build-file build-agent.zig agent-all
-zig build --build-file build-agent.zig cli-all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent agent-all
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli-all
 ```
 
 Normal `zig build` also produces it under `zig-out/agents/`.

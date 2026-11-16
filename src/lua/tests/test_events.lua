@@ -29,6 +29,24 @@ describe("events test suite", function()
   end)
 
   describe("built-in events", function()
+    it("preserves workspace closure flags for detach, end, and ordinary workspaces", function()
+      for _, payload in ipairs({
+        { name = "detached", session_id = "session", session_host = "host", session_ended = false },
+        { name = "ended", session_id = "session", session_host = "host", session_ended = true },
+        { name = "ordinary" },
+      }) do
+        local received
+        hollow.events.once("workspace:closed", function(event)
+          received = event
+        end)
+        hollow._emit_builtin_event("workspace:closed", payload)
+        harness.assert_equal(received.name, payload.name)
+        harness.assert_equal(received.session_id, payload.session_id)
+        harness.assert_equal(received.session_host, payload.session_host)
+        harness.assert_equal(received.session_ended, payload.session_ended)
+      end
+    end)
+
     it("cannot be emitted from Lua", function()
       for _, name in ipairs({
         "term:foreground_process_changed",
@@ -36,6 +54,7 @@ describe("events test suite", function()
         "term:command_finished",
         "term:pane_created",
         "term:pane_exited",
+        "term:pane_respawned",
         "term:pane_closed",
       }) do
         local built_in_error = pcall(function()

@@ -97,6 +97,7 @@ local function make_host_api()
     move_pane = nil,
     split_pane = nil,
     close_pane = nil,
+    respawn_pane = nil,
     focus_pane = nil,
     focus_pane_by_id = nil,
     resize_pane = nil,
@@ -602,6 +603,11 @@ local function make_host_api()
   function host_api.close_pane_by_id(pane_id)
     recorded.close_pane = pane_id
     return panes[pane_id] ~= nil
+  end
+
+  function host_api.respawn_pane(pane_id)
+    recorded.respawn_pane = pane_id or "active"
+    return true
   end
 
   function host_api.next_tab()

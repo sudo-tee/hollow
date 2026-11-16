@@ -24,9 +24,9 @@ bounded retained output, and ownership-checked cleanup.
 
 ```sh
 # Dependency-free build graph, also used for agents:
-zig build --build-file build-agent.zig cli -Doptimize=ReleaseSafe
-zig build --build-file build-agent.zig cli-all -Doptimize=ReleaseSafe
-zig build --build-file build-agent.zig test-cli
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli -Doptimize=ReleaseSafe
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent cli-all -Doptimize=ReleaseSafe
+zig build --build-file build-agent.zig --cache-dir .zig-cache-agent test-cli
 
 # Same steps are available through the main build:
 zig build cli

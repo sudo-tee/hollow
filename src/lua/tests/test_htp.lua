@@ -82,6 +82,19 @@ describe("HTP test suite", function()
   end)
 
   describe("HTP emits", function()
+    it("syncs snapshot foreground state without replaying command lifecycle", function()
+      local started = 0
+      local listener = hollow.events.on("term:command_started", function()
+        started = started + 1
+      end)
+      hollow.htp._handle_emit("session_foreground_process", { command = "nvim" }, 101)
+      harness.assert_equal(hollow.term.pane_by_id(101).foreground_process, "nvim")
+      harness.assert_equal(started, 0)
+      hollow.htp._handle_emit("session_foreground_process", { command = "" }, 101)
+      harness.assert_equal(hollow.term.pane_by_id(101).foreground_process, "")
+      hollow.events.off(listener)
+    end)
+
     it("dispatches move_pane", function()
       local ok_emit =
         hollow.htp._handle_emit("move_pane", { direction = "left", amount = 0.2 }, 101)

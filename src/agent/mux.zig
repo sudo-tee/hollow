@@ -164,7 +164,7 @@ const Agent = struct {
         const parsed = try std.json.parseFromSlice(p.Spawn, self.a, payload, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (parsed.value.cols == 0 or parsed.value.rows == 0) return error.InvalidSize;
-        try validateSpawn(parsed.value);
+        try pty.validateSpawn(parsed.value);
         var slot: ?usize = null;
         for (self.streams, 0..) |entry, i| if (entry == null) {
             slot = i;
@@ -689,15 +689,6 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
         // Bottom-staged data is fresh; make its first write attempt now rather
         // than adding a poll interval. EAGAIN is remembered until POLLOUT.
         if (!agent.pump()) return;
-    }
-}
-
-fn validateSpawn(spawn: p.Spawn) !void {
-    for (spawn.argv) |arg| if (std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidArgv;
-    if (spawn.cwd) |cwd| if (std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidCwd;
-    if (spawn.command) |cmd| if (std.mem.indexOfScalar(u8, cmd, 0) != null) return error.InvalidCommand;
-    for (spawn.env) |env| {
-        if (env.key.len == 0 or std.mem.indexOfAny(u8, env.key, "=\x00") != null or std.mem.indexOfScalar(u8, env.value, 0) != null) return error.InvalidEnv;
     }
 }
 

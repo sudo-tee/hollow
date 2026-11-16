@@ -29,17 +29,15 @@ pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f
     const dock_value = if (dock) |value| std.meta.stringToEnum(mux_mod.DockScope, value) else null;
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     const mode: SplitCommandMode = if (std.mem.eql(u8, command_mode, "spawn")) .spawn else .send;
-    const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
-    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
-    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
+    var queued = false;
     var event: input.PendingInputEvent = .{ .split_pane = .{
         .direction = dir,
         .edge = edge_value,
         .dock = dock_value,
         .ratio = ratio,
-        .domain_name = owned_domain,
-        .cwd = owned_cwd,
-        .command = owned_command,
+        .domain_name = null,
+        .cwd = null,
+        .command = null,
         .command_mode = mode,
         .close_on_exit = close_on_exit,
         .floating = floating,
@@ -49,10 +47,25 @@ pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f
         .width = if (has_bounds) width else null,
         .height = if (has_bounds) height else null,
         .callback_ref = callback_ref,
+        .lua_generation = if (app.lua) |*lua| lua.generation else null,
     } };
-    const queued = app.enqueueMouse(event);
-    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    defer if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    // Preserve the requested target even when only some copies would succeed.
+    if (domain_name) |value| event.split_pane.domain_name = app.allocator.dupe(u8, value) catch return false;
+    if (cwd) |value| event.split_pane.cwd = app.allocator.dupe(u8, value) catch return false;
+    if (command) |value| event.split_pane.command = app.allocator.dupe(u8, value) catch return false;
+    queued = app.enqueueMouse(event);
     return queued;
+}
+
+pub fn luaActivateSessionNoticeCallback(app_ptr: *anyopaque, id: u64) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .session_notice_activate = id });
+}
+
+pub fn luaSessionTakeoverActionCallback(app_ptr: *anyopaque, id: usize, action: @import("../session/takeover.zig").Action) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .session_takeover = .{ .workspace_id = id, .action = action } });
 }
 
 pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {
@@ -131,12 +144,14 @@ pub fn luaGetPaneProgramStatusCallback(app_ptr: *anyopaque, pane_id: usize) ?*co
 
 pub fn luaNewTabCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int, insert_at_end: bool) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
-    const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
-    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    var event: input.PendingInputEvent = .{ .new_tab = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref, .insert_at_end = insert_at_end } };
-    const queued = app.enqueueMouse(event);
-    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    var queued = false;
+    var event: input.PendingInputEvent = .{ .new_tab = .{ .cwd = null, .domain_name = null, .command = null, .callback_ref = callback_ref, .insert_at_end = insert_at_end, .lua_generation = if (app.lua) |*lua| lua.generation else null } };
+    defer if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    // Losing an explicit domain under OOM could silently route to another host.
+    if (cwd) |value| event.new_tab.cwd = app.allocator.dupe(u8, value) catch return false;
+    if (domain_name) |value| event.new_tab.domain_name = app.allocator.dupe(u8, value) catch return false;
+    if (command) |value| event.new_tab.command = app.allocator.dupe(u8, value) catch return false;
+    queued = app.enqueueMouse(event);
     return queued;
 }
 
@@ -155,6 +170,13 @@ pub fn luaClosePaneByIdCallback(app_ptr: *anyopaque, pane_id: usize) bool {
     return app.enqueueMouse(.{ .close_pane_by_id = pane_id });
 }
 
+pub fn luaRespawnPaneCallback(app_ptr: *anyopaque, pane_id: usize) ?[:0]const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const id = if (pane_id != 0) pane_id else if (app.activePane()) |pane| pane.id else return "PaneNotFound";
+    @import("session_controller.zig").respawnPane(app, id) catch |err| return @errorName(err);
+    return null;
+}
+
 pub fn luaNextTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.next_tab);
@@ -167,14 +189,118 @@ pub fn luaPrevTabCallback(app_ptr: *anyopaque) void {
 
 pub fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
-    const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
-    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
-    var event: input.PendingInputEvent = .{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = io.milliTimestamp() } };
-    const queued = app.enqueueMouse(event);
-    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    var queued = false;
+    var event: input.PendingInputEvent = .{ .new_workspace = .{ .cwd = null, .domain_name = null, .command = null, .name = null, .callback_ref = callback_ref, .queued_at_ms = io.milliTimestamp(), .lua_generation = if (app.lua) |*lua| lua.generation else null } };
+    defer if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    // Losing an explicit domain under OOM could silently route to another host.
+    // Admit all original arguments, or none of them.
+    if (cwd) |value| event.new_workspace.cwd = app.allocator.dupe(u8, value) catch return false;
+    if (domain_name) |value| event.new_workspace.domain_name = app.allocator.dupe(u8, value) catch return false;
+    if (command) |value| event.new_workspace.command = app.allocator.dupe(u8, value) catch return false;
+    if (name) |value| event.new_workspace.name = app.allocator.dupe(u8, value) catch return false;
+    queued = app.enqueueMouse(event);
     return queued;
+}
+
+test "session borrowers workspace callback never drops explicit host arguments on allocation failure" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    for (0..4) |index| {
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = index });
+        app.allocator = failing.allocator();
+        defer app.allocator = a;
+        try std.testing.expect(!luaNewWorkspaceCallback(app, "/work", "persistent-host", "pwd", "name", -1));
+        try std.testing.expect(app.action_queue.pop() == null);
+    }
+}
+
+test "session borrowers tab and split callbacks never drop explicit host arguments on allocation failure" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    for (0..3) |index| {
+        var failing_tab = std.testing.FailingAllocator.init(a, .{ .fail_index = index });
+        app.allocator = failing_tab.allocator();
+        defer app.allocator = a;
+        try std.testing.expect(!luaNewTabCallback(app, "/work", "persistent-host", "pwd", -1, false));
+        try std.testing.expect(app.action_queue.pop() == null);
+        try std.testing.expectEqual(failing_tab.allocated_bytes, failing_tab.freed_bytes);
+
+        var failing_split = std.testing.FailingAllocator.init(a, .{ .fail_index = index });
+        app.allocator = failing_split.allocator();
+        try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
+        try std.testing.expect(app.action_queue.pop() == null);
+        try std.testing.expectEqual(failing_split.allocated_bytes, failing_split.freed_bytes);
+    }
+}
+
+test "session borrowers tab and split callbacks free copied arguments when queue is full" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    while (app.action_queue.push(.none)) {}
+    try std.testing.expect(!luaNewTabCallback(app, "/work", "persistent-host", "pwd", -1, false));
+    try std.testing.expect(!luaSplitPaneCallback(app, "horizontal", 0.5, "persistent-host", "/work", "pwd", "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
+    while (app.action_queue.pop()) |event| try std.testing.expect(event == .none);
+}
+
+test "session borrowers workspace tab and split callbacks fence inherited persistent domain generation" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    app.ghostty = try @import("../term/ghostty.zig").Runtime.init(a, null);
+    app.mux = mux_mod.Mux.init(a);
+    try app.config.setDomainShell("ordinary", "/bin/sh");
+    try app.config.setDefaultDomain("ordinary");
+    try app.config.setDomainPersist("persistent-host", true);
+    const pane = try a.create(@import("../pane.zig").Pane);
+    pane.* = @import("../pane.zig").Pane.init(a);
+    pane.id = app.mux.?.reservePaneId();
+    pane.content.terminal.domain_name = try a.dupe(u8, "persistent-host");
+    try app.mux.?.newWorkspaceWithPane(&app.ghostty.?, pane, null);
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(a, &app.config);
+    try std.testing.expect(!app.config.persistForDomain(null));
+    try std.testing.expect(luaNewWorkspaceCallback(app, null, null, null, null, -1));
+    var event = app.action_queue.pop().?;
+    defer input.deinitPendingInputEvent(a, &event);
+    try std.testing.expectEqual(@as(?u64, app.lua.?.generation), event.new_workspace.lua_generation);
+    try std.testing.expect(luaNewTabCallback(app, null, null, null, -1, false));
+    var tab_event = app.action_queue.pop().?;
+    defer input.deinitPendingInputEvent(a, &tab_event);
+    try std.testing.expectEqual(@as(?u64, app.lua.?.generation), tab_event.new_tab.lua_generation);
+    try std.testing.expect(luaSplitPaneCallback(app, "horizontal", 0.5, null, null, null, "spawn", false, false, false, 0, 0, 0, 0, false, -1, null, null));
+    var split_event = app.action_queue.pop().?;
+    defer input.deinitPendingInputEvent(a, &split_event);
+    try std.testing.expectEqual(@as(?u64, app.lua.?.generation), split_event.split_pane.lua_generation);
+}
+
+pub fn luaAttachSessionCallback(app_ptr: *anyopaque, session_id: []const u8, domain_name: ?[]const u8, name: ?[]const u8, callback_ref: c_int, intent: @import("../agent/session_protocol.zig").AttachIntent) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    var queued = false;
+    defer if (!queued) {
+        if (app.lua) |*lua| lua.discardOperationCallbackFromLua(callback_ref);
+    };
+    var event: input.PendingInputEvent = .{ .attach_session = .{
+        .session_id = app.allocator.dupe(u8, session_id) catch return,
+        .trace_intent = intent,
+        .domain_name = null,
+        .name = null,
+        .callback_ref = callback_ref,
+        .lua_generation = if (app.lua) |*lua| lua.generation else null,
+    } };
+    defer if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    if (domain_name) |value| event.attach_session.domain_name = app.allocator.dupe(u8, value) catch return;
+    if (name) |value| event.attach_session.name = app.allocator.dupe(u8, value) catch return;
+    queued = app.enqueueMouse(event);
 }
 
 pub fn luaCloseWorkspaceCallback(app_ptr: *anyopaque, workspace_id: ?usize) void {
@@ -524,6 +650,36 @@ pub fn luaGetActiveWorkspaceIndexCallback(app_ptr: *anyopaque) usize {
 pub fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.workspaceName(index, out_buf);
+}
+
+pub fn luaGetWorkspaceSessionIdCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*mux| mux else return "";
+    if (index >= mux.workspaces.items.len) return "";
+    const controller = mux.workspaces.items[index].session_controller orelse return "";
+    return copyOut(controller.session_id, out_buf);
+}
+
+pub fn luaGetWorkspaceSessionHostCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*mux| mux else return "";
+    if (index >= mux.workspaces.items.len) return "";
+    const controller = mux.workspaces.items[index].session_controller orelse return "";
+    return copyOut(controller.host, out_buf);
+}
+
+pub fn luaGetWorkspaceSessionStateCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*value| value else return "";
+    if (index >= mux.workspaces.items.len) return "";
+    const controller = mux.workspaces.items[index].session_controller orelse return "";
+    return copyOut(controller.stateName(), out_buf);
+}
+
+fn copyOut(value: []const u8, out_buf: []u8) []const u8 {
+    if (value.len > out_buf.len) return "";
+    @memcpy(out_buf[0..value.len], value);
+    return out_buf[0..value.len];
 }
 
 pub fn luaGetWorkspaceIdCallback(app_ptr: *anyopaque, index: usize) usize {

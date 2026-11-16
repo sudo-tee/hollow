@@ -23,30 +23,57 @@ function M.absolute(path)
     and (path:sub(1, 1) == "/" or path:match("^[A-Za-z]:[/\\]") ~= nil or path:sub(1, 2) == "\\\\")
 end
 
-local function agent(opts)
+local function windows_absolute(path)
+  return type(path) == "string"
+    and (path:match("^[A-Za-z]:[/\\]") ~= nil or path:sub(1, 2) == "\\\\")
+end
+
+local function agent(opts, native_windows)
   local result = { timeout_ms = opts.timeout_ms or 60000 }
   local timeout = result.timeout_ms
-  if type(timeout) ~= "number" or timeout ~= timeout or timeout % 1 ~= 0 or timeout < 1 or timeout > 300000 then
+  if
+    type(timeout) ~= "number"
+    or timeout ~= timeout
+    or timeout % 1 ~= 0
+    or timeout < 1
+    or timeout > 300000
+  then
     error("timeout_ms must be an integer from 1 to 300000", 3)
   end
   if opts.agent_path ~= nil then
     result.path = M.string(opts.agent_path, "agent_path")
-    if result.path:sub(1, 1) ~= "/" then error("agent_path must be an absolute Linux path", 3) end
+    if native_windows and not windows_absolute(result.path) then
+      error("agent_path must be an absolute Windows path", 3)
+    elseif not native_windows and result.path:sub(1, 1) ~= "/" then
+      error("agent_path must be an absolute Linux path", 3)
+    end
   end
   if opts.agent_dir ~= nil then
     result.dir = M.string(opts.agent_dir, "agent_dir")
-    if not M.absolute(result.dir) then error("agent_dir must be a client-native absolute path", 3) end
+    if not M.absolute(result.dir) then
+      error("agent_dir must be a client-native absolute path", 3)
+    end
   end
   if opts.artifacts ~= nil then
-    if type(opts.artifacts) ~= "table" then error("artifacts must be a table", 3) end
+    if type(opts.artifacts) ~= "table" then
+      error("artifacts must be a table", 3)
+    end
     result.artifacts = {}
     for arch, item in pairs(opts.artifacts) do
-      if arch ~= "x86_64" and arch ~= "aarch64" then error("unsupported artifact architecture", 3) end
-      if type(item) ~= "table" then error("artifact must be a table", 3) end
+      if arch ~= "x86_64" and arch ~= "aarch64" then
+        error("unsupported artifact architecture", 3)
+      end
+      if type(item) ~= "table" then
+        error("artifact must be a table", 3)
+      end
       local path = M.string(item.path, "artifact path")
-      if not M.absolute(path) then error("artifact path must be client-native absolute", 3) end
+      if not M.absolute(path) then
+        error("artifact path must be client-native absolute", 3)
+      end
       local digest = M.string(item.sha256, "artifact sha256")
-      if #digest ~= 64 or not digest:match("^%x+$") then error("artifact sha256 must be 64 hex digits", 3) end
+      if #digest ~= 64 or not digest:match("^%x+$") then
+        error("artifact sha256 must be 64 hex digits", 3)
+      end
       result.artifacts[arch] = { path = path, sha256 = digest:lower() }
     end
   end
@@ -57,9 +84,37 @@ end
 --- timeout_ms } }` for a host of `kind` ("wsl", "ssh", "podman", "docker").
 function M.target(kind, opts)
   local module = ADAPTERS[kind]
-  if not module then error("unsupported host type: " .. tostring(kind), 2) end
-  if type(opts) ~= "table" then error(kind .. " host expects an options table", 2) end
+  if not module then
+    error("unsupported host type: " .. tostring(kind), 2)
+  end
+  if type(opts) ~= "table" then
+    error(kind .. " host expects an options table", 2)
+  end
   return { connector = require(module).connector(opts), agent = agent(opts) }
+end
+
+--- Session owners also support native Linux/Windows, without a connector process.
+function M.session_target(kind, opts)
+  if type(opts) ~= "table" then
+    error("session host expects an options table", 2)
+  end
+  if opts.timeout_ms == false then
+    error("timeout_ms must be an integer from 1 to 300000", 2)
+  end
+  if kind ~= "local" then
+    local target = M.target(kind, opts)
+    if kind == "wsl" then
+      target.wsl = { distro = opts.distro, user = opts.user, launcher = opts.wsl or "wsl.exe" }
+    end
+    return target
+  end
+  if type(opts) ~= "table" then
+    error("local host expects an options table", 2)
+  end
+  return {
+    connector = { argv = {} },
+    agent = agent(opts, (_G.hollow.platform or {}).is_windows),
+  }
 end
 
 return M

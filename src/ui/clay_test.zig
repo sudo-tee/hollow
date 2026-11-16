@@ -48,7 +48,6 @@ test "Clay workspace windows retire disjoint clipped columns within scroll capac
                 nodes[index].id = .{ .chars = id.ptr, .length = @intCast(id.len), .isStaticallyAllocated = false };
                 nodes[index + 1] = node(2, 0, 0, 0);
                 nodes[index + 1].text = .{ .chars = "workspace column", .length = 16, .isStaticallyAllocated = true };
-                nodes[index + 1].wrap = 2;
             }
         }
         _ = layout(surface, &nodes, 800, 600, 0);
@@ -508,6 +507,45 @@ test "Clay confirmation wraps its prompt and keeps both footer buttons inside th
             try std.testing.expectEqual(@as(c_int, index), c.hollow_clay_hit(surface, &nodes, nodes.len, button.x + button.width / 2, button.y + button.height / 2));
         }
     }
+}
+
+test "Clay crowded dialog buttons wrap their labels instead of overlapping" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{
+        node(1, -1, 0, 4), // Footer: spacer and three buttons.
+        node(0, -1, 0, 0),
+        node(0, 0, 0, 1),
+        node(2, 0, 0, 0),
+        node(0, 0, 0, 1),
+        node(2, 0, 0, 0),
+        node(0, 0, 0, 1),
+        node(2, 0, 0, 0),
+    };
+    const labels = [_][]const u8{ "New workspace on pwsh", "Global dock on pwsh", "Cancel" };
+    nodes[0].gap = 16;
+    inline for (.{ 2, 4, 6 }, 0..) |index, i| {
+        nodes[index].padding = .{ .left = 8, .right = 8, .top = 0, .bottom = 0 };
+        nodes[index].clickable = true;
+        nodes[index + 1].text = .{ .chars = labels[i].ptr, .length = @intCast(labels[i].len), .isStaticallyAllocated = true };
+        nodes[index + 1].text_align = 1;
+    }
+    // 30 cells cannot fit 46 cells of labels on one line.
+    const commands = c.hollow_clay_layout(surface, &nodes, nodes.len, 240, 200, 8, 19, -1, -1, 0, 1.0 / 60.0);
+    try std.testing.expect(!c.hollow_clay_failed(surface));
+    var buttons: [3]c.Clay_BoundingBox = undefined;
+    inline for (.{ 2, 4, 6 }, 0..) |index, i| buttons[i] = c.hollow_clay_bounds(surface, &nodes, index).boundingBox;
+    for (buttons[0..2], buttons[1..]) |left, right| try std.testing.expect(left.x + left.width <= right.x);
+    var wrapped = false;
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_TEXT) continue;
+        const b = command.boundingBox;
+        const owner = for (buttons) |button| {
+            if (b.x >= button.x and b.x + b.width <= button.x + button.width) break button;
+        } else return error.TextOutsideButton;
+        if (b.y > owner.y) wrapped = true;
+    }
+    try std.testing.expect(wrapped);
 }
 
 test "Clay horizontal input viewport keeps an unwrapped caret visible while editing and resizing" {
