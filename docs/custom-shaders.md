@@ -38,6 +38,12 @@ A shader that fails to compile is skipped and the error goes to the log file.
 - `cursor_trail.glsl` draws a fading trail behind the cursor and a soft glow around it.
 - `crt_scanlines.glsl` adds faint scanlines and an RGB fringe.
 
+[Background shaders](background.md#background-shader) draw under the terminal instead of over it:
+
+- `aurora_background.glsl` draws slow aurora bands.
+- `matrix_rain.glsl` draws falling green glyph rain.
+- `synthwave.glsl` draws a striped sunset over a scrolling neon grid.
+
 Chain them to try both:
 
 ```lua
@@ -96,6 +102,20 @@ Like Ghostty, shaders see the graphics API's native coordinates:
 - Linux (OpenGL): `fragCoord` starts at the bottom-left and `y` grows upwards.
 
 `iCurrentCursor.xy` is the cursor's left edge on the `+y` side, as in Ghostty, so shaders written for Ghostty place the cursor correctly on both platforms.
+
+`HOLLOW_Y_DOWN` is defined as `1` on Windows and `0` on Linux.
+Shaders that need a fixed "up", such as falling rain, can flip `fragCoord.y` with it:
+
+```glsl
+#ifndef HOLLOW_Y_DOWN
+#define HOLLOW_Y_DOWN 0 // other terminals, such as Ghostty
+#endif
+
+vec2 uv = fragCoord / iResolution.xy;
+#if HOLLOW_Y_DOWN
+uv.y = 1.0 - uv.y; // y now grows upwards on every platform
+#endif
+```
 
 ## Limits
 

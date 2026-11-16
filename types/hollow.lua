@@ -416,6 +416,12 @@
 ---@class HollowBackgroundConfig
 ---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
 ---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
+---@field shader? string|HollowBackgroundShaderConfig|false Ghostty-compatible GLSL shader drawn under the image; false removes it
+
+---@class HollowBackgroundShaderConfig
+---@field path? string Shader file path
+---@field opacity? number 0..1, default 1. Mix with the background colour; the shader's alpha is ignored and window transparency still applies
+---@field animate? boolean Render every frame so the shader animates (default true)
 
 ---@alias HollowShaderAnimation "cursor"|"always"|"off"
 

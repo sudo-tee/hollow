@@ -21,7 +21,7 @@ The is the main entry point for Hollow's documentation.
 - [Persistent sessions](persistent-sessions-guide.md) — experimental host-owned terminals and explicit reattachment
 - [Session diagnostics](session-diagnostics.md) — ownership tracing
 - [Themes](themes.md) — built-in themes, custom themes, palette overrides
-- [Background and transparency](background.md) — window opacity and background images
+- [Background and transparency](background.md) — window opacity, background images and background shaders
 - [Custom shaders](custom-shaders.md) — Ghostty-compatible post-process shaders such as cursor trails
 - [Custom UI](custom-ui.md) — top bar, sidebars, overlays, Lua panes, and the widget runtime
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment

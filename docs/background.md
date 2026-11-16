@@ -1,7 +1,7 @@
 # Background and transparency
 
-Hollow can draw an image behind the terminal and make the window translucent.
-Both live under the `background` config table.
+Hollow can draw a shader or an image behind the terminal and make the window translucent.
+All three live under the `background` config table.
 
 ## Window opacity
 
@@ -61,7 +61,49 @@ With `background.opacity` below `1`, the desktop shows through wherever the imag
 A file that fails to load is logged once and skipped.
 Change the path or reload the config to try again.
 
+## Background shader
+
+```lua
+hollow.config.set({
+  background = {
+    shader = {
+      path = "C:/Users/me/shaders/aurora_background.glsl",
+      opacity = 1,     -- 0..1
+      animate = true,  -- render every frame
+    },
+  },
+})
+```
+
+`shader` also accepts a bare path string, which uses `opacity = 1` and `animate = true`.
+Set it to `false` to remove the shader.
+
+Background shaders use the same Ghostty-compatible GLSL as [custom shaders](custom-shaders.md#writing-shaders), with the same uniforms.
+The differences:
+
+- `iChannel0` is an empty texture; there is no scene to sample yet.
+- The shader takes the place of the background colour. Its alpha is ignored; `opacity` mixes it with the background colour.
+- `background.opacity` still sets the window transparency, so the desktop shows through the shader too.
+- The layers stack as: background colour, shader, image, then the terminal.
+  Give the image an `opacity` below `1` to let the shader show through.
+
+`animate = true` renders every frame, which keeps the GPU busy.
+Set it to `false` for static shaders; they then redraw only when the terminal changes.
+
+The shader compiles when the config sets `background.shader`.
+Run `hollow.config.reload()` after editing it.
+A shader that fails to compile is skipped and the error goes to the log file.
+
+[`examples/shaders/`](../examples/shaders/) has background shaders to start from:
+
+- `aurora_background.glsl`: slow aurora bands.
+- `matrix_rain.glsl`: falling green glyph rain.
+- `synthwave.glsl`: a striped sunset over a scrolling neon grid.
+
+Each has constants at the top, such as `strength`, to tone it down behind text.
+
 ## See also
 
 - [Configuration](configuration.md)
+- [Custom shaders](custom-shaders.md)
 - [`hollow.config` reference](reference/lua/config.md#background)

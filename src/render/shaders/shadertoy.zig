@@ -67,13 +67,21 @@ const macros =
     \\#define texture2D texture
     \\
     \\void mainImage(out vec4 fragColor, in vec2 fragCoord);
-    \\void main() { mainImage(_fragColor, gl_FragCoord.xy); }
+    \\#define hollow_layer_opacity hollow_globals[9].z
+    \\#define hollow_window_alpha hollow_globals[9].w
+    \\void main() {
+    \\    mainImage(_fragColor, gl_FragCoord.xy);
+    \\    // Background layers ignore the shader's alpha. Colour is premultiplied
+    \\    // by the window alpha; alpha is the coverage of the clear colour.
+    \\    if (hollow_layer_opacity > 0.0) _fragColor = vec4(_fragColor.rgb * hollow_layer_opacity * hollow_window_alpha, hollow_layer_opacity);
+    \\}
     \\#line 1
     \\
 ;
 
+// `HOLLOW_Y_DOWN` follows the version line, so the prefixes are split.
+const block_version = "#version 430 core\n";
 const block_prefix =
-    \\#version 430 core
     \\layout(std140, binding = 0) uniform Globals {
     \\    vec4 hollow_globals[16];
     \\    float iChannelTime[4];
@@ -86,8 +94,8 @@ const block_prefix =
 ++ macros;
 
 // Linux requests a GL 3.3 core context.
+const plain_version = "#version 330 core\n";
 const plain_prefix =
-    \\#version 330 core
     \\uniform vec4 hollow_globals[16];
     \\uniform float iChannelTime[4];
     \\uniform vec3 iChannelResolution[4];
@@ -139,6 +147,11 @@ pub const Uniforms = struct {
     selection_foreground: [3]f32 = .{ 0, 0, 0 },
     selection_background: [3]f32 = .{ 1, 1, 1 },
     palette: [256][3]f32 = std.mem.zeroes([256][3]f32),
+    /// Non-zero for background layers, which replace the clear colour by
+    /// this fraction. Not part of Ghostty's interface.
+    layer_opacity: f32 = 0,
+    /// Alpha of the clear colour under a background layer.
+    window_alpha: f32 = 1,
 
     fn slots(self: *const Uniforms) [slot_count][4]f32 {
         const f = struct {
@@ -164,7 +177,7 @@ pub const Uniforms = struct {
                 f.flag(self.cursor_visible),
                 self.time_cursor_change,
             },
-            .{ self.time_focus, f.flag(self.focus), 0, 0 },
+            .{ self.time_focus, f.flag(self.focus), self.layer_opacity, self.window_alpha },
             f.rgb(self.background),
             f.rgb(self.foreground),
             f.rgb(self.cursor_color),
@@ -229,6 +242,10 @@ var process_initialized = false;
 
 /// Translates a user shader to fragment source for `target`. The result is
 /// owned by `alloc`. Errors leave a message in `log`.
+fn yDefine(target: Target) []const u8 {
+    return if (yIsDown(target)) "#define HOLLOW_Y_DOWN 1\n" else "#define HOLLOW_Y_DOWN 0\n";
+}
+
 pub fn compileFragment(alloc: std.mem.Allocator, user_source: []const u8, target: Target, log: *Log) Error![:0]u8 {
     log.len = 0;
     if (user_source.len > max_source_bytes) {
@@ -237,12 +254,12 @@ pub fn compileFragment(alloc: std.mem.Allocator, user_source: []const u8, target
     }
     // GL also validates through glslang so both backends report the same
     // diagnostics, then hands the driver the original source.
-    const block_src = try std.mem.concatWithSentinel(alloc, u8, &.{ block_prefix, user_source }, 0);
+    const block_src = try std.mem.concatWithSentinel(alloc, u8, &.{ block_version, yDefine(target), block_prefix, user_source }, 0);
     defer alloc.free(block_src);
     const spirv = try spirvFromGlsl(alloc, block_src, log);
     defer alloc.free(spirv);
     return switch (target) {
-        .glsl => std.mem.concatWithSentinel(alloc, u8, &.{ plain_prefix, user_source }, 0),
+        .glsl => std.mem.concatWithSentinel(alloc, u8, &.{ plain_version, yDefine(target), plain_prefix, user_source }, 0),
         .hlsl => hlslFromSpirv(alloc, spirv, log),
     };
 }
@@ -334,7 +351,7 @@ test "shadertoy: GL keeps the user source after the plain prefix" {
     var log: Log = .{};
     const glsl = try compileFragment(testing.allocator, cursor_shader, .glsl, &log);
     defer testing.allocator.free(glsl);
-    try testing.expect(std.mem.startsWith(u8, glsl, "#version 330 core\nuniform vec4 hollow_globals[16];"));
+    try testing.expect(std.mem.startsWith(u8, glsl, "#version 330 core\n#define HOLLOW_Y_DOWN 0\nuniform vec4 hollow_globals[16];"));
     try testing.expect(std.mem.endsWith(u8, glsl, cursor_shader));
 }
 
@@ -357,16 +374,39 @@ test "shadertoy: rejects oversized sources" {
 test "shadertoy: packs uniforms for both layouts" {
     try testing.expectEqual(@as(usize, 4480), @sizeOf(Std140));
     try testing.expectEqual(@as(usize, 3392), @sizeOf(Native));
-    var u: Uniforms = .{ .resolution = .{ 800, 600 }, .time = 2, .frame = 7, .cursor_visible = true, .current_cursor_style = .bar };
+    var u: Uniforms = .{ .resolution = .{ 800, 600 }, .time = 2, .frame = 7, .cursor_visible = true, .current_cursor_style = .bar, .layer_opacity = 0.5, .window_alpha = 0.8 };
     u.palette[1] = .{ 1, 0.5, 0.25 };
     var std140: Std140 = undefined;
     u.packStd140(&std140);
     try testing.expectEqual([4]f32{ 800, 600, 1, 2 }, std140.globals[0]);
     try testing.expectEqual(@as(f32, 7), std140.globals[1][2]);
     try testing.expectEqual([4]f32{ 2, 0, 1, 0 }, .{ std140.globals[8][0], std140.globals[8][1], std140.globals[8][2], std140.globals[8][3] });
+    try testing.expectEqual(@as(f32, 0.5), std140.globals[9][2]);
+    try testing.expectEqual(@as(f32, 0.8), std140.globals[9][3]);
     try testing.expectEqual([4]f32{ 1, 0.5, 0.25, 0 }, std140.palette[1]);
     var native: Native = undefined;
     u.packNative(&native);
     try testing.expectEqual([3]f32{ 1, 0.5, 0.25 }, native.palette[1]);
     try testing.expectEqual([3]f32{ 800, 600, 1 }, native.channel_resolution[0]);
+}
+
+test "shadertoy: shipped example shaders compile" {
+    const io = std.testing.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, "examples/shaders", .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    var count: usize = 0;
+    while (try it.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".glsl")) continue;
+        const source = try dir.readFileAlloc(io, entry.name, testing.allocator, .limited(max_source_bytes));
+        defer testing.allocator.free(source);
+        var log: Log = .{};
+        const hlsl = compileFragment(testing.allocator, source, .hlsl, &log) catch |err| {
+            std.debug.print("{s}: {s}\n", .{ entry.name, log.slice() });
+            return err;
+        };
+        testing.allocator.free(hlsl);
+        count += 1;
+    }
+    try testing.expect(count >= 3);
 }

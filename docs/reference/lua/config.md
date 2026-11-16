@@ -139,6 +139,11 @@ hollow.config.set({
       fit = "cover",        -- "cover" | "contain" | "stretch" | "tile" | "center"
       opacity = 0.5,
     },
+    shader = {              -- or a path string, or false
+      path = "/home/me/shaders/aurora_background.glsl",
+      opacity = 1,
+      animate = true,       -- render every frame
+    },
   },
 })
 ```

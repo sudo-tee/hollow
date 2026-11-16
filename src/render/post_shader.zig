@@ -1,6 +1,7 @@
-//! Ghostty-compatible post-process shaders. The terminal scene renders into
-//! an offscreen target and each shader samples the previous pass through
-//! `iChannel0`; the last pass writes the swapchain.
+//! Ghostty-compatible shaders. The terminal scene renders into an offscreen
+//! target and each post-process shader samples the previous pass through
+//! `iChannel0`; the last pass writes the swapchain. An optional background
+//! shader draws inside the scene pass, under the background image.
 
 const std = @import("std");
 const c = @import("sokol_c");
@@ -83,12 +84,41 @@ const Pass = struct {
     }
 };
 
+/// 1×1 transparent texture bound as the background shader's `iChannel0`.
+const EmptyTexture = struct {
+    image: c.sg_image,
+    view: c.sg_view,
+
+    fn init() EmptyTexture {
+        const pixel = [4]u8{ 0, 0, 0, 0 };
+        var img_desc = std.mem.zeroes(c.sg_image_desc);
+        img_desc.width = 1;
+        img_desc.height = 1;
+        img_desc.pixel_format = c.SG_PIXELFORMAT_RGBA8;
+        img_desc.data.mip_levels[0].ptr = &pixel;
+        img_desc.data.mip_levels[0].size = pixel.len;
+        img_desc.label = "background-shader-empty";
+        const image = c.sg_make_image(&img_desc);
+        var view_desc = std.mem.zeroes(c.sg_view_desc);
+        view_desc.texture.image = image;
+        return .{ .image = image, .view = c.sg_make_view(&view_desc) };
+    }
+
+    fn deinit(self: EmptyTexture) void {
+        c.sg_destroy_view(self.view);
+        c.sg_destroy_image(self.image);
+    }
+};
+
 pub const Chain = struct {
     /// Config generation of the last sync, so failing files are not retried
     /// every frame.
     generation: ?u32 = null,
     passes: [max_passes]Pass = undefined,
     pass_count: usize = 0,
+    background: ?Pass = null,
+    empty_texture: ?EmptyTexture = null,
+    packed_uniforms: Packed = undefined,
     targets: [2]?Target = .{ null, null },
     target_size: [2]u32 = .{ 0, 0 },
     sampler: c.sg_sampler = .{ .id = 0 },
@@ -104,6 +134,10 @@ pub const Chain = struct {
     fn releaseGpu(self: *Chain) void {
         for (self.passes[0..self.pass_count]) |pass| pass.deinit();
         self.pass_count = 0;
+        if (self.background) |pass| pass.deinit();
+        self.background = null;
+        if (self.empty_texture) |t| t.deinit();
+        self.empty_texture = null;
         self.releaseTargets();
         if (self.sampler.id != 0) c.sg_destroy_sampler(self.sampler);
         self.sampler = .{ .id = 0 };
@@ -117,17 +151,27 @@ pub const Chain = struct {
         self.target_size = .{ 0, 0 };
     }
 
+    /// Whether post-process passes run, so the scene renders offscreen.
     pub fn active(self: *const Chain) bool {
         return self.pass_count > 0;
     }
 
+    pub fn backgroundActive(self: *const Chain) bool {
+        return self.background != null;
+    }
+
+    /// Whether any shader reads the uniforms.
+    pub fn anyActive(self: *const Chain) bool {
+        return self.active() or self.backgroundActive();
+    }
+
     /// Rebuild the chain when the config generation changed. Must run
     /// outside a render pass.
-    pub fn sync(self: *Chain, alloc: std.mem.Allocator, paths: []const []const u8, generation: u32) void {
+    pub fn sync(self: *Chain, alloc: std.mem.Allocator, paths: []const []const u8, background_path: ?[]const u8, generation: u32) void {
         if (self.generation == generation) return;
         self.generation = generation;
         self.releaseGpu();
-        if (paths.len == 0) return;
+        if (paths.len == 0 and background_path == null) return;
 
         const swapchain = c.sglue_swapchain();
         if (swapchain.sample_count > 1) {
@@ -135,14 +179,20 @@ pub const Chain = struct {
             return;
         }
         for (paths[0..@min(paths.len, max_passes)]) |path| {
-            const pass = buildPass(alloc, path, swapchain.color_format, swapchain.depth_format) catch |err| {
+            const pass = buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, false) catch |err| {
                 std.log.err("custom_shader '{s}' failed: {s}", .{ path, @errorName(err) });
                 continue;
             };
             self.passes[self.pass_count] = pass;
             self.pass_count += 1;
         }
-        if (self.pass_count == 0) return;
+        if (background_path) |path| {
+            if (buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, true)) |pass| {
+                self.background = pass;
+                self.empty_texture = EmptyTexture.init();
+            } else |err| std.log.err("background shader '{s}' failed: {s}", .{ path, @errorName(err) });
+        }
+        if (!self.anyActive()) return;
 
         var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
         smp_desc.min_filter = c.SG_FILTER_LINEAR;
@@ -204,7 +254,8 @@ pub const Chain = struct {
     }
 
     /// Whether the next frame must render even when nothing else changed.
-    pub fn wantsFrame(self: *const Chain, now_ns: i128, animation: Animation) bool {
+    pub fn wantsFrame(self: *const Chain, now_ns: i128, animation: Animation, animate_background: bool) bool {
+        if (self.backgroundActive() and animate_background) return true;
         if (!self.active()) return false;
         return switch (animation) {
             .always => true,
@@ -216,10 +267,10 @@ pub const Chain = struct {
         };
     }
 
-    /// Run every pass after the scene pass ended. The last pass writes the
-    /// swapchain.
-    pub fn run(self: *Chain, now_ns: i128, w: f32, h: f32) void {
-        if (!self.active() or self.targets[0] == null) return;
+    /// Update the per-frame uniforms. Call once per frame before
+    /// `drawBackground` and `run`.
+    pub fn beginFrame(self: *Chain, now_ns: i128, w: f32, h: f32) void {
+        if (!self.anyActive()) return;
         const u = &self.uniforms;
         u.resolution = .{ w, h };
         u.time = self.secondsSince(now_ns);
@@ -227,10 +278,31 @@ pub const Chain = struct {
         u.frame_rate = if (u.time_delta > 0) 1.0 / u.time_delta else 0;
         u.date = date(now_ns);
         self.last_frame_ns = now_ns;
+        if (target == .hlsl) u.packStd140(&self.packed_uniforms) else u.packNative(&self.packed_uniforms);
+        u.frame +%= 1;
+    }
 
-        var packed_uniforms: Packed = undefined;
-        if (target == .hlsl) u.packStd140(&packed_uniforms) else u.packNative(&packed_uniforms);
+    /// Draw the background shader inside the scene pass. It replaces
+    /// `opacity` of the clear colour and keeps its alpha, `window_alpha`.
+    pub fn drawBackground(self: *const Chain, opacity: f32, window_alpha: f32) void {
+        const pass = self.background orelse return;
+        if (opacity <= 0) return;
+        var packed_uniforms = self.packed_uniforms;
+        packed_uniforms.globals[9][2] = opacity;
+        packed_uniforms.globals[9][3] = window_alpha;
+        c.sg_apply_pipeline(pass.pipeline);
+        var bindings = std.mem.zeroes(c.sg_bindings);
+        bindings.views[0] = self.empty_texture.?.view;
+        bindings.samplers[0] = self.sampler;
+        c.sg_apply_bindings(&bindings);
+        c.sg_apply_uniforms(0, &.{ .ptr = &packed_uniforms, .size = @sizeOf(Packed) });
+        c.sg_draw(0, 3, 1);
+    }
 
+    /// Run every pass after the scene pass ended. The last pass writes the
+    /// swapchain.
+    pub fn run(self: *const Chain) void {
+        if (!self.active() or self.targets[0] == null) return;
         for (self.passes[0..self.pass_count], 0..) |pass, i| {
             const src = self.targets[i % 2].?;
             const last = i + 1 == self.pass_count;
@@ -248,11 +320,10 @@ pub const Chain = struct {
             bindings.views[0] = src.texture;
             bindings.samplers[0] = self.sampler;
             c.sg_apply_bindings(&bindings);
-            c.sg_apply_uniforms(0, &.{ .ptr = &packed_uniforms, .size = @sizeOf(Packed) });
+            c.sg_apply_uniforms(0, &.{ .ptr = &self.packed_uniforms, .size = @sizeOf(Packed) });
             c.sg_draw(0, 3, 1);
             c.sg_end_pass();
         }
-        u.frame +%= 1;
     }
 };
 
@@ -273,7 +344,10 @@ fn date(now_ns: i128) [4]f32 {
     };
 }
 
-fn buildPass(alloc: std.mem.Allocator, path: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format) !Pass {
+/// `premultiplied_blend` mixes the output into the target for the
+/// background layer: colour `src + dst * (1 - a)`, alpha
+/// `dst * a + dst * (1 - a)`, so the window alpha is unchanged.
+fn buildPass(alloc: std.mem.Allocator, path: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format, premultiplied_blend: bool) !Pass {
     const source = try std.Io.Dir.cwd().readFileAlloc(io.get(), path, alloc, .limited(shadertoy.max_source_bytes));
     defer alloc.free(source);
     var log: shadertoy.Log = .{};
@@ -333,6 +407,14 @@ fn buildPass(alloc: std.mem.Allocator, path: []const u8, color_format: c.sg_pixe
     var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
     pip_desc.shader = shader;
     pip_desc.colors[0].pixel_format = color_format;
+    if (premultiplied_blend) {
+        const blend = &pip_desc.colors[0].blend;
+        blend.enabled = true;
+        blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
+        blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.src_factor_alpha = c.SG_BLENDFACTOR_DST_ALPHA;
+        blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    }
     pip_desc.depth.pixel_format = depth_format;
     pip_desc.label = "post-shader-pipeline";
     const pipeline = c.sg_make_pipeline(&pip_desc);
@@ -358,13 +440,21 @@ test "cursor animation runs for a second after a cursor change" {
     var chain: Chain = .{ .pass_count = 1 };
     chain.noteCursor(2 * std.time.ns_per_s, .{ 10, 20, 8, 16 }, .{ 1, 1, 1, 1 });
     try std.testing.expectEqual(@as(f32, 2), chain.uniforms.time_cursor_change);
-    try std.testing.expect(chain.wantsFrame(2 * std.time.ns_per_s + std.time.ns_per_s / 2, .cursor));
-    try std.testing.expect(!chain.wantsFrame(4 * std.time.ns_per_s, .cursor));
-    try std.testing.expect(chain.wantsFrame(4 * std.time.ns_per_s, .always));
+    try std.testing.expect(chain.wantsFrame(2 * std.time.ns_per_s + std.time.ns_per_s / 2, .cursor, true));
+    try std.testing.expect(!chain.wantsFrame(4 * std.time.ns_per_s, .cursor, true));
+    try std.testing.expect(chain.wantsFrame(4 * std.time.ns_per_s, .always, true));
 
     // An unchanged cursor keeps the previous change time.
     chain.noteCursor(3 * std.time.ns_per_s, .{ 10, 20, 8, 16 }, .{ 1, 1, 1, 1 });
     try std.testing.expectEqual(@as(f32, 2), chain.uniforms.time_cursor_change);
     chain.noteCursor(3 * std.time.ns_per_s, .{ 18, 20, 8, 16 }, .{ 1, 1, 1, 1 });
     try std.testing.expectEqual([4]f32{ 10, 20, 8, 16 }, chain.uniforms.previous_cursor);
+}
+
+test "an animated background shader renders every frame" {
+    const stub: Pass = .{ .shader = .{ .id = 0 }, .pipeline = .{ .id = 0 } };
+    var chain: Chain = .{ .background = stub };
+    try std.testing.expect(!chain.active());
+    try std.testing.expect(chain.wantsFrame(10 * std.time.ns_per_s, .off, true));
+    try std.testing.expect(!chain.wantsFrame(10 * std.time.ns_per_s, .off, false));
 }

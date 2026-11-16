@@ -69,7 +69,7 @@ fn rgbUniform(color: ghostty.ColorRgb) [3]f32 {
 /// Feed the focused pane's cursor and colours to the custom shader chain.
 /// `ox`/`oy` place the pane in the framebuffer.
 fn notePostShaderPane(app: *App, renderer: *FtRenderer, runtime: *ghostty.Runtime, pane: *Pane, ox: f32, oy: f32, fb_h: f32, now_ns: i128) void {
-    if (!g_post_chain.active()) return;
+    if (!g_post_chain.anyActive()) return;
     const term = readyTerminal(pane) orelse return;
     const cfg = &app.config;
     const pad = if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) cfg.alternate_screen_padding else cfg.terminal_padding;
@@ -3692,7 +3692,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
         visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
-            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation);
+            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, app.config.background.shader_animate);
     }
     const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -4445,9 +4445,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     g_background_image.sync(app.allocator, app.config.background.image);
-    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.custom_shader.generation);
+    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background.shader, app.config.custom_shader.generation);
     const shader_now_ns = io.nanoTimestamp();
-    if (g_post_chain.active()) {
+    if (g_post_chain.anyActive()) {
         g_post_chain.noteFocus(shader_now_ns, app.window_focused);
         if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| if (app.activePane()) |active_pane| {
             var ox: f32 = 0;
@@ -4458,6 +4458,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             };
             notePostShaderPane(app, renderer, runtime, active_pane, ox, oy, height, shader_now_ns);
         };
+        g_post_chain.beginFrame(shader_now_ns, width, height);
     }
 
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
@@ -4470,6 +4471,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
+    g_post_chain.drawBackground(app.config.background.shader_opacity, clear_alpha);
     if (g_ft_renderer) |*renderer| {
         const bg = app.config.background;
         g_background_image.draw(renderer.atlas_pip, bg.image_fit, bg.image_opacity, width, height);
@@ -4819,7 +4821,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
-    g_post_chain.run(shader_now_ns, width, height);
+    g_post_chain.run();
     if (cmd_ipc.hasPendingScreenshot(app)) {
         const frame_width: usize = @intFromFloat(width);
         const frame_height: usize = @intFromFloat(height);

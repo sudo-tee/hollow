@@ -289,15 +289,31 @@ pub const Config = struct {
         image_fit: Fit = .cover,
         /// Range: 0..1.
         image_opacity: f32 = 1.0,
+        /// Ghostty-compatible shader drawn under the image. Its generation
+        /// is `CustomShader.generation`.
+        shader: ?[]u8 = null,
+        /// Range: 0..1.
+        shader_opacity: f32 = 1.0,
+        /// Render every frame so the shader animates.
+        shader_animate: bool = true,
 
         pub fn deinit(self: *Background, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.image);
+            freeOwned(allocator, &self.shader);
         }
 
         /// Default-background cells are left clear so the layers behind the
         /// panes show through.
         pub fn translucentCells(self: Background) bool {
-            return self.opacity < 1.0 or self.image != null;
+            return self.opacity < 1.0 or self.image != null or self.shader != null;
+        }
+
+        pub fn setShader(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
+            try replaceOwned(allocator, &self.shader, value);
+        }
+
+        pub fn clearShader(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.shader);
         }
 
         pub fn setImage(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
@@ -318,8 +334,8 @@ pub const Config = struct {
         /// `cursor` renders extra frames for a moment after the cursor or
         /// focus changes; `always` renders every frame.
         animation: Animation = .cursor,
-        /// Bumped whenever `paths` is set, so reloading the config recompiles
-        /// shaders whose files changed.
+        /// Bumped whenever `paths` or `Background.shader` is set, so
+        /// reloading the config recompiles shaders whose files changed.
         generation: u32 = 0,
 
         /// Process-wide, because reloading recreates the config.
