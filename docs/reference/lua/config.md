@@ -128,6 +128,23 @@ hollow.config.set({
 })
 ```
 
+### Background
+
+```lua
+hollow.config.set({
+  background = {
+    opacity = 0.9,          -- 0..1, window transparency (startup decides the surface)
+    image = {               -- or a path string, or false
+      path = "/home/me/wallpaper.png",
+      fit = "cover",        -- "cover" | "contain" | "stretch" | "tile" | "center"
+      opacity = 0.5,
+    },
+  },
+})
+```
+
+See [Background and transparency](../../background.md).
+
 ### Mouse Cursor
 
 This option defaults to `true`. Set it to `false` to keep the OS mouse cursor

@@ -275,6 +275,8 @@ pub const FtRenderer = struct {
     shaped_run_read_idx: usize = 0,
     style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = @splat(null),
     render_colors_scratch: ghostty.RenderStateColors = undefined,
+    /// Leave default-background cells transparent. Set once per frame.
+    translucent_bg: bool = false,
     offscreen_pass_scratch: c.sg_pass = std.mem.zeroes(c.sg_pass),
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
@@ -888,7 +890,10 @@ pub const FtRenderer = struct {
         self.offscreen_pass_scratch.attachments.colors[0] = cache.rt_att_view;
         if (options.force_full) {
             self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-            self.offscreen_pass_scratch.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+            self.offscreen_pass_scratch.action.colors[0].clear_value = if (options.translucent_bg)
+                .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 }
+            else
+                .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
         } else {
             self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_LOAD;
         }

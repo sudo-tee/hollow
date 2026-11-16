@@ -654,6 +654,7 @@ test {
     _ = @import("render/ft_types.zig");
     _ = @import("render/synth_glyphs.zig");
     _ = @import("render/kitty_graphics.zig");
+    _ = @import("render/background_image.zig");
     _ = @import("render/shaping.zig");
     _ = @import("render/glyph_batch.zig");
     _ = @import("render/terminal_render.zig");

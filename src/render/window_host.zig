@@ -15,6 +15,8 @@ pub const Options = struct {
     height: i32,
     title: [*:0]const u8,
     vsync: bool,
+    /// Create a surface with a premultiplied alpha channel.
+    transparent: bool = false,
     background: ?[3]u8 = null,
     before_show: ?*const fn (?*const anyopaque, ?*anyopaque) callconv(.c) void = null,
 };
@@ -39,7 +41,9 @@ pub const WindowHost = struct {
         desc.max_dropped_file_path_length = 8192;
         desc.window_title = options.title;
         desc.no_vsync = !options.vsync;
-        if (options.background) |rgb| {
+        desc.alpha = options.transparent;
+        if (options.background != null and !options.transparent) {
+            const rgb = options.background.?;
             desc.win32.has_background = true;
             desc.win32.background_r = rgb[0];
             desc.win32.background_g = rgb[1];

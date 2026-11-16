@@ -1,0 +1,226 @@
+From: Hollow local patches
+Subject: [PATCH] transparent windows via desc.alpha
+
+With desc.alpha set, D3D11 on Windows 10+ presents a premultiplied-alpha
+swapchain through DirectComposition (falling back to an opaque HWND
+swapchain), and GLX prefers 32-bit ARGB visuals so X11 compositors blend
+the window.
+
+--- a/sokol_app.h	2026-11-16 10:35:31.639449865 -0500
++++ b/sokol_app.h	2026-11-16 10:35:31.641678406 -0500
+@@ -2513,6 +2513,7 @@
+         #endif
+         #include <d3d11.h>
+         #include <dxgi.h>
++        #include <dxgi1_2.h>
+         // DXGI_SWAP_EFFECT_FLIP_DISCARD is only defined in newer Windows SDKs, so don't depend on it
+         #define _SAPP_DXGI_SWAP_EFFECT_FLIP_DISCARD (4)
+     #endif
+@@ -2953,6 +2954,10 @@
+     DXGI_SWAP_CHAIN_DESC swap_chain_desc;
+     IDXGISwapChain* swap_chain;
+     IDXGIDevice1* dxgi_device;
++    // DirectComposition objects for a transparent (desc.alpha) window.
++    void* dcomp_device;
++    void* dcomp_target;
++    void* dcomp_visual;
+     bool use_dxgi_frame_stats;
+     UINT sync_refresh_count;
+ } _sapp_d3d11_t;
+@@ -8499,6 +8504,31 @@
+ static const IID _sapp_IID_ID3D11Texture2D = { 0x6f15aaf2,0xd208,0x4e89, {0x9a,0xb4,0x48,0x95,0x35,0xd3,0x4f,0x9c} };
+ static const IID _sapp_IID_IDXGIDevice1    = { 0x77db970f,0x6276,0x48ba, {0xba,0x28,0x07,0x01,0x43,0xb4,0x39,0x2c} };
+ static const IID _sapp_IID_IDXGIFactory    = { 0x7b7166ec,0x21c7,0x44ae, {0xb2,0x1a,0xc9,0xae,0x32,0x1a,0xe3,0x69} };
++static const IID _sapp_IID_IDXGIFactory2   = { 0x50c83a1c,0xe072,0x4c48, {0x87,0xb0,0x36,0x30,0xfa,0x36,0xa6,0xd0} };
++static const IID _sapp_IID_IDCompositionDevice = { 0xc37ea93a,0xe7aa,0x450d, {0xb1,0x6f,0x97,0x46,0xcb,0x04,0x07,0xf3} };
++
++// dcomp.h only declares C++ interfaces, so DirectComposition is called
++// through raw vtable slots (IUnknown occupies slots 0..2).
++#define _SAPP_COM_METHOD(obj, slot, type) ((type)((*(void***)(obj))[slot]))
++typedef HRESULT (WINAPI* _sapp_DCompositionCreateDevice_t)(IDXGIDevice*, REFIID, void**);
++typedef ULONG (STDMETHODCALLTYPE* _sapp_com_release_t)(void*);
++typedef HRESULT (STDMETHODCALLTYPE* _sapp_com_query_t)(void*, REFIID, void**);
++typedef HRESULT (STDMETHODCALLTYPE* _sapp_dcomp_commit_t)(void*);
++typedef HRESULT (STDMETHODCALLTYPE* _sapp_dcomp_create_target_t)(void*, HWND, BOOL, void**);
++typedef HRESULT (STDMETHODCALLTYPE* _sapp_dcomp_create_visual_t)(void*, void**);
++typedef HRESULT (STDMETHODCALLTYPE* _sapp_dcomp_set_t)(void*, void*);
++#define _SAPP_DCOMP_DEVICE_COMMIT (3)
++#define _SAPP_DCOMP_DEVICE_CREATE_TARGET_FOR_HWND (6)
++#define _SAPP_DCOMP_DEVICE_CREATE_VISUAL (7)
++#define _SAPP_DCOMP_TARGET_SET_ROOT (3)
++#define _SAPP_DCOMP_VISUAL_SET_CONTENT (15)
++
++_SOKOL_PRIVATE void _sapp_com_release(void** obj) {
++    if (*obj) {
++        _SAPP_COM_METHOD(*obj, 2, _sapp_com_release_t)(*obj);
++        *obj = 0;
++    }
++}
+ 
+ static inline HRESULT _sapp_dxgi_GetBuffer(IDXGISwapChain* self, UINT Buffer, REFIID riid, void** ppSurface) {
+     #if defined(__cplusplus)
+@@ -8596,7 +8626,65 @@
+     #endif
+ }
+ 
++// Present through DirectComposition with premultiplied alpha so the desktop
++// shows through transparent pixels. Returns false to fall back to an opaque
++// HWND swapchain.
++_SOKOL_PRIVATE bool _sapp_d3d11_create_composition_swapchain(IDXGIFactory* dxgi_factory) {
++    IDXGIFactory2* factory2 = 0;
++    HMODULE dcomp_dll = 0;
++    IDXGISwapChain1* swap_chain1 = 0;
++    HRESULT hr = _SAPP_COM_METHOD(dxgi_factory, 0, _sapp_com_query_t)(dxgi_factory, _sapp_win32_refiid(_sapp_IID_IDXGIFactory2), (void**)&factory2);
++    if (!SUCCEEDED(hr) || !factory2) {
++        return false;
++    }
++    DXGI_SWAP_CHAIN_DESC1 desc;
++    _sapp_clear(&desc, sizeof(desc));
++    desc.Width = (UINT)(_sapp.framebuffer_width > 0 ? _sapp.framebuffer_width : 1);
++    desc.Height = (UINT)(_sapp.framebuffer_height > 0 ? _sapp.framebuffer_height : 1);
++    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
++    desc.SampleDesc.Count = 1;
++    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
++    desc.BufferCount = 2;
++    desc.Scaling = DXGI_SCALING_STRETCH;
++    desc.SwapEffect = (DXGI_SWAP_EFFECT) _SAPP_DXGI_SWAP_EFFECT_FLIP_DISCARD;
++    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
++    #if defined(__cplusplus)
++        hr = factory2->CreateSwapChainForComposition((IUnknown*)_sapp.d3d11.device, &desc, NULL, &swap_chain1);
++    #else
++        hr = factory2->lpVtbl->CreateSwapChainForComposition(factory2, (IUnknown*)_sapp.d3d11.device, &desc, NULL, &swap_chain1);
++    #endif
++    _SAPP_SAFE_RELEASE(factory2);
++    if (!SUCCEEDED(hr) || !swap_chain1) {
++        return false;
++    }
++
++    dcomp_dll = LoadLibraryA("dcomp.dll");
++    _sapp_DCompositionCreateDevice_t create_device = dcomp_dll ? (_sapp_DCompositionCreateDevice_t)(void*)GetProcAddress(dcomp_dll, "DCompositionCreateDevice") : 0;
++    bool ok = create_device &&
++        SUCCEEDED(create_device((IDXGIDevice*)_sapp.d3d11.dxgi_device, _sapp_win32_refiid(_sapp_IID_IDCompositionDevice), &_sapp.d3d11.dcomp_device));
++    ok = ok && SUCCEEDED(_SAPP_COM_METHOD(_sapp.d3d11.dcomp_device, _SAPP_DCOMP_DEVICE_CREATE_TARGET_FOR_HWND, _sapp_dcomp_create_target_t)(_sapp.d3d11.dcomp_device, _sapp.win32.hwnd, TRUE, &_sapp.d3d11.dcomp_target));
++    ok = ok && SUCCEEDED(_SAPP_COM_METHOD(_sapp.d3d11.dcomp_device, _SAPP_DCOMP_DEVICE_CREATE_VISUAL, _sapp_dcomp_create_visual_t)(_sapp.d3d11.dcomp_device, &_sapp.d3d11.dcomp_visual));
++    ok = ok && SUCCEEDED(_SAPP_COM_METHOD(_sapp.d3d11.dcomp_visual, _SAPP_DCOMP_VISUAL_SET_CONTENT, _sapp_dcomp_set_t)(_sapp.d3d11.dcomp_visual, swap_chain1));
++    ok = ok && SUCCEEDED(_SAPP_COM_METHOD(_sapp.d3d11.dcomp_target, _SAPP_DCOMP_TARGET_SET_ROOT, _sapp_dcomp_set_t)(_sapp.d3d11.dcomp_target, _sapp.d3d11.dcomp_visual));
++    ok = ok && SUCCEEDED(_SAPP_COM_METHOD(_sapp.d3d11.dcomp_device, _SAPP_DCOMP_DEVICE_COMMIT, _sapp_dcomp_commit_t)(_sapp.d3d11.dcomp_device));
++    if (!ok) {
++        _sapp_com_release(&_sapp.d3d11.dcomp_visual);
++        _sapp_com_release(&_sapp.d3d11.dcomp_target);
++        _sapp_com_release(&_sapp.d3d11.dcomp_device);
++        _SAPP_SAFE_RELEASE(swap_chain1);
++        // dcomp.dll stays loaded: a failed device may still reference it.
++        return false;
++    }
++    _sapp.d3d11.swap_chain = (IDXGISwapChain*)swap_chain1;
++    _sapp.d3d11.swap_chain_desc.BufferCount = desc.BufferCount;
++    _sapp.d3d11.use_dxgi_frame_stats = false;
++    return true;
++}
++
+ _SOKOL_PRIVATE void _sapp_d3d11_create_device_and_swapchain(void) {
++    // A transparent window creates the device first and its composition
++    // swapchain once the DXGI factory is known.
++    const bool composition = _sapp.desc.alpha && _sapp.win32.is_win10_or_greater;
+     DXGI_SWAP_CHAIN_DESC* sc_desc = &_sapp.d3d11.swap_chain_desc;
+     sc_desc->BufferDesc.Width = (UINT)_sapp.framebuffer_width;
+     sc_desc->BufferDesc.Height = (UINT)_sapp.framebuffer_height;
+@@ -8631,8 +8719,8 @@
+         requested_feature_levels,       /* pFeatureLevels */
+         2,                              /* FeatureLevels */
+         D3D11_SDK_VERSION,              /* SDKVersion */
+-        sc_desc,                        /* pSwapChainDesc */
+-        &_sapp.d3d11.swap_chain,        /* ppSwapChain */
++        composition ? NULL : sc_desc,   /* pSwapChainDesc */
++        composition ? NULL : &_sapp.d3d11.swap_chain, /* ppSwapChain */
+         &_sapp.d3d11.device,            /* ppDevice */
+         &result_feature_level,          /* pFeatureLevel */
+         &_sapp.d3d11.device_context);   /* ppImmediateContext */
+@@ -8658,14 +8746,14 @@
+             requested_feature_levels,       /* pFeatureLevels */
+             2,                              /* FeatureLevels */
+             D3D11_SDK_VERSION,              /* SDKVersion */
+-            sc_desc,                        /* pSwapChainDesc */
+-            &_sapp.d3d11.swap_chain,        /* ppSwapChain */
++            composition ? NULL : sc_desc,   /* pSwapChainDesc */
++            composition ? NULL : &_sapp.d3d11.swap_chain, /* ppSwapChain */
+             &_sapp.d3d11.device,            /* ppDevice */
+             &result_feature_level,          /* pFeatureLevel */
+             &_sapp.d3d11.device_context);   /* ppImmediateContext */
+     }
+     #endif
+-    SOKOL_ASSERT(SUCCEEDED(hr) && _sapp.d3d11.swap_chain && _sapp.d3d11.device && _sapp.d3d11.device_context);
++    SOKOL_ASSERT(SUCCEEDED(hr) && (composition || _sapp.d3d11.swap_chain) && _sapp.d3d11.device && _sapp.d3d11.device_context);
+ 
+     // minimize frame latency, disable Alt-Enter
+     hr = _sapp_d3d11_QueryInterface(_sapp.d3d11.device, _sapp_win32_refiid(_sapp_IID_IDXGIDevice1), (void**)&_sapp.d3d11.dxgi_device);
+@@ -8678,6 +8766,13 @@
+             hr = _sapp_dxgi_GetParent((IDXGIObject*)dxgi_adapter, _sapp_win32_refiid(_sapp_IID_IDXGIFactory), (void**)&dxgi_factory);
+             if (SUCCEEDED(hr)) {
+                 _sapp_dxgi_MakeWindowAssociation(dxgi_factory, _sapp.win32.hwnd, DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_PRINT_SCREEN);
++                if (composition && !_sapp_d3d11_create_composition_swapchain(dxgi_factory)) {
++                    #if defined(__cplusplus)
++                        dxgi_factory->CreateSwapChain((IUnknown*)_sapp.d3d11.device, sc_desc, &_sapp.d3d11.swap_chain);
++                    #else
++                        dxgi_factory->lpVtbl->CreateSwapChain(dxgi_factory, (IUnknown*)_sapp.d3d11.device, sc_desc, &_sapp.d3d11.swap_chain);
++                    #endif
++                }
+                 _SAPP_SAFE_RELEASE(dxgi_factory);
+             } else {
+                 _SAPP_ERROR(WIN32_D3D11_GET_IDXGIFACTORY_FAILED);
+@@ -8689,9 +8784,13 @@
+     } else {
+         _SAPP_PANIC(WIN32_D3D11_QUERY_INTERFACE_IDXGIDEVICE1_FAILED);
+     }
++    SOKOL_ASSERT(_sapp.d3d11.swap_chain);
+ }
+ 
+ _SOKOL_PRIVATE void _sapp_d3d11_destroy_device_and_swapchain(void) {
++    _sapp_com_release(&_sapp.d3d11.dcomp_visual);
++    _sapp_com_release(&_sapp.d3d11.dcomp_target);
++    _sapp_com_release(&_sapp.d3d11.dcomp_device);
+     _SAPP_SAFE_RELEASE(_sapp.d3d11.swap_chain);
+     _SAPP_SAFE_RELEASE(_sapp.d3d11.dxgi_device);
+     _SAPP_SAFE_RELEASE(_sapp.d3d11.device_context);
+@@ -9850,7 +9949,13 @@
+        windowed-mode window will always be created first (however in hidden
+        mode, so that no windowed-mode window pops up before the fullscreen window)
+     */
+-    const DWORD win_ex_style = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
++    DWORD win_ex_style = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
++    #if defined(SOKOL_D3D11)
++    if (_sapp.desc.alpha && _sapp.win32.is_win10_or_greater) {
++        // DirectComposition content replaces the redirection surface.
++        win_ex_style |= WS_EX_NOREDIRECTIONBITMAP;
++    }
++    #endif
+     RECT rect = { 0, 0, 0, 0 };
+     DWORD win_style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SIZEBOX;
+     rect.right = (int) ((float)_sapp.window_width * _sapp.win32.dpi.window_scale);
+@@ -12440,6 +12545,9 @@
+ 
+     usable_configs = (_sapp_gl_fbconfig*) _sapp_malloc_clear((size_t)native_count * sizeof(_sapp_gl_fbconfig));
+     usable_count = 0;
++    /* A compositor only blends windows with a 32-bit ARGB visual. When alpha
++       is requested, try those first and fall back to any visual. */
++    for (int argb_pass = _sapp.desc.alpha ? 0 : 1; argb_pass < 2 && usable_count == 0; argb_pass++)
+     for (i = 0;  i < native_count;  i++) {
+         const GLXFBConfig n = native_configs[i];
+         _sapp_gl_fbconfig* u = usable_configs + usable_count;
+@@ -12449,6 +12557,16 @@
+         if (0 == (_sapp_glx_attrib(n, GLX_RENDER_TYPE) & GLX_RGBA_BIT)) {
+             continue;
+         }
++        if (argb_pass == 0) {
++            XVisualInfo* vi = _sapp.glx.GetVisualFromFBConfig(_sapp.x11.display, n);
++            const bool argb = vi && vi->depth == 32;
++            if (vi) {
++                XFree(vi);
++            }
++            if (!argb) {
++                continue;
++            }
++        }
+         /* Only consider window GLXFBConfigs */
+         if (0 == (_sapp_glx_attrib(n, GLX_DRAWABLE_TYPE) & GLX_WINDOW_BIT)) {
+             if (trust_window_bit) {

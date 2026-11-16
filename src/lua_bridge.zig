@@ -4513,6 +4513,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "background") and value_type == .table) {
+            const background_idx = absoluteIndex(api, state, -1);
+            applyBackgroundTable(ctx.cfg, api, state, background_idx) catch |err| std.log.err("config background field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "bell") and value_type == .table) {
             const bell_idx = absoluteIndex(api, state, -1);
             applyBellTable(ctx.cfg, api, state, bell_idx) catch |err| std.log.err("config bell field failed: {s}", .{@errorName(err)});
@@ -4723,6 +4729,66 @@ fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_i
         if (std.mem.eql(u8, key, "dim_opacity") and value_type == .number) {
             cfg.unfocused_pane.dim = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
             continue;
+        }
+    }
+}
+
+fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    const background = &cfg.background;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
+            background.opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "image")) {
+            switch (value_type) {
+                .boolean => background.clearImage(cfg.allocator),
+                .string => {
+                    var value_len: usize = 0;
+                    const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                    if (value_len == 0) background.clearImage(cfg.allocator) else try background.setImage(cfg.allocator, value_ptr[0..value_len]);
+                },
+                .table => try applyBackgroundImageTable(cfg, api, state, absoluteIndex(api, state, -1)),
+                else => {},
+            }
+            continue;
+        }
+    }
+}
+
+fn applyBackgroundImageTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    const background = &cfg.background;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
+            background.image_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
+        if (value_type != .string) continue;
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const value = value_ptr[0..value_len];
+        if (std.mem.eql(u8, key, "path")) {
+            if (value.len == 0) background.clearImage(cfg.allocator) else try background.setImage(cfg.allocator, value);
+        } else if (std.mem.eql(u8, key, "fit")) {
+            if (std.meta.stringToEnum(config.Config.Background.Fit, value)) |fit| background.image_fit = fit;
         }
     }
 }
@@ -8646,6 +8712,30 @@ test "set_config ignores window size once the GUI is ready" {
     try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
     try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
     try std.testing.expectEqual(@as(u16, 90), cfg.cols);
+}
+
+test "set_config parses background opacity and image" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(!cfg.background.translucentCells());
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 1.5 } })");
+    try std.testing.expectEqual(@as(f32, 1.0), cfg.background.opacity);
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 0.8, image = { path = '/tmp/bg.png', fit = 'tile', opacity = 0.25 } } })");
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
+    try std.testing.expectEqualStrings("/tmp/bg.png", cfg.background.image.?);
+    try std.testing.expectEqual(config.Config.Background.Fit.tile, cfg.background.image_fit);
+    try std.testing.expectEqual(@as(f32, 0.25), cfg.background.image_opacity);
+
+    try runtime.runString("host_api.set_config({ background = { image = '/tmp/other.jpg' } })");
+    try std.testing.expectEqualStrings("/tmp/other.jpg", cfg.background.image.?);
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
+    try std.testing.expect(cfg.background.image == null);
+    try std.testing.expect(!cfg.background.translucentCells());
 }
 
 test "set_config toggles window placement restoration" {

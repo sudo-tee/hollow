@@ -406,6 +406,17 @@
 ---@field dim? boolean|number
 ---@field dim_opacity? number
 
+---@alias HollowBackgroundImageFit "cover"|"contain"|"stretch"|"tile"|"center"
+
+---@class HollowBackgroundImageConfig
+---@field path string PNG or JPEG file
+---@field fit? HollowBackgroundImageFit Defaults to "cover"
+---@field opacity? number 0..1, defaults to 1
+
+---@class HollowBackgroundConfig
+---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
+---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
+
 ---@class HollowScrollbarConfig
 ---@field enabled? boolean
 ---@field width? integer
@@ -505,6 +516,7 @@
 ---@field quick_select? HollowQuickSelectConfig
 ---@field cursor? HollowCursorConfig
 ---@field unfocused_pane? HollowUnfocusedPaneConfig
+---@field background? HollowBackgroundConfig
 ---@field shell? string|string[]
 ---@field default_domain? string
 ---@field domains? table<string, string|HollowDomainConfig>

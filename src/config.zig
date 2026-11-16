@@ -277,6 +277,38 @@ pub const Config = struct {
         }
     };
 
+    pub const Background = struct {
+        pub const Fit = enum { cover, contain, stretch, tile, center };
+
+        /// Opacity of the default terminal background. Range: 0..1. Values
+        /// below 1 show the desktop only when the window surface was created
+        /// transparent, which is decided at startup.
+        opacity: f32 = 1.0,
+        /// Image drawn behind the terminal panes. PNG or JPEG.
+        image: ?[]u8 = null,
+        image_fit: Fit = .cover,
+        /// Range: 0..1.
+        image_opacity: f32 = 1.0,
+
+        pub fn deinit(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.image);
+        }
+
+        /// Default-background cells are left clear so the layers behind the
+        /// panes show through.
+        pub fn translucentCells(self: Background) bool {
+            return self.opacity < 1.0 or self.image != null;
+        }
+
+        pub fn setImage(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
+            try replaceOwned(allocator, &self.image, value);
+        }
+
+        pub fn clearImage(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.image);
+        }
+    };
+
     pub const Bell = struct {
         /// Draw a brief flash overlay on the pane that received the BEL.
         visual: bool = true,
@@ -317,6 +349,7 @@ pub const Config = struct {
     hyperlinks: Hyperlinks = .{},
     unfocused_pane: UnfocusedPane = .{},
     bell: Bell = .{},
+    background: Background = .{},
     lib_dir: ?[]u8 = null,
     top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,
@@ -377,6 +410,7 @@ pub const Config = struct {
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
         self.hyperlinks.deinit(self.allocator);
+        self.background.deinit(self.allocator);
         for (self.watch_dirs.items) |dir| self.allocator.free(dir);
         self.watch_dirs.deinit(self.allocator);
     }

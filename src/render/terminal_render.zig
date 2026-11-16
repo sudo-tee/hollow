@@ -110,6 +110,8 @@ pub const QueueOptions = struct {
     row_map_keys: ?[]ghostty.RowId = null,
     row_map_vals: ?[]u64 = null,
     row_map_skip: bool = false,
+    /// Leave default-background cells clear so window layers show through.
+    translucent_bg: bool = false,
     colors: QueueColors,
 
     inline fn useRowMap(self: @This()) bool {
@@ -289,7 +291,8 @@ pub fn queueBackgroundAndRasterPass(
 
     var row_y: usize = 0;
     var quads_open = false;
-    if (queue.force_full) {
+    // Translucent targets are already cleared to transparent.
+    if (queue.force_full and !queue.translucent_bg) {
         // Default background sits behind every image layer. Explicit cell
         // backgrounds remain on layer 0, above below-background images.
         c.sgl_layer(-3);
@@ -329,7 +332,12 @@ pub fn queueBackgroundAndRasterRow(
             c.sgl_begin_quads();
             quads_open.* = true;
         }
-        c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
+        // The default pipeline does not blend, so a transparent quad erases
+        // the row's previous pixels.
+        if (queue.translucent_bg)
+            c.sgl_c4b(0, 0, 0, 0)
+        else
+            c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
         c.sgl_v2f(0.0, row.py);
         c.sgl_v2f(pane_w, row.py);
         c.sgl_v2f(pane_w, row.py + self.cell_h);

@@ -3,6 +3,7 @@ const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
+const BackgroundImage = @import("background_image.zig").BackgroundImage;
 const window_placement = if (builtin.os.tag == .windows) @import("window_placement_windows.zig") else struct {};
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
@@ -51,6 +52,9 @@ const LuaPanePrepare = struct {
     changed: bool = false,
 };
 var g_lua_pane_prepare: ?*LuaPanePrepare = null;
+/// The window surface carries alpha. Decided once before the window opens.
+var g_transparent_surface = false;
+var g_background_image: BackgroundImage = .{};
 
 fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
     const ctx = g_lua_pane_prepare orelse return;
@@ -1010,6 +1014,7 @@ const PaneCacheEntry = struct {
     /// one full clear so the padding and any untouched pixels match the new theme.
     last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
     has_bg_color: bool = false,
+    last_translucent_bg: bool = false,
     /// Open-addressing map: opaque, scroll-stable row ID → cell-content hash.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
     row_map_keys: [ROW_MAP_CAP]ghostty.RowId = @splat(ROW_MAP_EMPTY),
@@ -3352,6 +3357,7 @@ pub fn run(app: *App) !void {
     g_drag_node = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
+    g_transparent_surface = app.config.background.opacity < 1.0;
 
     var host = WindowHost.init(.{
         .context = app,
@@ -3365,6 +3371,7 @@ pub fn run(app: *App) !void {
         .height = @intCast(app.config.window_height),
         .title = titleCString(app.config.windowTitle()),
         .vsync = app.config.vsync,
+        .transparent = g_transparent_surface,
         .background = defaultClearColor(app),
         .before_show = if (builtin.os.tag == .windows) beforeShowCb else null,
     });
@@ -3687,6 +3694,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
     }
+    if (g_ft_renderer) |*renderer| renderer.translucent_bg = app.config.background.translucentCells();
 
     // Resolve background color for the clear pass.
     const default_clear = defaultClearColor(app);
@@ -3783,7 +3791,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             invalidatePaneCacheForPane(pane);
         }
     }
-    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame;
+    // Direct rendering redraws partially over the swapchain, which cannot
+    // leave default-background cells clear.
+    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame and !app.config.background.translucentCells();
     const use_safe_render = app.config.renderer_safe_mode and !sync_cache_supported;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
     const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !sync_cache_supported;
@@ -3915,7 +3925,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
                         }
                     }
+                    const translucent_bg = cfg.background.translucentCells();
                     const background_changed = !cache_entry.has_bg_color or
+                        cache_entry.last_translucent_bg != translucent_bg or
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
@@ -4149,6 +4161,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.pty_burst_active = pty_active;
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
+                    cache_entry.last_translucent_bg = translucent_bg;
                     cache_entry.prev_cursor_row = cursor_row;
                     cache_entry.last_cursor_row = cursor_row;
                     cache_entry.last_cursor_col = cursor_col;
@@ -4382,11 +4395,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         _ = renderer.uploadGlyphVerts();
     }
 
+    g_background_image.sync(app.allocator, app.config.background.image);
+
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
     g_swapchain_pass.swapchain = c.sglue_swapchain();
     g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-    g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+    const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
+    g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
+    if (g_ft_renderer) |*renderer| {
+        const bg = app.config.background;
+        g_background_image.draw(renderer.atlas_pip, bg.image_fit, bg.image_opacity, width, height);
+    }
     var swapchain_panes_ns: i128 = 0;
     var swapchain_ui_ns: i128 = 0;
     var swapchain_glyph_ns: i128 = 0;
@@ -4738,7 +4758,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const pixels = app.allocator.alloc(u8, frame_width * frame_height * 4) catch null;
         if (pixels) |rgba| {
             defer app.allocator.free(rgba);
-            cmd_ipc.finishScreenshot(app, if (c.hollow_capture_frame(rgba.ptr, @intCast(frame_width), @intCast(frame_height))) rgba else null, frame_width, frame_height);
+            const captured = c.hollow_capture_frame(rgba.ptr, @intCast(frame_width), @intCast(frame_height));
+            // Premultiplied pixels over black: export opaque, as PNG alpha is straight.
+            if (captured and g_transparent_surface) {
+                var i: usize = 3;
+                while (i < rgba.len) : (i += 4) rgba[i] = 255;
+            }
+            cmd_ipc.finishScreenshot(app, if (captured) rgba else null, frame_width, frame_height);
         } else cmd_ipc.finishScreenshot(app, null, 0, 0);
     }
     c.sg_commit();
@@ -5095,6 +5121,7 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     g_grid_debug.deinit();
     for (&g_native_bars) |*surface| surface.deinit();
     g_native_debug.deinit();
+    if (appFromUserData(user_data)) |app| g_background_image.deinit(app.allocator);
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window
