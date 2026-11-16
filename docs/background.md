@@ -61,6 +61,10 @@ With `background.opacity` below `1`, the desktop shows through wherever the imag
 A file that fails to load is logged once and skipped.
 Change the path or reload the config to try again.
 
+![Terminal listing shader files over a Bubble Nebula photo drawn at 40% opacity](assets/shaders/background-image.webp)
+
+Background photo: Bubble Nebula, NASA, ESA and the Hubble Heritage Team (STScI/AURA).
+
 ## Background shader
 
 ```lua
@@ -101,6 +105,12 @@ A shader that fails to compile is skipped and the error goes to the log file.
 - `synthwave.glsl`: a striped sunset over a scrolling neon grid.
 
 Each has constants at the top, such as `strength`, to tone it down behind text.
+
+![Animated recording of the synthwave background shader: a striped sun and a scrolling purple grid behind shader source text](assets/shaders/synthwave.webp)
+
+![Animated recording of the matrix rain background shader: columns of green glyphs falling behind terminal text](assets/shaders/matrix-rain.webp)
+
+![Aurora background shader: faint green and violet bands behind the shader's own source](assets/shaders/aurora-background.webp)
 
 ## See also
 

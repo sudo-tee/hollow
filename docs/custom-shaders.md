@@ -38,6 +38,10 @@ A shader that fails to compile is skipped and the error goes to the log file.
 - `cursor_trail.glsl` draws a fading trail behind the cursor and a soft glow around it.
 - `crt_scanlines.glsl` adds faint scanlines and an RGB fringe.
 
+![Animated recording of the cursor trail shader in Neovim: the cursor leaves a fading trail as it jumps between the top and bottom of the file](assets/shaders/cursor-trail.webp)
+
+![CRT scanlines shader over Neovim: faint horizontal scanlines and a red-blue fringe on the text](assets/shaders/crt-scanlines.webp)
+
 [Background shaders](background.md#background-shader) draw under the terminal instead of over it:
 
 - `aurora_background.glsl` draws slow aurora bands.
