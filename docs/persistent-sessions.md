@@ -58,6 +58,26 @@ Rules:
 
 ## Layout ownership
 
+### Moving tabs between sessions
+
+Use `move_tab_to_workspace` to transfer a whole live tab between sessions.
+Both sessions must be attached on the same domain and host.
+Both connections must advertise the owner's `tab-transfer` capability.
+Older owners require an upgrade.
+The source authorizes its panes and pauses delivery before adoption.
+The GUI moves the tab only after destination acknowledgement.
+Local pane IDs, processes, scrollback, and splits are preserved.
+Owner pane IDs are remapped into the destination session.
+Both workspace layouts are saved afterward.
+An empty source session ends and its workspace is removed.
+Moving the last tab with remaining source docks is refused.
+Dock-only layouts cannot be restored.
+Single-pane transfers across persistent workspaces remain unsupported.
+Cross-domain and persistent-to-non-persistent moves remain unsupported.
+If acknowledgement is lost, both local attachments freeze.
+Reattach the sessions to recover authoritative membership.
+Uncertain transfers are never replayed and do not spawn replacements.
+
 - The owner owns structure: which panes exist, which tab they belong to, tab
   order. It enforces this on pane create/kill.
 - The GUI owns geometry: nested split tree, ratios, focus, floating and

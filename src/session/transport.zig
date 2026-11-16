@@ -266,6 +266,27 @@ pub const Connection = struct {
         return self.client.respawn_supported;
     }
 
+    pub fn supportsTabTransfer(self: *Connection) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.client.tab_transfer_supported;
+    }
+
+    pub fn transferRequest(self: *Connection, generation: u64, value: p.Request) !u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closing or generation != self.client.generation) return error.Detached;
+        const id = try self.client.request(value);
+        self.changed.broadcast(self.io);
+        return id;
+    }
+
+    pub fn forgetTransferredPane(self: *Connection, generation: u64, pane: u32) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (generation == self.client.generation) self.client.forgetPane(pane);
+    }
+
     pub fn supportsCreateId(self: *Connection) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

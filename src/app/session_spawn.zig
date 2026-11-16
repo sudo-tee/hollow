@@ -65,7 +65,7 @@ fn admit(app: *App, placement: Mux.SessionPlacement, cwd: ?[]const u8, requested
     const controller = ws.session_controller orelse return error.NotSessionWorkspace;
     if (controller.detached or controller.connection.status().phase != .ready) return error.Detached;
     if (ws.session_close_desired or controller.close_work or controller.pendingCloses() != 0 or controller.kill_request != null) return error.SessionClosing;
-    if (controller.spawn_active) return error.SessionBusy;
+    if (controller.spawn_active or controller.transfer_active) return error.SessionBusy;
     if (controller.layout_conflict) return error.RevisionConflict;
     const tab = mux.activeTab() orelse return error.NoActiveTab;
     const active = mux.activePane() orelse return error.NoActivePane;
@@ -146,7 +146,7 @@ pub fn respawnRejected(app: *App, remote: ?[]const u8) void {
     report(app, error.RespawnRejected, .rejected, remote);
 }
 
-fn report(app: *App, reason: anyerror, outcome: @import("../session/open.zig").Outcome, remote: ?[]const u8) void {
+pub fn report(app: *App, reason: anyerror, outcome: @import("../session/open.zig").Outcome, remote: ?[]const u8) void {
     const id = app.session_open_next_id;
     if (id != std.math.maxInt(u64)) app.session_open_next_id += 1;
     _ = app.session_notices.failedRemote(id, reason, outcome, remote);
@@ -276,7 +276,7 @@ pub fn handle(app: *App, controller: *Controller, message: transport.Message) bo
 }
 
 fn canSave(controller: *const Controller) bool {
-    return controller.layout_dirty and !controller.detached and !controller.spawn_active and !controller.close_work and
+    return controller.layout_dirty and !controller.detached and !controller.spawn_active and !controller.transfer_active and !controller.close_work and
         controller.layout_request == null and controller.kill_request == null and !controller.layout_conflict and controller.pendingCloses() == 0 and
         controller.connection.status().phase == .ready;
 }
@@ -429,6 +429,190 @@ fn mockPump(app: *App) void {
 fn mockDock(app: *App, id: u32, edge: @import("../mux.zig").PaneEdge, scope: @import("../mux.zig").DockScope) !*@import("../pane.zig").Pane {
     const ws = app.activeWorkspace().?;
     return app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, ws.session_controller.?, ws.id, .{ .id = id, .cols = 80, .rows = 24 }, "bound", null, .{ .dock = .{ .edge = edge, .scope = scope } });
+}
+
+fn enableMockTransfer(controller: *Controller) !void {
+    controller.connection.client.tab_transfer_supported = true;
+    controller.allocator.free(controller.host);
+    controller.host = try controller.allocator.dupe(u8, "same-owner");
+    controller.layout_dirty = false;
+}
+
+test "session borrowers tab transfer waits for both barriers and preserves GUI identity and layouts" {
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |keep_source| {
+        const app = try mockApp();
+        defer a.destroy(app);
+        defer app.deinit();
+        const source_ws = app.activeWorkspace().?;
+        const source_id = source_ws.id;
+        const source = source_ws.session_controller.?;
+        const tab = app.mux.?.activeTab().?;
+        const tab_id = tab.id;
+        const pane = app.activePane().?;
+        const pane_id = pane.id;
+        const vt = pane.content.terminal.terminal;
+        const sibling = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, source, source_ws.id, .{ .id = 2, .cols = 80, .rows = 24 }, "bound", null, .{ .split = .{ .tab_id = tab.id, .source_id = pane.id, .direction = .vertical, .ratio = 0.3 } });
+        const sibling_id = sibling.id;
+        sibling.content.terminal.pty.?.session.status = 0;
+        sibling.content.terminal.pty.?.session.close_on_exit = true;
+        const root = tab.root_split;
+        if (keep_source) {
+            _ = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, source, source_ws.id, .{ .id = 3, .cols = 80, .rows = 24 }, "bound", null, .{ .tab = .{} });
+        }
+        const destination_ws = try mockWorkspace(app, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        const destination = destination_ws.session_controller.?;
+        try enableMockTransfer(source);
+        try enableMockTransfer(destination);
+        const transfer = @import("session_transfer.zig");
+        try transfer.begin(app, tab.id, 1);
+        try std.testing.expect(pane.content.terminal.pty.?.session.transfer_pending);
+        mockPump(app);
+        const offer = source.connection.client.nextWrite().?;
+        defer offer.deinit();
+        const offer_request = try p.parse(p.Request, a, offer.payload);
+        defer offer_request.deinit();
+        try std.testing.expectEqual(p.Op.transfer_offer, offer_request.value.op);
+        try std.testing.expectEqual(@as(usize, 2), offer_request.value.transfer_panes.len);
+        try std.testing.expect(source_ws.tabById(tab_id) == tab);
+        try mockReply(source.connection, .{ .id = offer_request.value.id, .revision = 0 });
+        mockPump(app);
+        try std.testing.expect(transfer.paused(app, source));
+        const commit = destination.connection.client.nextWrite().?;
+        defer commit.deinit();
+        const request = try p.parse(p.Request, a, commit.payload);
+        defer request.deinit();
+        try std.testing.expectEqual(p.Op.transfer, request.value.op);
+        try std.testing.expect(source_ws.tabById(tab_id) == tab);
+        if (!keep_source) {
+            const bytes = try p.stringify(a, p.Event{ .event = .session_end, .session = source.session_id });
+            defer a.free(bytes);
+            try source.connection.client.receive(p.header(.event, 0, bytes.len), bytes);
+            mockPump(app);
+            try std.testing.expect(app.session_transfer != null);
+            try std.testing.expect(!source.detached);
+        }
+        try mockReply(destination.connection, .{ .id = request.value.id, .revision = 1, .source_revision = 1, .transferred = &.{ .{ .from = 1, .to = 2 }, .{ .from = 2, .to = 3 } } });
+        mockPump(app);
+        try std.testing.expect(app.session_transfer == null);
+        try std.testing.expectEqual(tab, app.mux.?.activeTab().?);
+        try std.testing.expectEqual(root, tab.root_split);
+        try std.testing.expectEqual(pane_id, pane.id);
+        try std.testing.expectEqual(vt, pane.content.terminal.terminal);
+        try std.testing.expectEqual(destination, app.mux.?.controllerForPane(pane.id).?);
+        try std.testing.expectEqual(@as(u32, 2), pane.content.terminal.pty.?.session.pane);
+        try std.testing.expect(!pane.content.terminal.pty.?.session.transfer_pending);
+        try std.testing.expectEqual(sibling_id, sibling.id);
+        try std.testing.expectEqual(destination, app.mux.?.controllerForPane(sibling.id).?);
+        try std.testing.expectEqual(@as(u32, 3), sibling.content.terminal.pty.?.session.pane);
+        try std.testing.expect(destination.close_work);
+        try std.testing.expect(destination.layout_dirty);
+        const capture = @import("../mux/session_layout.zig");
+        const bytes = try capture.capture(a, destination_ws, &app.mux.?.global_docks);
+        defer a.free(bytes);
+        const layout = try @import("../session/layout.zig").decode(a, bytes, &.{ 1, 2, 3 });
+        defer layout.deinit();
+        try std.testing.expectEqual(@as(usize, 2), layout.value.tabs.len);
+        if (keep_source) {
+            try std.testing.expect(source.layout_dirty);
+            const source_bytes = try capture.capture(a, source_ws, &app.mux.?.global_docks);
+            defer a.free(source_bytes);
+            const source_layout = try @import("../session/layout.zig").decode(a, source_bytes, &.{3});
+            defer source_layout.deinit();
+            try std.testing.expectEqual(@as(usize, 1), source_layout.value.tabs.len);
+        } else try std.testing.expect(app.mux.?.workspaceById(source_id) == null);
+    }
+}
+
+test "session borrowers rejected transfer cancels its offer without moving the tab" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const source_ws = app.activeWorkspace().?;
+    const source = source_ws.session_controller.?;
+    const tab = app.mux.?.activeTab().?;
+    const destination_ws = try mockWorkspace(app, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const destination = destination_ws.session_controller.?;
+    try enableMockTransfer(source);
+    try enableMockTransfer(destination);
+    try @import("session_transfer.zig").begin(app, tab.id, 1);
+    mockPump(app);
+    const offer = source.connection.client.nextWrite().?;
+    defer offer.deinit();
+    try mockReply(source.connection, .{ .id = offer.request_id.?, .revision = 0 });
+    mockPump(app);
+    const commit = destination.connection.client.nextWrite().?;
+    defer commit.deinit();
+    try mockReply(destination.connection, .{ .id = commit.request_id.?, .ok = false, .@"error" = "RevisionConflict" });
+    mockPump(app);
+    const cancel = source.connection.client.nextWrite().?;
+    defer cancel.deinit();
+    const request = try p.parse(p.Request, a, cancel.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.transfer_cancel, request.value.op);
+    try mockReply(source.connection, .{ .id = request.value.id });
+    mockPump(app);
+    try std.testing.expect(app.session_transfer == null);
+    try std.testing.expectEqual(tab, source_ws.tabById(tab.id).?);
+    try std.testing.expect(!source.detached and !destination.detached);
+}
+
+test "session borrowers lost transfer reply freezes both attachments and never replays" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const source = app.activeWorkspace().?.session_controller.?;
+    const tab = app.mux.?.activeTab().?;
+    const destination_ws = try mockWorkspace(app, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const destination = destination_ws.session_controller.?;
+    try enableMockTransfer(source);
+    try enableMockTransfer(destination);
+    try @import("session_transfer.zig").begin(app, tab.id, 1);
+    mockPump(app);
+    const offer = source.connection.client.nextWrite().?;
+    defer offer.deinit();
+    try mockReply(source.connection, .{ .id = offer.request_id.?, .revision = 0 });
+    mockPump(app);
+    const commit = destination.connection.client.nextWrite().?;
+    defer commit.deinit();
+    app.session_transfer.?.deadline = 0;
+    mockPump(app);
+    try std.testing.expect(app.session_transfer == null);
+    try std.testing.expect(source.detached and destination.detached);
+    try std.testing.expectEqual(@as(usize, 2), app.mux.?.workspaces.items.len);
+    try std.testing.expectEqual(@as(usize, 1), tab.panes.items.len);
+    mockPump(app);
+    try std.testing.expect(source.connection.client.nextWrite() == null);
+    try std.testing.expect(destination.connection.client.nextWrite() == null);
+}
+
+test "session borrowers tab transfer rejects legacy owners and different domains or hosts" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const source = app.activeWorkspace().?.session_controller.?;
+    const tab = app.mux.?.activeTab().?;
+    const destination_ws = try mockWorkspace(app, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const destination = destination_ws.session_controller.?;
+    const transfer = @import("session_transfer.zig");
+    try std.testing.expectError(error.OwnerUpgradeRequired, transfer.begin(app, tab.id, 1));
+    try enableMockTransfer(source);
+    try enableMockTransfer(destination);
+    destination.host[0] = 'X';
+    try std.testing.expectError(error.SessionHostChanged, transfer.begin(app, tab.id, 1));
+    destination.host[0] = 's';
+    const pane = tab.activePane().?;
+    const domain = pane.content.terminal.domain_name;
+    pane.content.terminal.domain_name = try a.dupe(u8, "other");
+    defer {
+        a.free(pane.content.terminal.domain_name);
+        pane.content.terminal.domain_name = domain;
+    }
+    try std.testing.expectError(error.CrossSessionDomain, transfer.begin(app, tab.id, 1));
+    try std.testing.expect(app.session_transfer == null);
 }
 
 test "session borrowers global dock close and respawn use its owner binding" {

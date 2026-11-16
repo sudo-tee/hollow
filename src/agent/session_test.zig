@@ -190,6 +190,100 @@ test "outdated empty owner retires despite idle clients and refuses a racing cre
     try std.testing.expectEqual(@as(usize, 0), owner.sessions.items.len);
 }
 
+test "session tab transfer keeps live processes VT and scrollback and remaps pane IDs" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const source = try Fake.open(&owner, owner.identity);
+    defer source.deinit();
+    const destination = try Fake.open(&owner, owner.identity);
+    defer destination.deinit();
+    const created = try source.reply(&owner, try source.request(.{ .id = 0, .op = .create, .spawn = shell("printf 'retained-screen\\n'; while IFS= read -r line; do printf 'live:%s\\n' \"$line\"; done") }));
+    defer created.deinit();
+    const target = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer target.deinit();
+    const spawned = try source.reply(&owner, try source.request(.{ .id = 0, .op = .spawn, .spawn = shell("sleep 30") }));
+    defer spawned.deinit();
+    const original = owner.sessions.items[0].panes.items[0];
+    const pid = original.pid;
+    const terminal = original.vt;
+    const token = @as([32]u8, @splat('c'));
+    const offered = try source.reply(&owner, try source.request(.{ .id = 0, .op = .transfer_offer, .revision = 1, .transfer_session = target.value.session.?.id, .transfer_token = &token, .transfer_panes = &.{ 1, 2 } }));
+    defer offered.deinit();
+    try std.testing.expect(offered.value.ok);
+    const reply = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .transfer, .revision = 0, .transfer_session = created.value.session.?.id, .transfer_token = &token }));
+    defer reply.deinit();
+    try std.testing.expect(reply.value.ok);
+    const mappings = reply.value.transferred.?;
+    try std.testing.expectEqual(@as(usize, 2), mappings.len);
+    try std.testing.expectEqual(@as(u32, 2), mappings[0].to);
+    try std.testing.expectEqual(@as(u32, 3), mappings[1].to);
+    const target_session = owner.sessions.items[0];
+    try std.testing.expectEqual(@as(usize, 3), target_session.panes.items.len);
+    try std.testing.expectEqual(original, target_session.panes.items[1]);
+    try std.testing.expectEqual(pid, original.pid);
+    try std.testing.expectEqual(terminal, original.vt);
+    try std.testing.expect(original.status == null);
+    _ = try destination.wait(&owner, .snapshot_end, 2);
+    try destination.sendBytes(.input, 2, "still-alive\n");
+    try destination.waitOutput(&owner, 2, "live:still-alive");
+    const history = try vt.plain(original.vt.terminal, a);
+    defer a.free(history);
+    try std.testing.expect(std.mem.indexOf(u8, history, "retained-screen") != null);
+    // A later attachment recovers the same pane membership and VT history.
+    const attached = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .attach, .session = target.value.session.?.id }));
+    defer attached.deinit();
+    try std.testing.expectEqual(@as(usize, 3), attached.value.session.?.panes.len);
+    try std.testing.expectEqual(@as(u64, 1), attached.value.session.?.revision);
+}
+
+test "session tab transfer rejects stale revisions and forged tokens without changing membership" {
+    var owner = Owner.init(a, std.testing.io);
+    defer owner.deinit();
+    const source = try Fake.open(&owner, owner.identity);
+    defer source.deinit();
+    const destination = try Fake.open(&owner, owner.identity);
+    defer destination.deinit();
+    const created = try source.reply(&owner, try source.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer created.deinit();
+    const target = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .create, .spawn = shell("sleep 30") }));
+    defer target.deinit();
+    const token = @as([32]u8, @splat('c'));
+    const offered = try source.reply(&owner, try source.request(.{ .id = 0, .op = .transfer_offer, .revision = 0, .transfer_session = target.value.session.?.id, .transfer_token = &token, .transfer_panes = &.{1} }));
+    defer offered.deinit();
+    try std.testing.expect(offered.value.ok);
+    const forged = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .transfer, .revision = 0, .transfer_session = created.value.session.?.id, .transfer_token = &(@as([32]u8, @splat('d'))) }));
+    defer forged.deinit();
+    try std.testing.expectEqualStrings("InvalidTransfer", forged.value.@"error".?);
+    const stale = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .transfer, .revision = 1, .transfer_session = created.value.session.?.id, .transfer_token = &token }));
+    defer stale.deinit();
+    try std.testing.expectEqualStrings("RevisionConflict", stale.value.@"error".?);
+    for (owner.sessions.items) |session| {
+        try std.testing.expectEqual(@as(usize, 1), session.panes.items.len);
+        try std.testing.expectEqual(@as(u64, 0), session.meta.revision);
+    }
+    // Output accumulated under the offer must resume even if the process
+    // produces no further bytes and the client has already returned credit.
+    owner.sessions.items[0].panes.items[0].stream.appendOutput(a, "paused-output");
+    const canceled = try source.reply(&owner, try source.request(.{ .id = 0, .op = .transfer_cancel, .transfer_token = &token }));
+    defer canceled.deinit();
+    try std.testing.expect(canceled.value.ok);
+    try std.testing.expect(owner.sessions.items[0].meta.offer == null);
+    try source.waitOutput(&owner, 1, "paused-output");
+    const again = try source.reply(&owner, try source.request(.{ .id = 0, .op = .transfer_offer, .revision = 0, .transfer_session = target.value.session.?.id, .transfer_token = &token, .transfer_panes = &.{1} }));
+    defer again.deinit();
+    try std.testing.expect(again.value.ok);
+    const replacement = try Fake.open(&owner, owner.identity);
+    defer replacement.deinit();
+    const takeover = try replacement.reply(&owner, try replacement.request(.{ .id = 0, .op = .attach, .session = created.value.session.?.id }));
+    defer takeover.deinit();
+    try std.testing.expect(takeover.value.ok);
+    try std.testing.expect(owner.sessions.items[0].meta.offer == null);
+    const revoked = try destination.reply(&owner, try destination.request(.{ .id = 0, .op = .transfer, .revision = 0, .transfer_session = created.value.session.?.id, .transfer_token = &token }));
+    defer revoked.deinit();
+    try std.testing.expectEqualStrings("TransferNotFound", revoked.value.@"error".?);
+    for (owner.sessions.items) |session| try std.testing.expectEqual(@as(usize, 1), session.panes.items.len);
+}
+
 test "outdated owner preserves sessions then retires atomically after the last close" {
     var owner = Owner.init(a, std.testing.io);
     defer owner.deinit();

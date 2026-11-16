@@ -1017,25 +1017,84 @@ function M.setup(hollow, host_api)
 
   local palette = hollow.ui.command_palette
 
-  local function pick_workspace_and_run(fn)
-    local entries = palette.build_workspace_entries()
+  local function is_persistent_workspace(workspace)
+    return workspace.session_id ~= nil or workspace.session_state ~= nil
+  end
+
+  local function supports_workspace_move(source, target, kind)
+    if not is_persistent_workspace(source) and not is_persistent_workspace(target) then
+      return true
+    end
+    return kind == "tab"
+      and is_persistent_workspace(source)
+      and is_persistent_workspace(target)
+      and source.session_state == "attached"
+      and target.session_state == "attached"
+      and source.domain ~= nil
+      and source.domain ~= ""
+      and source.domain == target.domain
+      and source.session_host ~= nil
+      and source.session_host ~= ""
+      and source.session_host == target.session_host
+  end
+
+  local function pick_workspace_for_move(kind, fn)
+    local source = hollow.term.current_workspace()
+    if not source then
+      return
+    end
+    local restriction = kind == "tab"
+        and "Persistent tab moves require attached sessions on the same domain and host."
+      or "Moving a single pane to or from a persistent workspace is not supported; move its tab instead."
+    if is_persistent_workspace(source) and not supports_workspace_move(source, source, kind) then
+      hollow.ui.notify.warn(restriction)
+      return
+    end
+    local destinations = {}
+    for _, workspace in ipairs(hollow.term.workspaces()) do
+      if workspace.id ~= source.id and supports_workspace_move(source, workspace, kind) then
+        destinations[workspace.id] = true
+      end
+    end
+    local entries = {}
+    for _, entry in ipairs(palette.build_workspace_entries()) do
+      if destinations[entry.workspace_id] then
+        entries[#entries + 1] = entry
+      end
+    end
+    local function move(item)
+      if not item then
+        return
+      end
+      -- Picker entries are snapshots; resolve IDs again before queueing a move.
+      local current_source = hollow.term.workspace_by_id(source.id)
+      local target = hollow.term.workspace_by_id(item.workspace_id)
+      if not current_source or not target or target.id == source.id then
+        hollow.ui.notify.warn(
+          "Workspace move canceled: the source or destination is no longer available."
+        )
+        return
+      end
+      if not supports_workspace_move(current_source, target, kind) then
+        hollow.ui.notify.warn(restriction)
+        return
+      end
+      if not fn(target.index) then
+        hollow.ui.notify.error("Could not queue the workspace move.")
+      end
+    end
     if #entries == 0 then
-      fn(nil)
+      hollow.ui.notify.warn("No compatible destination workspace is available. " .. restriction)
       return
     end
     if #entries == 1 then
-      fn(entries[1])
+      move(entries[1])
       return
     end
     palette.open({
       prompt = "Target workspace",
       entries = entries,
-      on_confirm = function(item)
-        if item and item.workspace_index then
-          host_api.switch_workspace(item.workspace_index - 1)
-          fn(item)
-        end
-      end,
+      on_confirm = move,
     })
   end
 
@@ -1168,10 +1227,8 @@ function M.setup(hollow, host_api)
       if not tab then
         return
       end
-      pick_workspace_and_run(function(item)
-        if item and item.workspace_index then
-          host_api.move_tab_to_workspace(tab.id, item.workspace_index - 1)
-        end
+      pick_workspace_for_move("tab", function(index)
+        return host_api.move_tab_to_workspace(tab.id, index - 1)
       end)
     end,
     desc = "Move current tab to workspace",
@@ -1184,10 +1241,12 @@ function M.setup(hollow, host_api)
       if not pane then
         return
       end
-      pick_workspace_and_run(function(item)
-        if item and item.workspace_index then
-          host_api.move_pane_to_workspace(pane.id, item.workspace_index - 1)
-        end
+      if pane.dock then
+        hollow.ui.notify.warn("Undock the pane before moving it to another workspace.")
+        return
+      end
+      pick_workspace_for_move("pane", function(index)
+        return host_api.move_pane_to_workspace(pane.id, index - 1)
       end)
     end,
     desc = "Move current pane to workspace",

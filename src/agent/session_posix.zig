@@ -799,7 +799,30 @@ pub const Owner = struct {
         var arena_state = std.heap.ArenaAllocator.init(self.a);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
+        if (client.session) |session| if (session.meta.offer != null) switch (req.op) {
+            .spawn, .close, .layout, .respawn, .transfer_offer => return error.SessionBusy,
+            else => {},
+        };
         switch (req.op) {
+            .transfer_offer => {
+                const source = client.session orelse return error.NotAttached;
+                const offer = try core.TransferOffer.init(&source.meta, req);
+                const destination = self.findSession(&offer.destination) orelse return error.SessionNotFound;
+                if (destination.client == null or destination.meta.offer != null) return error.NotAttached;
+                for (offer.panes[0..offer.count]) |id| _ = source.find(id) orelse return error.PaneNotFound;
+                source.meta.offer = offer;
+                self.reply(client, .{ .id = req.id, .revision = source.meta.revision });
+            },
+            .transfer_cancel => {
+                const source = client.session orelse return error.NotAttached;
+                if (source.meta.offer) |offer| {
+                    if (!std.mem.eql(u8, req.transfer_token orelse "", &offer.token)) return error.InvalidTransfer;
+                    source.meta.offer = null;
+                }
+                self.reply(client, .{ .id = req.id });
+                for (source.panes.items) |pane| if (!pane.removed) self.flushPane(source, pane);
+            },
+            .transfer => try self.transferTab(client, req),
             .hold_wsl => return error.Unsupported,
             .list => {
                 var list: std.ArrayList(p.SessionInfo) = .empty;
@@ -885,9 +908,44 @@ pub const Owner = struct {
         return .{ .id = &s.meta.id, .attached = s.client != null, .revision = s.meta.revision, .layout = s.meta.layout, .panes = panes.items };
     }
 
+    fn transferTab(self: *Owner, client: *Client, request: p.Request) !void {
+        const destination = client.session orelse return error.NotAttached;
+        const source = self.findSession(request.transfer_session orelse return error.MissingSession) orelse return error.SessionNotFound;
+        if (source.client == null or source == destination) return error.NotAttached;
+        const plan = try core.TransferPlan.prepare(&source.meta, &destination.meta, request);
+        if (livePanes(destination) + plan.count > 1024) return error.ResourceExhausted;
+        var panes: [64]*Pane = undefined;
+        for (plan.mappings[0..plan.count], 0..) |mapping, i| panes[i] = source.find(mapping.from) orelse return error.PaneNotFound;
+        try destination.panes.ensureUnusedCapacity(self.a, plan.count);
+        // Encode before committing. A failed send after commit is uncertain,
+        // not a rejected operation that the client may safely retry.
+        const bytes = try p.stringify(self.a, p.Reply{ .id = request.id, .revision = plan.destination_revision, .source_revision = plan.source_revision, .transferred = plan.mappings[0..plan.count] });
+        defer self.a.free(bytes);
+        for (panes[0..plan.count], plan.mappings[0..plan.count]) |pane, mapping| {
+            for (source.panes.items, 0..) |candidate, i| if (candidate == pane) {
+                _ = source.panes.orderedRemove(i);
+                break;
+            };
+            pane.id = mapping.to;
+            pane.stream.detach();
+            pane.stream.attach();
+            destination.panes.appendAssumeCapacity(pane);
+        }
+        plan.commit(&source.meta, &destination.meta);
+        if (!self.send(client, .reply, 0, bytes)) client.dead = true;
+        if (livePanes(source) == 0) {
+            self.endSession(source);
+        } else {
+            self.saveState(source);
+            for (source.panes.items) |pane| if (!pane.removed) self.flushPane(source, pane);
+        }
+        self.saveState(destination);
+    }
+
     /// Attach with take-over: the reply carries the session, then each pane
     /// gets a snapshot (see `serveSnapshots`) and live output resumes.
     fn attach(self: *Owner, client: *Client, s: *Session, id: u64, sizes: []const p.PaneSize) void {
+        s.meta.offer = null;
         if (client.session) |old| if (old != s) self.detach(client, old);
         if (attachment.link(client, s)) |other| {
             const owner_identity = trace.Identity.local("owner");
@@ -914,6 +972,7 @@ pub const Owner = struct {
 
     fn detach(self: *Owner, client: *Client, s: *Session) void {
         if (!attachment.unlink(client, s)) return;
+        s.meta.offer = null;
         std.log.info("session.detached session={s} connection={s}", .{ &s.meta.id, client.trace_identity.wire().connection });
         for (s.panes.items) |pane| pane.stream.detach();
         self.saveState(s);
@@ -925,6 +984,7 @@ pub const Owner = struct {
     /// bytes can slip in between snapshot and stream.
     fn serveSnapshots(self: *Owner, client: *Client) void {
         const s = client.session orelse return;
+        if (s.meta.offer != null) return;
         for (s.panes.items) |pane| {
             if (client.dead or client.out.len() >= snapshot_queue_low) return;
             if (pane.removed or !pane.stream.startSnapshot()) continue;
@@ -1118,6 +1178,7 @@ pub const Owner = struct {
     /// output before it is out. A stale pane is resynced when the client has
     /// returned all credit.
     fn flushPane(self: *Owner, s: *Session, pane: *Pane) void {
+        if (s.meta.offer != null) return;
         const client = s.client orelse return;
         if (pane.stream.snapshot_pending) return;
         if (pane.stream.requestResync()) {

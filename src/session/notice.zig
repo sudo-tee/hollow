@@ -145,6 +145,30 @@ pub const Text = struct {
             return;
         }
         const remote = notice.remote[0..notice.remote_len];
+        if ((notice.reason orelse error.Unknown) == error.OwnerUpgradeRequired) {
+            self.lines[0] = "Tab move requires a newer session owner";
+            self.lines[1] = "The running owner does not support tab transfers.";
+            self.lines[2] = "Upgrade the owner; existing panes were not changed.";
+            self.count = 3;
+            return;
+        }
+        if ((notice.reason orelse error.Unknown) == error.TransferOutcomeUnknown or
+            (notice.reason orelse error.Unknown) == error.TransferConnectionLost or
+            (notice.reason orelse error.Unknown) == error.InvalidTransfer)
+        {
+            self.lines[0] = "Tab transfer outcome unknown";
+            self.lines[1] = "Reattach both sessions to recover their live panes.";
+            self.lines[2] = "No automatic retry or new process was started.";
+            self.count = 3;
+            return;
+        }
+        if ((notice.reason orelse error.Unknown) == error.TransferRejected) {
+            self.lines[0] = "Tab transfer rejected";
+            self.lines[1] = if (remote.len > 0) remote else "The owner refused the transfer.";
+            self.lines[2] = "The tab stayed in its original workspace.";
+            self.count = 3;
+            return;
+        }
         if (notice.outcome == .uncertain) if (notice.recovery_session) |sid| {
             self.lines[0] = "Session creation outcome unknown";
             self.lines[1] = std.fmt.bufPrint(&self.buffer, "Recover: hollow-cli session attach {s}", .{sid}) catch unreachable;
@@ -307,6 +331,15 @@ test "session pane notice text distinguishes uncertainty without implying safe r
     text.format(.{ .id = 4, .state = .failed, .reason = error.DeployFailed, .outcome = .not_sent });
     try std.testing.expectEqual(@as(usize, 3), text.count);
     try std.testing.expect(std.mem.indexOf(u8, text.lines[1], "not sent") != null);
+}
+
+test "tab transfer notices explain recovery and owner upgrades" {
+    var text: Text = .{};
+    text.format(.{ .id = 1, .state = .failed, .reason = error.TransferOutcomeUnknown, .outcome = .uncertain });
+    try std.testing.expectEqualStrings("Tab transfer outcome unknown", text.lines[0]);
+    try std.testing.expectEqualStrings("Reattach both sessions to recover their live panes.", text.lines[1]);
+    text.format(.{ .id = 1, .state = .failed, .reason = error.OwnerUpgradeRequired });
+    try std.testing.expectEqualStrings("Tab move requires a newer session owner", text.lines[0]);
 }
 
 test "session pane notice unsent disconnect explains lost connection without blaming host settings" {

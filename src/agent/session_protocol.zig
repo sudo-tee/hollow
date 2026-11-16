@@ -115,7 +115,7 @@ pub const Welcome = struct {
 pub const HandoffNotice = struct { from: []const u8, to: []const u8, ok: bool };
 pub const handoff_notice_ms = 10_000;
 
-pub const owner_features = [_][]const u8{ "respawn", "create-id", "retire-empty", "drain-empty" };
+pub const owner_features = [_][]const u8{ "respawn", "create-id", "retire-empty", "drain-empty", "tab-transfer" };
 pub const windows_owner_features = owner_features ++ [_][]const u8{"wsl-keepalive"};
 pub const posix_owner_features = owner_features ++ [_][]const u8{"exec-handoff"};
 
@@ -243,6 +243,12 @@ pub const Op = enum {
     /// Pin an explicitly resolved WSL host in the native Windows owner.
     /// Requires "wsl-keepalive". The pin lasts until this client disconnects.
     hold_wsl,
+    /// Pause source delivery and authorize a bounded transfer to another session.
+    transfer_offer,
+    /// Adopt an offered tab into the attached destination; reply precedes snapshots.
+    transfer,
+    /// Withdraw an uncommitted offer and resume source delivery.
+    transfer_cancel,
 };
 
 pub const PaneSize = struct { pane: u32, cols: u16, rows: u16 };
@@ -262,7 +268,12 @@ pub const Request = struct {
     /// Opaque, GUI-defined layout blob.
     layout: ?[]const u8 = null,
     wsl: ?WslHold = null,
+    transfer_session: ?[]const u8 = null,
+    transfer_token: ?[]const u8 = null,
+    transfer_panes: []const u32 = &.{},
 };
+
+pub const PaneTransfer = struct { from: u32, to: u32 };
 
 pub const PaneInfo = struct {
     id: u32,
@@ -299,6 +310,8 @@ pub const Reply = struct {
     revision: ?u64 = null,
     /// Owner-resolved exit policy for a spawned pane; absent on older owners.
     close_on_exit: ?bool = null,
+    transferred: ?[]const PaneTransfer = null,
+    source_revision: ?u64 = null,
 };
 
 pub fn stringify(allocator: std.mem.Allocator, value: anytype) ![]u8 {

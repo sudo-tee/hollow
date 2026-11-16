@@ -31,6 +31,7 @@ pub const Metadata = struct {
     revision: u64 = 0,
     layout: []u8 = &.{},
     ended: bool = false,
+    offer: ?TransferOffer = null,
 
     pub fn deinit(self: *Metadata, a: std.mem.Allocator) void {
         a.free(self.layout);
@@ -78,6 +79,96 @@ pub const Metadata = struct {
         self.revision = revision;
     }
 };
+
+/// An offer belongs to the current attachment and is cleared on detach/takeover.
+/// Fixed storage bounds both authorization and the eventual atomic commit.
+pub const TransferOffer = struct {
+    token: [32]u8,
+    destination: [32]u8,
+    revision: u64,
+    panes: [64]u32 = undefined,
+    count: usize,
+
+    pub fn init(meta: *const Metadata, request: p.Request) !TransferOffer {
+        if (meta.offer != null) return error.SessionBusy;
+        if (request.revision != meta.revision) return error.RevisionConflict;
+        const destination = try reservedId(request.transfer_session orelse return error.MissingSession);
+        if (std.mem.eql(u8, &destination, &meta.id)) return error.SameSession;
+        if (request.transfer_panes.len == 0 or request.transfer_panes.len > 64) return error.ResourceExhausted;
+        var result: TransferOffer = .{
+            .token = try reservedId(request.transfer_token orelse return error.InvalidTransfer),
+            .destination = destination,
+            .revision = meta.revision,
+            .count = request.transfer_panes.len,
+        };
+        for (request.transfer_panes, 0..) |id, i| {
+            if (id == 0 or std.mem.indexOfScalar(u32, result.panes[0..i], id) != null) return error.InvalidTransfer;
+            result.panes[i] = id;
+        }
+        return result;
+    }
+};
+
+pub const TransferPlan = struct {
+    mappings: [64]p.PaneTransfer = undefined,
+    count: usize,
+    next_pane: u64,
+    source_revision: u64,
+    destination_revision: u64,
+
+    pub fn prepare(source: *const Metadata, destination: *const Metadata, request: p.Request) !TransferPlan {
+        const offer = source.offer orelse return error.TransferNotFound;
+        if (!std.mem.eql(u8, request.transfer_token orelse "", &offer.token) or
+            !std.mem.eql(u8, &destination.id, &offer.destination)) return error.InvalidTransfer;
+        if (source.revision != offer.revision or request.revision != destination.revision) return error.RevisionConflict;
+        if (source.ended or destination.ended or destination.offer != null) return error.SessionBusy;
+        var result: TransferPlan = .{
+            .count = offer.count,
+            .next_pane = destination.next_pane,
+            .source_revision = try source.prepareMembershipChange(),
+            .destination_revision = try destination.prepareMembershipChange(),
+        };
+        for (offer.panes[0..offer.count], 0..) |id, i| {
+            if (result.next_pane == 0 or result.next_pane > std.math.maxInt(u32)) return error.ResourceExhausted;
+            result.mappings[i] = .{ .from = id, .to = @intCast(result.next_pane) };
+            result.next_pane += 1;
+        }
+        return result;
+    }
+
+    pub fn commit(self: *const TransferPlan, source: *Metadata, destination: *Metadata) void {
+        source.revision = self.source_revision;
+        destination.revision = self.destination_revision;
+        destination.next_pane = self.next_pane;
+        source.offer = null;
+    }
+};
+
+test "session transfer plan is bounded authorized revision checked and nonmutating until commit" {
+    var source: Metadata = .{ .id = @splat('a'), .revision = 3 };
+    var destination: Metadata = .{ .id = @splat('b'), .revision = 5, .next_pane = 8 };
+    const offer_request: p.Request = .{ .id = 1, .op = .transfer_offer, .revision = 3, .transfer_session = &destination.id, .transfer_token = &(@as([32]u8, @splat('c'))), .transfer_panes = &.{ 1, 2 } };
+    source.offer = try TransferOffer.init(&source, offer_request);
+    var request: p.Request = .{ .id = 2, .op = .transfer, .revision = 5, .transfer_token = offer_request.transfer_token };
+    request.transfer_token = &(@as([32]u8, @splat('d')));
+    try std.testing.expectError(error.InvalidTransfer, TransferPlan.prepare(&source, &destination, request));
+    request.transfer_token = offer_request.transfer_token;
+    request.revision = 4;
+    try std.testing.expectError(error.RevisionConflict, TransferPlan.prepare(&source, &destination, request));
+    request.revision = 5;
+    const plan = try TransferPlan.prepare(&source, &destination, request);
+    try std.testing.expectEqual(@as(u64, 3), source.revision);
+    try std.testing.expectEqual(@as(u32, 8), plan.mappings[0].to);
+    try std.testing.expectEqual(@as(u32, 9), plan.mappings[1].to);
+    destination.next_pane = std.math.maxInt(u32);
+    try std.testing.expectError(error.ResourceExhausted, TransferPlan.prepare(&source, &destination, request));
+    destination.next_pane = 8;
+    plan.commit(&source, &destination);
+    try std.testing.expect(source.offer == null);
+    try std.testing.expectEqual(@as(u64, 4), source.revision);
+    try std.testing.expectEqual(@as(u64, 6), destination.revision);
+    try std.testing.expectEqual(@as(u64, 10), destination.next_pane);
+}
 
 test "identity encoding, retained ended collision and collection reuse" {
     const id = try reservedId("0123456789abcdef0123456789abcdef");

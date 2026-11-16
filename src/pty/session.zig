@@ -22,6 +22,7 @@ pub const SessionPty = struct {
     detached: bool = false,
     /// The owner explicitly transferred this attachment to another client.
     taken: bool = false,
+    transfer_pending: bool = false,
     close_request: ?u64 = null,
     pending_resize: ?struct { cols: u16, rows: u16 } = null,
 
@@ -147,6 +148,7 @@ pub const SessionPty = struct {
     }
 
     pub fn writeAll(self: *SessionPty, bytes: []const u8) !void {
+        if (self.transfer_pending) return error.ResourceExhausted;
         if (!self.isAlive() or self.close_request != null) return error.EndOfStream;
         self.flushResize();
         try self.connection.input(self.generation, self.pane, bytes);
@@ -165,6 +167,7 @@ pub const SessionPty = struct {
     }
 
     fn flushResize(self: *SessionPty) void {
+        if (self.transfer_pending) return;
         if (self.detached) {
             self.pending_resize = null;
             return;
