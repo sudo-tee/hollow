@@ -252,6 +252,7 @@ pub const AppCallbacks = struct {
     close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
     move_tab_to_workspace: *const fn (app: *anyopaque, tab_id: usize, workspace_index: usize) bool,
     move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
+    move_pane_to_tab: *const fn (app: *anyopaque, pane_id: usize, tab_id: usize, direction: @import("mux/types.zig").SplitDirection, ratio: f32) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
     /// Pane 0 is the active pane. Returns null once queued, else the reason.
     respawn_pane: ?*const fn (app: *anyopaque, pane_id: usize) ?[:0]const u8 = null,
@@ -2896,6 +2897,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_move_pane_to_workspace, 1);
         api.set_field(self.state, -2, "move_pane_to_workspace");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_move_pane_to_tab, 1);
+        api.set_field(self.state, -2, "move_pane_to_tab");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_tab_title_by_id, 1);
@@ -7556,6 +7561,28 @@ fn l_move_tab_to_workspace(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.move_tab_to_workspace(cbs.app, tab_id, ws_idx)) 1 else 0);
+    return 1;
+}
+
+fn l_move_pane_to_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    api.push_boolean(state, 0);
+    const cbs = ctx.app_callbacks orelse return 1;
+    const pane_id = luaPaneIdArg(api, state, 1) orelse return 1;
+    const tab_id = luaPaneIdArg(api, state, 2) orelse return 1;
+    var direction_len: usize = 0;
+    const direction_name = (api.to_lstring(state, 3, &direction_len) orelse return 1)[0..direction_len];
+    const direction: @import("mux/types.zig").SplitDirection = if (std.mem.eql(u8, direction_name, "vertical"))
+        .vertical
+    else if (std.mem.eql(u8, direction_name, "horizontal"))
+        .horizontal
+    else
+        return 1;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 4)))) != .number) return 1;
+    const ratio = api.to_number(state, 4);
+    if (!std.math.isFinite(ratio) or ratio <= 0 or ratio >= 1) return 1;
+    api.push_boolean(state, if (cbs.move_pane_to_tab(cbs.app, pane_id, tab_id, direction, @floatCast(ratio))) 1 else 0);
     return 1;
 }
 

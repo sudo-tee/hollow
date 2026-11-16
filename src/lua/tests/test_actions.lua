@@ -12,6 +12,37 @@ describe("actions test suite", function()
     recorded = env.recorded
   end)
 
+  describe("pane tab transfers", function()
+    it("chooses a destination and orientation without switching before confirmation", function()
+      local original_tabs = hollow.term.tabs
+      local original_open = hollow.ui.command_palette.open
+      local picker
+      hollow.term.tabs = function()
+        return {
+          { id = 201, index = 1, title = "Source" },
+          { id = 202, index = 2, title = "Destination" },
+        }
+      end
+      hollow.ui.command_palette.open = function(opts)
+        picker = opts
+      end
+      local ok, err = pcall(function()
+        hollow.action.move_pane_to_tab()
+        harness.assert_equal(#picker.entries, 1)
+        harness.assert_equal(picker.entries[1].tab_id, 202)
+        picker.on_confirm(picker.entries[1])
+        harness.assert_equal(#picker.entries, 2)
+        picker.on_confirm(picker.entries[2])
+        harness.assert_equal(recorded.move_pane_to_tab.pane_id, 101)
+        harness.assert_equal(recorded.move_pane_to_tab.tab_id, 202)
+        harness.assert_equal(recorded.move_pane_to_tab.direction, "horizontal")
+      end)
+      hollow.term.tabs = original_tabs
+      hollow.ui.command_palette.open = original_open
+      assert(ok, err)
+    end)
+  end)
+
   describe("quick_select actions", function()
     it("requests URL opening", function()
       hollow.action.quick_select()

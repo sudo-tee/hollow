@@ -1178,6 +1178,53 @@ function M.setup(hollow, host_api)
     category = "tab",
   })
 
+  register(hollow, "move_pane_to_tab", {
+    run = function()
+      local pane = hollow.term.current_pane()
+      local current_tab = hollow.term.current_tab()
+      if not pane or not current_tab or pane.dock then
+        return
+      end
+      local entries = {}
+      for _, tab in ipairs(hollow.term.tabs()) do
+        if tab.id ~= current_tab.id then
+          entries[#entries + 1] = {
+            name = ("%d: %s"):format(tab.index, tab.title or "Tab"),
+            tab_id = tab.id,
+          }
+        end
+      end
+      if #entries == 0 then
+        return
+      end
+      palette.open({
+        prompt = "Move pane to tab",
+        entries = entries,
+        on_confirm = function(item)
+          if not item then
+            return
+          end
+          palette.open({
+            prompt = "Split destination tab",
+            entries = {
+              { name = "Side by side", direction = "vertical" },
+              { name = "Top and bottom", direction = "horizontal" },
+            },
+            on_confirm = function(split)
+              if split then
+                hollow.term.move_pane_to_tab(pane.id, item.tab_id, {
+                  direction = split.direction,
+                })
+              end
+            end,
+          })
+        end,
+      })
+    end,
+    desc = "Move current pane to another tab",
+    category = "pane",
+  })
+
   register(hollow, "move_pane_to_workspace", {
     run = function()
       local pane = hollow.term.current_pane()

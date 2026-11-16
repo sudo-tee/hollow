@@ -245,6 +245,34 @@ hollow.term.resize_pane({ axis = "right", delta = -0.05 })
 
 `move_pane` reorders tiled panes; for floating panes it nudges the bounds.
 
+### Move between tabs
+
+Run `move_pane_to_tab` from the command palette.
+Choose another tab in the current workspace.
+Then choose **Side by side** or **Top and bottom**.
+The moved pane keeps its ID, process, and scrollback; no shell is restarted.
+The destination tab becomes active, and an emptied source tab is removed.
+There is no default keybinding; bind the action in your config if desired.
+
+From Lua, pass a destination **tab ID**, not its 1-based position:
+
+```lua
+hollow.term.move_pane_to_tab(pane_id, tab_id) -- right half, side by side
+hollow.term.move_pane_to_tab(pane_id, tab_id, {
+  direction = "horizontal", -- bottom edge of the whole destination tab
+  ratio = 0.3,
+})
+```
+
+The pane is inserted along the right or bottom edge of the whole tab.
+Floating or hidden source panes become visible tiled panes.
+Docked panes must be undocked first.
+Moves within the same tab, to missing tabs, or across workspaces are refused.
+Tabs in the same attached persistent session are supported.
+The updated session layout is saved.
+Detached or taken-over session views cannot be moved.
+The Lua call returns whether the request was queued, not whether it completed.
+
 ### Pane identity
 
 Panes are addressable by `id`. You can also tag them and target by tag:

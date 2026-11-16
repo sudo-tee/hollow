@@ -142,6 +142,7 @@ return {
   ["hollow.term.kill_session"] = "fun(session_id: string Non-empty, at most 128 bytes, without NUL, opts?: { domain?: string, on_complete?: fun(result: HollowSessionQueryResult) }): boolean?, string?",
   ["hollow.term.list_sessions"] = "fun(opts: { domain?: string, on_complete: fun(result: HollowSessionQueryResult) }): boolean?, string?",
   ["hollow.term.move_pane"] = "fun(direction_or_opts: \"left\"|\"right\"|\"up\"|\"down\"|HollowMovePaneOpts, opts?: HollowMovePaneOpts)",
+  ["hollow.term.move_pane_to_tab"] = "fun(pane_id: integer, tab_id: integer, opts?: HollowMovePaneToTabOpts): boolean queued",
   ["hollow.term.mux_tree"] = "fun(): HollowMuxWorkspace[]",
   ["hollow.term.new_tab"] = "fun(opts?: HollowNewTabOpts)",
   ["hollow.term.new_workspace"] = "fun(opts?: { cwd?: string, domain?: string, command?: string, name?: string })",

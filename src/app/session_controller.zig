@@ -608,6 +608,29 @@ pub fn moveTabToWorkspace(self: *App, tab_id: usize, workspace_index: usize) voi
     if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
 }
 
+pub fn movePaneToTab(self: *App, pane_id: usize, tab_id: usize, direction: SplitDirection, ratio: f32) void {
+    var mux = if (self.mux) |*value| value else return;
+    const runtime = if (self.ghostty) |*value| value else return;
+    const previous = mux.activePane();
+    const pane = self.findPaneById(pane_id) orelse return;
+    const source_tab_id = for (mux.workspaces.items) |workspace| {
+        if (workspace.tabContainingPane(pane)) |tab| break tab.id;
+    } else return;
+    const previous_workspace = mux.active_workspace;
+    if (!mux.movePaneToTab(runtime, pane_id, tab_id, direction, ratio)) return;
+    self.markSessionLayoutsDirty();
+    self.syncActivePaneChange(previous, mux.activePane());
+    self.refreshActivePaneDisplay();
+    self.requestLayoutResize(true);
+    self.requestLayoutRefresh();
+    if (previous_workspace != mux.active_workspace)
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+    if (mux.tabById(source_tab_id) == null)
+        self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = source_tab_id });
+    self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab_id });
+    self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+}
+
 pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;

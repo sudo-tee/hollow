@@ -9,6 +9,26 @@ For the LuaLS schema see
 [`types/hollow.lua`](../../../types/hollow.lua) (`HollowPane`,
 `HollowTab`, `HollowWorkspace`, `HollowDomain`).
 
+## Moving panes between tabs
+
+```lua
+hollow.term.move_pane_to_tab(pane_id, tab_id, opts)
+```
+
+Queues a move into another tab in the same workspace.
+Preserves the pane's ID, process, and scrollback.
+Focuses the destination and removes an emptied source tab.
+`opts` is optional.
+`opts.direction` defaults to `"vertical"` (side by side).
+Use `"horizontal"` for top and bottom.
+`opts.ratio` is the moved pane's share, in `(0, 1)` (default `0.5`).
+Inserts a visible tiled pane at the whole tab's right or bottom edge.
+Refuses docked panes, same-tab moves, and cross-workspace moves.
+Refuses detached or taken-over session views.
+The result reports queue acceptance, not completion.
+
+See [the guide](../../panes-tabs-workspaces.md#move-between-tabs).
+
 ## Reading state
 
 ```lua
