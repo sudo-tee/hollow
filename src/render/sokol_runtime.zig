@@ -2802,6 +2802,7 @@ const WidgetRenderCtx = struct {
 
 var g_widget_render_ctx: ?WidgetRenderCtx = null;
 var g_rect_pip: c.sgl_pipeline = .{ .id = 0 };
+var g_background_overlay_pip: c.sgl_pipeline = .{ .id = 0 };
 
 const WidgetPreRasterCtx = struct {
     app: *App,
@@ -3551,6 +3552,9 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     rect_pip_desc.colors[0].pixel_format = swapchain_color_format;
     rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
+    rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_DST_ALPHA;
+    rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_DST_ALPHA;
+    g_background_overlay_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
     if (builtin.os.tag == .windows and app.config.restore_window_placement) {
@@ -4472,10 +4476,34 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
     g_post_chain.drawBackground(app.config.background.shader_opacity, app.config.background.shader_brightness, clear_alpha);
+    // Background layers must precede even terminal geometry queued before this pass.
+    c.sgl_layer(-4);
     if (g_ft_renderer) |*renderer| {
         const bg = app.config.background;
         g_background_image.draw(renderer.atlas_pip, bg.image_fit, bg.image_opacity, width, height);
     }
+    if (app.config.background.overlay_color) |color| {
+        const opacity = app.config.background.overlay_opacity;
+        if (opacity > 0) {
+            c.sgl_defaults();
+            c.sgl_viewport(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+            c.sgl_scissor_rect(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+            c.sgl_load_pipeline(g_background_overlay_pip);
+            c.sgl_matrix_mode_projection();
+            c.sgl_load_identity();
+            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+            const scale = opacity / 255.0;
+            c.sgl_begin_quads();
+            c.sgl_c4f(@as(f32, @floatFromInt(color.r)) * scale, @as(f32, @floatFromInt(color.g)) * scale, @as(f32, @floatFromInt(color.b)) * scale, opacity);
+            c.sgl_v2f(0, 0);
+            c.sgl_v2f(width, 0);
+            c.sgl_v2f(width, height);
+            c.sgl_v2f(0, height);
+            c.sgl_end();
+            c.sgl_load_default_pipeline();
+        }
+    }
+    c.sgl_layer(0);
     var swapchain_panes_ns: i128 = 0;
     var swapchain_ui_ns: i128 = 0;
     var swapchain_glyph_ns: i128 = 0;
@@ -4788,6 +4816,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     updateLuaPaneHover(app);
 
     // Flush all queued geometry — exactly once per frame.
+    c.sgl_draw_layer(-4);
     c.sgl_draw_layer(-3);
     c.sgl_draw_layer(-2);
     c.sgl_draw();
@@ -5228,6 +5257,10 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_rect_pip.id != 0) {
         c.sgl_destroy_pipeline(g_rect_pip);
         g_rect_pip = .{ .id = 0 };
+    }
+    if (g_background_overlay_pip.id != 0) {
+        c.sgl_destroy_pipeline(g_background_overlay_pip);
+        g_background_overlay_pip = .{ .id = 0 };
     }
     c.sgl_shutdown();
     c.sg_shutdown();

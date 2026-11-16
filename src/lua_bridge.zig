@@ -4772,6 +4772,21 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             continue;
         }
 
+        if (std.mem.eql(u8, key, "overlay")) {
+            if (value_type == .boolean and api.to_boolean(state, -1) == 0) {
+                background.overlay_color = null;
+            } else if (value_type == .table) {
+                const idx = absoluteIndex(api, state, -1);
+                if (parseColorField(api, state, idx, "color")) |color| background.overlay_color = color;
+                api.get_field(state, idx, "opacity");
+                if (api.value_type(state, -1) == @backingInt(LuaType.number)) {
+                    background.overlay_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+                }
+                pop(api, state, 1);
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "image")) {
             switch (value_type) {
                 .boolean => background.clearImage(cfg.allocator),
@@ -8826,6 +8841,24 @@ test "set_config parses background opacity and image" {
 
     try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
     try std.testing.expect(cfg.background.image == null);
+    try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses and removes a background overlay" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expect(!cfg.background.translucentCells());
+    try runtime.runString("host_api.set_config({ background = { overlay = { color = '#242038', opacity = 0.4 } } })");
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 0x24, .g = 0x20, .b = 0x38 }, cfg.background.overlay_color.?);
+    try std.testing.expectEqual(@as(f32, 0.4), cfg.background.overlay_opacity);
+    try std.testing.expect(cfg.background.translucentCells());
+    try runtime.runString("host_api.set_config({ background = { overlay = { opacity = 2 } } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.overlay_opacity);
+    try runtime.runString("host_api.set_config({ background = { overlay = false } })");
+    try std.testing.expect(cfg.background.overlay_color == null);
     try std.testing.expect(!cfg.background.translucentCells());
 }
 

@@ -91,7 +91,7 @@ The differences:
 - `brightness` multiplies the shader's RGB before that blend: `0` is black and `1` (the default) leaves it unchanged.
   Use it to dim a shader without fading it towards a lighter background colour.
 - `background.opacity` still sets the window transparency, so the desktop shows through the shader too.
-- The layers stack as: background colour, shader, image, then the terminal.
+- The layers stack as: background colour, shader, image, overlay, then the terminal.
   Give the image an `opacity` below `1` to let the shader show through.
 
 `animate = true` renders every frame, which keeps the GPU busy.
@@ -116,6 +116,23 @@ Each has constants at the top, such as `strength`, to tone it down behind text.
 ![Animated recording of the matrix rain background shader: columns of green glyphs falling behind terminal text](assets/shaders/matrix-rain.webp)
 
 ![Aurora background shader: faint green and violet bands behind the shader's own source](assets/shaders/aurora-background.webp)
+
+## Solid color overlay
+
+Use an overlay to tint a shader or image and soften its contrast without changing the shader:
+
+```lua
+hollow.config.set({
+  background = {
+    overlay = { color = "#242038", opacity = 0.5 },
+  },
+})
+```
+
+The overlay is drawn above the shader and image, but below terminal content.
+Its `opacity` ranges from `0` to `1` and defaults to `1`.
+Set `overlay = false` to remove it.
+It preserves window transparency; explicit terminal cell backgrounds can still cover it.
 
 ## See also
 

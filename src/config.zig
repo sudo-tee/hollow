@@ -289,6 +289,9 @@ pub const Config = struct {
         image_fit: Fit = .cover,
         /// Range: 0..1.
         image_opacity: f32 = 1.0,
+        /// Solid overlay above background images and shaders.
+        overlay_color: ?ghostty.ColorRgb = null,
+        overlay_opacity: f32 = 1.0,
         /// Ghostty-compatible shader drawn under the image. Its generation
         /// is `CustomShader.generation`.
         shader: ?[]u8 = null,
@@ -307,7 +310,7 @@ pub const Config = struct {
         /// Default-background cells are left clear so the layers behind the
         /// panes show through.
         pub fn translucentCells(self: Background) bool {
-            return self.opacity < 1.0 or self.image != null or self.shader != null;
+            return self.opacity < 1.0 or self.image != null or self.shader != null or self.overlay_color != null;
         }
 
         pub fn setShader(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {

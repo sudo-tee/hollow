@@ -417,6 +417,11 @@
 ---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
 ---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
 ---@field shader? string|HollowBackgroundShaderConfig|false Ghostty-compatible GLSL shader drawn under the image; false removes it
+---@field overlay? HollowBackgroundOverlayConfig|false Solid color over the shader and image; false removes it
+
+---@class HollowBackgroundOverlayConfig
+---@field color? HollowHexColor Solid overlay color
+---@field opacity? number 0..1, default 1
 
 ---@class HollowBackgroundShaderConfig
 ---@field path? string Shader file path
