@@ -134,6 +134,25 @@ Its `opacity` ranges from `0` to `1` and defaults to `1`.
 Set `overlay = false` to remove it.
 It preserves window transparency; explicit terminal cell backgrounds can still cover it.
 
+## Cell background opacity
+
+Programs such as Neovim paint their own background colours on cells, which hide the layers behind them.
+Use `cell_opacity` to let those colours show the shader, image or overlay through:
+
+```lua
+hollow.config.set({
+  background = {
+    cell_opacity = 0.7,
+  },
+})
+```
+
+It ranges from `0` to `1` and defaults to `1` (opaque).
+It applies only when a shader, image, overlay or window transparency is set.
+Cells using the theme background colour stay fully clear.
+Selection, search matches and the block cursor stay opaque.
+This keeps highlights such as an inactive-window background, diff colours or the cursor line visible while the background still shows through.
+
 ## See also
 
 - [Configuration](configuration.md)

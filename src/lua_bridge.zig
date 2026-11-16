@@ -4772,6 +4772,11 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             continue;
         }
 
+        if (std.mem.eql(u8, key, "cell_opacity") and value_type == .number) {
+            background.cell_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "overlay")) {
             if (value_type == .boolean and api.to_boolean(state, -1) == 0) {
                 background.overlay_color = null;
@@ -8860,6 +8865,22 @@ test "set_config parses and removes a background overlay" {
     try runtime.runString("host_api.set_config({ background = { overlay = false } })");
     try std.testing.expect(cfg.background.overlay_color == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses background cell opacity" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ background = { cell_opacity = 0.6 } })");
+    try std.testing.expectEqual(@as(f32, 0.6), cfg.background.cell_opacity);
+    // Without layers behind the panes, cells stay opaque.
+    try std.testing.expectEqual(@as(u8, 255), cfg.background.cellAlpha());
+    try runtime.runString("host_api.set_config({ background = { overlay = { color = '#242038' } } })");
+    try std.testing.expectEqual(@as(u8, 153), cfg.background.cellAlpha());
+    try runtime.runString("host_api.set_config({ background = { cell_opacity = -1 } })");
+    try std.testing.expectEqual(@as(u8, 0), cfg.background.cellAlpha());
 }
 
 test "set_config parses a background shader" {

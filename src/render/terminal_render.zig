@@ -112,6 +112,8 @@ pub const QueueOptions = struct {
     row_map_skip: bool = false,
     /// Leave default-background cells clear so window layers show through.
     translucent_bg: bool = false,
+    /// Alpha for explicit cell backgrounds over the window layers.
+    cell_bg_alpha: u8 = 255,
     colors: QueueColors,
 
     inline fn useRowMap(self: @This()) bool {
@@ -353,6 +355,7 @@ pub fn queueBackgroundAndRasterRow(
     var last_style_valid = false;
     var last_style_info: CachedStyleInfo = undefined;
     var background_run_color: ?ghostty.ColorRgb = null;
+    var background_run_alpha: u8 = 255;
     var background_run_start = col_px;
     while (runtime.nextCell(queue.row_cells.*)) : ({
         col_x += 1;
@@ -403,13 +406,20 @@ pub fn queueBackgroundAndRasterRow(
         else
             null;
         if (background) |bg| {
-            if (background_run_color == null or !colorsEqual(background_run_color.?, bg)) {
-                flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+            // Selection, search and the block cursor stay opaque.
+            const in_block_cursor = if (queue.cursor_block) if (row.cursor_col) |cursor_col|
+                col_x >= cursor_col and col_x < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
+            else
+                false else false;
+            const alpha: u8 = if (is_selected or has_search_highlight or in_block_cursor) 255 else queue.cell_bg_alpha;
+            if (background_run_color == null or !colorsEqual(background_run_color.?, bg) or background_run_alpha != alpha) {
+                flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
                 background_run_color = bg;
+                background_run_alpha = alpha;
                 background_run_start = col_px;
             }
         } else {
-            flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+            flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
         }
 
         switch (content_tag) {
@@ -508,7 +518,7 @@ pub fn queueBackgroundAndRasterRow(
             else => flushQueuedRun(self, .raster, run_buf, &run, row.py),
         }
     }
-    flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+    flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
     flushQueuedRun(self, .raster, run_buf, &run, row.py);
 }
 
@@ -950,9 +960,14 @@ pub fn resolveCellBackground(
     return bg;
 }
 
+inline fn premultiply(channel: u8, alpha: u8) u8 {
+    return @intCast((@as(u16, channel) * alpha + 127) / 255);
+}
+
 pub fn flushBackgroundRun(
     self: *FtRenderer,
     color: *?ghostty.ColorRgb,
+    alpha: u8,
     start_x: f32,
     end_x: f32,
     py: f32,
@@ -961,7 +976,9 @@ pub fn flushBackgroundRun(
     const bg = color.* orelse return;
     self.last_bg_rects += 1;
     openQuadBatch(self, quads_open);
-    c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+    // The pane target is premultiplied and this pipeline writes without
+    // blending, so a translucent run replaces the row's previous pixels.
+    c.sgl_c4b(premultiply(bg.r, alpha), premultiply(bg.g, alpha), premultiply(bg.b, alpha), alpha);
     c.sgl_v2f(start_x, py);
     c.sgl_v2f(end_x, py);
     c.sgl_v2f(end_x, py + self.cell_h);

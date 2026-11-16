@@ -1063,6 +1063,7 @@ const PaneCacheEntry = struct {
     last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
     has_bg_color: bool = false,
     last_translucent_bg: bool = false,
+    last_cell_bg_alpha: u8 = 255,
     /// Open-addressing map: opaque, scroll-stable row ID → cell-content hash.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
     row_map_keys: [ROW_MAP_CAP]ghostty.RowId = @splat(ROW_MAP_EMPTY),
@@ -3747,7 +3748,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
     }
-    if (g_ft_renderer) |*renderer| renderer.translucent_bg = app.config.background.translucentCells();
+    if (g_ft_renderer) |*renderer| {
+        renderer.translucent_bg = app.config.background.translucentCells();
+        renderer.cell_bg_alpha = app.config.background.cellAlpha();
+    }
 
     // Resolve background color for the clear pass.
     const default_clear = defaultClearColor(app);
@@ -3979,8 +3983,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         }
                     }
                     const translucent_bg = cfg.background.translucentCells();
+                    const cell_bg_alpha = cfg.background.cellAlpha();
                     const background_changed = !cache_entry.has_bg_color or
                         cache_entry.last_translucent_bg != translucent_bg or
+                        cache_entry.last_cell_bg_alpha != cell_bg_alpha or
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
@@ -4215,6 +4221,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
                     cache_entry.last_translucent_bg = translucent_bg;
+                    cache_entry.last_cell_bg_alpha = cell_bg_alpha;
                     cache_entry.prev_cursor_row = cursor_row;
                     cache_entry.last_cursor_row = cursor_row;
                     cache_entry.last_cursor_col = cursor_col;

@@ -292,6 +292,9 @@ pub const Config = struct {
         /// Solid overlay above background images and shaders.
         overlay_color: ?ghostty.ColorRgb = null,
         overlay_opacity: f32 = 1.0,
+        /// Opacity of explicit cell backgrounds over the window layers.
+        /// Range: 0..1. Selection, search and cursor stay opaque.
+        cell_opacity: f32 = 1.0,
         /// Ghostty-compatible shader drawn under the image. Its generation
         /// is `CustomShader.generation`.
         shader: ?[]u8 = null,
@@ -311,6 +314,13 @@ pub const Config = struct {
         /// panes show through.
         pub fn translucentCells(self: Background) bool {
             return self.opacity < 1.0 or self.image != null or self.shader != null or self.overlay_color != null;
+        }
+
+        /// Alpha for explicit cell backgrounds; opaque unless cells are
+        /// already translucent.
+        pub fn cellAlpha(self: Background) u8 {
+            if (!self.translucentCells()) return 255;
+            return @intFromFloat(@round(std.math.clamp(self.cell_opacity, 0.0, 1.0) * 255.0));
         }
 
         pub fn setShader(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
