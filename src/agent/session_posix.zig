@@ -833,7 +833,7 @@ pub const Owner = struct {
             .spawn => {
                 const s = client.session orelse return error.NotAttached;
                 const pane = try self.spawnPane(s, req.spawn orelse .{}, true);
-                self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.meta.revision });
+                self.reply(client, .{ .id = req.id, .pane = pane.id, .revision = s.meta.revision, .close_on_exit = pane.close_on_exit });
                 self.saveState(s);
             },
             .close => {

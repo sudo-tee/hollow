@@ -1,5 +1,6 @@
 """Exercise Windows installer staging without modifying a real installation."""
 
+import base64
 import os
 from pathlib import Path
 import shutil
@@ -24,6 +25,8 @@ class LaunchAgentBundleTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         shutil.copyfile(ROOT / "launch.sh", self.root / "launch.sh")
+        (self.root / "scripts").mkdir()
+        shutil.copyfile(ROOT / "scripts/restart-hollow.ps1", self.root / "scripts/restart-hollow.ps1")
         (self.root / "src/lua").mkdir(parents=True)
         (self.root / "src/lua/core.lua").write_text("-- fixture\n")
         (self.root / "conf").mkdir()
@@ -46,11 +49,21 @@ class LaunchAgentBundleTests(unittest.TestCase):
         wslpath = tools / "wslpath"
         wslpath.write_text('#!/bin/sh\nprintf "%s\\n" "$HOLLOW_TEST_INSTALL_DIR"\n')
         wslpath.chmod(0o755)
+        # Never invoke the real Windows helper, even when running under WSL.
+        powershell = tools / "powershell.exe"
+        powershell.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$@" >> "$HOLLOW_TEST_POWERSHELL_LOG"\n'
+            'exit "$HOLLOW_TEST_CLOSE_STATUS"\n'
+        )
+        powershell.chmod(0o755)
+        self.powershell_log = self.root / "powershell.log"
         self.install = self.root / "installed app"
         self.env = {
             **os.environ,
             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
             "HOLLOW_TEST_INSTALL_DIR": str(self.install),
+            "HOLLOW_TEST_POWERSHELL_LOG": str(self.powershell_log),
+            "HOLLOW_TEST_CLOSE_STATUS": "3",
         }
 
     def launch(self):
@@ -78,6 +91,26 @@ class LaunchAgentBundleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.install / "hollow-gui.exe").exists())
         self.assertFalse((self.install / "hollow-gui.pdb").exists())
+
+    def test_install_uses_staged_close_helper(self):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = self.powershell_log.read_text().splitlines()
+        self.assertEqual(args[:3], ["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        script = base64.b64decode(args[3]).decode("utf-16-le")
+        self.assertIn((ROOT / "scripts/restart-hollow.ps1").read_text().rstrip("\n"), script)
+        self.assertIn("-Action 'Close'", script)
+        self.assertEqual(len(args), 4, "no restart when no installed GUI was running")
+
+    def test_close_failure_cancels_install_before_overwriting(self):
+        self.install.mkdir()
+        previous = self.install / "hollow-native.exe"
+        previous.write_bytes(b"previous executable")
+        self.env["HOLLOW_TEST_CLOSE_STATUS"] = "1"
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installation cancelled", result.stdout)
+        self.assertEqual(previous.read_bytes(), b"previous executable")
 
     def test_missing_bundle_fails_before_overwriting_installation(self):
         self.install.mkdir()

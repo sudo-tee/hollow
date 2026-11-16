@@ -753,6 +753,7 @@ test "pane membership changes keep opaque layout and advance revision" {
     const spawned = try client.reply(&owner, try client.request(.{ .id = 0, .op = .spawn, .spawn = shell("sleep 30") }));
     defer spawned.deinit();
     try std.testing.expectEqual(@as(?u64, 2), spawned.value.revision);
+    try std.testing.expectEqual(@as(?bool, false), spawned.value.close_on_exit);
     const listed = try client.reply(&owner, try client.request(.{ .id = 0, .op = .list }));
     defer listed.deinit();
     // Kept for client-side reconciliation; the stale revision is fenced.

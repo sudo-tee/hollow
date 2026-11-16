@@ -6,9 +6,18 @@ param(
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $dir = 'C:\Applications\Hollow\'
+
+# Start-Process joins ArgumentList with spaces; quote for the Windows argv parser.
+function ConvertTo-WindowsArgument {
+  param([AllowEmptyString()][string]$Value)
+  '"' + (($Value -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+}
+
 if ($Action -eq 'Start') {
   $options = @{ FilePath = $dir + 'hollow-native.exe' }
-  if ($AppArgs.Count -gt 0) { $options.ArgumentList = $AppArgs }
+  if ($AppArgs.Count -gt 0) {
+    $options.ArgumentList = ($AppArgs | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+  }
   Start-Process @options
   exit 0
 }

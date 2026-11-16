@@ -196,7 +196,7 @@ pub const Owner = struct {
                 const pane = try self.spawnPane(s, req.spawn orelse .{}, true);
                 // From publication onward, failed control admission is uncertain,
                 // never a rejection that could cause command replay.
-                self.control(client, .reply, p.Reply{ .id = req.id, .pane = pane.id, .revision = s.meta.revision });
+                self.control(client, .reply, p.Reply{ .id = req.id, .pane = pane.id, .revision = s.meta.revision, .close_on_exit = pane.close_on_exit });
                 pane.stream.attach();
             },
             .close => {

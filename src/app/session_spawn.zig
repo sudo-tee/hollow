@@ -235,7 +235,7 @@ pub fn handle(app: *App, controller: *Controller, message: transport.Message) bo
         }
         const mux = if (app.mux) |*value| value else unreachable;
         const previous = mux.activePane();
-        const pane = mux.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, op.workspace_id, .{ .id = parsed.value.pane.?, .cols = op.spawn.cols, .rows = op.spawn.rows, .cwd = op.spawn.cwd orelse "", .close_on_exit = @import("../agent/pty_protocol.zig").sessionCloseOnExit(op.spawn) }, op.domain, @import("session_borrowers.zig").beforeReplace, op.placement) catch |err| {
+        const pane = mux.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, op.workspace_id, .{ .id = parsed.value.pane.?, .cols = op.spawn.cols, .rows = op.spawn.rows, .cwd = op.spawn.cwd orelse "", .close_on_exit = parsed.value.close_on_exit orelse @import("../agent/pty_protocol.zig").sessionCloseOnExit(op.spawn) }, op.domain, @import("session_borrowers.zig").beforeReplace, op.placement) catch |err| {
             // Spawn succeeded, but no view can receive its stream. Detach safely;
             // reattachment recovers it. Never replay spawn or keep routing blind.
             controller.abort(err);
@@ -624,6 +624,25 @@ test "session borrowers edge splits span the tab and save all four placements" {
         const layout = try @import("../session/layout.zig").decode(a, parsed.value.layout.?, &.{ 1, 2, 3 });
         defer layout.deinit();
         try std.testing.expectEqual(@as(usize, 5), layout.value.tabs[0].nodes.len);
+    }
+}
+
+test "session borrowers spawned panes honor owner exit policy with legacy fallback" {
+    const a = std.testing.allocator;
+    for ([_]?bool{ true, false, null }) |policy| {
+        const app = try mockApp();
+        defer a.destroy(app);
+        defer app.deinit();
+        // The POSIX fallback rejects this Windows shell; the owner's true wins.
+        if (policy == true) try app.config.setDomainShell("bound", "pwsh.exe");
+        const connection = app.activeWorkspace().?.session_controller.?.connection;
+        try newTab(app, null, null, null, -1, false);
+        mockPump(app);
+        const outgoing = connection.client.nextWrite().?;
+        defer outgoing.deinit();
+        try mockReply(connection, .{ .id = outgoing.request_id.?, .pane = 2, .revision = 1, .close_on_exit = policy });
+        mockPump(app);
+        try std.testing.expectEqual(policy orelse true, app.activePane().?.content.terminal.pty.?.session.close_on_exit);
     }
 }
 

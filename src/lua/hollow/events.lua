@@ -81,7 +81,7 @@ function M.setup(hollow, state, term_helpers)
       name = payload.name,
       session_id = payload.session_id,
       session_host = payload.session_host,
-      session_ended = payload.session_id ~= nil and payload.session_ended == true or nil,
+      session_ended = payload.session_ended,
     }
   end
   local function adapt_tab_closed(payload)

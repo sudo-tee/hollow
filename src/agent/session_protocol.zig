@@ -297,6 +297,8 @@ pub const Reply = struct {
     sessions: ?[]const SessionInfo = null,
     pane: ?u32 = null,
     revision: ?u64 = null,
+    /// Owner-resolved exit policy for a spawned pane; absent on older owners.
+    close_on_exit: ?bool = null,
 };
 
 pub fn stringify(allocator: std.mem.Allocator, value: anytype) ![]u8 {
