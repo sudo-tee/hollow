@@ -1201,6 +1201,25 @@ function M.setup(hollow, host_api)
     end
   end
 
+  --- Queue a move into another tab in the same workspace, without restarting the pane.
+  function hollow.term.move_pane_to_tab(pane_id, tab_id, opts)
+    check_pane_id(pane_id, "move_pane_to_tab(pane_id, tab_id, opts)")
+    check_pane_id(tab_id, "move_pane_to_tab: tab_id")
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.move_pane_to_tab: opts must be a table")
+    end
+    opts = opts or {}
+    local direction = opts.direction == nil and "vertical" or opts.direction
+    local ratio = opts.ratio == nil and 0.5 or opts.ratio
+    if direction ~= "vertical" and direction ~= "horizontal" then
+      error("hollow.term.move_pane_to_tab: direction must be vertical or horizontal")
+    end
+    if type(ratio) ~= "number" or not (ratio > 0 and ratio < 1) then
+      error("hollow.term.move_pane_to_tab: ratio must be in (0, 1)")
+    end
+    return host_api.move_pane_to_tab(pane_id, tab_id, direction, ratio)
+  end
+
   --- Move a pane into a window-edge dock that stays visible across tab switches.
   --- opts.edge is required; opts.scope is "global" (default) or "workspace";
   --- opts.ratio is the dock's share of the window (default 0.3).

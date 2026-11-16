@@ -565,6 +565,7 @@ pub fn build(b: *std.Build) void {
             "hidden panes retain session identity and restore tiled bounds",
             "edge split spans the whole layout on the requested side",
             "edge placement is dropped once the pane leaves the window edge",
+            "pane tab transfer",
         },
     });
     const mux_visibility_run = b.addRunArtifact(mux_visibility_tests);

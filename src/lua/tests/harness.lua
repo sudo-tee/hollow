@@ -401,6 +401,16 @@ local function make_host_api()
     }
   end
 
+  function host_api.move_pane_to_tab(pane_id, tab_id, direction, ratio)
+    recorded.move_pane_to_tab = {
+      pane_id = pane_id,
+      tab_id = tab_id,
+      direction = direction,
+      ratio = ratio,
+    }
+    return true
+  end
+
   function host_api.undock_pane(pane_id)
     recorded.undock_pane = pane_id
     if panes[pane_id] == nil or panes[pane_id].dock == nil then

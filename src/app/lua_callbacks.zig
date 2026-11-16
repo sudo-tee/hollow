@@ -904,3 +904,8 @@ pub fn luaMovePaneToWorkspaceCallback(app_ptr: *anyopaque, pane_id: usize, works
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.enqueueMouse(.{ .move_pane_to_workspace = .{ .pane_id = pane_id, .workspace_index = workspace_index } });
 }
+
+pub fn luaMovePaneToTabCallback(app_ptr: *anyopaque, pane_id: usize, tab_id: usize, direction: @import("../mux/types.zig").SplitDirection, ratio: f32) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.enqueueMouse(.{ .move_pane_to_tab = .{ .pane_id = pane_id, .tab_id = tab_id, .direction = direction, .ratio = ratio } });
+}

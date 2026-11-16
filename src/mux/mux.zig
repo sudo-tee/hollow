@@ -1572,6 +1572,52 @@ pub const Mux = struct {
         return true;
     }
 
+    /// Transfer a pane between tabs of one workspace without recreating it.
+    /// Allocate the destination split before detaching so failures preserve both tabs.
+    pub fn movePaneToTab(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize, tab_id: usize, direction: SplitDirection, ratio: f32) bool {
+        if (!std.math.isFinite(ratio) or ratio <= 0 or ratio >= 1) return false;
+        for (self.workspaces.items) |ws| {
+            const source = for (ws.tabs.items) |tab| {
+                for (tab.panes.items) |pane| {
+                    if (pane.id == pane_id) break;
+                } else continue;
+                break tab;
+            } else continue;
+            const target = ws.tabById(tab_id) orelse return false;
+            if (source == target) return false;
+            if (target.panes.items.len >= MAX_LAYOUT_LEAVES) return false;
+            const root = target.root_split orelse return false;
+            if (!canWrapSplit(root, @import("../session/layout.zig").max_depth - 1)) return false;
+            if (ws.session_controller) |controller| {
+                if (controller.taken or controller.detached or controller.connection.status().phase == .ended) return false;
+            }
+            const pane = for (source.panes.items) |pane| {
+                if (pane.id == pane_id) break pane;
+            } else unreachable;
+            target.splitEdge(pane, direction, ratio, false) catch return false;
+            source.detachPane(pane);
+            pane.is_floating = false;
+            pane.is_hidden = false;
+            if (source.panes.items.len == 0) {
+                ws.detachTab(source);
+                source.deinit(runtime);
+                self.allocator.destroy(source);
+            }
+            ws.active_tab = target;
+            self.active_workspace = ws;
+            self.focused_dock = null;
+            return true;
+        }
+        return false;
+    }
+
+    fn canWrapSplit(node: *const types.SplitNode, remaining: usize) bool {
+        if (node.kind == .pane) return true;
+        if (remaining == 0) return false;
+        return canWrapSplit(node.first orelse return false, remaining - 1) and
+            canWrapSplit(node.second orelse return false, remaining - 1);
+    }
+
     fn edgeForDirection(direction: FocusDirection) PaneEdge {
         return switch (direction) {
             .left => .left,

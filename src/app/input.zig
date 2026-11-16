@@ -117,6 +117,12 @@ pub const PendingInputEvent = union(enum) {
         pane_id: usize,
         workspace_index: usize,
     },
+    move_pane_to_tab: struct {
+        pane_id: usize,
+        tab_id: usize,
+        direction: SplitDirection,
+        ratio: f32,
+    },
     set_workspace_name: []const u8,
     set_workspace_default_cwd: []const u8,
     split_pane: struct {
@@ -537,6 +543,9 @@ pub fn processInputQueue(self: *App) void {
             },
             .move_pane_to_workspace => |mev| {
                 mux_ops.movePaneToWorkspace(self, mev.pane_id, mev.workspace_index);
+            },
+            .move_pane_to_tab => |move| {
+                mux_ops.movePaneToTab(self, move.pane_id, move.tab_id, move.direction, move.ratio);
             },
             .set_workspace_name => |name| {
                 mux_ops.setWorkspaceName(self, name);

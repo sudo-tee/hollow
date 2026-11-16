@@ -402,6 +402,104 @@ test "mixed Lua and terminal panes split float zoom move and close without reapi
     try std.testing.expect(recorder.all_panes_resolved);
 }
 
+test "pane tab transfer preserves live terminal identity and removes empty source" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(a);
+    defer cfg.deinit();
+    cfg.shell = try a.dupe(u8, "/bin/sh");
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    var recorder: PaneLifecycleRecorder = .{ .mux = &mux };
+    mux.host_context = &recorder;
+    mux.pane_created = PaneLifecycleRecorder.recordCreated;
+    mux.pane_closing = PaneLifecycleRecorder.recordClosing;
+    try mux.bootstrapSingle(&runtime, LifecycleTestCallbacks.callbacks, cfg, 8, 16, 800, 600);
+    const pane = mux.activePane().?;
+    const id = pane.id;
+    const terminal = pane.content.terminal.terminal;
+    const pid = pane.content.terminal.pty.?.childPid();
+    try mux.newTab(&runtime, LifecycleTestCallbacks.callbacks, cfg, 8, 16, 800, 600, null, null, null, false);
+    const target = mux.activeTab().?;
+    try std.testing.expect(mux.movePaneToTab(&runtime, id, target.id, .vertical, 0.4));
+    try std.testing.expectEqual(@as(usize, 1), mux.activeWorkspace().?.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), target.panes.items.len);
+    try std.testing.expectEqual(pane, mux.activePane().?);
+    try std.testing.expectEqual(id, pane.id);
+    try std.testing.expectEqual(terminal, pane.content.terminal.terminal);
+    try std.testing.expectEqual(pid, pane.content.terminal.pty.?.childPid());
+    try std.testing.expectEqual(@as(usize, 2), recorder.created);
+    try std.testing.expectEqual(@as(usize, 0), recorder.closed);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), mux.paneSplitInfo(pane).?.size, 1e-6);
+}
+
+test "pane tab transfer handles hidden floating and Lua panes and rejects stale targets" {
+    const a = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const first = try mux.createLuaPane();
+    try mux.newWorkspaceWithPane(&runtime, first, null);
+    const ws = mux.activeWorkspace().?;
+    const source = mux.activeTab().?;
+    const moving = try mux.createLuaPane();
+    try mux.splitActivePaneWith(moving, .vertical, 0.5, true);
+    try std.testing.expect(mux.setPaneVisible(moving, false));
+    const target = try ws.newTab(100, false);
+    const other = try mux.createLuaPane();
+    try target.appendPane(other);
+    try std.testing.expect(!mux.movePaneToTab(&runtime, moving.id, source.id, .vertical, 0.5));
+    try std.testing.expect(!mux.movePaneToTab(&runtime, moving.id, 999, .vertical, 0.5));
+    try std.testing.expect(!mux.movePaneToTab(&runtime, 999, target.id, .vertical, 0.5));
+    try std.testing.expect(!mux.movePaneToTab(&runtime, moving.id, target.id, .vertical, std.math.nan(f32)));
+    try std.testing.expect(!mux.movePaneToTab(&runtime, moving.id, target.id, .vertical, 1));
+    try std.testing.expectEqual(@as(usize, 2), source.panes.items.len);
+    try std.testing.expect(mux.movePaneToTab(&runtime, moving.id, target.id, .horizontal, 0.3));
+    try std.testing.expectEqual(first, source.active_pane.?);
+    try std.testing.expectEqual(moving, mux.activePane().?);
+    try std.testing.expect(!moving.is_hidden and !moving.is_floating);
+    try std.testing.expectEqual(@as(usize, 2), ws.tabs.items.len);
+    try std.testing.expectEqual(types.SplitDirection.horizontal, target.root_split.?.direction);
+    const foreign = try mux.createLuaPane();
+    try mux.newWorkspaceWithPane(&runtime, foreign, null);
+    try std.testing.expect(!mux.movePaneToTab(&runtime, moving.id, mux.activeTab().?.id, .vertical, 0.5));
+    try std.testing.expectEqual(@as(usize, 2), target.panes.items.len);
+}
+
+test "pane tab transfer allocation failure preserves both layouts" {
+    const a = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(a, null);
+    defer runtime.deinit();
+    var mux = Mux.init(a);
+    defer mux.deinit(&runtime);
+    const pane = try mux.createLuaPane();
+    try mux.newWorkspaceWithPane(&runtime, pane, null);
+    const ws = mux.activeWorkspace().?;
+    const source = mux.activeTab().?;
+    const target = try ws.newTab(100, false);
+    const other = try mux.createLuaPane();
+    try target.appendPane(other);
+    const source_root = source.root_split.?;
+    const target_root = target.root_split.?;
+    for (0..3) |index| {
+        // Force all three destination allocations, including pane-list growth.
+        target.panes.shrinkAndFree(a, target.panes.items.len);
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = index, .resize_fail_index = 0 });
+        target.allocator = failing.allocator();
+        defer target.allocator = a;
+        try std.testing.expect(!mux.movePaneToTab(&runtime, pane.id, target.id, .vertical, 0.5));
+        try std.testing.expectEqual(@as(usize, 1), source.panes.items.len);
+        try std.testing.expectEqual(@as(usize, 1), target.panes.items.len);
+        try std.testing.expectEqual(source_root, source.root_split.?);
+        try std.testing.expectEqual(target_root, target.root_split.?);
+        try std.testing.expectEqual(pane, source_root.pane.?);
+        try std.testing.expectEqual(other, target_root.pane.?);
+    }
+}
+
 test "workspace new tab can append after active tab" {
     const allocator = std.testing.allocator;
     var workspace = Workspace.init(allocator, 1);

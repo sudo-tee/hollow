@@ -249,6 +249,31 @@ describe("term test suite", function()
     end)
   end)
 
+  describe("pane tab transfers", function()
+    it("queues tab IDs and split options", function()
+      harness.assert_true(hollow.term.move_pane_to_tab(101, 202))
+      harness.assert_equal(recorded.move_pane_to_tab.pane_id, 101)
+      harness.assert_equal(recorded.move_pane_to_tab.tab_id, 202)
+      harness.assert_equal(recorded.move_pane_to_tab.direction, "vertical")
+      harness.assert_equal(recorded.move_pane_to_tab.ratio, 0.5)
+      hollow.term.move_pane_to_tab(101, 203, { direction = "horizontal", ratio = 0.3 })
+      harness.assert_equal(recorded.move_pane_to_tab.direction, "horizontal")
+      harness.assert_equal(recorded.move_pane_to_tab.ratio, 0.3)
+    end)
+
+    it("rejects invalid IDs and options before queueing", function()
+      for _, id in ipairs({ -1, 0, 1.5, math.huge, 0 / 0, "101" }) do
+        harness.assert_true(not pcall(hollow.term.move_pane_to_tab, id, 202))
+        harness.assert_true(not pcall(hollow.term.move_pane_to_tab, 101, id))
+      end
+      for _, ratio in ipairs({ -1, 0, 1, math.huge, 0 / 0, "0.5", false }) do
+        harness.assert_true(not pcall(hollow.term.move_pane_to_tab, 101, 202, { ratio = ratio }))
+      end
+      harness.assert_true(not pcall(hollow.term.move_pane_to_tab, 101, 202, false))
+      harness.assert_true(not pcall(hollow.term.move_pane_to_tab, 101, 202, { direction = "left" }))
+    end)
+  end)
+
   describe("pane docks", function()
     it("docks, lists, and undocks panes", function()
       hollow.term.dock_pane(101, { edge = "right" })

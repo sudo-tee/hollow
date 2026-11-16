@@ -705,6 +705,50 @@ test "session borrowers workspace close acknowledges docks before removing the l
     }
 }
 
+test "session borrowers pane tab transfer preserves owner bindings and saves merged layout" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const ws = app.activeWorkspace().?;
+    const controller = ws.session_controller.?;
+    const pane = app.activePane().?;
+    const remote_id = pane.content.terminal.pty.?.session.pane;
+    const second = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, ws.id, .{ .id = 2, .cols = 80, .rows = 24 }, "bound", null, .{ .tab = .{} });
+    const target = ws.tabContainingPane(second).?;
+    controller.layout_dirty = false;
+    const ops = @import("session_controller.zig");
+    controller.taken = true;
+    ops.movePaneToTab(app, pane.id, target.id, .vertical, 0.5);
+    try std.testing.expectEqual(@as(usize, 2), ws.tabs.items.len);
+    try std.testing.expect(!controller.layout_dirty);
+    controller.taken = false;
+    controller.detached = true;
+    ops.movePaneToTab(app, pane.id, target.id, .vertical, 0.5);
+    try std.testing.expectEqual(@as(usize, 2), ws.tabs.items.len);
+    controller.detached = false;
+    ops.movePaneToTab(app, pane.id, target.id, .horizontal, 0.3);
+    try std.testing.expectEqual(@as(usize, 1), ws.tabs.items.len);
+    try std.testing.expectEqual(pane, app.activePane().?);
+    try std.testing.expectEqual(controller, app.mux.?.controllerForPane(pane.id).?);
+    try std.testing.expectEqual(remote_id, pane.content.terminal.pty.?.session.pane);
+    try std.testing.expect(controller.layout_dirty);
+    controller.layout_due_ns = 0;
+    mockPump(app);
+    const save = controller.connection.client.nextWrite().?;
+    defer save.deinit();
+    const request = try p.parse(p.Request, a, save.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(p.Op.layout, request.value.op);
+    const layout = try @import("../session/layout.zig").decode(a, request.value.layout.?, &.{ 1, 2 });
+    defer layout.deinit();
+    try std.testing.expectEqual(@as(usize, 1), layout.value.tabs.len);
+    try std.testing.expectEqual(@as(usize, 3), layout.value.tabs[0].nodes.len);
+    try mockReply(controller.connection, .{ .id = request.value.id, .revision = 1 });
+    mockPump(app);
+    try std.testing.expect(controller.layout_request == null and !controller.layout_dirty);
+}
+
 test "session borrowers undock rejects foreign workspaces without changing either layout" {
     const a = std.testing.allocator;
     const app = try mockApp();

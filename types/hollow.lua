@@ -1714,6 +1714,19 @@ function term.run_domain_process(args, domain, opts) end
 ---@param opts? HollowSplitPaneOpts
 function term.split_pane(direction, opts) end
 
+---@class HollowMovePaneToTabOpts
+---@field direction? "vertical"|"horizontal" Defaults to vertical (side by side).
+---@field ratio? number New pane's share of the destination tab, in (0, 1); default 0.5.
+
+---Queue a move to another tab in the same workspace, preserving the pane and its process.
+---Focuses the destination; removes the source tab if empty.
+---Returns queue acceptance, not completion; invalid or stale destinations leave layouts unchanged.
+---@param pane_id integer
+---@param tab_id integer
+---@param opts? HollowMovePaneToTabOpts
+---@return boolean queued
+function term.move_pane_to_tab(pane_id, tab_id, opts) end
+
 ---@param id integer
 function term.focus_tab(id) end
 
@@ -3384,6 +3397,7 @@ function plugins.sync() end
 ---@field set_pane_floating fun(pane_id?: integer, floating?: boolean)
 ---@field set_floating_pane_bounds fun(pane_id?: integer, x?: number, y?: number, width?: number, height?: number)
 ---@field move_pane fun(pane_id?: integer, direction: string, amount?: number)
+---@field move_pane_to_tab fun(pane_id: integer, tab_id: integer, direction: "vertical"|"horizontal", ratio: number): boolean
 ---@field close_pane fun()
 ---@field focus_pane fun(direction: string)
 ---@field focus_pane_by_id fun(pane_id: integer): boolean

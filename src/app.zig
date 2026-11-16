@@ -1341,6 +1341,7 @@ pub const App = struct {
             .respawn_pane = lua_callbacks.luaRespawnPaneCallback,
             .move_tab_to_workspace = lua_callbacks.luaMoveTabToWorkspaceCallback,
             .move_pane_to_workspace = lua_callbacks.luaMovePaneToWorkspaceCallback,
+            .move_pane_to_tab = lua_callbacks.luaMovePaneToTabCallback,
             .bell_pane = lua_callbacks.luaBellPaneCallback,
             .send_text_to_pane = lua_callbacks.luaSendTextToPaneCallback,
             .send_key_to_pane = lua_callbacks.luaSendKeyToPaneCallback,
