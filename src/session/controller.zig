@@ -57,6 +57,7 @@ pub const Controller = struct {
     layout_dirty: bool = false,
     layout_due_ns: i128 = 0,
     spawn_active: bool = false,
+    transfer_active: bool = false,
     spawn_request: ?u64 = null,
 
     pub fn init(a: std.mem.Allocator, connection: *transport.Connection) Controller {
@@ -113,7 +114,7 @@ pub const Controller = struct {
 
     pub fn requestClose(self: *Controller, id: usize) !u64 {
         if (self.detached) return error.Detached;
-        if (self.spawn_active) return error.SessionBusy;
+        if (self.spawn_active or self.transfer_active) return error.SessionBusy;
         if (self.kill_request != null) return error.SessionClosing;
         const entry = self.byNode(id) orelse return error.PaneNotFound;
         const node = entry.node orelse return error.PaneNotFound;
@@ -124,6 +125,7 @@ pub const Controller = struct {
     }
 
     pub fn scheduleClose(self: *Controller, id: usize) !void {
+        if (self.transfer_active) return error.SessionBusy;
         if (self.detached) return error.Detached;
         if (self.kill_request != null) return error.SessionClosing;
         const entry = self.byNode(id) orelse return error.PaneNotFound;
@@ -135,7 +137,7 @@ pub const Controller = struct {
     /// Frame-thread batch admission; full request queues are retried next
     /// frame, without removing views or replaying an admitted request.
     pub fn flushCloses(self: *Controller) !void {
-        if (!self.close_work or self.detached or self.kill_request != null or self.spawn_active) return;
+        if (!self.close_work or self.detached or self.kill_request != null or self.spawn_active or self.transfer_active) return;
         var submitted: usize = 0;
         for (&self.bindings) |*slot| if (slot.*) |*entry| {
             if (!entry.close_desired or entry.node == null) continue;
@@ -151,6 +153,7 @@ pub const Controller = struct {
     }
 
     pub fn requestKill(self: *Controller) !u64 {
+        if (self.transfer_active) return error.SessionBusy;
         if (self.detached) return error.Detached;
         if (self.spawn_active) return error.SessionBusy;
         if (self.kill_request) |id| return id;
@@ -163,7 +166,7 @@ pub const Controller = struct {
     /// reply or automatically overwrite an owner revision conflict.
     pub fn requestLayout(self: *Controller, bytes: []const u8) !u64 {
         if (self.detached) return error.Detached;
-        if (self.spawn_active) return error.SessionBusy;
+        if (self.spawn_active or self.transfer_active) return error.SessionBusy;
         if (self.kill_request != null) return error.SessionClosing;
         if (self.layout_request != null) return error.LayoutPending;
         if (self.layout_conflict) return error.RevisionConflict;
@@ -185,6 +188,7 @@ pub const Controller = struct {
     /// Restarts an exited pane in place. Never replayed: a lost reply leaves
     /// the pane dead until the user retries.
     pub fn requestRespawn(self: *Controller, id: usize) !u64 {
+        if (self.spawn_active or self.transfer_active) return error.SessionBusy;
         if (self.detached) return error.Detached;
         if (self.kill_request != null) return error.SessionClosing;
         const entry = self.byNode(id) orelse return error.PaneNotFound;
@@ -212,7 +216,7 @@ pub const Controller = struct {
     pub fn requestSpawn(self: *Controller, spawn: p.Spawn) !u64 {
         if (self.detached) return error.Detached;
         if (self.kill_request != null) return error.SessionClosing;
-        if (self.spawn_request != null or self.layout_request != null or self.pendingCloses() != 0) return error.SessionBusy;
+        if (self.transfer_active or self.spawn_request != null or self.layout_request != null or self.pendingCloses() != 0) return error.SessionBusy;
         const id = try self.connection.spawnAttached(self.generation, spawn);
         self.spawn_active = true;
         self.spawn_request = id;

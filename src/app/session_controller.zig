@@ -133,6 +133,7 @@ pub fn deinitSessionControllers(self: *App) void {
 /// Dispatch bounded frame batches on the GUI thread. Pane polling runs between
 /// passes so full pane queues and snapshot budgets can make progress.
 pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
+    @import("session_transfer.zig").pump(self);
     @import("session_spawn.zig").pump(self);
     // Control handlers emit Lua, which can append controllers and reallocate
     // this list. Do not retain its backing slice across a handler invocation.
@@ -148,6 +149,7 @@ pub fn pumpSessionControllers(self: *App, runtime: *GhosttyRuntime) void {
 
         var dispatched: usize = 0;
         while (dispatched < 64) : (dispatched += 1) {
+            if (@import("session_transfer.zig").paused(self, controller)) break;
             const step = controller.step() catch |err| {
                 std.log.err("session controller failed: {s}", .{@errorName(err)});
                 self.markAutomationChanged();
@@ -186,6 +188,7 @@ pub fn reportHandoff(self: *App, handoff: @import("../session/client.zig").Clien
 
 fn handleSessionControl(self: *App, runtime: *GhosttyRuntime, controller: *SessionController, message: SessionTransport.Message) bool {
     if (message.kind == .reply) {
+        if (@import("session_transfer.zig").handle(self, controller, message)) return true;
         if (@import("session_spawn.zig").handle(self, controller, message)) return true;
         const request_id = message.request_id orelse return false;
         if (controller.finishRespawn(request_id)) |pane_id| {
@@ -280,7 +283,7 @@ fn retireSessionControllers(self: *App) void {
             break :blk false;
         } else false;
 
-        if (in_mux or controller.spawn_active or (controller.hasBindings() and status.phase != .ended)) {
+        if (in_mux or controller.spawn_active or controller.transfer_active or (controller.hasBindings() and status.phase != .ended)) {
             index += 1;
             continue;
         }
@@ -598,6 +601,16 @@ pub fn closeActivePane(self: *App) void {
 pub fn moveTabToWorkspace(self: *App, tab_id: usize, workspace_index: usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
+    const source = for (mux.workspaces.items) |workspace| {
+        if (workspace.tabById(tab_id) != null) break workspace;
+    } else return;
+    if (workspace_index >= mux.workspaces.items.len) return;
+    if (source.session_controller != null or mux.workspaces.items[workspace_index].session_controller != null) {
+        @import("session_transfer.zig").begin(self, tab_id, workspace_index) catch |err| {
+            @import("session_spawn.zig").report(self, err, .not_sent, null);
+        };
+        return;
+    }
     const previous = mux.activePane();
     if (!mux.moveTabToWorkspace(runtime, tab_id, workspace_index)) return;
     self.syncActivePaneChange(previous, mux.activePane());

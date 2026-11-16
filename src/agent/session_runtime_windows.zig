@@ -119,7 +119,10 @@ pub const Owner = struct {
 
     pub fn disconnect(self: *Owner, client: *Client) void {
         const s = client.session orelse return;
-        if (attachment.unlink(client, s)) s.resetDelivery(self.a);
+        if (attachment.unlink(client, s)) {
+            s.meta.offer = null;
+            s.resetDelivery(self.a);
+        }
     }
 
     fn control(self: *Owner, client: *Client, kind: p.Kind, value: anytype) void {
@@ -152,7 +155,29 @@ pub const Owner = struct {
         var arena = std.heap.ArenaAllocator.init(self.a);
         defer arena.deinit();
         const temp = arena.allocator();
+        if (client.session) |session| if (session.meta.offer != null) switch (req.op) {
+            .spawn, .close, .layout, .respawn, .transfer_offer => return error.SessionBusy,
+            else => {},
+        };
         switch (req.op) {
+            .transfer_offer => {
+                const source = try attached(client);
+                const offer = try core.TransferOffer.init(&source.meta, req.*);
+                const destination = self.find(&offer.destination) orelse return error.SessionNotFound;
+                if (destination.client == null or destination.meta.offer != null) return error.NotAttached;
+                for (offer.panes[0..offer.count]) |id| _ = source.find(id) orelse return error.PaneNotFound;
+                source.meta.offer = offer;
+                self.control(client, .reply, p.Reply{ .id = req.id, .revision = source.meta.revision });
+            },
+            .transfer_cancel => {
+                const source = try attached(client);
+                if (source.meta.offer) |offer| {
+                    if (!std.mem.eql(u8, req.transfer_token orelse "", &offer.token)) return error.InvalidTransfer;
+                    source.meta.offer = null;
+                }
+                self.control(client, .reply, p.Reply{ .id = req.id });
+            },
+            .transfer => try self.transferTab(client, req),
             .hold_wsl => return error.Unsupported, // Native transport owns WSL pins.
             .list => {
                 const infos = try temp.alloc(p.SessionInfo, self.count);
@@ -217,6 +242,33 @@ pub const Owner = struct {
 
     fn find(self: *Owner, id: []const u8) ?*Session {
         return core.findSession(self.sessions[0..self.count], id);
+    }
+
+    fn transferTab(self: *Owner, client: *Client, req: *const p.Request) !void {
+        const destination = try attached(client);
+        const source = self.find(req.transfer_session orelse return error.MissingSession) orelse return error.SessionNotFound;
+        if (source.client == null or source == destination) return error.NotAttached;
+        const plan = try core.TransferPlan.prepare(&source.meta, &destination.meta, req.*);
+        if (destination.count + plan.count > max_session_panes) return error.ResourceExhausted;
+        var panes: [64]*RuntimePane = undefined;
+        for (plan.mappings[0..plan.count], 0..) |mapping, i| panes[i] = source.find(mapping.from) orelse return error.PaneNotFound;
+        const bytes = try p.stringify(self.a, p.Reply{ .id = req.id, .revision = plan.destination_revision, .source_revision = plan.source_revision, .transferred = plan.mappings[0..plan.count] });
+        defer self.a.free(bytes);
+        for (panes[0..plan.count], plan.mappings[0..plan.count]) |pane, mapping| {
+            for (source.panes[0..source.count], 0..) |candidate, i| if (candidate == pane) {
+                source.count -= 1;
+                std.mem.copyForwards(*RuntimePane, source.panes[i..source.count], source.panes[i + 1 .. source.count + 1]);
+                break;
+            };
+            pane.id = mapping.to;
+            pane.resetDelivery(self.a);
+            pane.stream.attach();
+            destination.panes[destination.count] = pane;
+            destination.count += 1;
+        }
+        plan.commit(&source.meta, &destination.meta);
+        if (!client.send(.reply, 0, bytes)) client.dead = true;
+        if (source.count == 0) self.end(source);
     }
 
     fn create(self: *Owner, req: *const p.Request) !*Session {
@@ -337,6 +389,7 @@ pub const Owner = struct {
             pane.rows = size.rows;
         }
         self.disconnect(client);
+        s.meta.offer = null;
         s.resetDelivery(self.a);
         if (attachment.link(client, s)) |old| {
             const owner_identity = trace.Identity.local("owner");
@@ -497,6 +550,7 @@ pub const Owner = struct {
         if (s.status != null and (s.backend.outputEnded() or now >= s.exit_deadline.?)) s.drained = true;
 
         const client = session.client orelse return more;
+        if (session.meta.offer != null) return more;
         if (client.dead) return more;
         if (!s.snapshot_active and s.stream.requestResync()) self.event(client, .resync, session, s.id);
         if (client.dead) return more;
@@ -794,6 +848,64 @@ test "session capacity rejects before allocation or child creation" {
     try std.testing.expectError(error.ResourceExhausted, owner.create(&.{ .id = 1, .op = .create }));
     try std.testing.expect(!failing.has_induced_failure);
     try std.testing.expectEqual(max_sessions, owner.count);
+}
+
+test "Windows session tab transfer is atomic before allocation and preserves pane backends" {
+    const a = std.testing.allocator;
+    const Sink = struct {
+        fn send(_: *anyopaque, _: p.Kind, _: u32, _: []const u8) !void {}
+    };
+    var context: u8 = 0;
+    var owner = Owner.init(a, .{});
+    var source: Session = .{ .meta = .{ .id = @splat('a') } };
+    var destination: Session = .{ .meta = .{ .id = @splat('b'), .next_pane = 2 } };
+    var pane: RuntimePane = .{
+        .id = 1,
+        .backend = undefined,
+        .launch_arena = .init(a),
+        .launch = .{ .shell = "cmd.exe" },
+        .cols = 80,
+        .rows = 24,
+        .cwd = undefined,
+        .close_on_exit = false,
+    };
+    defer pane.launch_arena.deinit();
+    defer pane.stream.deinit(a);
+    var sibling: RuntimePane = undefined;
+    sibling.id = 2;
+    var existing: RuntimePane = undefined;
+    existing.id = 1;
+    source.panes[0] = &pane;
+    source.panes[1] = &sibling;
+    source.count = 2;
+    destination.panes[0] = &existing;
+    destination.count = 1;
+    owner.sessions[0] = &source;
+    owner.sessions[1] = &destination;
+    owner.count = 2;
+    owner.pane_count = 3;
+    var first: Client = .{ .context = &context, .send_fn = Sink.send, .session = &source };
+    var second: Client = .{ .context = &context, .send_fn = Sink.send, .session = &destination };
+    source.client = &first;
+    destination.client = &second;
+    const token = @as([32]u8, @splat('c'));
+    source.meta.offer = try core.TransferOffer.init(&source.meta, .{ .id = 1, .op = .transfer_offer, .revision = 0, .transfer_session = &destination.meta.id, .transfer_token = &token, .transfer_panes = &.{1} });
+    const request_value: p.Request = .{ .id = 2, .op = .transfer, .revision = 0, .transfer_session = &source.meta.id, .transfer_token = &token };
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    owner.a = failing.allocator();
+    try std.testing.expectError(error.OutOfMemory, owner.transferTab(&second, &request_value));
+    try std.testing.expectEqual(@as(usize, 2), source.count);
+    try std.testing.expectEqual(@as(usize, 1), destination.count);
+    try std.testing.expectEqual(@as(u32, 1), pane.id);
+    owner.a = a;
+    try owner.transferTab(&second, &request_value);
+    try std.testing.expectEqual(@as(usize, 1), source.count);
+    try std.testing.expectEqual(@as(usize, 2), destination.count);
+    try std.testing.expectEqual(@as(usize, 3), owner.pane_count);
+    try std.testing.expectEqual(&pane, destination.panes[1]);
+    try std.testing.expectEqual(@as(u32, 2), pane.id);
+    try std.testing.expect(pane.stream.snapshot_pending);
+    try std.testing.expect(source.meta.offer == null);
 }
 
 test "global and per-session pane capacity reject before allocation or mutation" {

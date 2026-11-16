@@ -1651,6 +1651,13 @@ pub const Mux = struct {
         return .{ .id = id, .host = host, .ended = ended };
     }
 
+    /// After a successful owner transfer, no pane bindings remain in this view.
+    pub fn removeEmptyTransferredWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace: *Workspace) void {
+        std.debug.assert(workspace.tabs.items.len == 0);
+        std.debug.assert(workspace.session_controller != null and !workspace.session_controller.?.hasBindings());
+        _ = self.removeWorkspace(runtime, workspace);
+    }
+
     fn removeWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace: *Workspace) bool {
         var idx: ?usize = null;
         for (self.workspaces.items, 0..) |ws, i| {

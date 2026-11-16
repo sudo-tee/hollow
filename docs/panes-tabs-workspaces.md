@@ -80,6 +80,28 @@ for _, p in ipairs(tab.panes) do
 end
 ```
 
+### Moving tabs and panes between workspaces
+
+Use `move_tab_to_workspace` or `move_pane_to_workspace` from the command palette.
+The picker excludes the current workspace and incompatible destinations.
+If exactly one eligible destination exists, the action uses it directly.
+The active workspace changes only when the native move succeeds.
+Canceling or refusing a move leaves the active workspace unchanged.
+Whole tabs can move between attached persistent workspaces.
+Both workspaces must use the same domain and host.
+The owner must advertise `tab-transfer`; older owners show an upgrade notice.
+Processes, scrollback, pane identity, and the tab's split layout are preserved.
+Both session layouts are saved after the owner acknowledges the transfer.
+Moving the last tab also removes its empty source workspace.
+Moving the last tab while source docks remain is not supported.
+Single panes cannot cross persistent-workspace boundaries.
+Move their whole tab instead.
+Persistent-to-non-persistent and cross-domain moves are not supported.
+If the outcome is unknown after connection loss, reattach both sessions.
+Reattachment recovers their authoritative panes.
+Hollow never retries an uncertain transfer or starts replacement processes.
+Docked panes must be undocked before moving them to another workspace.
+
 ## Panes
 
 Panes are shells. Create one with `hollow.term.split_pane(opts)`:

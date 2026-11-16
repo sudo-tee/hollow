@@ -403,6 +403,7 @@ pub const App = struct {
     session_open_count: usize = 0,
     session_spawns: [session_spawn.max_pending]?*session_spawn.Operation = @splat(null),
     session_spawn_count: usize = 0,
+    session_transfer: ?@import("app/session_transfer.zig").Operation = null,
     session_layout_suppressed: bool = false,
     session_open_next_id: u64 = 1,
     session_queries: [session_query.max_pending]?*session_query.Pending = @splat(null),
@@ -1077,6 +1078,7 @@ pub const App = struct {
             self.renderer = null;
         }
 
+        @import("app/session_transfer.zig").shutdown(self);
         session_spawn.flushLayouts(self, session_spawn.shutdown_flush_ns);
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
@@ -1562,6 +1564,7 @@ pub const App = struct {
     pub fn nextIdleWakeNs(self: *const App) i128 {
         var next_wake_ns = self.next_idle_render_poll_ns;
         next_wake_ns = input.minWakeNs(next_wake_ns, session_spawn.nextLayoutWakeNs(self));
+        if (self.session_transfer) |op| next_wake_ns = input.minWakeNs(next_wake_ns, op.deadline);
         if (self.leader_visual_active and self.leader_visual_expires_at_ns != 0) {
             next_wake_ns = input.minWakeNs(next_wake_ns, self.leader_visual_expires_at_ns);
         }

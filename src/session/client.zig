@@ -103,6 +103,7 @@ pub const Client = struct {
     host_len: u8 = 0,
     /// The owner advertised the optional respawn op.
     respawn_supported: bool = false,
+    tab_transfer_supported: bool = false,
     create_id_supported: bool = false,
     wsl_keepalive_supported: bool = false,
     /// Recent in-place owner handoff from the welcome, until taken.
@@ -166,8 +167,9 @@ pub const Client = struct {
         if (value.op == .respawn and !self.respawn_supported) return error.Unsupported;
         if (value.create_id != null and !self.create_id_supported) return error.Unsupported;
         if (value.op == .hold_wsl and !self.wsl_keepalive_supported) return error.Unsupported;
+        if ((value.op == .transfer or value.op == .transfer_offer or value.op == .transfer_cancel) and !self.tab_transfer_supported) return error.Unsupported;
         const attached_op = switch (value.op) {
-            .spawn, .close, .layout, .detach, .respawn => true,
+            .spawn, .close, .layout, .detach, .respawn, .transfer, .transfer_offer, .transfer_cancel => true,
             .kill => value.session == null,
             else => false,
         };
@@ -286,6 +288,16 @@ pub const Client = struct {
             return;
         };
         return error.ResourceExhausted;
+    }
+
+    pub fn forgetPane(self: *Client, id: u32) void {
+        for (&self.panes) |*slot| if (slot.*) |entry| {
+            if (entry.id != id) continue;
+            self.buffered -= entry.buffered;
+            if (entry.granted > 0) self.grants_pending -= 1;
+            slot.* = null;
+            return;
+        };
     }
 
     pub fn send(self: *Client, kind: p.Kind, id: u32, bytes: []const u8) !void {
@@ -427,6 +439,7 @@ pub const Client = struct {
                     self.host_len = @intCast(w.host.len);
                 }
                 self.respawn_supported = p.hasFeature(w.features, "respawn");
+                self.tab_transfer_supported = p.hasFeature(w.features, "tab-transfer");
                 self.create_id_supported = p.hasFeature(w.features, "create-id");
                 self.wsl_keepalive_supported = p.hasFeature(w.features, "wsl-keepalive");
                 if (w.handoff) |notice| if (shortBuild(notice.from)) |from| if (shortBuild(notice.to)) |to| {
@@ -447,6 +460,11 @@ pub const Client = struct {
                         for (session.panes) |info| try self.addPane(info.id);
                     },
                     .spawn => try self.addPane(reply.value.pane orelse return error.InvalidReply),
+                    .transfer => {
+                        const mappings = reply.value.transferred orelse return error.InvalidReply;
+                        if (mappings.len == 0 or mappings.len > 64) return error.InvalidReply;
+                        for (mappings) |mapping| try self.addPane(mapping.to);
+                    },
                     .close => for (&self.panes) |*slot| {
                         if (slot.* != null and slot.*.?.id == entry.pane) {
                             self.buffered -= slot.*.?.buffered;
