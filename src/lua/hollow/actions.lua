@@ -1186,10 +1186,19 @@ function M.setup(hollow, host_api)
         return
       end
       local entries = {}
+      local function nonempty(value)
+        return value and value ~= "" and value or nil
+      end
       for _, tab in ipairs(hollow.term.tabs()) do
         if tab.id ~= current_tab.id then
+          local target = tab.pane
+          local title = nonempty(tab.title)
+            or nonempty(target and target.foreground_process)
+            or nonempty(target and target.cwd and hollow.util.basename(target.cwd))
+            or nonempty(target and target.title)
+            or "Tab"
           entries[#entries + 1] = {
-            name = ("%d: %s"):format(tab.index, tab.title or "Tab"),
+            name = ("%d: %s"):format(tab.index, title),
             tab_id = tab.id,
           }
         end

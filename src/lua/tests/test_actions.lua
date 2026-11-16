@@ -13,6 +13,37 @@ describe("actions test suite", function()
   end)
 
   describe("pane tab transfers", function()
+    it("renders a fallback tab label and opens both real pickers", function()
+      local clay = require("tests.clay_helpers")
+      local original_tabs = hollow.term.tabs
+      hollow.term.tabs = function()
+        return {
+          { id = 201, index = 1, title = "Source" },
+          { id = 202, index = 2, title = "", pane = { foreground_process = "fish" } },
+        }
+      end
+      local function click(label)
+        for _, node in ipairs(clay.nodes(hollow.ui)) do
+          if node.list_item and node.label and node.label:find(label, 1, true) then
+            hollow.ui.dispatch_widget_event("overlay:click", { id = node.id, index = 1 })
+            return
+          end
+        end
+        error("missing palette item: " .. label)
+      end
+      local ok, err = pcall(function()
+        hollow.ui.command_palette.open({ query = "Move current pane to another tab" })
+        click("Move current pane to another tab")
+        click("2: fish")
+        click("Side by side")
+        harness.assert_equal(recorded.move_pane_to_tab.tab_id, 202)
+        harness.assert_equal(hollow.ui.overlay.depth(), 0)
+      end)
+      hollow.term.tabs = original_tabs
+      hollow.ui.overlay.clear()
+      assert(ok, err)
+    end)
+
     it("chooses a destination and orientation without switching before confirmation", function()
       local original_tabs = hollow.term.tabs
       local original_open = hollow.ui.command_palette.open
@@ -21,6 +52,9 @@ describe("actions test suite", function()
         return {
           { id = 201, index = 1, title = "Source" },
           { id = 202, index = 2, title = "Destination" },
+          { id = 203, index = 3, title = "", pane = { cwd = "/home/me/project" } },
+          { id = 204, index = 4, title = "", pane = { title = "Pane title" } },
+          { id = 205, index = 5, title = "" },
         }
       end
       hollow.ui.command_palette.open = function(opts)
@@ -28,8 +62,12 @@ describe("actions test suite", function()
       end
       local ok, err = pcall(function()
         hollow.action.move_pane_to_tab()
-        harness.assert_equal(#picker.entries, 1)
+        harness.assert_equal(#picker.entries, 4)
         harness.assert_equal(picker.entries[1].tab_id, 202)
+        harness.assert_equal(picker.entries[1].name, "2: Destination")
+        harness.assert_equal(picker.entries[2].name, "3: project")
+        harness.assert_equal(picker.entries[3].name, "4: Pane title")
+        harness.assert_equal(picker.entries[4].name, "5: Tab")
         picker.on_confirm(picker.entries[1])
         harness.assert_equal(#picker.entries, 2)
         picker.on_confirm(picker.entries[2])
