@@ -145,6 +145,17 @@ hollow.config.set({
 
 See [Background and transparency](../../background.md).
 
+### Custom Shaders
+
+```lua
+hollow.config.set({
+  custom_shader = "/home/me/shaders/cursor_smear.glsl", -- or a list, or false
+  shader_animation = "cursor", -- "cursor" | "always" | "off", or a boolean
+})
+```
+
+See [Custom shaders](../../custom-shaders.md).
+
 ### Mouse Cursor
 
 This option defaults to `true`. Set it to `false` to keep the OS mouse cursor

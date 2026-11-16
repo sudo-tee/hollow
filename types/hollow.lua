@@ -417,6 +417,8 @@
 ---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
 ---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
 
+---@alias HollowShaderAnimation "cursor"|"always"|"off"
+
 ---@class HollowScrollbarConfig
 ---@field enabled? boolean
 ---@field width? integer
@@ -517,6 +519,8 @@
 ---@field cursor? HollowCursorConfig
 ---@field unfocused_pane? HollowUnfocusedPaneConfig
 ---@field background? HollowBackgroundConfig
+---@field custom_shader? string|string[]|false Ghostty-compatible post-process GLSL shaders, applied in order (max 8)
+---@field shader_animation? HollowShaderAnimation|boolean "cursor" (default) animates briefly after cursor or focus changes; "always" every frame; false/"off" never
 ---@field shell? string|string[]
 ---@field default_domain? string
 ---@field domains? table<string, string|HollowDomainConfig>

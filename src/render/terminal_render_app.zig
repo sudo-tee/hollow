@@ -71,6 +71,66 @@ fn appCursorCol(context: ?*anyopaque, row: usize) ?usize {
     return null;
 }
 
+/// Cursor and theme colours exposed to custom shaders, in pane pixels.
+pub const ShaderState = struct {
+    /// Drawn cursor rectangle, top-left origin. Null while hidden or blinked off.
+    cursor_rect: ?[4]f32,
+    cursor_style: ?ghostty.CursorVisualStyle,
+    cursor_visible: bool,
+    cursor: ghostty.ColorRgb,
+    cursor_text: ghostty.ColorRgb,
+    background: ghostty.ColorRgb,
+    foreground: ghostty.ColorRgb,
+    selection_bg: ghostty.ColorRgb,
+    selection_fg: ghostty.ColorRgb,
+    palette: *const [256]ghostty.ColorRgb,
+};
+
+pub fn shaderState(renderer: *FtRenderer, runtime: *ghostty.Runtime, cfg: *const Config, app: *const App, pane: *const Pane, render_state: ?*anyopaque, padding_x: f32, padding_y: f32) ?ShaderState {
+    const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
+        if (!runtime.renderStateColorsInto(render_state, &renderer.render_colors_scratch)) return null;
+        break :blk &renderer.render_colors_scratch;
+    };
+    const theme = &cfg.terminal_theme;
+    const default_bg = if (theme.enabled) theme.background else render_colors.?.background;
+    const default_fg = if (theme.enabled) theme.foreground else render_colors.?.foreground;
+    const raw_cursor_color: ghostty.ColorRgb = if (theme.enabled)
+        (theme.cursor orelse .{ .r = 220, .g = 220, .b = 220 })
+    else if (render_colors.?.cursor_has_value)
+        render_colors.?.cursor
+    else
+        .{ .r = 220, .g = 220, .b = 220 };
+    const cursor_bg = effectiveCursorColor(raw_cursor_color, default_bg);
+    const style = effectiveCursorStyle(runtime, render_state, pane, app, true);
+
+    var rect: ?[4]f32 = null;
+    if (style) |s| if (runtime.cursorPos(render_state)) |pos| {
+        const wide = runtime.cursorWideTail(render_state);
+        const col = @as(usize, pos.x) -| @intFromBool(wide);
+        const x = padding_x + @as(f32, @floatFromInt(col)) * renderer.cell_w;
+        const y = padding_y + @as(f32, @floatFromInt(pos.y)) * renderer.cell_h;
+        const w = if (wide and s != .bar) renderer.cell_w * 2.0 else renderer.cell_w;
+        rect = switch (s) {
+            .block, .block_hollow => .{ x, y, w, renderer.cell_h },
+            .bar => .{ x, y, @min(@as(f32, 3.0), @max(@as(f32, 2.0), @floor(w * 0.16))), renderer.cell_h },
+            .underline => .{ x, y + renderer.cell_h - 4.0, w, 4.0 },
+        };
+    };
+
+    return .{
+        .cursor_rect = rect,
+        .cursor_style = style,
+        .cursor_visible = runtime.cursorVisible(render_state),
+        .cursor = cursor_bg,
+        .cursor_text = if (theme.enabled) (theme.cursor_fg orelse contrastTextColor(cursor_bg)) else contrastTextColor(cursor_bg),
+        .background = default_bg,
+        .foreground = default_fg,
+        .selection_bg = if (theme.enabled) (theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35)) else mixColor(default_bg, default_fg, 0.35),
+        .selection_fg = if (theme.enabled) (theme.selection_fg orelse default_fg) else default_fg,
+        .palette = if (theme.enabled) &theme.palette else &render_colors.?.palette,
+    };
+}
+
 pub fn buildQueueOptions(
     renderer: *FtRenderer,
     runtime: *ghostty.Runtime,

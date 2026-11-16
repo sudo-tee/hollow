@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
 const BackgroundImage = @import("background_image.zig").BackgroundImage;
+const post_shader = @import("post_shader.zig");
 const window_placement = if (builtin.os.tag == .windows) @import("window_placement_windows.zig") else struct {};
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
@@ -55,6 +56,53 @@ var g_lua_pane_prepare: ?*LuaPanePrepare = null;
 /// The window surface carries alpha. Decided once before the window opens.
 var g_transparent_surface = false;
 var g_background_image: BackgroundImage = .{};
+var g_post_chain: post_shader.Chain = .{};
+
+fn rgbUniform(color: ghostty.ColorRgb) [3]f32 {
+    return .{
+        @as(f32, @floatFromInt(color.r)) / 255.0,
+        @as(f32, @floatFromInt(color.g)) / 255.0,
+        @as(f32, @floatFromInt(color.b)) / 255.0,
+    };
+}
+
+/// Feed the focused pane's cursor and colours to the custom shader chain.
+/// `ox`/`oy` place the pane in the framebuffer.
+fn notePostShaderPane(app: *App, renderer: *FtRenderer, runtime: *ghostty.Runtime, pane: *Pane, ox: f32, oy: f32, fb_h: f32, now_ns: i128) void {
+    if (!g_post_chain.active()) return;
+    const term = readyTerminal(pane) orelse return;
+    const cfg = &app.config;
+    const pad = if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) cfg.alternate_screen_padding else cfg.terminal_padding;
+    const pad_x = (cfg.fonts.padding_x + @as(f32, @floatFromInt(pad.left))) * renderer.dpi_scale;
+    const pad_y = (cfg.fonts.padding_y + @as(f32, @floatFromInt(pad.top))) * renderer.dpi_scale;
+    const state = terminal_render_app.shaderState(renderer, runtime, cfg, app, pane, term.render_state, pad_x, pad_y) orelse return;
+
+    const u = &g_post_chain.uniforms;
+    u.background = rgbUniform(state.background);
+    u.foreground = rgbUniform(state.foreground);
+    u.cursor_color = rgbUniform(state.cursor);
+    u.cursor_text = rgbUniform(state.cursor_text);
+    u.selection_background = rgbUniform(state.selection_bg);
+    u.selection_foreground = rgbUniform(state.selection_fg);
+    for (&u.palette, state.palette) |*dst, src| dst.* = rgbUniform(src);
+
+    if (state.cursor_rect) |r| {
+        const left = ox + r[0];
+        const top = oy + r[1];
+        // Like Ghostty, the rect origin is the cursor's left +Y edge in the
+        // backend's native fragment coordinates.
+        const rect: [4]f32 = if (post_shader.y_is_down) .{ left, top + r[3], r[2], r[3] } else .{ left, fb_h - top, r[2], r[3] };
+        const rgb = u.cursor_color;
+        g_post_chain.noteCursor(now_ns, rect, .{ rgb[0], rgb[1], rgb[2], 1 });
+    }
+    const style: post_shader.CursorStyle = if (state.cursor_style) |s| switch (s) {
+        .block => .block,
+        .block_hollow => .block_hollow,
+        .bar => .bar,
+        .underline => .underline,
+    } else u.current_cursor_style;
+    g_post_chain.noteCursorStyle(style, state.cursor_visible);
+}
 
 fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
     const ctx = g_lua_pane_prepare orelse return;
@@ -3643,7 +3691,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app);
+        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
+            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation);
     }
     const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -4396,9 +4445,27 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     g_background_image.sync(app.allocator, app.config.background.image);
+    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.custom_shader.generation);
+    const shader_now_ns = io.nanoTimestamp();
+    if (g_post_chain.active()) {
+        g_post_chain.noteFocus(shader_now_ns, app.window_focused);
+        if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| if (app.activePane()) |active_pane| {
+            var ox: f32 = 0;
+            var oy: f32 = 0;
+            for (leaves) |leaf| if (leaf.pane == active_pane) {
+                ox = @floatFromInt(leaf.bounds.x);
+                oy = @floatFromInt(leaf.bounds.y);
+            };
+            notePostShaderPane(app, renderer, runtime, active_pane, ox, oy, height, shader_now_ns);
+        };
+    }
 
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
-    g_swapchain_pass.swapchain = c.sglue_swapchain();
+    if (g_post_chain.active()) {
+        g_swapchain_pass.attachments = g_post_chain.sceneAttachments(@intFromFloat(width), @intFromFloat(height));
+    } else {
+        g_swapchain_pass.swapchain = c.sglue_swapchain();
+    }
     g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
     const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
@@ -4752,6 +4819,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
+    g_post_chain.run(shader_now_ns, width, height);
     if (cmd_ipc.hasPendingScreenshot(app)) {
         const frame_width: usize = @intFromFloat(width);
         const frame_height: usize = @intFromFloat(height);
@@ -5122,6 +5190,7 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     for (&g_native_bars) |*surface| surface.deinit();
     g_native_debug.deinit();
     if (appFromUserData(user_data)) |app| g_background_image.deinit(app.allocator);
+    g_post_chain.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window

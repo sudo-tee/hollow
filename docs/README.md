@@ -22,6 +22,7 @@ The is the main entry point for Hollow's documentation.
 - [Session diagnostics](session-diagnostics.md) — ownership tracing
 - [Themes](themes.md) — built-in themes, custom themes, palette overrides
 - [Background and transparency](background.md) — window opacity and background images
+- [Custom shaders](custom-shaders.md) — Ghostty-compatible post-process shaders such as cursor trails
 - [Custom UI](custom-ui.md) — top bar, sidebars, overlays, Lua panes, and the widget runtime
 - [Lua REPL](lua-repl.md) — run Lua interactively in the live Hollow environment
 - [Command line](command-line.md) — run one Hollow action or Lua chunk and return to work

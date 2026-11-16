@@ -11,6 +11,18 @@
         .fontdeps = .{ .path = "vendor/ghostty-fontdeps", .lazy = true },
         .zluajit = .{ .path = "third_party/lua-zluajit" },
         .nightwatch = .{ .path = "third_party/nightwatch" },
+        // KhronosGroup/glslang 14.2.0 (same tarball as Ghostty's pkg/glslang).
+        .glslang = .{
+            .url = "https://deps.files.ghostty.org/glslang-12201278a1a05c0ce0b6eb6026c65cd3e9247aa041b1c260324bf29cee559dd23ba1.tar.gz",
+            .hash = "N-V-__8AABzkUgISeKGgXAzgtutgJsZc0-kkeqBBscJgMkvy",
+            .lazy = true,
+        },
+        // KhronosGroup/SPIRV-Cross (same tarball as Ghostty's pkg/spirv-cross).
+        .spirv_cross = .{
+            .url = "https://deps.files.ghostty.org/spirv_cross-1220fb3b5586e8be67bc3feb34cbe749cf42a60d628d2953632c2f8141302748c8da.tar.gz",
+            .hash = "N-V-__8AANb6pwD7O1WG6L5nvD_rNMvnSc9Cpg1ijSlTYywv",
+            .lazy = true,
+        },
     },
     .paths = .{""},
 }

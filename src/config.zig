@@ -309,6 +309,45 @@ pub const Config = struct {
         }
     };
 
+    pub const CustomShader = struct {
+        pub const Animation = enum { cursor, always, off };
+        pub const max_paths = 8;
+
+        /// Post-process shaders applied in order. Ghostty-compatible GLSL.
+        paths: std.ArrayList([]u8) = .empty,
+        /// `cursor` renders extra frames for a moment after the cursor or
+        /// focus changes; `always` renders every frame.
+        animation: Animation = .cursor,
+        /// Bumped whenever `paths` is set, so reloading the config recompiles
+        /// shaders whose files changed.
+        generation: u32 = 0,
+
+        /// Process-wide, because reloading recreates the config.
+        var last_generation: u32 = 0;
+
+        pub fn bumpGeneration(self: *CustomShader) void {
+            last_generation +%= 1;
+            self.generation = last_generation;
+        }
+
+        pub fn deinit(self: *CustomShader, allocator: std.mem.Allocator) void {
+            self.clearPaths(allocator);
+            self.paths.deinit(allocator);
+        }
+
+        pub fn clearPaths(self: *CustomShader, allocator: std.mem.Allocator) void {
+            for (self.paths.items) |path| allocator.free(path);
+            self.paths.clearRetainingCapacity();
+        }
+
+        pub fn addPath(self: *CustomShader, allocator: std.mem.Allocator, path: []const u8) !void {
+            if (self.paths.items.len >= max_paths) return error.ResourceExhausted;
+            const owned = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned);
+            try self.paths.append(allocator, owned);
+        }
+    };
+
     pub const Bell = struct {
         /// Draw a brief flash overlay on the pane that received the BEL.
         visual: bool = true,
@@ -350,6 +389,7 @@ pub const Config = struct {
     unfocused_pane: UnfocusedPane = .{},
     bell: Bell = .{},
     background: Background = .{},
+    custom_shader: CustomShader = .{},
     lib_dir: ?[]u8 = null,
     top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,
@@ -411,6 +451,7 @@ pub const Config = struct {
         freeOwned(self.allocator, &self.lib_dir);
         self.hyperlinks.deinit(self.allocator);
         self.background.deinit(self.allocator);
+        self.custom_shader.deinit(self.allocator);
         for (self.watch_dirs.items) |dir| self.allocator.free(dir);
         self.watch_dirs.deinit(self.allocator);
     }

@@ -4549,6 +4549,29 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "custom_shader")) {
+            applyCustomShader(ctx.cfg, api, state, value_type) catch |err| std.log.err("config custom_shader failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "shader_animation")) {
+            const shader = &ctx.cfg.custom_shader;
+            switch (value_type) {
+                .boolean => shader.animation = if (api.to_boolean(state, -1) != 0) .always else .off,
+                .string => {
+                    var value_len: usize = 0;
+                    const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                    const value = value_ptr[0..value_len];
+                    shader.animation = std.meta.stringToEnum(config.Config.CustomShader.Animation, value) orelse {
+                        std.log.err("config shader_animation: unknown value '{s}'", .{value});
+                        continue;
+                    };
+                },
+                else => {},
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "watch_dirs") and value_type == .table) {
             for (ctx.cfg.watch_dirs.items) |dir| ctx.allocator.free(dir);
             ctx.cfg.watch_dirs.clearRetainingCapacity();
@@ -4762,6 +4785,34 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             }
             continue;
         }
+    }
+}
+
+/// `custom_shader` is a path, a list of paths applied in order, or false.
+fn applyCustomShader(cfg: *config.Config, api: Api, state: *State, value_type: LuaType) !void {
+    const shader = &cfg.custom_shader;
+    shader.clearPaths(cfg.allocator);
+    shader.bumpGeneration();
+    switch (value_type) {
+        .string => {
+            var len: usize = 0;
+            const ptr = api.to_lstring(state, -1, &len) orelse return;
+            if (len > 0) try shader.addPath(cfg.allocator, ptr[0..len]);
+        },
+        .table => {
+            const table_idx = absoluteIndex(api, state, -1);
+            var i: c_int = 1;
+            while (true) : (i += 1) {
+                api.rawgeti(state, table_idx, i);
+                defer pop(api, state, 1);
+                const item_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+                if (item_type != .string) break;
+                var len: usize = 0;
+                const ptr = api.to_lstring(state, -1, &len) orelse break;
+                if (len > 0) try shader.addPath(cfg.allocator, ptr[0..len]);
+            }
+        },
+        else => {},
     }
 }
 
@@ -8736,6 +8787,29 @@ test "set_config parses background opacity and image" {
     try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
     try std.testing.expect(cfg.background.image == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses custom shaders in order" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ custom_shader = { '/tmp/a.glsl', '/tmp/b.glsl' }, shader_animation = 'always' })");
+    try std.testing.expectEqual(@as(usize, 2), cfg.custom_shader.paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/a.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqualStrings("/tmp/b.glsl", cfg.custom_shader.paths.items[1]);
+    try std.testing.expectEqual(config.Config.CustomShader.Animation.always, cfg.custom_shader.animation);
+
+    const first_generation = cfg.custom_shader.generation;
+    try runtime.runString("host_api.set_config({ custom_shader = '/tmp/c.glsl', shader_animation = false })");
+    try std.testing.expect(cfg.custom_shader.generation != first_generation);
+    try std.testing.expectEqual(@as(usize, 1), cfg.custom_shader.paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/c.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqual(config.Config.CustomShader.Animation.off, cfg.custom_shader.animation);
+
+    try runtime.runString("host_api.set_config({ custom_shader = false })");
+    try std.testing.expectEqual(@as(usize, 0), cfg.custom_shader.paths.items.len);
 }
 
 test "set_config toggles window placement restoration" {
