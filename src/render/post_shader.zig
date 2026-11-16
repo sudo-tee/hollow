@@ -284,12 +284,13 @@ pub const Chain = struct {
 
     /// Draw the background shader inside the scene pass. It replaces
     /// `opacity` of the clear colour and keeps its alpha, `window_alpha`.
-    pub fn drawBackground(self: *const Chain, opacity: f32, window_alpha: f32) void {
+    pub fn drawBackground(self: *const Chain, opacity: f32, brightness: f32, window_alpha: f32) void {
         const pass = self.background orelse return;
         if (opacity <= 0) return;
         var packed_uniforms = self.packed_uniforms;
         packed_uniforms.globals[9][2] = opacity;
         packed_uniforms.globals[9][3] = window_alpha;
+        packed_uniforms.globals[10][3] = brightness;
         c.sg_apply_pipeline(pass.pipeline);
         var bindings = std.mem.zeroes(c.sg_bindings);
         bindings.views[0] = self.empty_texture.?.view;

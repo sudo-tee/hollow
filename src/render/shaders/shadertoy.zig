@@ -69,11 +69,12 @@ const macros =
     \\void mainImage(out vec4 fragColor, in vec2 fragCoord);
     \\#define hollow_layer_opacity hollow_globals[9].z
     \\#define hollow_window_alpha hollow_globals[9].w
+    \\#define hollow_layer_brightness hollow_globals[10].w
     \\void main() {
     \\    mainImage(_fragColor, gl_FragCoord.xy);
     \\    // Background layers ignore the shader's alpha. Colour is premultiplied
     \\    // by the window alpha; alpha is the coverage of the clear colour.
-    \\    if (hollow_layer_opacity > 0.0) _fragColor = vec4(_fragColor.rgb * hollow_layer_opacity * hollow_window_alpha, hollow_layer_opacity);
+    \\    if (hollow_layer_opacity > 0.0) _fragColor = vec4(_fragColor.rgb * hollow_layer_brightness * hollow_layer_opacity * hollow_window_alpha, hollow_layer_opacity);
     \\}
     \\#line 1
     \\

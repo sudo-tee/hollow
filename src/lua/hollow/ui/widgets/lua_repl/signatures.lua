@@ -238,6 +238,7 @@ return {
   ["hollow.ui.pane.get"] = "fun(id: integer): HollowUiPane|nil",
   ["hollow.ui.pane.register"] = "fun(name: string Nonempty name without NUL; registering again replaces the factory., factory: fun(args: HollowUiPaneArgs): HollowUiPaneOptions Must return a render function.)",
   ["hollow.ui.pane.split"] = "fun(opts: HollowUiPaneOptions): HollowUiPane|nil",
+  ["hollow.ui.request_redraw"] = "fun()",
   ["hollow.ui.row"] = "fun(children: HollowUiChild[], opts?: HollowUiRowOptions): HollowUiRowNode",
   ["hollow.ui.scroll_nav"] = "fun(n: integer, opts?: { row_count_fn?: fun(item: any): integer, row_budget?: integer }): HollowUiScrollNav",
   ["hollow.ui.select.close"] = "fun()",

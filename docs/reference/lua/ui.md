@@ -51,6 +51,7 @@ hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
+hollow.ui.request_redraw()          -- request a frame without invalidating layout
 hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
 hollow.ui.each(list, fn)            -- map dense list to child fragment
 hollow.ui.join(items, sep)          -- join truthy children

@@ -4471,7 +4471,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
-    g_post_chain.drawBackground(app.config.background.shader_opacity, clear_alpha);
+    g_post_chain.drawBackground(app.config.background.shader_opacity, app.config.background.shader_brightness, clear_alpha);
     if (g_ft_renderer) |*renderer| {
         const bg = app.config.background;
         g_background_image.draw(renderer.atlas_pip, bg.image_fit, bg.image_opacity, width, height);

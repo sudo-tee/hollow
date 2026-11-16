@@ -421,6 +421,7 @@
 ---@class HollowBackgroundShaderConfig
 ---@field path? string Shader file path
 ---@field opacity? number 0..1, default 1. Mix with the background colour; the shader's alpha is ignored and window transparency still applies
+---@field brightness? number 0..1, default 1. Multiply shader RGB toward black independently of opacity
 ---@field animate? boolean Render every frame so the shader animates (default true)
 
 ---@alias HollowShaderAnimation "cursor"|"always"|"off"
@@ -2921,6 +2922,9 @@ function leader_preview.configure(opts) end
 ---@field components HollowUiComponents Clay node constructors and components for overlays and Lua panes.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
+
+--- Request a frame without invalidating UI layout.
+function ui.request_redraw() end
 
 --- True when Hollow's window has OS focus, not merely when a pane is active.
 ---@return boolean

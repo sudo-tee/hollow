@@ -294,6 +294,8 @@ pub const Config = struct {
         shader: ?[]u8 = null,
         /// Range: 0..1.
         shader_opacity: f32 = 1.0,
+        /// Shader RGB multiplier, range 0..1.
+        shader_brightness: f32 = 1.0,
         /// Render every frame so the shader animates.
         shader_animate: bool = true,
 

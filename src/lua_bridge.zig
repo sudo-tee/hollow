@@ -4816,6 +4816,8 @@ fn applyBackgroundShaderTable(cfg: *config.Config, api: Api, state: *State, tabl
 
         if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
             background.shader_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+        } else if (std.mem.eql(u8, key, "brightness") and value_type == .number) {
+            background.shader_brightness = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
         } else if (std.mem.eql(u8, key, "animate") and value_type == .boolean) {
             background.shader_animate = api.to_boolean(state, -1) != 0;
         } else if (std.mem.eql(u8, key, "path") and value_type == .string) {
@@ -8838,11 +8840,18 @@ test "set_config parses a background shader" {
     try std.testing.expectEqualStrings("/tmp/stars.glsl", cfg.background.shader.?);
     try std.testing.expect(cfg.custom_shader.generation != first_generation);
     try std.testing.expect(cfg.background.translucentCells());
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
 
-    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, animate = false } } })");
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, brightness = 0.3, animate = false } } })");
     try std.testing.expectEqualStrings("/tmp/waves.glsl", cfg.background.shader.?);
     try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_opacity);
+    try std.testing.expectEqual(@as(f32, 0.3), cfg.background.shader_brightness);
     try std.testing.expect(!cfg.background.shader_animate);
+
+    try runtime.runString("host_api.set_config({ background = { shader = { brightness = -1 } } })");
+    try std.testing.expectEqual(@as(f32, 0), cfg.background.shader_brightness);
+    try runtime.runString("host_api.set_config({ background = { shader = { brightness = 2 } } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
 
     try runtime.runString("host_api.set_config({ background = { shader = false } })");
     try std.testing.expect(cfg.background.shader == null);

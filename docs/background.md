@@ -72,7 +72,8 @@ hollow.config.set({
   background = {
     shader = {
       path = "C:/Users/me/shaders/aurora_background.glsl",
-      opacity = 1,     -- 0..1
+      opacity = 1,     -- blend shader with the background colour
+      brightness = 0.3, -- dim the shader towards black
       animate = true,  -- render every frame
     },
   },
@@ -87,12 +88,16 @@ The differences:
 
 - `iChannel0` is an empty texture; there is no scene to sample yet.
 - The shader takes the place of the background colour. Its alpha is ignored; `opacity` mixes it with the background colour.
+- `brightness` multiplies the shader's RGB before that blend: `0` is black and `1` (the default) leaves it unchanged.
+  Use it to dim a shader without fading it towards a lighter background colour.
 - `background.opacity` still sets the window transparency, so the desktop shows through the shader too.
 - The layers stack as: background colour, shader, image, then the terminal.
   Give the image an `opacity` below `1` to let the shader show through.
 
 `animate = true` renders every frame, which keeps the GPU busy.
 Set it to `false` for static shaders; they then redraw only when the terminal changes.
+Plugins can request a frame explicitly with `hollow.ui.request_redraw()`.
+This requests a redraw; it does not recompile an edited shader file.
 
 The shader compiles when the config sets `background.shader`.
 Run `hollow.config.reload()` after editing it.
