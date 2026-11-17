@@ -12,7 +12,8 @@ hollow.config.set({
 ```
 
 `opacity` ranges from `0` (fully transparent) to `1` (opaque, the default).
-It applies to the default terminal background only.
+It applies to the default terminal background.
+Top and bottom bar base fills preserve the background's transparency.
 Text, cells with an explicit background colour, the cursor, selections and Lua UI stay opaque.
 
 The window surface is chosen when Hollow starts.
@@ -51,6 +52,7 @@ Use config reload or `hollow.config.set()` to switch materials.
 An opaque background hides the material.
 
 The material sits beneath shaders, images, overlays and terminal content.
+With a material active, Windows' solid caption-color override is disabled.
 Opaque images or overlays can cover it.
 Custom post-process shaders must preserve alpha.
 Windows controls tint, blur and accessibility or power-saving fallbacks.

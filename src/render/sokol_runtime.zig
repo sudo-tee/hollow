@@ -2276,10 +2276,14 @@ fn roundedRectRowInset(h: f32, radius: f32, sample_y: f32) f32 {
 }
 
 fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8, a: u8) void {
+    drawRoundedRectWithAlphaMode(x, y, w, h, radius, r, g, b, a, false);
+}
+
+fn drawRoundedRectWithAlphaMode(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) void {
     if (w <= 0 or h <= 0) return;
     const clamped_radius = @min(radius, @min(w, h) * 0.5);
     if (clamped_radius <= 0.5) {
-        drawBorderRect(x, y, w, h, r, g, b, a);
+        drawBorderRectWithAlphaMode(x, y, w, h, r, g, b, a, preserve_alpha);
         return;
     }
 
@@ -2297,15 +2301,15 @@ fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b:
         const fringe = full_inset - inset;
         const row_x = x + full_inset;
         const row_w = w - full_inset * 2.0;
-        if (row_w > 0) drawBorderRect(row_x, row_y, row_w, row_h, r, g, b, a);
+        if (row_w > 0) drawBorderRectWithAlphaMode(row_x, row_y, row_w, row_h, r, g, b, a, preserve_alpha);
 
         if (fringe > 0.001 and a > 0) {
             const fringe_alpha = @as(u8, @intFromFloat(@round(std.math.clamp(fringe, 0.0, 1.0) * @as(f32, @floatFromInt(a)))));
             if (fringe_alpha > 0) {
                 const left_x = x + full_inset - 1.0;
                 const right_x = x + w - full_inset;
-                if (left_x >= x) drawBorderRect(left_x, row_y, 1.0, row_h, r, g, b, fringe_alpha);
-                if (right_x + 1.0 <= x + w) drawBorderRect(right_x, row_y, 1.0, row_h, r, g, b, fringe_alpha);
+                if (left_x >= x) drawBorderRectWithAlphaMode(left_x, row_y, 1.0, row_h, r, g, b, fringe_alpha, preserve_alpha);
+                if (right_x + 1.0 <= x + w) drawBorderRectWithAlphaMode(right_x, row_y, 1.0, row_h, r, g, b, fringe_alpha, preserve_alpha);
             }
         }
     }
@@ -2370,7 +2374,11 @@ fn drawRoundedRectOutline(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness
 }
 
 fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
-    if (style.bg) |bg| drawRoundedRect(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255);
+    drawBarBackgroundWithAlphaMode(x, y, w, h, style, false);
+}
+
+fn drawBarBackgroundWithAlphaMode(x: f32, y: f32, w: f32, h: f32, style: BarStyle, preserve_alpha: bool) void {
+    if (style.bg) |bg| drawRoundedRectWithAlphaMode(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255, preserve_alpha);
     if (style.border) |border| {
         drawRoundedRectOutline(x, y, w, h, style.radius, 1.0, border.r, border.g, border.b, 72);
     }
@@ -2677,7 +2685,9 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
     const frame_w = frame.width;
     const frame_h = frame.height;
     if (widget.style.bg != null or widget.style.border != null) {
-        drawBarBackground(frame_x, frame_y, frame_w, frame_h, widget.style);
+        // Tint the existing background without covering its desktop material.
+        // Child tab highlights and labels still use ordinary opaque UI paint.
+        drawBarBackgroundWithAlphaMode(frame_x, frame_y, frame_w, frame_h, widget.style, g_transparent_surface);
     }
 
     const content_y = frame_y + widget.layout.padding.top;
@@ -3558,8 +3568,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     rect_pip_desc.colors[0].pixel_format = swapchain_color_format;
     rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
-    rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_DST_ALPHA;
-    rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_DST_ALPHA;
+    rect_pip_desc.colors[0].blend = backgroundTintBlend();
     g_background_overlay_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
@@ -5302,7 +5311,6 @@ fn beforeShowCb(hwnd_raw: ?*const anyopaque, user_data: ?*anyopaque) callconv(.c
 }
 
 fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
-    applyNativeWindowColors(hwnd, app);
     applyWindowBackdrop(hwnd, app);
 
     if (app.config.window_titlebar_show) return true;
@@ -5343,9 +5351,7 @@ fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
         @sizeOf(i32),
     );
 
-    const caption_color: u32 = @as(u32, app.config.top_bar_bg.r) |
-        (@as(u32, app.config.top_bar_bg.g) << 8) |
-        (@as(u32, app.config.top_bar_bg.b) << 16);
+    const caption_color = nativeCaptionColor(app.config.top_bar_bg, g_backdrop_active);
     _ = win32.DwmSetWindowAttribute(
         hwnd,
         win32.DWMWA_CAPTION_COLOR,
@@ -5362,11 +5368,28 @@ fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
     );
 }
 
+fn nativeCaptionColor(color: ghostty.ColorRgb, backdrop_active: bool) u32 {
+    // A forced caption colour overrides the material even under custom chrome
+    // when DWM extends the frame across the client area.
+    if (backdrop_active) return 0xFFFFFFFF; // DWMWA_COLOR_DEFAULT
+    return @as(u32, color.r) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16);
+}
+
+test "native caption releases its solid tint for system backdrops and restores the theme" {
+    const theme = ghostty.ColorRgb{ .r = 0x24, .g = 0x20, .b = 0x38 };
+    try std.testing.expectEqual(@as(u32, 0x00382024), nativeCaptionColor(theme, false));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), nativeCaptionColor(theme, true));
+    try std.testing.expectEqual(@as(u32, 0x00382024), nativeCaptionColor(theme, false));
+}
+
 fn applyWindowBackdrop(hwnd: win32.HWND, app: *App) void {
     if (builtin.os.tag != .windows) return;
 
     const requested = app.config.background.backdrop;
-    if (g_requested_backdrop == requested) return;
+    if (g_requested_backdrop == requested) {
+        applyNativeWindowColors(hwnd, app);
+        return;
+    }
     g_requested_backdrop = requested;
     const was_active = g_backdrop_active;
     const backdrop: u32 = @backingInt(requested);
@@ -5377,6 +5400,8 @@ fn applyWindowBackdrop(hwnd: win32.HWND, app: *App) void {
     if (result < 0 and requested != .none) {
         std.log.warn("Windows backdrop {s} unavailable (HRESULT 0x{x}); keeping existing transparency", .{ @tagName(requested), @as(u32, @bitCast(result)) });
     }
+    // Update this on live material changes as well as during window creation.
+    applyNativeWindowColors(hwnd, app);
     if (g_backdrop_active or was_active) extendDwmFrame(hwnd);
 }
 
@@ -7022,21 +7047,61 @@ fn readLineFromFile(path: []const u8, buf: []u8) ![]u8 {
 /// Draw a filled RGBA rectangle using the current sokol_gl projection.
 /// Assumes the default pipeline (no texture) is active.
 fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {
-    const rf = @as(f32, @floatFromInt(r)) / 255.0;
-    const gf = @as(f32, @floatFromInt(g)) / 255.0;
-    const bf = @as(f32, @floatFromInt(b)) / 255.0;
-    const af = @as(f32, @floatFromInt(a)) / 255.0;
-    if (g_rect_pip.id != 0) {
-        c.sgl_load_pipeline(g_rect_pip);
+    drawBorderRectWithAlphaMode(x, y, w, h, r, g, b, a, false);
+}
+
+fn backgroundTintBlend() c.sg_blend_state {
+    var blend = std.mem.zeroes(c.sg_blend_state);
+    blend.enabled = true;
+    blend.src_factor_rgb = c.SG_BLENDFACTOR_DST_ALPHA;
+    blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.src_factor_alpha = c.SG_BLENDFACTOR_DST_ALPHA;
+    blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    return blend;
+}
+
+fn rectPaintColor(r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) [4]f32 {
+    const alpha = @as(f32, @floatFromInt(a)) / 255.0;
+    const scale = (if (preserve_alpha) alpha else @as(f32, 1)) / 255.0;
+    return .{ @as(f32, @floatFromInt(r)) * scale, @as(f32, @floatFromInt(g)) * scale, @as(f32, @floatFromInt(b)) * scale, alpha };
+}
+
+fn drawBorderRectWithAlphaMode(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) void {
+    const color = rectPaintColor(r, g, b, a, preserve_alpha);
+    const pipeline = if (preserve_alpha) g_background_overlay_pip else g_rect_pip;
+    if (pipeline.id != 0) {
+        c.sgl_load_pipeline(pipeline);
     }
     c.sgl_begin_quads();
-    c.sgl_c4f(rf, gf, bf, af);
+    c.sgl_c4f(color[0], color[1], color[2], color[3]);
     c.sgl_v2f(x, y);
     c.sgl_v2f(x + w, y);
     c.sgl_v2f(x + w, y + h);
     c.sgl_v2f(x, y + h);
     c.sgl_end();
     c.sgl_load_default_pipeline();
+}
+
+test "bar surface tint preserves backdrop alpha including rounded edge coverage" {
+    const blend = backgroundTintBlend();
+    try std.testing.expect(blend.enabled);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_DST_ALPHA), blend.src_factor_rgb);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), blend.dst_factor_rgb);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_DST_ALPHA), blend.src_factor_alpha);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), blend.dst_factor_alpha);
+    for ([_]f32{ 0, 0.2, 0.8, 1 }) |destination_alpha| {
+        for ([_]u8{ 0, 64, 128, 255 }) |coverage| {
+            const tint = rectPaintColor(255, 128, 0, coverage, true);
+            const result_alpha = tint[3] * destination_alpha + destination_alpha * (1 - tint[3]);
+            try std.testing.expectApproxEqAbs(destination_alpha, result_alpha, 0.00001);
+            try std.testing.expectApproxEqAbs(tint[3], tint[0], 0.00001);
+            try std.testing.expectApproxEqAbs(tint[3] * (128.0 / 255.0), tint[1], 0.00001);
+        }
+    }
+    // Text and tab highlights keep straight-alpha paint, independent of the backdrop.
+    const solid = rectPaintColor(255, 128, 0, 255, false);
+    try std.testing.expectEqual(@as(f32, 1), solid[0]);
+    try std.testing.expectEqual(@as(f32, 1), solid[3]);
 }
 
 test "Alt+F4 is the window close chord, not pane input" {
