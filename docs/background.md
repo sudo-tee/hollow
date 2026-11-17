@@ -111,7 +111,9 @@ hollow.config.set({
       path = "C:/Users/me/shaders/aurora_background.glsl",
       opacity = 1,     -- blend shader with the background colour
       brightness = 0.3, -- dim the shader towards black
-      animate = true,  -- render every frame
+      animate = true,  -- request redraws for animation
+      max_fps = 30,   -- refresh the background independently of terminal FPS
+      render_scale = 0.5, -- optional half-resolution background shader
     },
   },
 })
@@ -131,8 +133,20 @@ The differences:
 - The layers stack as: background colour, shader, image, overlay, then the terminal.
   Give the image an `opacity` below `1` to let the shader show through.
 
-`animate = true` renders every frame, which keeps the GPU busy.
+Without a cap, `animate = true` renders every frame, which keeps the GPU busy.
 Set it to `false` for static shaders; they then redraw only when the terminal changes.
+Set `max_fps` to 1–240 to cache the background shader layer and limit its refresh rate without capping terminal redraws.
+For a decorative animated background, try `max_fps = 30` first.
+The cache adds one GPU texture and a composite draw per rendered frame, so lightweight shaders may not benefit.
+With `max_fps = 0` and `render_scale = 1` (the defaults), the shader draws directly without an offscreen texture.
+
+Set `render_scale` below `1` to render the background shader at a lower resolution and upscale it with linear filtering.
+Values are clamped to `0.25`–`1`; `0.5` halves each axis, so the shader runs on about one quarter of the pixels.
+`iResolution`, pixel coordinates, and cursor rectangles are relative to that smaller target.
+Text, images, overlays, and post-processing stay at full resolution.
+This works well for soft effects like aurora, but may blur sharp patterns.
+Scaling works with or without `max_fps`; without a cap, the smaller target is refreshed on each rendered frame.
+If the GPU cannot use the scaled target, Hollow falls back to direct rendering.
 Plugins can request a frame explicitly with `hollow.ui.request_redraw()`.
 This requests a redraw; it does not recompile an edited shader file.
 

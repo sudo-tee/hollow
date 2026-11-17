@@ -146,7 +146,9 @@ hollow.config.set({
     shader = {              -- or a path string, or false
       path = "/home/me/shaders/aurora_background.glsl",
       opacity = 1,
-      animate = true,       -- render every frame
+      animate = true,       -- request animation redraws
+      max_fps = 30,         -- optional background-only refresh cap; default 0
+      render_scale = 0.5,   -- optional background-only resolution scale; default 1
     },
   },
 })

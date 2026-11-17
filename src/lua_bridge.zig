@@ -4882,6 +4882,8 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
                     var value_len: usize = 0;
                     const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
                     if (value_len == 0) background.clearShader(cfg.allocator) else try background.setShader(cfg.allocator, value_ptr[0..value_len]);
+                    background.shader_max_fps = 0;
+                    background.shader_render_scale = 1.0;
                 },
                 .table => try applyBackgroundShaderTable(cfg, api, state, absoluteIndex(api, state, -1)),
                 else => {},
@@ -4908,6 +4910,12 @@ fn applyBackgroundShaderTable(cfg: *config.Config, api: Api, state: *State, tabl
             background.shader_brightness = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
         } else if (std.mem.eql(u8, key, "animate") and value_type == .boolean) {
             background.shader_animate = api.to_boolean(state, -1) != 0;
+        } else if (std.mem.eql(u8, key, "max_fps") and value_type == .number) {
+            const fps = api.to_number(state, -1);
+            if (std.math.isFinite(fps)) background.shader_max_fps = @intFromFloat(std.math.clamp(fps, 0, 240));
+        } else if (std.mem.eql(u8, key, "render_scale") and value_type == .number) {
+            const scale = api.to_number(state, -1);
+            if (std.math.isFinite(scale)) background.shader_render_scale = @floatCast(std.math.clamp(scale, 0.25, 1.0));
         } else if (std.mem.eql(u8, key, "path") and value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -9079,11 +9087,17 @@ test "set_config parses a background shader" {
     try std.testing.expect(cfg.background.translucentCells());
     try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
 
-    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, brightness = 0.3, animate = false } } })");
+    try std.testing.expectEqual(@as(u32, 0), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, brightness = 0.3, animate = false, max_fps = 30 } } })");
     try std.testing.expectEqualStrings("/tmp/waves.glsl", cfg.background.shader.?);
     try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_opacity);
     try std.testing.expectEqual(@as(f32, 0.3), cfg.background.shader_brightness);
     try std.testing.expect(!cfg.background.shader_animate);
+    try std.testing.expectEqual(@as(u32, 30), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { max_fps = 500 } } })");
+    try std.testing.expectEqual(@as(u32, 240), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(u32, 0), cfg.background.shader_max_fps);
 
     try runtime.runString("host_api.set_config({ background = { shader = { brightness = -1 } } })");
     try std.testing.expectEqual(@as(f32, 0), cfg.background.shader_brightness);
@@ -9093,6 +9107,23 @@ test "set_config parses a background shader" {
     try runtime.runString("host_api.set_config({ background = { shader = false } })");
     try std.testing.expect(cfg.background.shader == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses background shader render scale" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', render_scale = 0.5 } } })");
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { render_scale = 0/0 } } })");
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { render_scale = 0.1 } } })");
+    try std.testing.expectEqual(@as(f32, 0.25), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_render_scale);
 }
 
 test "set_config parses custom shaders in order" {

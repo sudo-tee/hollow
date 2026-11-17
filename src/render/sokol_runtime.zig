@@ -3714,9 +3714,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
         visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
-            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, app.config.background.shader_animate);
+            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, app.config.background);
     }
-    const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
+    var use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
     if (g_drag_node == null and !visually_active) {
         // With vsync on, a long pre-render idle sleep can push a newly-active
@@ -3730,17 +3730,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             g_idle_frame_ns;
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
-        const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        var idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        if (g_post_chain.backgroundDeadline(app.config.background)) |shader_deadline_ns| {
+            idle_deadline_ns = @min(idle_deadline_ns, shader_deadline_ns);
+        }
         if (profile_start != null) profile_before_idle_ns = io.nanoTimestamp() - frame_start_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
         busy_start_ns = io.nanoTimestamp();
         // Returning without also suppressing the backend present rotates to an
         // unrendered flip-model buffer on D3D11, producing a black flash.
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending) {
+        const shader_wake = g_post_chain.wantsFrame(busy_start_ns, app.config.custom_shader.animation, app.config.background);
+        if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending and !shader_wake) {
             c.sapp_skip_present();
             return;
         }
+        if (shader_wake) use_idle_frame_cap = false;
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
@@ -4475,7 +4480,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     g_background_image.sync(app.allocator, app.config.background.image);
-    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background.shader, app.config.custom_shader.generation);
+    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background, app.config.custom_shader.generation);
     const shader_now_ns = io.nanoTimestamp();
     if (g_post_chain.anyActive()) {
         g_post_chain.noteFocus(shader_now_ns, app.window_focused);
@@ -4491,6 +4496,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_post_chain.beginFrame(shader_now_ns, width, height);
     }
 
+    const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
+    g_post_chain.prepareBackground(app.config.background, @intFromFloat(width), @intFromFloat(height), shader_now_ns, clear_alpha);
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
     if (g_post_chain.active()) {
         g_swapchain_pass.attachments = g_post_chain.sceneAttachments(@intFromFloat(width), @intFromFloat(height));
@@ -4498,7 +4505,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_swapchain_pass.swapchain = c.sglue_swapchain();
     }
     g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-    const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
     g_post_chain.drawBackground(app.config.background.shader_opacity, app.config.background.shader_brightness, clear_alpha);

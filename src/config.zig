@@ -307,8 +307,12 @@ pub const Config = struct {
         shader_opacity: f32 = 1.0,
         /// Shader RGB multiplier, range 0..1.
         shader_brightness: f32 = 1.0,
-        /// Render every frame so the shader animates.
+        /// Request redraws for background animation.
         shader_animate: bool = true,
+        /// Background cache refresh cap. Zero imposes no cap.
+        shader_max_fps: u32 = 0,
+        /// Background shader target scale, range 0.25..1.
+        shader_render_scale: f32 = 1.0,
 
         pub fn deinit(self: *Background, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.image);
@@ -334,6 +338,8 @@ pub const Config = struct {
 
         pub fn clearShader(self: *Background, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.shader);
+            self.shader_max_fps = 0;
+            self.shader_render_scale = 1.0;
         }
 
         pub fn setImage(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
