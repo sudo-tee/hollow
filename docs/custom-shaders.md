@@ -56,6 +56,50 @@ For example, a valid shader can still discard the window's transparency.
 
 See [`hollow.shader`](reference/lua/shader.md) for result codes and path rules.
 
+### Live picker previews
+
+Use `on_selection_changed` to preview the highlighted shader.
+Restore the original configuration on unmount unless an action accepted it:
+
+```lua
+local original = hollow.config.get("custom_shader")
+local accepted = false
+local previewed
+hollow.ui.select.open({
+  items = shader_paths,
+  on_selection_changed = function(path)
+    previewed = nil
+    if path and hollow.shader.validate(path).valid then
+      previewed = path
+      hollow.config.set({ custom_shader = path })
+    else
+      hollow.config.set({ custom_shader = original or false })
+    end
+  end,
+  actions = {
+    {
+      name = "Apply",
+      fn = function(path)
+        if path and path == previewed then
+          accepted = true
+          hollow.ui.select.close()
+        end
+      end,
+    },
+  },
+  on_unmount = function()
+    if not accepted then
+      hollow.config.set({ custom_shader = original or false })
+    end
+  end,
+})
+```
+
+The callback also runs for the initial selection and receives `nil` for no matches.
+For large collections, cache validation results or debounce previews in the plugin.
+Invalidate cached results when files change.
+Cancel pending preview work on unmount so it cannot overwrite the accepted shader.
+
 ## Examples
 
 [`examples/shaders/`](../examples/shaders/) has shaders to start from:

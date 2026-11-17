@@ -1253,6 +1253,7 @@
 ---@field score number
 
 ---@class HollowUiSelectOptions
+---@field on_selection_changed? fun(item: any|nil) Initial selection and changes; nil when empty. Live table items should have stable id values or references.
 ---@field layout_live? boolean Callable sources default to live rebuilding; false requires explicit layout events or invalidation.
 ---@field layout_events? string[] Native snapshot invalidation events while mounted.
 ---@field layout_refresh_after? fun(): number|nil Native snapshot refresh delay in milliseconds.
