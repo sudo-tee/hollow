@@ -88,6 +88,7 @@ return {
   ["hollow.read_dir"] = "fun(path: string): string[]",
   ["hollow.route.link"] = "fun(handler:fun(request:HollowLinkRouteRequest):HollowLinkRouteResult|false|nil):fun():boolean Register link handler; return unsubscribe function",
   ["hollow.schedule"] = "fun(handler: fun())",
+  ["hollow.shader.validate"] = "fun(path: string Native-host path, absolute or relative to Hollow's working directory): HollowShaderValidationResult",
   ["hollow.shape.any"] = "fun(): HollowShapeSchema<any>",
   ["hollow.shape.array"] = "fun(item?: HollowShapeRule): HollowShapeSchema<table>",
   ["hollow.shape.assert"] = "fun(condition: boolean, message: string): boolean",

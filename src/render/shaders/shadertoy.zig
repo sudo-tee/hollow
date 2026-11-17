@@ -173,8 +173,8 @@ pub const Uniforms = struct {
             self.current_cursor_color,
             self.previous_cursor_color,
             .{
-                @floatFromInt(@intFromEnum(self.current_cursor_style)),
-                @floatFromInt(@intFromEnum(self.previous_cursor_style)),
+                @floatFromInt(@backingInt(self.current_cursor_style)),
+                @floatFromInt(@backingInt(self.previous_cursor_style)),
                 f.flag(self.cursor_visible),
                 self.time_cursor_change,
             },
@@ -230,7 +230,7 @@ pub const Log = struct {
         return self.buf[0..self.len];
     }
 
-    fn set(self: *Log, msg: []const u8) void {
+    pub fn set(self: *Log, msg: []const u8) void {
         const trimmed = std.mem.trim(u8, msg, " \r\n\x00");
         self.len = @min(trimmed.len, self.buf.len);
         @memcpy(self.buf[0..self.len], trimmed[0..self.len]);

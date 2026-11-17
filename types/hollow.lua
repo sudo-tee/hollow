@@ -1535,6 +1535,22 @@ function config.snapshot() end
 
 function config.reload() end
 
+---@alias HollowShaderValidationCode "ok"|"invalid_argument"|"read_failed"|"resource_exhausted"|"shader_invalid"|"translation_failed"|"out_of_memory"
+
+---@class HollowShaderValidationResult
+---@field valid boolean Compiler validation succeeded; not a GPU or visual correctness guarantee
+---@field code HollowShaderValidationCode
+---@field message string Compiler diagnostic or file error; empty on success, at most 4096 bytes
+---@field target "glsl"|"hlsl" Native backend: HLSL on Windows, GLSL elsewhere
+
+---@class HollowShaderNamespace
+local shader = {}
+
+---Synchronously validate one shader file without applying it or allocating GPU resources.
+---@param path string Native-host path, absolute or relative to Hollow's working directory
+---@return HollowShaderValidationResult
+function shader.validate(path) end
+
 ---@class HollowThemeNamespace
 local theme = {}
 
@@ -3343,6 +3359,7 @@ function plugins.sync() end
 ---@field default_shell string
 
 ---@class HollowHostBridge
+---@field shader_validate fun(path: string): HollowShaderValidationResult
 ---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field term_session_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
@@ -3472,6 +3489,7 @@ function plugins.sync() end
 ---@field activity HollowActivityNamespace
 ---@field action HollowActionNamespace
 ---@field config HollowConfigNamespace
+---@field shader HollowShaderNamespace
 ---@field fonts HollowFontsNamespace
 ---@field json HollowJsonNamespace
 ---@field term HollowTermNamespace
@@ -3504,6 +3522,7 @@ function plugins.sync() end
 hollow = {}
 
 hollow.config = config
+hollow.shader = shader
 hollow.host = host
 hollow.fonts = {}
 hollow.json = json

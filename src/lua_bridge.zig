@@ -9,6 +9,8 @@ const platform = @import("platform.zig");
 const font_discovery = @import("render/font_discovery.zig");
 const ghostty = @import("term/ghostty.zig");
 const bar = @import("ui/bar.zig");
+const shader_validation = @import("render/shaders/validation.zig");
+const shadertoy = @import("render/shaders/shadertoy.zig");
 
 extern fn luaL_newstate() callconv(.c) ?*State;
 extern fn lua_close(*State) callconv(.c) void;
@@ -2381,6 +2383,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "read_file");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_shader_validate, 1);
+        api.set_field(self.state, -2, "shader_validate");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_write_file, 1);
         api.set_field(self.state, -2, "write_file");
 
@@ -3787,6 +3793,32 @@ fn l_read_file(state: *State) callconv(.c) c_int {
     defer std.heap.page_allocator.free(bytes);
 
     api.push_lstring(state, bytes.ptr, bytes.len);
+    return 1;
+}
+
+fn l_shader_validate(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const result = blk: {
+        if (api.value_type(state, 1) != @backingInt(LuaType.string))
+            break :blk shader_validation.Result.failure(.invalid_argument, "hollow.shader.validate expects a string path");
+        var len: usize = 0;
+        const path = api.to_lstring(state, 1, &len) orelse
+            break :blk shader_validation.Result.failure(.invalid_argument, "hollow.shader.validate expects a string path");
+        break :blk shader_validation.validateFile(ctx.cfg.allocator, path[0..len], shadertoy.native_target);
+    };
+    api.create_table(state, 0, 4);
+    api.push_boolean(state, if (result.valid) 1 else 0);
+    api.set_field(state, -2, "valid");
+    const code = @tagName(result.code);
+    api.push_lstring(state, code.ptr, code.len);
+    api.set_field(state, -2, "code");
+    const message = result.log.slice();
+    api.push_lstring(state, message.ptr, message.len);
+    api.set_field(state, -2, "message");
+    const target = @tagName(shadertoy.native_target);
+    api.push_lstring(state, target.ptr, target.len);
+    api.set_field(state, -2, "target");
     return 1;
 }
 
@@ -8832,6 +8864,44 @@ test "set_config ignores window size once the GUI is ready" {
     try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
     try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
     try std.testing.expectEqual(@as(u16, 90), cfg.cols);
+}
+
+test "public shader validation reports diagnostics without changing active shaders" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io.get(), .{ .sub_path = "shader.glsl", .data = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }" });
+    const path = try tmp.dir.realPathFileAlloc(io.get(), "shader.glsl", allocator);
+    defer allocator.free(path);
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(@embedFile("lua/core.lua"));
+    const api = runtime.context.api;
+    api.push_lstring(runtime.state, path.ptr, path.len);
+    api.set_field(runtime.state, LUA_GLOBALSINDEX, "shader_test_path");
+    try runtime.runString(
+        \\host_api.set_config({custom_shader = 'active.glsl', background = {shader = 'background.glsl'}})
+        \\local result = hollow.shader.validate(shader_test_path)
+        \\assert(result.valid and result.code == 'ok' and result.message == '')
+        \\assert(result.target == (hollow.platform.is_windows and 'hlsl' or 'glsl'))
+    );
+    const generation = cfg.custom_shader.generation;
+    try tmp.dir.writeFile(io.get(), .{ .sub_path = "shader.glsl", .data = "vec4 color = vec4(1.0);" });
+    try runtime.runString(
+        \\local result = hollow.shader.validate(shader_test_path)
+        \\assert(not result.valid and result.code == 'shader_invalid')
+        \\assert(result.message:find('mainImage', 1, true))
+        \\assert(#result.message <= 4096)
+        \\assert(hollow.shader.validate().code == 'invalid_argument')
+        \\assert(hollow.shader.validate(42).code == 'invalid_argument')
+        \\assert(hollow.shader.validate('').code == 'invalid_argument')
+        \\assert(hollow.shader.validate('a\0b').code == 'invalid_argument')
+    );
+    try std.testing.expectEqual(generation, cfg.custom_shader.generation);
+    try std.testing.expectEqualStrings("active.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqualStrings("background.glsl", cfg.background.shader.?);
 }
 
 test "set_config parses background opacity and image" {

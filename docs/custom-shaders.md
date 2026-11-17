@@ -31,6 +31,31 @@ Shader files are compiled when the config sets `custom_shader`.
 After editing a shader, run `hollow.config.reload()` to recompile it.
 A shader that fails to compile is skipped and the error goes to the log file.
 
+## Validate before applying
+
+Use `hollow.shader.validate(path)` to check a selected file without applying it:
+
+```lua
+local result = hollow.shader.validate(path)
+if not result.valid then
+  hollow.ui.notify.error(result.message)
+  return
+end
+hollow.config.set({ custom_shader = path })
+```
+
+Validation uses Hollow's real Shadertoy wrapper and native compiler target.
+It catches missing `mainImage`, GLSL errors, and backend translation failures.
+It does not change the active shaders or create GPU resources.
+The same validation works for background and post-process shaders.
+
+This is synchronous: validate on selection, not every frame or picker redraw.
+Files are limited to 256 KiB and diagnostics to 4096 bytes.
+GPU creation can still fail later, and compilation cannot guarantee appearance.
+For example, a valid shader can still discard the window's transparency.
+
+See [`hollow.shader`](reference/lua/shader.md) for result codes and path rules.
+
 ## Examples
 
 [`examples/shaders/`](../examples/shaders/) has shaders to start from:

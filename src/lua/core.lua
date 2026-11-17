@@ -50,6 +50,11 @@ hollow.host = require("hollow.host")
 require("hollow.host.pty").setup(hollow)
 hollow.theme = theme
 hollow.json = json
+hollow.shader = {
+  validate = function(path)
+    return host_api.shader_validate(path)
+  end,
+}
 hollow.workspace = workspace
 hollow.copy_mode = copy_mode
 hollow.clipboard = {

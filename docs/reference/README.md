@@ -12,6 +12,7 @@ Start with [Overview and conventions](lua/overview.md).
 | Namespace | Doc | What it does |
 | --- | --- | --- |
 | `hollow.config` | [config.md](lua/config.md) | Read and write configuration |
+| `hollow.shader` | [shader.md](lua/shader.md) | Validate shader files |
 | `hollow.term` | [term.md](lua/term.md) | Tabs, panes, workspaces, text, process |
 | `hollow.events` | [events.md](lua/events.md) | Subscribe to host events |
 | `hollow.activity` | [activity.md](lua/activity.md) | Activity inbox, session history, and running programs |
