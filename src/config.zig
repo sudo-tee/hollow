@@ -279,11 +279,15 @@ pub const Config = struct {
 
     pub const Background = struct {
         pub const Fit = enum { cover, contain, stretch, tile, center };
+        /// Values match DWM_SYSTEMBACKDROP_TYPE (Windows 11 22H2+).
+        pub const Backdrop = enum(u32) { none = 1, mica = 2, acrylic = 3, mica_alt = 4 };
 
         /// Opacity of the default terminal background. Range: 0..1. Values
         /// below 1 show the desktop only when the window surface was created
         /// transparent, which is decided at startup.
         opacity: f32 = 1.0,
+        /// Native Windows material behind the transparent window.
+        backdrop: Backdrop = .none,
         /// Image drawn behind the terminal panes. PNG or JPEG.
         image: ?[]u8 = null,
         image_fit: Fit = .cover,

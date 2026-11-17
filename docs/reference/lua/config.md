@@ -134,6 +134,7 @@ hollow.config.set({
 hollow.config.set({
   background = {
     opacity = 0.9,          -- 0..1, window transparency (startup decides the surface)
+    backdrop = "acrylic",   -- Windows 11 22H2+; default "none"
     image = {               -- or a path string, or false
       path = "/home/me/wallpaper.png",
       fit = "cover",        -- "cover" | "contain" | "stretch" | "tile" | "center"

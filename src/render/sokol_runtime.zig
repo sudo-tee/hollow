@@ -55,6 +55,8 @@ const LuaPanePrepare = struct {
 var g_lua_pane_prepare: ?*LuaPanePrepare = null;
 /// The window surface carries alpha. Decided once before the window opens.
 var g_transparent_surface = false;
+var g_requested_backdrop: ?Config.Background.Backdrop = null;
+var g_backdrop_active = false;
 var g_background_image: BackgroundImage = .{};
 var g_post_chain: post_shader.Chain = .{};
 
@@ -749,6 +751,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_CAPTION_COLOR: u32 = 35;
     const DWMWA_TEXT_COLOR: u32 = 36;
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
@@ -3350,6 +3353,8 @@ pub fn run(app: *App) !void {
     @memset(g_last_window_title[0..], 0);
     g_gui_ready_fired = false;
     g_window_chrome_applied = false;
+    g_requested_backdrop = null;
+    g_backdrop_active = false;
     g_prev_wnd_proc = 0;
     g_subclassed_hwnd = null;
     g_window_iconified = false;
@@ -3657,6 +3662,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (builtin.os.tag == .windows and !g_window_chrome_applied) {
         g_window_chrome_applied = applyWindowChrome(app);
+    }
+    if (builtin.os.tag == .windows and g_requested_backdrop != app.config.background.backdrop) {
+        if (c.sapp_win32_get_hwnd()) |hwnd| {
+            applyWindowBackdrop(@ptrCast(@constCast(hwnd)), app);
+        }
     }
     g_frame_index += 1;
     if (g_frames_since_drag_release < std.math.maxInt(usize)) g_frames_since_drag_release += 1;
@@ -5293,6 +5303,7 @@ fn beforeShowCb(hwnd_raw: ?*const anyopaque, user_data: ?*anyopaque) callconv(.c
 
 fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
     applyNativeWindowColors(hwnd, app);
+    applyWindowBackdrop(hwnd, app);
 
     if (app.config.window_titlebar_show) return true;
 
@@ -5351,14 +5362,34 @@ fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
     );
 }
 
+fn applyWindowBackdrop(hwnd: win32.HWND, app: *App) void {
+    if (builtin.os.tag != .windows) return;
+
+    const requested = app.config.background.backdrop;
+    if (g_requested_backdrop == requested) return;
+    g_requested_backdrop = requested;
+    const was_active = g_backdrop_active;
+    const backdrop: u32 = @backingInt(requested);
+    // Older Windows versions reject this attribute. Keep the existing
+    // transparency path and do not retry a rejected request every frame.
+    const result = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, @sizeOf(u32));
+    g_backdrop_active = result >= 0 and requested != .none;
+    if (result < 0 and requested != .none) {
+        std.log.warn("Windows backdrop {s} unavailable (HRESULT 0x{x}); keeping existing transparency", .{ @tagName(requested), @as(u32, @bitCast(result)) });
+    }
+    if (g_backdrop_active or was_active) extendDwmFrame(hwnd);
+}
+
 fn extendDwmFrame(hwnd: win32.HWND) void {
     if (builtin.os.tag != .windows) return;
 
+    // Extend the material across the client area, not only the resize border.
+    const margin: i32 = if (g_backdrop_active) -1 else 1;
     const margins = win32.MARGINS{
-        .cxLeftWidth = 1,
-        .cxRightWidth = 1,
-        .cyTopHeight = 1,
-        .cyBottomHeight = 1,
+        .cxLeftWidth = margin,
+        .cxRightWidth = margin,
+        .cyTopHeight = margin,
+        .cyBottomHeight = margin,
     };
     _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
 

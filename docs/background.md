@@ -1,7 +1,7 @@
 # Background and transparency
 
 Hollow can draw a shader or an image behind the terminal and make the window translucent.
-All three live under the `background` config table.
+These settings live under the `background` config table.
 
 ## Window opacity
 
@@ -25,6 +25,41 @@ Platform notes:
   Older versions fall back to an opaque window.
 - Linux needs a compositing window manager.
   Hollow asks GLX for a 32-bit ARGB visual and falls back to an opaque one when none exists.
+
+## Windows Acrylic and Mica
+
+Windows 11 22H2 (build 22621) or later supports native system backdrops:
+
+```lua
+hollow.config.set({
+  background = {
+    backdrop = "acrylic", -- "none" | "acrylic" | "mica" | "mica_alt"
+    opacity = 0.8,
+  },
+})
+```
+
+- `acrylic` is frosted glass that blurs the desktop and windows behind Hollow.
+- `mica` is a subtle wallpaper-derived material, not a live blur of other windows.
+- `mica_alt` is a stronger-tinted Mica variant.
+- `none` (the default) removes the material without changing window opacity.
+
+Set `opacity` below `1` in your startup config and restart.
+The backdrop setting does not change opacity automatically.
+With a transparent surface, `backdrop` can change without a restart.
+Use config reload or `hollow.config.set()` to switch materials.
+An opaque background hides the material.
+
+The material sits beneath shaders, images, overlays and terminal content.
+Opaque images or overlays can cover it.
+Custom post-process shaders must preserve alpha.
+Windows controls tint, blur and accessibility or power-saving fallbacks.
+Enable Windows **Transparency effects** to see translucent materials.
+Find it under **Settings → Personalization → Colors**.
+Hollow does not expose a native blur radius.
+Unsupported Windows versions retain existing transparency.
+They log a warning when a material is requested.
+Other platforms ignore `backdrop`.
 
 ## Background image
 

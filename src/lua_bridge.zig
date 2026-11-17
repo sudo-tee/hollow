@@ -4777,6 +4777,15 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             continue;
         }
 
+        if (std.mem.eql(u8, key, "backdrop") and value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            if (std.meta.stringToEnum(config.Config.Background.Backdrop, value_ptr[0..value_len])) |backdrop| {
+                background.backdrop = backdrop;
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "overlay")) {
             if (value_type == .boolean and api.to_boolean(state, -1) == 0) {
                 background.overlay_color = null;
@@ -8847,6 +8856,30 @@ test "set_config parses background opacity and image" {
     try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
     try std.testing.expect(cfg.background.image == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses Windows backdrops without changing opacity" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    const Backdrop = config.Config.Background.Backdrop;
+    try std.testing.expectEqual(Backdrop.none, cfg.background.backdrop);
+
+    inline for (.{ Backdrop.acrylic, Backdrop.mica, Backdrop.mica_alt, Backdrop.none }) |backdrop| {
+        try runtime.runString("host_api.set_config({ background = { backdrop = '" ++ @tagName(backdrop) ++ "' } })");
+        try std.testing.expectEqual(backdrop, cfg.background.backdrop);
+        try std.testing.expectEqual(@as(f32, 1), cfg.background.opacity);
+        try std.testing.expect(!cfg.background.translucentCells());
+    }
+    try runtime.runString("host_api.set_config({ background = { opacity = 0.8, backdrop = 'acrylic' } })");
+    try runtime.runString("host_api.set_config({ background = { backdrop = 'invalid' } })");
+    try runtime.runString("host_api.set_config({ background = { backdrop = false } })");
+    try std.testing.expectEqual(Backdrop.acrylic, cfg.background.backdrop);
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
+    try runtime.runString("host_api.set_config({ background = { backdrop = 'none' } })");
+    try std.testing.expectEqual(Backdrop.none, cfg.background.backdrop);
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
 }
 
 test "set_config parses and removes a background overlay" {

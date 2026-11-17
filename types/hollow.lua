@@ -414,6 +414,7 @@
 ---@field opacity? number 0..1, defaults to 1
 
 ---@class HollowBackgroundConfig
+---@field backdrop? "none"|"acrylic"|"mica"|"mica_alt" Windows 11 22H2+ system material; default "none". Requires startup opacity below 1 to show through; ignored elsewhere
 ---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
 ---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
 ---@field shader? string|HollowBackgroundShaderConfig|false Ghostty-compatible GLSL shader drawn under the image; false removes it
