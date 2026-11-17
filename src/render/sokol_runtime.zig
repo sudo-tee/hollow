@@ -22,7 +22,8 @@ const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 const terminal_render_app = @import("terminal_render_app.zig");
 const FtRendererConfig = @import("font_config.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
-const PaneCache = @import("pane_cache.zig").PaneCache;
+const pane_cache = @import("pane_cache.zig");
+const PaneCache = pane_cache.PaneCache;
 const Pane = @import("../pane.zig").Pane;
 const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 const selection = @import("../selection.zig");
@@ -3529,10 +3530,10 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     sg_desc.max_commit_listeners = MAX_PANE_CACHES * 2 + 64;
     // Each pane cache ends up consuming a surprising number of sg pipelines:
     // one sokol_gl context default pipeline (5 backend pipelines) plus one
-    // extra pane atlas pipeline (another 5). With 6 panes we exceed sokol_gfx's
-    // default pipeline pool size of 64 and crash during cache creation. Lua
+    // extra pane atlas and solid RGBA pipelines (another 10). With 6 panes we
+    // exceed sokol_gfx's default pipeline pool size of 64. Lua
     // panes may lazily add a straight-alpha rectangle pipeline (another 5).
-    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 18 + 64;
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 23 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -3550,7 +3551,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
     // context and drops overlays like the cursor. Size the pool to our cache cap.
     sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
-    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 3 + 16;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 4 + 16;
     c.sgl_setup(&sgl_desc);
 
     const swapchain = c.sglue_swapchain();
@@ -3559,12 +3560,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     else
         c.sglue_environment().defaults.color_format;
 
-    var rect_pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
-    rect_pip_desc.colors[0].blend.enabled = true;
-    rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
-    rect_pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
-    rect_pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    var rect_pip_desc = pane_cache.uiRectPipelineDescriptor();
     rect_pip_desc.colors[0].pixel_format = swapchain_color_format;
     rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);

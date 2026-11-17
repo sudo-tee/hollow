@@ -231,13 +231,14 @@ pub fn queueTerminal(
 
     self.last_pass2_glyph_ns = pass2_glyph_ns;
     self.last_pass2_decoration_ns = pass2_decoration_ns;
+    c.sgl_load_default_pipeline();
 }
 
 // ── Pass management ───────────────────────────────────────────────────────────
 
 pub fn setupViewport(self: *FtRenderer, offset_x: f32, offset_y: f32, pane_w: f32, pane_h: f32) void {
-    _ = self;
     c.sgl_defaults();
+    c.sgl_load_pipeline(self.solid_pip);
     c.sgl_viewport(
         @as(c_int, @intFromFloat(offset_x)),
         @as(c_int, @intFromFloat(offset_y)),
@@ -535,6 +536,7 @@ pub fn queueGlyphPass(
     if (!queue.helpersReady()) return stats;
     if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return stats;
 
+    c.sgl_load_pipeline(self.solid_pip);
     var row_y: usize = 0;
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
         const overlay_row = if (queue.overlay_row_fn) |callback| callback(queue.overlay_context, row_y) else false;
@@ -741,7 +743,7 @@ pub fn queueCursorShapeRow(self: *FtRenderer, queue: *const QueueContext, row: R
 
     const cursor_width = if (row.cursor_wide and cursor_style != .bar) self.cell_w * 2.0 else self.cell_w;
     const px = columnPixelX(self, cursor_col, queue.col_count);
-    c.sgl_load_default_pipeline();
+    c.sgl_load_pipeline(self.solid_pip);
     drawCursor(px, row.py, cursor_width, self.cell_h, queue.colors.cursor_bg, cursor_style);
 }
 
@@ -795,7 +797,7 @@ pub fn drawRowDecorations(
         if (underline == 0 and !strikethrough and !overline and !hovered_link_visual) continue;
 
         if (!dec_quads_open) {
-            c.sgl_load_default_pipeline();
+            c.sgl_load_pipeline(self.solid_pip);
             c.sgl_begin_quads();
             dec_quads_open = true;
         }

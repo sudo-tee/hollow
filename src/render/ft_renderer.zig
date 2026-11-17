@@ -158,6 +158,7 @@ pub const FtRenderer = struct {
     atlas_ui_smp: c.sg_sampler,
     kitty_image_smp: c.sg_sampler,
     atlas_pip: c.sgl_pipeline,
+    solid_pip: c.sgl_pipeline,
     /// Atlas page currently bound for sgl UI draws.
     sgl_bound_atlas: u8 = 0,
 
@@ -415,13 +416,10 @@ pub const FtRenderer = struct {
 
         // Pipeline: alpha-blend using the coverage stored in the alpha channel.
         // UI atlas stores grey coverage in all 4 RGBA channels for sgl multiply.
-        var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
-        pip_desc.colors[0].blend.enabled = true;
-        pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
-        pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
-        pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        const pip_desc = pane_cache_mod.atlasPipelineDescriptor();
         const atlas_pip = c.sgl_make_pipeline(&pip_desc);
+        const solid_desc = pane_cache_mod.solidPipelineDescriptor();
+        const solid_pip = c.sgl_make_pipeline(&solid_desc);
 
         // ── Custom glyph shader pipeline ──────────────────────────────────
         // Uses a gamma-correct (perceptual luminance) fragment shader.
@@ -603,6 +601,7 @@ pub const FtRenderer = struct {
             .atlas_ui_smp = atlas_ui_smp,
             .kitty_image_smp = kitty_image_smp,
             .atlas_pip = atlas_pip,
+            .solid_pip = solid_pip,
             .sgl_bound_atlas = 0,
             .atlas_dirty = true,
             .atlas_reset_this_frame = false,
@@ -767,6 +766,7 @@ pub const FtRenderer = struct {
         c.sg_destroy_sampler(self.atlas_smp);
         c.sg_destroy_sampler(self.atlas_ui_smp);
         c.sg_destroy_sampler(self.kitty_image_smp);
+        c.sgl_destroy_pipeline(self.solid_pip);
         // Custom glyph pipeline resources.
         self.allocator.free(self.glyph_verts_cpu);
         c.sg_destroy_buffer(self.glyph_ibuf);
@@ -863,9 +863,11 @@ pub const FtRenderer = struct {
         // own vertex / command buffers (isolated from the main context).
         c.sgl_set_context(cache.sgl_ctx);
 
-        // Temporarily swap in the context-specific atlas pipeline.
+        // Temporarily swap in the context-specific atlas and solid pipelines.
         const saved_pip = self.atlas_pip;
+        const saved_solid_pip = self.solid_pip;
         self.atlas_pip = cache.atlas_pip;
+        self.solid_pip = cache.solid_pip;
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
@@ -873,8 +875,9 @@ pub const FtRenderer = struct {
         self.queueTerminal(runtime, options);
         const t_queue_end = if (options.debug_timing) io.nanoTimestamp() else 0;
 
-        // Restore atlas pipeline and default context.
+        // Restore the default-context pipelines before returning to that context.
         self.atlas_pip = saved_pip;
+        self.solid_pip = saved_solid_pip;
 
         // Upload glyph vertices to GPU BEFORE beginning the pass.
         // sg_update_buffer must not be called inside an active sg_pass on D3D11.
