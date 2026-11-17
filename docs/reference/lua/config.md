@@ -135,6 +135,9 @@ hollow.config.set({
   background = {
     opacity = 0.9,          -- 0..1, window transparency (startup decides the surface)
     backdrop = "acrylic",   -- Windows 11 22H2+; default "none"
+    cell_opacity = 0.7,     -- explicit cell backgrounds; default 1
+    powerline_opacity = true, -- fade separators with cell_opacity; default false
+    powerline_glyphs = { "◀", "▶" }, -- extend U+E0B0..U+E0BF; default {}
     image = {               -- or a path string, or false
       path = "/home/me/wallpaper.png",
       fit = "cover",        -- "cover" | "contain" | "stretch" | "tile" | "center"

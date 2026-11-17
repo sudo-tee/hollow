@@ -114,6 +114,7 @@ pub const QueueOptions = struct {
     translucent_bg: bool = false,
     /// Alpha for explicit cell backgrounds over the window layers.
     cell_bg_alpha: u8 = 255,
+    powerline: ?*const @import("../powerline.zig").Config = null,
     colors: QueueColors,
 
     inline fn useRowMap(self: @This()) bool {
@@ -412,7 +413,8 @@ pub fn queueBackgroundAndRasterRow(
                 col_x >= cursor_col and col_x < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
             else
                 false else false;
-            const alpha: u8 = if (is_selected or has_search_highlight or in_block_cursor) 255 else queue.cell_bg_alpha;
+            const fade_powerline = powerlineCell(self, runtime, queue, row, raw_cell, is_selected, col_x);
+            const alpha: u8 = if (is_selected or has_search_highlight or in_block_cursor or fade_powerline) 255 else queue.cell_bg_alpha;
             if (background_run_color == null or !colorsEqual(background_run_color.?, bg) or background_run_alpha != alpha) {
                 flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
                 background_run_color = bg;
@@ -604,6 +606,23 @@ pub fn queueGlyphRow(
         } else null;
         const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
         const has_block_cursor = has_cursor and queue.cursor_block;
+
+        if (powerlineCell(self, runtime, queue, row, raw_cell, is_selected, col_x)) {
+            // Fade the foreground and its cell background together after glyph
+            // drawing. Fading only the glyph would double-blend coloured joins.
+            c.sgl_layer(2);
+            c.sgl_load_pipeline(self.powerline_pip);
+            c.sgl_disable_texture();
+            c.sgl_begin_quads();
+            c.sgl_c4b(0, 0, 0, queue.cell_bg_alpha);
+            c.sgl_v2f(col_px, row.py);
+            c.sgl_v2f(col_px + self.cell_w, row.py);
+            c.sgl_v2f(col_px + self.cell_w, row.py + self.cell_h);
+            c.sgl_v2f(col_px, row.py + self.cell_h);
+            c.sgl_end();
+            c.sgl_layer(0);
+            c.sgl_load_pipeline(self.solid_pip);
+        }
 
         if (queue.overlay_label_fn) |callback| {
             if (callback(queue.overlay_context, row.row_y, col_x)) |label_ch| {
@@ -960,6 +979,26 @@ pub fn resolveCellBackground(
     if (colorsEqual(bg, queue.colors.default_bg)) return null;
 
     return bg;
+}
+
+fn powerlineCell(self: *FtRenderer, runtime: *ghostty.Runtime, queue: *const QueueContext, row: RowRenderInfo, raw_cell: u64, selected: bool, col: usize) bool {
+    if (self.powerline_pip.id == 0) return false;
+    if (!runtime.cellHasTextRaw(raw_cell)) return false;
+    const policy = queue.powerline orelse return false;
+    if (!policy.fades(runtime.cellCodepointRaw(raw_cell), queue.cell_bg_alpha, false)) return false;
+    const highlighted = (if (queue.search_cell_fn) |callback|
+        callback(queue.search_highlight_context, row.row_y, col) != null
+    else
+        false) or (if (row.search_highlight) |highlight|
+        col >= highlight.start_col and col < highlight.end_col
+    else
+        false);
+    const cursor = if (row.cursor_col) |cursor_col|
+        col >= cursor_col and col < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
+    else
+        false;
+    const overlay = if (queue.overlay_row_fn) |callback| callback(queue.overlay_context, row.row_y) else false;
+    return !selected and !highlighted and !cursor and !overlay;
 }
 
 inline fn premultiply(channel: u8, alpha: u8) u8 {

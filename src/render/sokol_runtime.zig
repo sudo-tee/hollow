@@ -1068,6 +1068,7 @@ const PaneCacheEntry = struct {
     has_bg_color: bool = false,
     last_translucent_bg: bool = false,
     last_cell_bg_alpha: u8 = 255,
+    last_powerline_generation: u32 = 0,
     /// Open-addressing map: opaque, scroll-stable row ID → cell-content hash.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
     row_map_keys: [ROW_MAP_CAP]ghostty.RowId = @splat(ROW_MAP_EMPTY),
@@ -3533,7 +3534,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // extra pane atlas and solid RGBA pipelines (another 10). With 6 panes we
     // exceed sokol_gfx's default pipeline pool size of 64. Lua
     // panes may lazily add a straight-alpha rectangle pipeline (another 5).
-    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 23 + 64;
+    // Terminal panes may lazily add a Powerline cell fade pipeline (another 5).
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 28 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -3551,7 +3553,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
     // context and drops overlays like the cursor. Size the pool to our cache cap.
     sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
-    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 4 + 16;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 5 + 16;
     c.sgl_setup(&sgl_desc);
 
     const swapchain = c.sglue_swapchain();
@@ -4002,6 +4004,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const background_changed = !cache_entry.has_bg_color or
                         cache_entry.last_translucent_bg != translucent_bg or
                         cache_entry.last_cell_bg_alpha != cell_bg_alpha or
+                        cache_entry.last_powerline_generation != cfg.background.powerline.generation or
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
@@ -4237,6 +4240,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.has_bg_color = true;
                     cache_entry.last_translucent_bg = translucent_bg;
                     cache_entry.last_cell_bg_alpha = cell_bg_alpha;
+                    cache_entry.last_powerline_generation = cfg.background.powerline.generation;
                     cache_entry.prev_cursor_row = cursor_row;
                     cache_entry.last_cursor_row = cursor_row;
                     cache_entry.last_cursor_col = cursor_col;

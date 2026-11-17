@@ -4809,6 +4809,33 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             continue;
         }
 
+        if (std.mem.eql(u8, key, "powerline_opacity") and value_type == .boolean) {
+            background.powerline.enabled = api.to_boolean(state, -1) != 0;
+            background.powerline.generation +%= 1;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "powerline_glyphs") and value_type == .table) {
+            var next = background.powerline;
+            next.extra_len = 0;
+            const glyphs_idx = absoluteIndex(api, state, -1);
+            var i: c_int = 1;
+            while (true) : (i += 1) {
+                api.rawgeti(state, glyphs_idx, i);
+                defer pop(api, state, 1);
+                if (api.value_type(state, -1) == @backingInt(LuaType.nil_type)) break;
+                if (i > @import("powerline.zig").max_extra_glyphs) return error.ResourceExhausted;
+                if (api.value_type(state, -1) != @backingInt(LuaType.string)) return error.InvalidArgument;
+                var len: usize = 0;
+                const ptr = api.to_lstring(state, -1, &len) orelse return error.InvalidArgument;
+                try next.add(ptr[0..len]);
+                if (@import("text_width.zig").width(ptr[0..len]) != 1) return error.InvalidArgument;
+            }
+            next.generation +%= 1;
+            background.powerline = next;
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "backdrop") and value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -8926,6 +8953,59 @@ test "set_config parses background opacity and image" {
     try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
     try std.testing.expect(cfg.background.image == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config extends Powerline defaults and invalidates cached opacity policy" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(!cfg.background.powerline.enabled);
+    try runtime.runString("host_api.set_config({ background = { powerline_opacity = true, powerline_glyphs = { '▶', '◀' } } })");
+    try std.testing.expect(cfg.background.powerline.enabled);
+    try std.testing.expect(cfg.background.powerline.contains(0x25b6));
+    try std.testing.expect(cfg.background.powerline.contains(0x25c0));
+    try std.testing.expect(cfg.background.powerline.contains(0xe0b6));
+    const generation = cfg.background.powerline.generation;
+    try runtime.runString("host_api.set_config({ background = { powerline_glyphs = {} } })");
+    try std.testing.expect(!cfg.background.powerline.contains(0x25b6));
+    try std.testing.expect(cfg.background.powerline.contains(0xe0b6));
+    try std.testing.expect(cfg.background.powerline.generation != generation);
+    try runtime.runString("host_api.set_config({ background = { powerline_opacity = false } })");
+    try std.testing.expect(!cfg.background.powerline.enabled);
+}
+
+test "Powerline config rejects invalid extensions without replacing the previous set" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("host_api.set_config({ background = { powerline_glyphs = { '▶' } } })");
+    const api = runtime.context.api;
+    const generation = cfg.background.powerline.generation;
+    const cases = .{
+        "invalid_powerline = { powerline_glyphs = { 'ab' } }",
+        "invalid_powerline = { powerline_glyphs = { '😀' } }",
+        "invalid_powerline = { powerline_glyphs = { 42 } }",
+    };
+    inline for (cases) |source| {
+        const top = api.get_top(runtime.state);
+        defer api.set_top(runtime.state, top);
+        try runtime.runString(source);
+        api.get_field(runtime.state, LUA_GLOBALSINDEX, "invalid_powerline");
+        try std.testing.expectError(error.InvalidArgument, applyBackgroundTable(&cfg, api, runtime.state, absoluteIndex(api, runtime.state, -1)));
+        pop(api, runtime.state, 1);
+        try std.testing.expect(cfg.background.powerline.contains(0x25b6));
+        try std.testing.expectEqual(generation, cfg.background.powerline.generation);
+    }
+    try runtime.runString("local glyphs = {}; for i = 1, 128 do glyphs[i] = '▶' end; host_api.set_config({ background = { powerline_glyphs = glyphs } }); invalid_powerline = { powerline_glyphs = glyphs }; glyphs[129] = '▶'");
+    try std.testing.expectEqual(@as(u8, 1), cfg.background.powerline.extra_len);
+    const bounded_generation = cfg.background.powerline.generation;
+    const top = api.get_top(runtime.state);
+    defer api.set_top(runtime.state, top);
+    api.get_field(runtime.state, LUA_GLOBALSINDEX, "invalid_powerline");
+    try std.testing.expectError(error.ResourceExhausted, applyBackgroundTable(&cfg, api, runtime.state, absoluteIndex(api, runtime.state, -1)));
+    try std.testing.expectEqual(bounded_generation, cfg.background.powerline.generation);
 }
 
 test "set_config parses Windows backdrops without changing opacity" {

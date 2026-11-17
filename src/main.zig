@@ -661,6 +661,7 @@ test {
     _ = @import("render/shaping.zig");
     _ = @import("render/glyph_batch.zig");
     _ = @import("render/terminal_render.zig");
+    _ = @import("powerline.zig");
     _ = @import("render/box_draw.zig");
     _ = @import("render/ft_renderer.zig");
 }

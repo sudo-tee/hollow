@@ -159,6 +159,7 @@ pub const FtRenderer = struct {
     kitty_image_smp: c.sg_sampler,
     atlas_pip: c.sgl_pipeline,
     solid_pip: c.sgl_pipeline,
+    powerline_pip: c.sgl_pipeline = .{ .id = 0 },
     /// Atlas page currently bound for sgl UI draws.
     sgl_bound_atlas: u8 = 0,
 
@@ -868,6 +869,10 @@ pub const FtRenderer = struct {
         const saved_solid_pip = self.solid_pip;
         self.atlas_pip = cache.atlas_pip;
         self.solid_pip = cache.solid_pip;
+        self.powerline_pip = if (options.powerline) |policy|
+            if (policy.enabled and options.cell_bg_alpha < 255) cache.powerlinePipeline() else .{ .id = 0 }
+        else
+            .{ .id = 0 };
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
@@ -878,6 +883,7 @@ pub const FtRenderer = struct {
         // Restore the default-context pipelines before returning to that context.
         self.atlas_pip = saved_pip;
         self.solid_pip = saved_solid_pip;
+        self.powerline_pip = .{ .id = 0 };
 
         // Upload glyph vertices to GPU BEFORE beginning the pass.
         // sg_update_buffer must not be called inside an active sg_pass on D3D11.
@@ -914,6 +920,7 @@ pub const FtRenderer = struct {
         // Must happen after sgl_context_draw (avoids interleaving sgl and raw sg_*).
         // Vertices were already uploaded above via uploadGlyphVerts().
         self.drawGlyphQuads(options.viewport_width, options.viewport_height, true, srgbToLinearBg(clear_r, clear_g, clear_b));
+        c.sgl_context_draw_layer(cache.sgl_ctx, 2);
         c.sgl_context_draw_layer(cache.sgl_ctx, 1);
         c.sg_end_pass();
         const t_gpu_end = if (options.debug_timing) io.nanoTimestamp() else 0;

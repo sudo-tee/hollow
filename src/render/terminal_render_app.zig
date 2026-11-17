@@ -201,6 +201,7 @@ pub fn buildQueueOptions(
         .force_full = force_full,
         .translucent_bg = renderer.translucent_bg,
         .cell_bg_alpha = renderer.cell_bg_alpha,
+        .powerline = &cfg.background.powerline,
         .debug_timing = cfg.debug_overlay,
         .focused = is_focused,
         .cursor_row = if (cursor_pos) |cp| @intCast(cp.y) else std.math.maxInt(usize),

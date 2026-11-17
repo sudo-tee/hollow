@@ -190,6 +190,42 @@ Cells using the theme background colour stay fully clear.
 Selection, search matches and the block cursor stay opaque.
 This keeps highlights such as an inactive-window background, diff colours or the cursor line visible while the background still shows through.
 
+### Powerline separator opacity
+
+Powerline prompts use foreground glyphs to join coloured background segments.
+Normally these glyphs stay opaque even when `cell_opacity` fades the backgrounds.
+Enable `powerline_opacity` to fade each separator and its background together:
+
+```lua
+hollow.config.set({
+  background = {
+    opacity = 0.8,
+    cell_opacity = 0.45,
+    powerline_opacity = true,
+    powerline_glyphs = { "◀", "▶" }, -- optional additions to the default set
+  },
+})
+```
+
+The built-in set is U+E0B0 through U+E0BF, inclusive.
+It includes triangular, rounded and diagonal Powerline separators.
+`powerline_glyphs` extends this set; it never replaces the built-in characters.
+Each entry must be one valid Unicode scalar with terminal width one.
+At most 128 entries are accepted; duplicates are ignored.
+Setting an empty table clears the extensions.
+Changing the extension list replaces the previous extensions.
+
+The option defaults to `false`, preserving normal foreground rendering.
+At `cell_opacity = 1` it has no effect.
+Ordinary prompt text stays opaque unless its character was explicitly added.
+Selection, search highlights, cursors and quick-select overlays are not faded.
+The normal cached renderer supports this effect.
+Diagnostic direct/safe rendering paths leave separator glyphs opaque.
+
+The cell is composited first and faded once, including between coloured segments.
+This avoids double-blending the separator over an already translucent background.
+The effect does not require Oh My Posh or a particular shell.
+
 ## See also
 
 - [Configuration](configuration.md)

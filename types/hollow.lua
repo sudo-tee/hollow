@@ -420,6 +420,8 @@
 ---@field shader? string|HollowBackgroundShaderConfig|false Ghostty-compatible GLSL shader drawn under the image; false removes it
 ---@field overlay? HollowBackgroundOverlayConfig|false Solid color over the shader and image; false removes it
 ---@field cell_opacity? number 0..1, default 1. Opacity of explicit cell backgrounds over the shader, image or overlay; selection, search and the block cursor stay opaque
+---@field powerline_opacity? boolean Fade Powerline separators with cell_opacity, preserving normal text; default false
+---@field powerline_glyphs? string[] Additional single-column Unicode characters; extends U+E0B0..U+E0BF, maximum 128 entries. Empty table clears extensions.
 
 ---@class HollowBackgroundOverlayConfig
 ---@field color? HollowHexColor Solid overlay color

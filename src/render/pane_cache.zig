@@ -51,6 +51,16 @@ pub fn uiRectPipelineDescriptor() c.sg_pipeline_desc {
     return desc;
 }
 
+pub fn powerlinePipelineDescriptor() c.sg_pipeline_desc {
+    var desc = solidPipelineDescriptor();
+    desc.colors[0].blend.enabled = true;
+    desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ZERO;
+    desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
+    desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ZERO;
+    desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_SRC_ALPHA;
+    return desc;
+}
+
 pub const PaneCache = struct {
     rt_img: c.sg_image,
     rt_att_view: c.sg_view,
@@ -59,6 +69,7 @@ pub const PaneCache = struct {
     sgl_ctx: c.sgl_context,
     atlas_pip: c.sgl_pipeline,
     solid_pip: c.sgl_pipeline,
+    powerline_pip: c.sgl_pipeline = .{ .id = 0 },
     /// Lua UI rectangles use straight alpha, unlike the premultiplied atlas.
     /// Allocate only for Lua panes; terminal caches retain their existing path.
     ui_rect_pip: c.sgl_pipeline = .{ .id = 0 },
@@ -150,7 +161,16 @@ pub const PaneCache = struct {
         return self.ui_rect_pip;
     }
 
+    pub fn powerlinePipeline(self: *PaneCache) c.sgl_pipeline {
+        if (self.powerline_pip.id == 0) {
+            const desc = powerlinePipelineDescriptor();
+            self.powerline_pip = c.sgl_context_make_pipeline(self.sgl_ctx, &desc);
+        }
+        return self.powerline_pip;
+    }
+
     pub fn deinit(self: *PaneCache) void {
+        if (self.powerline_pip.id != 0) c.sgl_destroy_pipeline(self.powerline_pip);
         if (self.ui_rect_pip.id != 0) c.sgl_destroy_pipeline(self.ui_rect_pip);
         c.sgl_destroy_pipeline(self.atlas_pip);
         c.sgl_destroy_pipeline(self.solid_pip);
@@ -202,4 +222,14 @@ test "opaque modal rectangles cover both opaque panes and transparent window pix
     try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), desc.colors[0].blend.dst_factor_rgb);
     try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_ONE), desc.colors[0].blend.src_factor_alpha);
     try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), desc.colors[0].blend.dst_factor_alpha);
+}
+
+test "Powerline fade multiplies the completed cell colour and alpha exactly once" {
+    const desc = powerlinePipelineDescriptor();
+    try std.testing.expectEqual(@as(c.sg_color_mask, c.SG_COLORMASK_RGBA), desc.colors[0].write_mask);
+    try std.testing.expect(desc.colors[0].blend.enabled);
+    try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_ZERO), desc.colors[0].blend.src_factor_rgb);
+    try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_SRC_ALPHA), desc.colors[0].blend.dst_factor_rgb);
+    try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_ZERO), desc.colors[0].blend.src_factor_alpha);
+    try std.testing.expectEqual(@as(c.sg_blend_factor, c.SG_BLENDFACTOR_SRC_ALPHA), desc.colors[0].blend.dst_factor_alpha);
 }

@@ -299,6 +299,7 @@ pub const Config = struct {
         /// Opacity of explicit cell backgrounds over the window layers.
         /// Range: 0..1. Selection, search and cursor stay opaque.
         cell_opacity: f32 = 1.0,
+        powerline: @import("powerline.zig").Config = .{},
         /// Ghostty-compatible shader drawn under the image. Its generation
         /// is `CustomShader.generation`.
         shader: ?[]u8 = null,
