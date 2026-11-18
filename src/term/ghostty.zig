@@ -355,6 +355,8 @@ pub const TerminalOpt = enum(u32) {
     apc_max_bytes = 19,
     apc_max_bytes_kitty = 20,
     selection = 21,
+    default_cursor_style = 22,
+    default_cursor_blink = 23,
     pwd_changed = 25,
     clipboard_write = 26,
     clipboard_read = 38,
@@ -1099,6 +1101,16 @@ pub const Runtime = struct {
         }
 
         _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_palette), palette);
+    }
+
+    /// Update the cursor defaults without replacing an application's explicit
+    /// DECSCUSR choice. The application can select these defaults with CSI 0 SP q.
+    pub fn setTerminalDefaultCursor(self: *Runtime, handle: ?*anyopaque, style: CursorVisualStyle, blink: bool) void {
+        const terminal = handle orelse return;
+        // GhosttyTerminalCursorStyle uses the same values as CursorVisualStyle.
+        const style_value: c_int = @intCast(@backingInt(style));
+        _ = self.terminal_set(terminal, @backingInt(TerminalOpt.default_cursor_style), &style_value);
+        _ = self.terminal_set(terminal, @backingInt(TerminalOpt.default_cursor_blink), &blink);
     }
 
     pub fn freeTerminal(self: *Runtime, handle: ?*anyopaque) void {
@@ -2169,6 +2181,31 @@ test "documented row identities survive scrolling and bulk hashes match cell ite
     try std.testing.expect(runtime.populateRowIterator(state, &rows));
     try std.testing.expect(runtime.nextRow(rows));
     try std.testing.expectEqual(id, runtime.rowId(rows));
+}
+
+test "terminal cursor defaults allow application overrides and DECSCUSR reset" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(80, 24, 0);
+    defer runtime.freeTerminal(terminal);
+    const state = try runtime.createRenderState();
+    defer runtime.freeRenderState(state);
+
+    runtime.setTerminalDefaultCursor(terminal, .bar, true);
+    try runtime.updateRenderState(state, terminal);
+    try std.testing.expectEqual(CursorVisualStyle.bar, runtime.cursorVisualStyle(state));
+    try std.testing.expect(runtime.cursorBlinking(state));
+
+    runtime.terminalWrite(terminal, "\x1b[2 q"); // steady block, as set by an application
+    runtime.setTerminalDefaultCursor(terminal, .underline, true);
+    try runtime.updateRenderState(state, terminal);
+    try std.testing.expectEqual(CursorVisualStyle.block, runtime.cursorVisualStyle(state));
+    try std.testing.expect(!runtime.cursorBlinking(state));
+
+    runtime.terminalWrite(terminal, "\x1b[0 q");
+    try runtime.updateRenderState(state, terminal);
+    try std.testing.expectEqual(CursorVisualStyle.underline, runtime.cursorVisualStyle(state));
+    try std.testing.expect(runtime.cursorBlinking(state));
 }
 
 test "terminal default colors are exposed through render state" {

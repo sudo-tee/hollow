@@ -14,10 +14,12 @@ pub fn bootstrap(term: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime, ca
     const terminal = (try runtime.createTerminal(cfg.cols, cfg.rows, cfg.scrollback)).?;
     errdefer runtime.freeTerminal(terminal);
     runtime.setTerminalDefaultColors(terminal, cfg.terminal_theme.foreground, cfg.terminal_theme.background, cfg.terminal_theme.cursor, &cfg.terminal_theme.palette);
+    runtime.setTerminalDefaultCursor(terminal, cfg.cursor.style, cfg.cursor.blink);
     try replaceTerminal(term, node, runtime, callbacks, terminal);
     term.pty = .{ .session = pty };
     term.session_callbacks = callbacks;
     term.session_scrollback = cfg.scrollback;
+    term.session_cursor = cfg.cursor;
     term.synchronized_output_enabled = cfg.synchronized_output;
     term.retain_on_exit = true;
     term.is_remote = true;
@@ -31,6 +33,7 @@ pub fn revive(term: *TerminalPane, node: *Pane) void {
         pty.session.status = null;
     };
     term.child_alive_cached = true;
+    term.shell_command_running = false;
     term.last_child_alive_check_ns = 0;
     term.exit_event_emitted = false;
     node.invalidate();
@@ -53,6 +56,7 @@ pub fn pollSnapshot(term: *TerminalPane, node: *Pane, runtime: *ghostty.Runtime)
         term.session_snapshot = null;
     };
     if (job.takeReady()) |terminal| {
+        runtime.setTerminalDefaultCursor(terminal, term.session_cursor.style, term.session_cursor.blink);
         replaceTerminal(term, node, runtime, term.session_callbacks.?, terminal) catch |err| {
             // Free the borrowing decoder before its not-yet-installed terminal.
             job.destroy();

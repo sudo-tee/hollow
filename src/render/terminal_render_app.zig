@@ -16,7 +16,6 @@ const PaneCache = @import("pane_cache.zig").PaneCache;
 const effectiveCursorColor = color_math.effectiveCursorColor;
 const contrastTextColor = color_math.contrastTextColor;
 const mixColor = color_math.mixColor;
-const blinkVisibleNow = color_math.blinkVisibleNow;
 
 const AppRenderPolicy = struct {
     app: *const App,
@@ -39,9 +38,23 @@ fn effectiveCursorStyle(
     if (runtime.cursorPos(render_state) == null) return null;
     if (runtime.cursorPasswordInput(render_state)) return .block;
     if (!runtime.cursorVisible(render_state)) return null;
-    if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(io.nanoTimestamp())) return null;
-    if (!is_focused) return app.config.unfocused_pane.cursor;
+    if (!is_focused) return app.config.cursor.unfocused;
+    if (busyShellCursor(pane, &app.config.cursor)) |style| return style;
     return runtime.cursorVisualStyle(render_state);
+}
+
+pub fn busyShellCursor(pane: ?*const Pane, cursor: *const Config.Cursor) ?ghostty.CursorVisualStyle {
+    const term = (pane orelse return null).asTerminalConst() orelse return null;
+    if (!term.shell_command_running or !term.child_alive_cached or term.active_screen != @backingInt(ghostty.TerminalScreen.primary)) return null;
+    return cursor.busy;
+}
+
+pub fn cursorBlinkVisible(runtime: *ghostty.Runtime, render_state: ?*anyopaque, pane: ?*const Pane, app: *const App, focused: bool, now_ns: i128) bool {
+    const cursor = &app.config.cursor;
+    return !runtime.cursorBlinking(render_state) or
+        runtime.cursorPasswordInput(render_state) or
+        (focused and busyShellCursor(pane, cursor) != null) or
+        color_math.blinkVisibleWithTimeout(now_ns, app.cursor_blink_start_ns, cursor.blink_rate, cursor.blink_timeout, focused);
 }
 
 fn appSearchHighlight(context: ?*anyopaque, row: usize) ?terminal_render.SearchHighlight {
@@ -73,7 +86,7 @@ fn appCursorCol(context: ?*anyopaque, row: usize) ?usize {
 
 /// Cursor and theme colours exposed to custom shaders, in pane pixels.
 pub const ShaderState = struct {
-    /// Drawn cursor rectangle, top-left origin. Null while hidden or blinked off.
+    /// Cursor geometry, top-left origin. Retained during the blink-off phase.
     cursor_rect: ?[4]f32,
     cursor_style: ?ghostty.CursorVisualStyle,
     cursor_visible: bool,
@@ -86,7 +99,7 @@ pub const ShaderState = struct {
     palette: *const [256]ghostty.ColorRgb,
 };
 
-pub fn shaderState(renderer: *FtRenderer, runtime: *ghostty.Runtime, cfg: *const Config, app: *const App, pane: *const Pane, render_state: ?*anyopaque, padding_x: f32, padding_y: f32) ?ShaderState {
+pub fn shaderState(renderer: *FtRenderer, runtime: *ghostty.Runtime, cfg: *const Config, app: *const App, pane: *const Pane, render_state: ?*anyopaque, padding_x: f32, padding_y: f32, now_ns: i128) ?ShaderState {
     const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
         if (!runtime.renderStateColorsInto(render_state, &renderer.render_colors_scratch)) return null;
         break :blk &renderer.render_colors_scratch;
@@ -110,17 +123,18 @@ pub fn shaderState(renderer: *FtRenderer, runtime: *ghostty.Runtime, cfg: *const
         const x = padding_x + @as(f32, @floatFromInt(col)) * renderer.cell_w;
         const y = padding_y + @as(f32, @floatFromInt(pos.y)) * renderer.cell_h;
         const w = if (wide and s != .bar) renderer.cell_w * 2.0 else renderer.cell_w;
+        const underline = terminal_render.underlineThickness(renderer.cell_h, cfg.cursor.underline_thickness);
         rect = switch (s) {
             .block, .block_hollow => .{ x, y, w, renderer.cell_h },
-            .bar => .{ x, y, @min(@as(f32, 3.0), @max(@as(f32, 2.0), @floor(w * 0.16))), renderer.cell_h },
-            .underline => .{ x, y + renderer.cell_h - 4.0, w, 4.0 },
+            .bar => .{ x, y, terminal_render.barThickness(w, cfg.cursor.bar_thickness), renderer.cell_h },
+            .underline => .{ x, y + renderer.cell_h - underline, w, underline },
         };
     };
 
     return .{
         .cursor_rect = rect,
         .cursor_style = style,
-        .cursor_visible = runtime.cursorVisible(render_state),
+        .cursor_visible = style != null and cursorBlinkVisible(runtime, render_state, pane, app, true, now_ns),
         .cursor = cursor_bg,
         .cursor_text = if (theme.enabled) (theme.cursor_fg orelse contrastTextColor(cursor_bg)) else contrastTextColor(cursor_bg),
         .background = default_bg,
@@ -129,6 +143,55 @@ pub fn shaderState(renderer: *FtRenderer, runtime: *ghostty.Runtime, cfg: *const
         .selection_fg = if (theme.enabled) (theme.selection_fg orelse default_fg) else default_fg,
         .palette = if (theme.enabled) &theme.palette else &render_colors.?.palette,
     };
+}
+
+test "shader cursor tracks movement during blink-off and busy shell uses a steady block" {
+    const allocator = std.testing.allocator;
+    const app = try allocator.create(App);
+    defer allocator.destroy(app);
+    app.* = App.init(allocator);
+    defer app.config.deinit();
+    app.config.terminal_theme.enabled = true;
+    app.config.cursor.unfocused = .block_hollow;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(allocator);
+    defer pane.deinit(&runtime);
+    const term = pane.asTerminal().?;
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    term.render_state = try runtime.createRenderState();
+    runtime.setTerminalDefaultCursor(term.terminal, .bar, true);
+    var renderer: FtRenderer = undefined;
+    renderer.cell_w = 8;
+    renderer.cell_h = 16;
+    const blink_off = @as(i128, app.config.cursor.blink_rate) * std.time.ns_per_ms;
+
+    try runtime.updateRenderState(term.render_state, term.terminal);
+    const initial = shaderState(&renderer, &runtime, &app.config, app, &pane, term.render_state, 0, 0, 0).?;
+    try std.testing.expect(initial.cursor_visible);
+    runtime.terminalWrite(term.terminal, "\x1b[3C");
+    try runtime.updateRenderState(term.render_state, term.terminal);
+    const moved = shaderState(&renderer, &runtime, &app.config, app, &pane, term.render_state, 0, 0, blink_off).?;
+    try std.testing.expect(!moved.cursor_visible);
+    try std.testing.expectEqual(initial.cursor_rect.?[0] + 24, moved.cursor_rect.?[0]);
+
+    term.shell_command_running = true;
+    const busy = shaderState(&renderer, &runtime, &app.config, app, &pane, term.render_state, 0, 0, blink_off).?;
+    try std.testing.expect(busy.cursor_visible);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.block, busy.cursor_style.?);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.block_hollow, effectiveCursorStyle(&runtime, term.render_state, &pane, app, false).?);
+    term.active_screen = @backingInt(ghostty.TerminalScreen.alternate);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.bar, effectiveCursorStyle(&runtime, term.render_state, &pane, app, true).?);
+    term.active_screen = @backingInt(ghostty.TerminalScreen.primary);
+    app.config.cursor.busy = .underline;
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.underline, effectiveCursorStyle(&runtime, term.render_state, &pane, app, true).?);
+    app.config.cursor.busy = null;
+    const normal = shaderState(&renderer, &runtime, &app.config, app, &pane, term.render_state, 0, 0, blink_off).?;
+    try std.testing.expect(!normal.cursor_visible);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.bar, normal.cursor_style.?);
+    app.config.cursor.bar_thickness = 5;
+    const thick = shaderState(&renderer, &runtime, &app.config, app, &pane, term.render_state, 0, 0, blink_off).?;
+    try std.testing.expectEqual(@as(f32, 5), thick.cursor_rect.?[2]);
 }
 
 pub fn buildQueueOptions(
@@ -167,7 +230,10 @@ pub fn buildQueueOptions(
         render_colors.?.cursor
     else
         .{ .r = 220, .g = 220, .b = 220 };
-    const cursor_style = effectiveCursorStyle(runtime, render_state, pane, app, is_focused);
+    const cursor_style = if (cursorBlinkVisible(runtime, render_state, pane, app, is_focused, io.nanoTimestamp()))
+        effectiveCursorStyle(runtime, render_state, pane, app, is_focused)
+    else
+        null;
     const cursor_wide = runtime.cursorWideTail(render_state);
     const cursor_bg = effectiveCursorColor(raw_cursor_color, default_bg);
     const selection_bg = if (cfg.terminal_theme.enabled)
@@ -207,6 +273,10 @@ pub fn buildQueueOptions(
         .cursor_row = if (cursor_pos) |cp| @intCast(cp.y) else std.math.maxInt(usize),
         .cursor_col = if (cursor_pos) |cp| @intCast(cp.x) else std.math.maxInt(usize),
         .cursor_style = cursor_style,
+        .cursor_rounded = cfg.cursor.rounded,
+        .cursor_bar_thickness = cfg.cursor.bar_thickness,
+        .cursor_underline_thickness = cfg.cursor.underline_thickness,
+        .cursor_hollow_thickness = cfg.cursor.hollow_thickness,
         .cursor_wide = cursor_wide,
         .cursor_block = cursor_style == .block or (cursor_style == null and pane != null and copy_mode.copyModeActiveForPane(app, pane.?)),
         .cursor_fg_explicit = cfg.terminal_theme.cursor_fg != null,

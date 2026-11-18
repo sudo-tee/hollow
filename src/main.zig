@@ -648,6 +648,7 @@ test {
     _ = @import("window_placement_test.zig");
     _ = @import("lua_bridge.zig");
     _ = @import("render/color_math.zig");
+    _ = @import("render/terminal_render_app.zig");
     _ = @import("render/text_util.zig");
     _ = @import("render/font_config.zig");
     _ = @import("render/font_discovery.zig");

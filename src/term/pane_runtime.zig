@@ -136,6 +136,7 @@ pub const RuntimeContext = struct {
             cfg.terminal_theme.cursor,
             &cfg.terminal_theme.palette,
         );
+        runtime.setTerminalDefaultCursor(terminal, cfg.cursor.style, cfg.cursor.blink);
 
         runtime.setTerminalUserdata(terminal, self.node);
         self.term.terminal_runtime = runtime;

@@ -463,7 +463,8 @@ pub const Chain = struct {
             .off => false,
             .cursor => blk: {
                 const last = @max(self.uniforms.time_cursor_change, self.uniforms.time_focus);
-                break :blk self.secondsSince(now_ns) - last < cursor_animation_s;
+                const now = self.secondsSince(now_ns);
+                break :blk now - last < cursor_animation_s or now - self.uniforms.time_cursor_change < self.uniforms.cursor_trail_decay;
             },
         };
     }

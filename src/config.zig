@@ -265,10 +265,29 @@ pub const Config = struct {
         }
     };
 
+    pub const Cursor = struct {
+        pub const Trail = struct {
+            decay: u32 = 300,
+            min_distance: f32 = 0,
+            color: ?ghostty.ColorRgb = null,
+        };
+
+        style: ghostty.CursorVisualStyle = .block,
+        blink: bool = false,
+        blink_rate: u32 = 600,
+        blink_timeout: u32 = 0,
+        bar_thickness: ?u8 = null,
+        underline_thickness: u8 = 4,
+        hollow_thickness: u8 = 2,
+        trail: Trail = .{},
+        busy: ?ghostty.CursorVisualStyle = .block,
+        unfocused: ?ghostty.CursorVisualStyle = null,
+        rounded: bool = true,
+    };
+
     pub const UnfocusedPane = struct {
         pub const default_dim: f32 = 0.12;
 
-        cursor: ?ghostty.CursorVisualStyle = null,
         /// Black overlay opacity applied to inactive panes. Range: 0..1.
         dim: f32 = 0.0,
 
@@ -429,6 +448,7 @@ pub const Config = struct {
     alternate_screen_resize_nudge: bool = true,
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
+    cursor: Cursor = .{},
     unfocused_pane: UnfocusedPane = .{},
     bell: Bell = .{},
     background: Background = .{},

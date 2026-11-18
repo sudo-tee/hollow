@@ -107,9 +107,12 @@ pub const Pane = struct {
         if (self.asLua()) |surface| surface.dirty = true;
     }
 
-    pub fn applyTerminalTheme(self: *Pane, runtime: *GhosttyRuntime, theme: *const Config.TerminalTheme) void {
+    pub fn applyTerminalConfig(self: *Pane, runtime: *GhosttyRuntime, cfg: *const Config) void {
         if (self.asTerminal()) |term| {
+            const theme = &cfg.terminal_theme;
             runtime.setTerminalDefaultColors(term.terminal, theme.foreground, theme.background, theme.cursor, &theme.palette);
+            runtime.setTerminalDefaultCursor(term.terminal, cfg.cursor.style, cfg.cursor.blink);
+            if (term.session_callbacks != null) term.session_cursor = cfg.cursor;
         }
         self.invalidate();
     }

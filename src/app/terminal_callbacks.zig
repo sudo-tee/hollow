@@ -169,13 +169,18 @@ fn progressReportCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const 
 
 fn semanticPromptCallback(_: ?*anyopaque, userdata: ?*anyopaque, event: *const ghostty.SemanticPrompt) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
+    const term = pane.asTerminal() orelse return;
     // Only a primary prompt ends a command, not RPROMPT/continuations.
-    if (event.kind == 1 and event.prompt_kind == 0) pane.program_status.endCommand(pane.allocator);
+    const primary_prompt = event.kind == 1 and event.prompt_kind == 0;
+    if (primary_prompt) pane.program_status.endCommand(pane.allocator);
+    if (event.kind == 3) term.shell_command_running = true; // output start
+    if (event.kind == 4 or primary_prompt) term.shell_command_running = false; // command end
 }
 
 fn resetCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
     pane.asTerminal().?.clipboard_read.revoke(pane.allocator);
+    pane.asTerminal().?.shell_command_running = false;
     pane.title_dirty = !pane.title_is_manual;
     pwdChangedCallback(terminal, userdata);
 }
@@ -442,6 +447,27 @@ test "semantic prompt and full reset clear the appropriate program status" {
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     try std.testing.expect(pane.title_dirty);
     try std.testing.expect(pane.cwd_dirty);
+}
+
+test "shell output markers track the busy cursor until completion or a new prompt" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(std.testing.allocator);
+    const term = pane.asTerminal().?;
+    term.terminal_runtime = &runtime;
+    term.terminal = try runtime.createTerminal(80, 24, 0);
+    defer pane.deinit(&runtime);
+    runtime.setTerminalUserdata(term.terminal, &pane);
+    runtime.registerCallbacks(term.terminal, terminalCallbacks());
+
+    runtime.terminalWrite(term.terminal, "\x1b]133;C\x07");
+    try std.testing.expect(term.shell_command_running);
+    runtime.terminalWrite(term.terminal, "\x1b]133;D;0\x07");
+    try std.testing.expect(!term.shell_command_running);
+    runtime.terminalWrite(term.terminal, "\x1b]133;C\x07");
+    try std.testing.expect(term.shell_command_running);
+    runtime.terminalWrite(term.terminal, "\x1b]133;A\x07");
+    try std.testing.expect(!term.shell_command_running);
 }
 
 test "cwd callbacks handle split, cancelled and legacy OSC 7 without changing old cwd early" {

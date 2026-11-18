@@ -4500,6 +4500,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var refresh_live_config = false;
+    var has_cursor_table = false;
     if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table) {
         std.log.err("set_config expects a Lua table", .{});
         return 0;
@@ -4556,9 +4557,15 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         // Quick-select patterns and callbacks live in Lua state.
         if (std.mem.eql(u8, key, "quick_select") and value_type == .table) continue;
 
+        if (std.mem.eql(u8, key, "cursor") and value_type == .table) {
+            has_cursor_table = true;
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "unfocused_pane") and value_type == .table) {
             const unfocused_pane_idx = absoluteIndex(api, state, -1);
-            applyUnfocusedPaneTable(ctx.cfg, api, state, unfocused_pane_idx) catch |err| std.log.err("config unfocused_pane field failed: {s}", .{@errorName(err)});
+            applyUnfocusedPaneTable(ctx.cfg, api, state, unfocused_pane_idx);
+            refresh_live_config = true;
             continue;
         }
 
@@ -4670,6 +4677,14 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         }
     }
 
+    // Apply the canonical cursor table after its legacy alias, regardless of
+    // Lua's iteration order. Later calls can still update either spelling.
+    if (has_cursor_table) {
+        api.get_field(state, 1, "cursor");
+        applyCursorTable(&ctx.cfg.cursor, api, state, absoluteIndex(api, state, -1));
+        pop(api, state, 1);
+        refresh_live_config = true;
+    }
     if (refresh_live_config) {
         if (ctx.app_callbacks) |cbs| cbs.refresh_live_config(cbs.app);
     }
@@ -4762,7 +4777,81 @@ fn parseCursorStyle(value: []const u8) ?ghostty.CursorVisualStyle {
     return null;
 }
 
-fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+fn applyOptionalCursorStyle(out: *?ghostty.CursorVisualStyle, api: Api, state: *State, value_type: LuaType) void {
+    if (value_type == .boolean and api.to_boolean(state, -1) == 0) {
+        out.* = null;
+    } else if (value_type == .string) {
+        var len: usize = 0;
+        const value = api.to_lstring(state, -1, &len) orelse return;
+        if (parseCursorStyle(value[0..len])) |style| out.* = style;
+    }
+}
+
+fn applyCursorTable(cursor: *config.Config.Cursor, api: Api, state: *State, table_idx: c_int) void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+        if (std.mem.eql(u8, key, "style") and value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            if (parseCursorStyle(value_ptr[0..value_len])) |style| cursor.style = style;
+        } else if (std.mem.eql(u8, key, "blink") and value_type == .boolean) {
+            cursor.blink = api.to_boolean(state, -1) != 0;
+        } else if (std.mem.eql(u8, key, "rounded") and value_type == .boolean) {
+            cursor.rounded = api.to_boolean(state, -1) != 0;
+        } else if (std.mem.eql(u8, key, "busy")) {
+            applyOptionalCursorStyle(&cursor.busy, api, state, value_type);
+        } else if (std.mem.eql(u8, key, "unfocused")) {
+            applyOptionalCursorStyle(&cursor.unfocused, api, state, value_type);
+        } else if (std.mem.eql(u8, key, "trail")) {
+            if (value_type == .table) applyCursorTrailTable(&cursor.trail, api, state, absoluteIndex(api, state, -1));
+            if (value_type == .boolean and api.to_boolean(state, -1) == 0) cursor.trail = .{};
+        } else if (std.mem.eql(u8, key, "bar_thickness") and value_type == .boolean and api.to_boolean(state, -1) == 0) {
+            cursor.bar_thickness = null;
+        } else if (value_type == .number) {
+            const rate = api.to_number(state, -1);
+            if (!std.math.isFinite(rate) or @trunc(rate) != rate) continue;
+            const num = asInt(u32, rate) catch continue;
+            if (std.mem.eql(u8, key, "blink_timeout")) cursor.blink_timeout = num;
+            if (num == 0) continue;
+            if (std.mem.eql(u8, key, "blink_rate")) cursor.blink_rate = num;
+            const thickness: u8 = @intCast(@min(16, num));
+            if (std.mem.eql(u8, key, "bar_thickness")) cursor.bar_thickness = thickness;
+            if (std.mem.eql(u8, key, "underline_thickness")) cursor.underline_thickness = thickness;
+            if (std.mem.eql(u8, key, "hollow_thickness")) cursor.hollow_thickness = thickness;
+        }
+    }
+}
+
+fn applyCursorTrailTable(trail: *config.Config.Cursor.Trail, api: Api, state: *State, table_idx: c_int) void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+        if (std.mem.eql(u8, key, "color")) {
+            if (value_type == .boolean and api.to_boolean(state, -1) == 0) trail.color = null;
+            if (value_type == .string) {
+                var len: usize = 0;
+                const color = api.to_lstring(state, -1, &len) orelse continue;
+                if (parseHexColor(color[0..len])) |rgb| trail.color = rgb;
+            }
+        } else if (value_type == .number) {
+            const value = api.to_number(state, -1);
+            if (!std.math.isFinite(value) or value < 0) continue;
+            if (std.mem.eql(u8, key, "min_distance")) trail.min_distance = @floatCast(@min(65535, value));
+            if (std.mem.eql(u8, key, "decay") and @trunc(value) == value) trail.decay = @intFromFloat(@min(10_000, value));
+        }
+    }
+}
+
+fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) void {
     api.push_nil(state);
     while (api.next(state, table_idx) != 0) {
         defer pop(api, state, 1);
@@ -4773,17 +4862,8 @@ fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_i
         const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "cursor")) {
-            if (value_type == .boolean) {
-                if (api.to_boolean(state, -1) == 0) cfg.unfocused_pane.cursor = null;
-                continue;
-            }
-
-            if (value_type == .string) {
-                var value_len: usize = 0;
-                const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
-                if (parseCursorStyle(value_ptr[0..value_len])) |style| cfg.unfocused_pane.cursor = style;
-                continue;
-            }
+            applyOptionalCursorStyle(&cfg.cursor.unfocused, api, state, value_type);
+            continue;
         }
 
         if (std.mem.eql(u8, key, "dim")) {
@@ -9073,6 +9153,53 @@ test "set_config parses and removes a background overlay" {
     try runtime.runString("host_api.set_config({ background = { overlay = false } })");
     try std.testing.expect(cfg.background.overlay_color == null);
     try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses cursor defaults and preserves partial updates" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ cursor = { style = 'bar', blink = true, blink_rate = 500 } })");
+    try std.testing.expectEqual(config.Config.Cursor{ .style = .bar, .blink = true, .blink_rate = 500 }, cfg.cursor);
+    try runtime.runString("host_api.set_config({ cursor = { blink = false, blink_rate = 0 } })");
+    try std.testing.expectEqual(config.Config.Cursor{ .style = .bar, .blink = false, .blink_rate = 500 }, cfg.cursor);
+}
+
+test "set_config accepts legacy and canonical unfocused cursors" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ unfocused_pane = { cursor = 'bar', dim = 0.25 } })");
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.bar, cfg.cursor.unfocused.?);
+    try runtime.runString("host_api.set_config({ cursor = { unfocused = false, busy = 'underline', rounded = false }, unfocused_pane = { cursor = 'block' } })");
+    try std.testing.expectEqual(null, cfg.cursor.unfocused);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.underline, cfg.cursor.busy.?);
+    try std.testing.expect(!cfg.cursor.rounded);
+    try std.testing.expectEqual(@as(f32, 0.25), cfg.unfocused_pane.dim);
+    try runtime.runString("host_api.set_config({ cursor = { busy = false }, unfocused_pane = { cursor = 'block_hollow' } })");
+    try std.testing.expectEqual(null, cfg.cursor.busy);
+    try std.testing.expectEqual(ghostty.CursorVisualStyle.block_hollow, cfg.cursor.unfocused.?);
+}
+
+test "set_config parses cursor thickness, idle timeout and trail overrides" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("host_api.set_config({cursor={bar_thickness=3,underline_thickness=2,hollow_thickness=1,blink_timeout=2000,trail={decay=450,min_distance=3.5,color='#123456'}}})");
+    try std.testing.expectEqual(@as(?u8, 3), cfg.cursor.bar_thickness);
+    try std.testing.expectEqual(@as(u8, 2), cfg.cursor.underline_thickness);
+    try std.testing.expectEqual(@as(u8, 1), cfg.cursor.hollow_thickness);
+    try std.testing.expectEqual(@as(u32, 2000), cfg.cursor.blink_timeout);
+    try std.testing.expectEqual(config.Config.Cursor.Trail{ .decay = 450, .min_distance = 3.5, .color = .{ .r = 0x12, .g = 0x34, .b = 0x56 } }, cfg.cursor.trail);
+    try runtime.runString("host_api.set_config({cursor={bar_thickness=false,blink_timeout=0,trail={color=false}}})");
+    try std.testing.expectEqual(null, cfg.cursor.bar_thickness);
+    try std.testing.expectEqual(@as(u32, 0), cfg.cursor.blink_timeout);
+    try std.testing.expectEqual(config.Config.Cursor.Trail{ .decay = 450, .min_distance = 3.5 }, cfg.cursor.trail);
 }
 
 test "set_config parses background cell opacity" {

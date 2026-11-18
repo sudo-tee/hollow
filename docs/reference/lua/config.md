@@ -118,15 +118,43 @@ hollow.config.set({
 
 ### Cursor
 
+The cursor defaults to a steady block.
+Applications such as Neovim can temporarily choose their own cursor shape and blink state.
+`blink_rate` is the duration of each visible or hidden phase in milliseconds and defaults to `600`.
+`blink_timeout` keeps the cursor steady after that many milliseconds without keyboard input or paste.
+It defaults to `0` (no timeout).
+Cursor thicknesses are in framebuffer pixels, limited to `1–16` and to the cell size.
+`bar_thickness = false` uses the automatic width (usually 2–3 px); underline and hollow outline thicknesses default to `4` and `2`.
+Only the focused pane can blink.
+`rounded` controls rounding on bars, filled blocks, and hollow blocks, and defaults to `true`.
+`busy` selects the steady cursor shown during a foreground command reported by shell integration.
+It defaults to `"block"`; use `false` to keep the normal cursor behavior while a command runs.
+Alternate-screen programs retain control of their cursor style.
+`unfocused` selects a steady cursor for unfocused panes.
+The bundled config uses `"block_hollow"`; use `false` to hide it.
+The legacy `unfocused_pane.cursor` still works; when both spellings appear in the same `hollow.config.set` call, `cursor.unfocused` wins.
+Pane dimming remains under `unfocused_pane.dim`.
+
 ```lua
 hollow.config.set({
   cursor = {
     style = "block",        -- "block" | "bar" | "underline" | "block_hollow"
     blink = true,
     blink_rate = 500,
+    blink_timeout = 2500,
+    bar_thickness = 3,
+    underline_thickness = 2,
+    hollow_thickness = 1,
+    busy = "block",
+    unfocused = "block_hollow",
+    rounded = true,
+    trail = { decay = 450, min_distance = 8, color = "#88c0d0" },
   },
 })
 ```
+
+`trail` is read by [compatible cursor shaders](../../custom-shaders.md), including the shipped `cursor_trail.glsl`.
+It does not enable a trail or change existing shaders that ignore the new inputs.
 
 ### Background
 

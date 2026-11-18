@@ -39,7 +39,6 @@ const dead_pane = @import("../session/dead_pane.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const app_profile = @import("app_profile.zig");
-const color_math = @import("color_math.zig");
 const rounded_border = @import("rounded_border.zig");
 const text_width = @import("../text_width.zig");
 const clay = @import("clay_c");
@@ -78,12 +77,15 @@ fn notePostShaderPane(app: *App, renderer: *FtRenderer, runtime: *ghostty.Runtim
     const pad = if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) cfg.alternate_screen_padding else cfg.terminal_padding;
     const pad_x = (cfg.fonts.padding_x + @as(f32, @floatFromInt(pad.left))) * renderer.dpi_scale;
     const pad_y = (cfg.fonts.padding_y + @as(f32, @floatFromInt(pad.top))) * renderer.dpi_scale;
-    const state = terminal_render_app.shaderState(renderer, runtime, cfg, app, pane, term.render_state, pad_x, pad_y) orelse return;
+    const state = terminal_render_app.shaderState(renderer, runtime, cfg, app, pane, term.render_state, pad_x, pad_y, now_ns) orelse return;
 
     const u = &g_post_chain.uniforms;
     u.background = rgbUniform(state.background);
     u.foreground = rgbUniform(state.foreground);
     u.cursor_color = rgbUniform(state.cursor);
+    u.cursor_trail_decay = @as(f32, @floatFromInt(cfg.cursor.trail.decay)) / 1000;
+    u.cursor_trail_min_distance = cfg.cursor.trail.min_distance;
+    u.cursor_trail_color = if (cfg.cursor.trail.color) |color| rgbUniform(color) else u.cursor_color;
     u.cursor_text = rgbUniform(state.cursor_text);
     u.selection_background = rgbUniform(state.selection_bg);
     u.selection_foreground = rgbUniform(state.selection_fg);
@@ -4018,15 +4020,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const cursor_row = if (cursor_pos) |cp| @as(usize, cp.y) else std.math.maxInt(usize);
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
                     const cursor_visible = rt.cursorVisible(term.render_state);
-                    const cursor_blinking = rt.cursorBlinking(term.render_state);
+                    const busy_cursor = if (focused) terminal_render_app.busyShellCursor(pane, &cfg.cursor) else null;
+                    const cursor_blinking = focused and busy_cursor == null and rt.cursorBlinking(term.render_state);
                     const cursor_password_input = rt.cursorPasswordInput(term.render_state);
                     const cursor_blink_visible = cursor_pos == null or
                         !cursor_visible or
                         !cursor_blinking or
                         cursor_password_input or
-                        color_math.blinkVisibleNow(io.nanoTimestamp());
+                        terminal_render_app.cursorBlinkVisible(rt, term.render_state, pane, app_ctx, focused, io.nanoTimestamp());
                     const cursor_wide_tail = rt.cursorWideTail(term.render_state);
-                    const cursor_style = rt.cursorVisualStyle(term.render_state);
+                    const cursor_style = busy_cursor orelse rt.cursorVisualStyle(term.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
                         cache_entry.last_cursor_row != cursor_row or
                         cache_entry.last_cursor_col != cursor_col or

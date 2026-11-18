@@ -90,6 +90,10 @@ pub const QueueOptions = struct {
     cursor_row: usize = std.math.maxInt(usize),
     cursor_col: usize = std.math.maxInt(usize),
     cursor_style: ?ghostty.CursorVisualStyle = null,
+    cursor_rounded: bool = true,
+    cursor_bar_thickness: ?u8 = null,
+    cursor_underline_thickness: u8 = 4,
+    cursor_hollow_thickness: u8 = 2,
     cursor_wide: bool = false,
     cursor_block: bool = false,
     cursor_fg_explicit: bool = false,
@@ -408,13 +412,8 @@ pub fn queueBackgroundAndRasterRow(
         else
             null;
         if (background) |bg| {
-            // Selection, search and the block cursor stay opaque.
-            const in_block_cursor = if (queue.cursor_block) if (row.cursor_col) |cursor_col|
-                col_x >= cursor_col and col_x < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
-            else
-                false else false;
             const fade_powerline = powerlineCell(self, runtime, queue, row, raw_cell, is_selected, col_x);
-            const alpha: u8 = if (is_selected or has_search_highlight or in_block_cursor or fade_powerline) 255 else queue.cell_bg_alpha;
+            const alpha: u8 = if (is_selected or has_search_highlight or fade_powerline) 255 else queue.cell_bg_alpha;
             if (background_run_color == null or !colorsEqual(background_run_color.?, bg) or background_run_alpha != alpha) {
                 flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
                 background_run_color = bg;
@@ -423,6 +422,18 @@ pub fn queueBackgroundAndRasterRow(
             }
         } else {
             flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
+        }
+
+        if (queue.cursor_block and !is_selected and !has_search_highlight) {
+            if (row.cursor_col) |cursor_col| {
+                const last_col = cursor_col + @as(usize, @intFromBool(row.cursor_wide));
+                if (col_x >= cursor_col and col_x <= last_col) {
+                    flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px + self.cell_w, row.py, quads_open);
+                    openQuadBatch(self, quads_open);
+                    const color = if (queue.cursor_fg_explicit) queue.colors.cursor_bg else runtime.cellForeground(queue.row_cells.*) orelse queue.colors.cursor_bg;
+                    emitBlockCursor(col_px, row.py, self.cell_w, self.cell_h, color, 0, queue.cursor_rounded, col_x == cursor_col, col_x == last_col);
+                }
+            }
         }
 
         switch (content_tag) {
@@ -762,8 +773,9 @@ pub fn queueCursorShapeRow(self: *FtRenderer, queue: *const QueueContext, row: R
 
     const cursor_width = if (row.cursor_wide and cursor_style != .bar) self.cell_w * 2.0 else self.cell_w;
     const px = columnPixelX(self, cursor_col, queue.col_count);
-    c.sgl_load_pipeline(self.solid_pip);
-    drawCursor(px, row.py, cursor_width, self.cell_h, queue.colors.cursor_bg, cursor_style);
+    c.sgl_disable_texture();
+    c.sgl_load_pipeline(if (cursor_style == .bar and queue.cursor_rounded) self.atlas_pip else self.solid_pip);
+    drawCursor(px, row.py, cursor_width, self.cell_h, queue.colors.cursor_bg, cursor_style, queue);
 }
 
 // ── Decoration helpers ────────────────────────────────────────────────────────
@@ -950,19 +962,6 @@ pub fn resolveCellBackground(
     if (row.search_highlight) |highlight| {
         if (highlight.start_col <= highlight.end_col and col_px >= self.padding_x + @as(f32, @floatFromInt(highlight.start_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(highlight.end_col)) * self.cell_w) {
             return if (highlight.active) queue.colors.search_active_bg else queue.colors.search_bg;
-        }
-    }
-
-    if (queue.cursor_block) {
-        if (row.cursor_col) |cursor_col| {
-            const cursor_end = cursor_col + (if (row.cursor_wide) @as(usize, 2) else 1);
-            if (col_px >= self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(cursor_end)) * self.cell_w) {
-                const cursor_bg = if (queue.cursor_fg_explicit)
-                    queue.colors.cursor_bg
-                else
-                    runtime.cellForeground(queue.row_cells.*) orelse queue.colors.cursor_bg;
-                return cursor_bg;
-            }
         }
     }
 
@@ -1231,25 +1230,98 @@ pub inline fn emitRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u
     c.sgl_v2f(x, y + h);
 }
 
+pub fn barThickness(w: f32, pixels: ?u8) f32 {
+    return @min(w, if (pixels) |value| @as(f32, @floatFromInt(value)) else std.math.clamp(@floor(w * 0.16), 2, 3));
+}
+
+pub fn underlineThickness(h: f32, pixels: u8) f32 {
+    return @min(h, @as(f32, @floatFromInt(pixels)));
+}
+
 /// Draw the cursor shape using a single sgl_begin_quads/sgl_end batch.
-fn drawCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, style: ghostty.CursorVisualStyle) void {
+fn drawCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, style: ghostty.CursorVisualStyle, queue: *const QueueContext) void {
+    const rounded = queue.cursor_rounded;
     c.sgl_begin_quads();
     switch (style) {
-        .block => emitRect(x, y, w, h, color.r, color.g, color.b, 255),
-        .block_hollow => {
-            const t: f32 = 2.0;
-            emitRect(x, y, w, t, color.r, color.g, color.b, 255);
-            emitRect(x, y + h - t, w, t, color.r, color.g, color.b, 255);
-            emitRect(x, y, t, h, color.r, color.g, color.b, 255);
-            emitRect(x + w - t, y, t, h, color.r, color.g, color.b, 255);
-        },
+        .block, .block_hollow => emitBlockCursor(x, y, w, h, color, if (style == .block_hollow) @floatFromInt(queue.cursor_hollow_thickness) else 0, rounded, true, true),
         .bar => {
-            const bar_w = @min(@as(f32, 3.0), @max(@as(f32, 2.0), @floor(w * 0.16)));
-            emitRect(x, y, bar_w, h, color.r, color.g, color.b, 255);
+            const bar_w = barThickness(w, queue.cursor_bar_thickness);
+            if (rounded and h >= 2 * @ceil(bar_w * 0.5) and bar_w == @floor(bar_w)) {
+                emitRoundedBar(x, y, bar_w, h, color);
+            } else {
+                emitRect(x, y, bar_w, h, color.r, color.g, color.b, 255);
+            }
         },
-        .underline => emitRect(x, y + h - 4.0, w, 4.0, color.r, color.g, color.b, 255),
+        .underline => {
+            const thickness = underlineThickness(h, queue.cursor_underline_thickness);
+            emitRect(x, y + h - thickness, w, thickness, color.r, color.g, color.b, 255);
+        },
     }
     c.sgl_end();
+}
+
+fn cursorCornerInset(radius: f32, y: f32) f32 {
+    const dy = @max(0, radius - y);
+    return radius - @sqrt(@max(0, radius * radius - dy * dy));
+}
+
+// A two-pixel-wide bar has no spare pixels for a hard-edged curve: use
+// premultiplied coverage in its caps rather than dropping an entire pixel.
+fn emitRoundedBar(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb) void {
+    const radius = w * 0.5;
+    const cap = @ceil(radius);
+    emitRect(x, y + cap, w, h - 2 * cap, color.r, color.g, color.b, 255);
+    var dy: f32 = 0;
+    while (dy < cap) : (dy += 1) {
+        var dx: f32 = 0;
+        while (dx < w) : (dx += 1) {
+            var coverage: f32 = 0;
+            for ([_]f32{ 0.125, 0.375, 0.625, 0.875 }) |sample| {
+                const inset = cursorCornerInset(radius, dy + sample);
+                coverage += @max(0, @min(dx + 1, w - inset) - @max(dx, inset)) * 0.25;
+            }
+            const alpha: u8 = @intFromFloat(@round(255 * coverage));
+            emitRect(x + dx, y + dy, 1, 1, premultiply(color.r, alpha), premultiply(color.g, alpha), premultiply(color.b, alpha), alpha);
+            emitRect(x + dx, y + h - dy - 1, 1, 1, premultiply(color.r, alpha), premultiply(color.g, alpha), premultiply(color.b, alpha), alpha);
+        }
+    }
+}
+
+fn emitBlockCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, outline: f32, rounded: bool, round_left: bool, round_right: bool) void {
+    const half_size = @min(w, h) * 0.5;
+    const radius = if (rounded) @min(3, half_size) else 0;
+    const hollow = outline > 0;
+    const border = @min(outline, half_size);
+    const cap = @min(@ceil(@max(radius, border)), h * 0.5);
+    var dy: f32 = 0;
+    while (dy < cap) : (dy += 1) {
+        const thickness = @min(1, cap - dy);
+        const sample = dy + thickness * 0.5;
+        const inset = cursorCornerInset(radius, sample);
+        const left = if (round_left) inset else 0;
+        const right = w - if (round_right) inset else 0;
+        const inner = if (hollow and sample >= border)
+            border + cursorCornerInset(@max(0, radius - border), sample - border)
+        else
+            w * 0.5;
+        if (inner >= w * 0.5) {
+            emitRect(x + left, y + dy, right - left, thickness, color.r, color.g, color.b, 255);
+            emitRect(x + left, y + h - dy - thickness, right - left, thickness, color.r, color.g, color.b, 255);
+        } else {
+            emitRect(x + left, y + dy, inner - left, thickness, color.r, color.g, color.b, 255);
+            emitRect(x + w - inner, y + dy, right - (w - inner), thickness, color.r, color.g, color.b, 255);
+            emitRect(x + left, y + h - dy - thickness, inner - left, thickness, color.r, color.g, color.b, 255);
+            emitRect(x + w - inner, y + h - dy - thickness, right - (w - inner), thickness, color.r, color.g, color.b, 255);
+        }
+    }
+    if (h > 2 * cap) {
+        if (hollow and w > 2 * border) {
+            emitRect(x, y + cap, border, h - 2 * cap, color.r, color.g, color.b, 255);
+            emitRect(x + w - border, y + cap, border, h - 2 * cap, color.r, color.g, color.b, 255);
+        } else {
+            emitRect(x, y + cap, w, h - 2 * cap, color.r, color.g, color.b, 255);
+        }
+    }
 }
 
 inline fn isLigatureCodepoint(cp: u32) bool {
