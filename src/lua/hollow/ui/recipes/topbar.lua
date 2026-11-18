@@ -27,20 +27,19 @@ return sheet.define("topbar", {
   },
   split_button = {
     fg = "tab_inactive_fg",
-    padding = { left = 6, right = 6, top = 2, bottom = 2 },
+    padding = { left = 4, right = 4, top = 2, bottom = 2 },
     margin = { right = 4 },
     radius = 4,
     hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
   },
   attention_button = {
-    padding = { left = 6, right = 6 },
+    padding = { left = 4, right = 4 },
     radius = 4,
     hover = { bg = "tab_hover_bg" },
   },
   attention = { fg = "muted", bold = false, variants = levels },
   hidden_panes_button = {
-    padding = { left = 6, right = 6 },
-    margin = { right = 6 },
+    padding = { left = 4, right = 4 },
     radius = 4,
     hover = { bg = "tab_hover_bg" },
   },
