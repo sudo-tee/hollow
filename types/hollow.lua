@@ -1088,6 +1088,8 @@
 ---@field id? string
 ---@field text? string
 ---@field style? HollowUiNodeStyle
+---@field tooltip? boolean|string Shows the built-in label by default. Use `false` to hide it or a string to replace it.
+---@field tooltip_shortcut? boolean Set to false to hide the action’s shortcut.
 
 ---@class HollowUiTopbarNewTabOptions: HollowUiTopbarButtonOptions
 ---@field shifted_text? string

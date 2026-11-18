@@ -2936,6 +2936,65 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
     return false;
 }
 
+fn renderTopbarTooltip(api: Api, state: *State, ui_idx: c_int, renderer: *FtRenderer, viewport: ?[2]f32) void {
+    const saved_top = api.get_top(state);
+    defer api.set_top(state, saved_top);
+    api.get_field(state, ui_idx, "_topbar_tooltip");
+    if (api.value_type(state, -1) != @backingInt(LuaType.function) or
+        api.pcall(state, 0, 1, 0) != 0 or api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    const tooltip_idx = absoluteIndex(api, state, -1);
+    const field = struct {
+        fn text(a: Api, s: *State, idx: c_int, name: [:0]const u8) ?[]const u8 {
+            a.get_field(s, idx, name);
+            defer pop(a, s, 1);
+            var len: usize = 0;
+            const ptr = a.to_lstring(s, -1, &len) orelse return null;
+            if (len == 0 or len > 512) return null;
+            return ptr[0..len];
+        }
+    }.text;
+    const label = field(api, state, tooltip_idx, "text") orelse return;
+    const shortcut = field(api, state, tooltip_idx, "shortcut");
+    if (viewport == null) {
+        renderer.preRasterizeLabelFace(label, 0);
+        if (shortcut) |text| renderer.preRasterizeLabelFace(text, 1);
+        return;
+    }
+    const id = field(api, state, tooltip_idx, "id") orelse return;
+    if (!g_top_bar_cache.enabled) return;
+    const hit = for (g_top_bar_cache.hits[0..g_top_bar_cache.hit_count]) |region| {
+        if (region.node_id) |node_id| if (std.mem.eql(u8, id, node_id)) break region;
+    } else return;
+    const bg = parseHexColor(field(api, state, tooltip_idx, "bg") orelse "") orelse ghostty.ColorRgb{ .r = 35, .g = 39, .b = 47 };
+    const fg = parseHexColor(field(api, state, tooltip_idx, "fg") orelse "") orelse ghostty.ColorRgb{ .r = 235, .g = 235, .b = 235 };
+    const shortcut_fg = parseHexColor(field(api, state, tooltip_idx, "shortcut_fg") orelse "") orelse fg;
+    const padding = 7.0;
+    const gap = 4.0;
+    const shortcut_gap = 8.0;
+    const label_width = @as(f32, @floatFromInt(countCodepoints(label))) * renderer.cell_w;
+    var width = label_width + 2 * padding;
+    var show_shortcut = false;
+    if (shortcut) |text| {
+        const extra = shortcut_gap + @as(f32, @floatFromInt(countCodepoints(text))) * renderer.cell_w;
+        if (width + extra + 2 * gap <= viewport.?[0]) {
+            show_shortcut = true;
+            width += extra;
+        }
+    }
+    const height = renderer.cell_h + 8;
+    const y = g_top_bar_cache.y + g_top_bar_cache.height + gap;
+    if (width + 2 * gap > viewport.?[0] or y + height > viewport.?[1]) return;
+    const x = @round(std.math.clamp(hit.x + (hit.width - width) / 2, gap, viewport.?[0] - width - gap));
+    drawRoundedRect(x, y, width, height, 6, bg.r, bg.g, bg.b, 255);
+    drawRoundedRectOutline(x, y, width, height, 6, 1, fg.r, fg.g, fg.b, 64);
+    renderer.drawLabelFace(x + padding, y + 4, label, fg.r, fg.g, fg.b, 0);
+    c.sgl_load_default_pipeline();
+    if (show_shortcut) {
+        renderer.drawLabelFace(x + padding + label_width + shortcut_gap, y + 4, shortcut.?, shortcut_fg.r, shortcut_fg.g, shortcut_fg.b, 1);
+        c.sgl_load_default_pipeline();
+    }
+}
+
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_surface_count = 0;
     g_overlay_has_modal = false;
@@ -3100,6 +3159,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             pop(api, state, 1);
         }
     }
+    renderTopbarTooltip(api, state, ui_idx, ctx.renderer, .{ ctx.width, ctx.height });
     pop(api, state, 3);
 }
 
@@ -3162,6 +3222,7 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
 
     process_bar.run(api, state, renderer, scratch, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state");
     process_bar.run(api, state, renderer, scratch, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
+    renderTopbarTooltip(api, state, ui_idx, renderer, null);
 
     pop(api, state, 2);
 }
@@ -3775,6 +3836,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    if (app.pending_window_minimize) {
+        app.pending_window_minimize = false;
+        c.hollow_minimize_window();
+    }
+
     const current_shader_bg = g_post_chain.background_options orelse app.config.background;
     var visually_active = true;
     if (g_drag_node == null) {
@@ -3836,11 +3902,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
     }
-    if (app.pending_window_minimize) {
-        app.pending_window_minimize = false;
-        c.hollow_minimize_window();
-    }
-
     if (g_ft_renderer) |*renderer| {
         renderer.translucent_bg = app.config.background.translucentCells();
         renderer.cell_bg_alpha = app.config.background.cellAlpha();
@@ -5772,6 +5833,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        app.emitLuaBuiltInEvent("topbar:leave", .none);
         g_terminal_pointer_mods = null;
         updateLuaPaneHover(app);
         setMouseCursorHidden(false);
@@ -5786,6 +5848,9 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
 
     if (event.type == c.SAPP_EVENTTYPE_QUIT_REQUESTED) {
         std.log.info("sokol quit requested", .{});
+    }
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED) {
+        app.emitLuaBuiltInEvent("topbar:leave", .none);
     }
 
     if (builtin.os.tag == .windows) {

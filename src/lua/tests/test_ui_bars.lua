@@ -219,6 +219,62 @@ describe("UI bars test suite", function()
       assert.is_nil(button("window-minimize-button"))
       assert.is_nil(button("close-test"))
     end)
+    it(
+      "reveals default tooltips with the current modal-style shortcut and cancels stale hovers",
+      function()
+        hollow.keymap.set("<C-S-x>", "split_horizontal")
+        hollow.ui.topbar.configure({
+          split_right = { tooltip = "Split beside" },
+          split_down = true,
+          close = true,
+          minimize = { tooltip = false },
+        })
+        hollow.ui._topbar_state()
+
+        hollow._emit_builtin_event("topbar:hover", { id = "split-right-button" })
+        assert.is_nil(hollow.ui._topbar_tooltip())
+        hollow._emit_builtin_event("topbar:hover", { id = "split-down-button" })
+        env.flush_deferred()
+        local tooltip = hollow.ui._topbar_tooltip()
+        assert.equals("split-down-button", tooltip.id)
+        assert.equals("Split down", tooltip.text)
+        assert.equals("<C-S-x>", tooltip.shortcut)
+        assert.equals(
+          require("hollow.ui.shared").palette("select").panel_border,
+          tooltip.shortcut_fg
+        )
+
+        hollow.keymap.del("<C-S-x>")
+        hollow.keymap.set("<A-x>", "split_horizontal")
+        assert.equals("<A-x>", hollow.ui._topbar_tooltip().shortcut)
+        hollow.keymap.del("<A-x>")
+        hollow._emit_builtin_event("topbar:leave", {})
+        assert.is_nil(hollow.ui._topbar_tooltip())
+
+        hollow.ui._topbar_state()
+        hollow._emit_builtin_event("topbar:hover", { id = "window-minimize-button" })
+        env.flush_deferred()
+        assert.is_nil(hollow.ui._topbar_tooltip())
+
+        hollow.ui._topbar_state()
+        hollow._emit_builtin_event("topbar:hover", { id = "window-close-button" })
+        env.flush_deferred()
+        assert.equals("Close window", hollow.ui._topbar_tooltip().text)
+        assert.is_nil(hollow.ui._topbar_tooltip().shortcut)
+        local close = stub(host_api, "request_window_close")
+        hollow._emit_builtin_event("topbar:click", { id = "window-close-button" })
+        assert.is_nil(hollow.ui._topbar_tooltip())
+        assert.stub(close).was.called(1)
+        close:revert()
+        hollow._emit_builtin_event("topbar:leave", {})
+        hollow.ui.topbar.configure({
+          split_right = false,
+          split_down = false,
+          minimize = false,
+          close = false,
+        })
+      end
+    )
   end)
 
   describe("tabs max_width", function()

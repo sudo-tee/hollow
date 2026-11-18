@@ -14,6 +14,8 @@ local DEFAULT_SHIFTED_NEW_TAB_TEXT = ""
 local DEFAULT_SPLIT_RIGHT_TEXT = "" -- Codicon split-horizontal: side-by-side panes.
 local DEFAULT_SPLIT_DOWN_TEXT = "" -- Codicon split-vertical: stacked panes.
 local WINDOW_CONTROL_GROUP_GAP = 8
+local TOOLTIP_DELAY_MS = 500
+local tooltip_ticket, tooltip = 0, nil
 local DEFAULT_TOPBAR_LAYOUT = {
   padding = { left = 1, right = 1, top = 1, bottom = 1 },
 }
@@ -109,6 +111,75 @@ local function configured_topbar_bar_opts(value)
   return type(value) == "table" and value or {}
 end
 
+local function dismiss_tooltip()
+  tooltip_ticket = tooltip_ticket + 1
+  if tooltip then
+    tooltip = nil
+    ui.request_redraw()
+  end
+end
+
+local function shortcut_hint(action)
+  local bindings = hollow.keymap.find_by_action(action)
+  table.sort(bindings, function(a, b)
+    return #a < #b or (#a == #b and a < b)
+  end)
+  return bindings[1]
+end
+
+local function with_tooltip(node, options, label, action)
+  local text = options.tooltip
+  if text == nil or text == true then
+    text = label
+  end
+  if type(text) ~= "string" or text == "" then
+    return node
+  end
+  local click = node.on_click
+  node.on_click = function(event)
+    dismiss_tooltip()
+    click(event)
+  end
+  node.on_mouse_leave = dismiss_tooltip
+  node.on_mouse_enter = function()
+    dismiss_tooltip()
+    local ticket = tooltip_ticket
+    state.host_api.defer(function()
+      if tooltip_ticket == ticket and state.ui.topbar_hovered_id == node.id then
+        tooltip =
+          { id = node.id, text = text, action = options.tooltip_shortcut ~= false and action }
+        ui.request_redraw()
+      end
+    end, TOOLTIP_DELAY_MS)
+  end
+  return node
+end
+
+function ui._topbar_tooltip()
+  if not tooltip or state.ui.mounted_topbar or state.ui.topbar_hovered_id ~= tooltip.id then
+    return nil
+  end
+  for _, widget in ipairs(state.ui.overlay_stack) do
+    if widget._modal then
+      dismiss_tooltip()
+      return nil
+    end
+  end
+  local action = tooltip.action
+  if type(action) == "function" then
+    action = action()
+  end
+  local palette = shared.palette("overlay")
+  return {
+    id = tooltip.id,
+    text = tooltip.text,
+    shortcut = action and shortcut_hint(action) or nil,
+    bg = palette.bg,
+    fg = palette.fg,
+    shortcut_fg = shared.palette("select").panel_border,
+  }
+end
+
 local function configured_topbar_new_tab(value)
   if value == false then
     return nil
@@ -120,27 +191,34 @@ local function configured_topbar_new_tab(value)
   local style = M.merge_tables(s.new_tab, options.style)
   style.id = id
 
-  return ui.bar.custom({
-    id = id,
-    style = style,
-    render = function()
-      local shifted = state.ui.topbar_hovered_id == id and state.ui.topbar_hovered_shifted
-      if shifted then
-        return options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT
-      end
-      return options.text or DEFAULT_NEW_TAB_TEXT
-    end,
-    on_click = function(event)
-      if event and event.shifted then
-        hollow.action.new_tab_in_domain({ insert_at_end = true })
-      else
-        hollow.action.new_tab({ insert_at_end = true })
-      end
-    end,
-  })
+  return with_tooltip(
+    ui.bar.custom({
+      id = id,
+      style = style,
+      render = function()
+        local shifted = state.ui.topbar_hovered_id == id and state.ui.topbar_hovered_shifted
+        if shifted then
+          return options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT
+        end
+        return options.text or DEFAULT_NEW_TAB_TEXT
+      end,
+      on_click = function(event)
+        if event and event.shifted then
+          hollow.action.new_tab_in_domain({ insert_at_end = true })
+        else
+          hollow.action.new_tab({ insert_at_end = true })
+        end
+      end,
+    }),
+    options,
+    "New tab",
+    function()
+      return state.ui.topbar_hovered_shifted and "new_tab_in_domain" or "new_tab"
+    end
+  )
 end
 
-local function configured_topbar_button(value, id, text, on_click, recipe)
+local function configured_topbar_button(value, id, text, on_click, recipe, label, action)
   if value ~= true and type(value) ~= "table" then
     return false
   end
@@ -150,14 +228,19 @@ local function configured_topbar_button(value, id, text, on_click, recipe)
   local style = M.merge_tables(styles(shared.bar_palette())[recipe or "new_tab"], options.style)
   style.id = id
 
-  return ui.bar.custom({
-    id = id,
-    style = style,
-    render = function()
-      return options.text or text
-    end,
-    on_click = on_click,
-  })
+  return with_tooltip(
+    ui.bar.custom({
+      id = id,
+      style = style,
+      render = function()
+        return options.text or text
+      end,
+      on_click = on_click,
+    }),
+    options,
+    label,
+    action
+  )
 end
 
 local function split_right()
@@ -212,23 +295,34 @@ function M.widget()
         "split-right-button",
         DEFAULT_SPLIT_RIGHT_TEXT,
         split_right,
-        "split_button"
+        "split_button",
+        "Split right",
+        "split_vertical"
       )
       local down_split = configured_topbar_button(
         opts.split_down,
         "split-down-button",
         DEFAULT_SPLIT_DOWN_TEXT,
         split_down,
-        "split_button"
+        "split_button",
+        "Split down",
+        "split_horizontal"
       )
-      local minimize =
-        configured_topbar_button(opts.minimize, "window-minimize-button", "−", minimize_window)
+      local minimize = configured_topbar_button(
+        opts.minimize,
+        "window-minimize-button",
+        "−",
+        minimize_window,
+        nil,
+        "Minimize window"
+      )
       local close = configured_topbar_button(
         opts.close,
         "window-close-button",
         "X",
         close_window,
-        "close_button"
+        "close_button",
+        "Close window"
       )
       local first_window_control = minimize or close
       if (right_split or down_split) and first_window_control then
@@ -295,6 +389,7 @@ local function sync_topbar_config(opts)
   hollow.config.set(config_opts)
 end
 function M.configure(opts)
+  dismiss_tooltip()
   opts = opts or {}
   local configured = clone_table(state.ui.configured_topbar)
   util.merge_tables(configured, opts)

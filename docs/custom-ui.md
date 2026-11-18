@@ -150,6 +150,19 @@ Top-bar buttons and single-icon `hollow.ui.components.button` labels are horizon
 Use equal left and right padding instead of compensating for a particular icon font.
 Use `false` to hide a button again, or pass a table such as `close = { text = "Close" }` to customize it.
 
+New Tab, Split Right, Split Down, Minimize, and Close show their built-in labels on hover by default.
+Set `tooltip = false` to disable a button’s tooltip or use a string to customize its label.
+The tooltip appears after 500 ms and shows the action’s current shortcut when one is bound.
+Set `tooltip_shortcut = false` to show only the label.
+
+```lua
+hollow.ui.topbar.configure({
+  split_right = true,
+  split_down = { tooltip = "Split down" },
+  close = { tooltip = false },
+})
+```
+
 Bar-level primitives live under `hollow.ui.bar` and can be reused by
 other bars:
 
