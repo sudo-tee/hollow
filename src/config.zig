@@ -279,6 +279,7 @@ pub const Config = struct {
 
     pub const Background = struct {
         pub const Fit = enum { cover, contain, stretch, tile, center };
+        pub const default_shader_max_fps: u32 = 60;
         /// Values match DWM_SYSTEMBACKDROP_TYPE (Windows 11 22H2+).
         pub const Backdrop = enum(u32) { none = 1, mica = 2, acrylic = 3, mica_alt = 4 };
 
@@ -310,7 +311,7 @@ pub const Config = struct {
         /// Request redraws for background animation.
         shader_animate: bool = true,
         /// Background cache refresh cap. Zero imposes no cap.
-        shader_max_fps: u32 = 0,
+        shader_max_fps: u32 = default_shader_max_fps,
         /// Background shader target scale, range 0.25..1.
         shader_render_scale: f32 = 1.0,
 
@@ -338,7 +339,7 @@ pub const Config = struct {
 
         pub fn clearShader(self: *Background, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.shader);
-            self.shader_max_fps = 0;
+            self.shader_max_fps = default_shader_max_fps;
             self.shader_render_scale = 1.0;
         }
 

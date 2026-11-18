@@ -431,8 +431,8 @@
 ---@field path? string Shader file path
 ---@field opacity? number 0..1, default 1. Mix with the background colour; the shader's alpha is ignored and window transparency still applies
 ---@field brightness? number 0..1, default 1. Multiply shader RGB toward black independently of opacity
----@field animate? boolean Request redraws to animate the background (default true)
----@field max_fps? integer Background shader refresh cap, 1..240; 0 (default) imposes no cap
+---@field animate? boolean Request redraws to animate the background (default true); false renders a static cached layer
+---@field max_fps? integer Background shader refresh cap, 1..240 (default 60); 0 imposes no cap
 ---@field render_scale? number Background shader resolution per axis, clamped to 0.25..1 (default 1)
 
 ---@alias HollowShaderAnimation "cursor"|"always"|"off"

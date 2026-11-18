@@ -112,14 +112,14 @@ hollow.config.set({
       opacity = 1,     -- blend shader with the background colour
       brightness = 0.3, -- dim the shader towards black
       animate = true,  -- request redraws for animation
-      max_fps = 30,   -- refresh the background independently of terminal FPS
+      max_fps = 30,   -- background refresh cap (default 60), independent of terminal FPS
       render_scale = 0.5, -- optional half-resolution background shader
     },
   },
 })
 ```
 
-`shader` also accepts a bare path string, which uses `opacity = 1` and `animate = true`.
+`shader` also accepts a bare path string, which uses `opacity = 1`, `animate = true`, and `max_fps = 60`.
 Set it to `false` to remove the shader.
 
 Background shaders use the same Ghostty-compatible GLSL as [custom shaders](custom-shaders.md#writing-shaders), with the same uniforms.
@@ -133,12 +133,13 @@ The differences:
 - The layers stack as: background colour, shader, image, overlay, then the terminal.
   Give the image an `opacity` below `1` to let the shader show through.
 
-Without a cap, `animate = true` renders every frame, which keeps the GPU busy.
-Set it to `false` for static shaders; they then redraw only when the terminal changes.
-Set `max_fps` to 1–240 to cache the background shader layer and limit its refresh rate without capping terminal redraws.
-For a decorative animated background, try `max_fps = 30` first.
-The cache adds one GPU texture and a composite draw per rendered frame, so lightweight shaders may not benefit.
-With `max_fps = 0` and `render_scale = 1` (the defaults), the shader draws directly without an offscreen texture.
+Hollow renders an animated background shader into a cached layer and refreshes it at most `max_fps` times per second, 60 by default.
+Terminal redraws are not capped; frames between refreshes reuse the cached layer.
+Set `max_fps` to 1–240 to change the cap.
+For a slow decorative background, `max_fps = 30` saves more GPU time; on one integrated GPU, 30 used about a third of the uncapped load and 60 about half.
+Set `max_fps = 0` to remove the cap: the shader then draws directly on every rendered frame, which keeps the GPU busy.
+The cache adds one GPU texture and a composite draw per rendered frame, so very cheap shaders may run faster uncapped.
+Set `animate = false` for static shaders; Hollow renders them once into a cached layer and re-renders only on resize or a layer change, such as window opacity.
 
 Set `render_scale` below `1` to render the background shader at a lower resolution and upscale it with linear filtering.
 Values are clamped to `0.25`–`1`; `0.5` halves each axis, so the shader runs on about one quarter of the pixels.

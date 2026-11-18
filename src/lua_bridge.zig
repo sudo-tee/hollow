@@ -4882,7 +4882,7 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
                     var value_len: usize = 0;
                     const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
                     if (value_len == 0) background.clearShader(cfg.allocator) else try background.setShader(cfg.allocator, value_ptr[0..value_len]);
-                    background.shader_max_fps = 0;
+                    background.shader_max_fps = config.Config.Background.default_shader_max_fps;
                     background.shader_render_scale = 1.0;
                 },
                 .table => try applyBackgroundShaderTable(cfg, api, state, absoluteIndex(api, state, -1)),
@@ -9087,7 +9087,7 @@ test "set_config parses a background shader" {
     try std.testing.expect(cfg.background.translucentCells());
     try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
 
-    try std.testing.expectEqual(@as(u32, 0), cfg.background.shader_max_fps);
+    try std.testing.expectEqual(@as(u32, 60), cfg.background.shader_max_fps);
     try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, brightness = 0.3, animate = false, max_fps = 30 } } })");
     try std.testing.expectEqualStrings("/tmp/waves.glsl", cfg.background.shader.?);
     try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_opacity);
@@ -9096,8 +9096,10 @@ test "set_config parses a background shader" {
     try std.testing.expectEqual(@as(u32, 30), cfg.background.shader_max_fps);
     try runtime.runString("host_api.set_config({ background = { shader = { max_fps = 500 } } })");
     try std.testing.expectEqual(@as(u32, 240), cfg.background.shader_max_fps);
-    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try runtime.runString("host_api.set_config({ background = { shader = { max_fps = 0 } } })");
     try std.testing.expectEqual(@as(u32, 0), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(u32, 60), cfg.background.shader_max_fps);
 
     try runtime.runString("host_api.set_config({ background = { shader = { brightness = -1 } } })");
     try std.testing.expectEqual(@as(f32, 0), cfg.background.shader_brightness);

@@ -47,8 +47,16 @@ fn scaleBackgroundUniforms(uniforms: *Uniforms, size: [2]u32) void {
     uniforms.resolution = resolution;
 }
 
+/// Values baked into the cached background layer.
+const BackgroundLayer = struct {
+    opacity: f32,
+    brightness: f32,
+    window_alpha: f32,
+};
+
 const BackgroundRefresh = struct {
     last_ns: ?i128 = null,
+    layer: ?BackgroundLayer = null,
 
     fn deadline(self: BackgroundRefresh, fps: u32) ?i128 {
         if (fps == 0) return null;
@@ -57,6 +65,12 @@ const BackgroundRefresh = struct {
 
     fn due(self: BackgroundRefresh, now_ns: i128, fps: u32) bool {
         return now_ns >= (self.deadline(fps) orelse return true);
+    }
+
+    /// A static layer renders once per target and layer change.
+    fn stale(self: BackgroundRefresh, bg: Background, layer: BackgroundLayer, now_ns: i128) bool {
+        if (!std.meta.eql(self.layer, @as(?BackgroundLayer, layer))) return true;
+        return bg.shader_animate and self.due(now_ns, bg.shader_max_fps);
     }
 };
 
@@ -163,7 +177,6 @@ pub const Chain = struct {
     background_target: ?Target = null,
     background_size: [2]u32 = .{ 0, 0 },
     background_refresh: BackgroundRefresh = .{},
-    background_window_alpha: f32 = 1,
     background_frame: u32 = 0,
     empty_texture: ?EmptyTexture = null,
     packed_uniforms: Packed = undefined,
@@ -250,7 +263,7 @@ pub const Chain = struct {
             if (buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, true)) |pass| {
                 self.background = pass;
                 self.empty_texture = EmptyTexture.init();
-                if (bg.shader_max_fps > 0 or bg.shader_render_scale < 1) {
+                if (!bg.shader_animate or bg.shader_max_fps > 0 or bg.shader_render_scale < 1) {
                     self.initBackgroundCache(alloc, pass, swapchain, bg.shader_render_scale < 1);
                 }
             } else |err| std.log.err("background shader '{s}' failed: {s}", .{ path, @errorName(err) });
@@ -372,7 +385,8 @@ pub const Chain = struct {
             self.background_size = size;
         }
         const cache = self.background_target orelse return;
-        if (window_alpha == self.background_window_alpha and !self.background_refresh.due(now_ns, bg.shader_max_fps)) return;
+        const layer: BackgroundLayer = .{ .opacity = bg.shader_opacity, .brightness = bg.shader_brightness, .window_alpha = window_alpha };
+        if (!self.background_refresh.stale(bg, layer, now_ns)) return;
 
         var uniforms = self.uniforms;
         if (bg.shader_render_scale < 1) scaleBackgroundUniforms(&uniforms, size);
@@ -391,8 +405,7 @@ pub const Chain = struct {
         c.sg_begin_pass(&pass);
         self.drawFullscreen(pip, self.empty_texture.?.view, &packed_uniforms);
         c.sg_end_pass();
-        self.background_refresh.last_ns = now_ns;
-        self.background_window_alpha = window_alpha;
+        self.background_refresh = .{ .last_ns = now_ns, .layer = layer };
         self.background_frame +%= 1;
     }
 
@@ -628,6 +641,24 @@ test "cached background wakes only at its own refresh deadline" {
     bg.shader_animate = false;
     try std.testing.expectEqual(@as(?i128, null), chain.backgroundDeadline(bg));
     try std.testing.expect(!chain.wantsFrame(deadline, .off, bg));
+}
+
+test "static background cache renders once until its layer changes" {
+    const bg: Background = .{ .shader_animate = false, .shader_opacity = 0.8, .shader_brightness = 0.6 };
+    const layer: BackgroundLayer = .{ .opacity = 0.8, .brightness = 0.6, .window_alpha = 1 };
+    var refresh: BackgroundRefresh = .{};
+    try std.testing.expect(refresh.stale(bg, layer, 0));
+    refresh = .{ .last_ns = 0, .layer = layer };
+    try std.testing.expect(!refresh.stale(bg, layer, 10 * std.time.ns_per_s));
+    try std.testing.expect(refresh.stale(bg, .{ .opacity = 0.8, .brightness = 0.6, .window_alpha = 0.9 }, 0));
+    try std.testing.expect(refresh.stale(bg, .{ .opacity = 0.5, .brightness = 0.6, .window_alpha = 1 }, 0));
+    try std.testing.expect(refresh.stale(bg, .{ .opacity = 0.8, .brightness = 1, .window_alpha = 1 }, 0));
+    // Animated layers also refresh at their deadline.
+    var animated = bg;
+    animated.shader_animate = true;
+    animated.shader_max_fps = 30;
+    try std.testing.expect(!refresh.stale(animated, layer, 33_333_332));
+    try std.testing.expect(refresh.stale(animated, layer, 33_333_333));
 }
 
 test "background cache copy and upscale translate to both shader backends" {
