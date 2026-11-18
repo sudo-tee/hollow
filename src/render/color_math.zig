@@ -75,12 +75,25 @@ pub fn mixColor(a: ghostty.ColorRgb, b: ghostty.ColorRgb, t: f32) ghostty.ColorR
 
 // ── Cursor blink / style resolution ──────────────────────────────────────────
 
-pub const CURSOR_BLINK_INTERVAL_MS: i128 = 600;
-
-pub fn blinkVisibleNow(now_ns: i128) bool {
+/// An unfocused cursor never enters the hidden blink phase.
+pub fn blinkVisibleNow(now_ns: i128, interval_ms: u32, focused: bool) bool {
+    if (!focused) return true;
     const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
-    const blink_phase = @divFloor(now_ms, CURSOR_BLINK_INTERVAL_MS);
+    const blink_phase = @divFloor(now_ms, @as(i128, @max(1, interval_ms)));
     return @mod(blink_phase, @as(i128, 2)) == 0;
+}
+
+pub fn blinkVisibleWithTimeout(now_ns: i128, start_ns: i128, interval_ms: u32, timeout_ms: u32, focused: bool) bool {
+    if (timeout_ms == 0) return blinkVisibleNow(now_ns, interval_ms, focused);
+    const elapsed = @max(0, now_ns - start_ns);
+    return elapsed >= @as(i128, timeout_ms) * std.time.ns_per_ms or blinkVisibleNow(elapsed, interval_ms, focused);
+}
+
+test "idle timeout ends a hidden blink phase and typing restarts visible" {
+    const ms = std.time.ns_per_ms;
+    try std.testing.expect(!blinkVisibleWithTimeout(1700 * ms, 1000 * ms, 500, 800, true));
+    try std.testing.expect(blinkVisibleWithTimeout(1800 * ms, 1000 * ms, 500, 800, true));
+    try std.testing.expect(blinkVisibleWithTimeout(1800 * ms, 1800 * ms, 500, 800, true));
 }
 
 // ── Selection bounds ─────────────────────────────────────────────────────────
@@ -204,14 +217,17 @@ test "mixColor: clamps out-of-range t" {
 
 test "blinkVisibleNow: alternates at interval" {
     const ms = std.time.ns_per_ms;
-    // At phase 0 (0ms, 1200ms...) blink is visible.
-    try std.testing.expect(blinkVisibleNow(0));
-    try std.testing.expect(blinkVisibleNow(599 * ms));
-    try std.testing.expect(blinkVisibleNow(1200 * ms));
-    // At phase 1 (600ms .. 1199ms) blink is hidden.
-    try std.testing.expect(!blinkVisibleNow(600 * ms));
-    try std.testing.expect(!blinkVisibleNow(601 * ms));
-    try std.testing.expect(!blinkVisibleNow(1199 * ms));
+    try std.testing.expect(blinkVisibleNow(0, 500, true));
+    try std.testing.expect(blinkVisibleNow(499 * ms, 500, true));
+    try std.testing.expect(!blinkVisibleNow(500 * ms, 500, true));
+    try std.testing.expect(!blinkVisibleNow(999 * ms, 500, true));
+    try std.testing.expect(blinkVisibleNow(1000 * ms, 500, true));
+}
+
+test "unfocused cursor remains steady during the hidden blink phase" {
+    const now = 500 * std.time.ns_per_ms;
+    try std.testing.expect(!blinkVisibleNow(now, 500, true));
+    try std.testing.expect(blinkVisibleNow(now, 500, false));
 }
 
 test "rowSelectionBounds: single-row range" {

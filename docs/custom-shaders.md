@@ -110,6 +110,10 @@ Cancel pending preview work on unmount so it cannot overwrite the accepted shade
 - `cursor_trail.glsl` draws a fading trail behind the cursor and a soft glow around it.
 - `crt_scanlines.glsl` adds faint scanlines and an RGB fringe.
 
+The included trail reads `cursor.trail` from Lua.
+`decay` is in milliseconds (default `300`, maximum `10000`, `0` disables the trail), `min_distance` is the minimum movement in framebuffer pixels (default `0`), and `color` defaults to the cursor color.
+Use `color = false` to return to the cursor color, or `trail = false` to reset all trail settings.
+
 ![Animated recording of the cursor trail shader in Neovim: the cursor leaves a fading trail as it jumps between the top and bottom of the file](assets/shaders/cursor-trail.webp)
 
 ![CRT scanlines shader over Neovim: faint horizontal scanlines and a red-blue fringe on the text](assets/shaders/crt-scanlines.webp)
@@ -156,8 +160,11 @@ Do not declare uniforms yourself; Hollow provides them.
 | `iPreviousCursorColor`        | `vec4`         | Cursor colour before the last change             |
 | `iCurrentCursorStyle`         | `int`          | One of the `CURSORSTYLE_*` constants             |
 | `iPreviousCursorStyle`        | `int`          | Style before the last change                     |
-| `iCursorVisible`              | `int`          | `1` when the terminal shows the cursor           |
+| `iCursorVisible`              | `int`          | `1` when the cursor is drawn, including its blink phase |
 | `iTimeCursorChange`           | `float`        | `iTime` of the last cursor change                |
+| `iCursorTrailDecay`           | `float`        | Configured trail decay in seconds                |
+| `iCursorTrailMinDistance`     | `float`        | Minimum trail movement in framebuffer pixels     |
+| `iCursorTrailColor`           | `vec3`         | Trail color (RGB), falling back to cursor color   |
 | `iFocus`, `iTimeFocus`        | `int`, `float` | Window focus and when it was last gained         |
 | `iBackgroundColor`            | `vec3`         | Terminal background                              |
 | `iForegroundColor`            | `vec3`         | Terminal foreground                              |

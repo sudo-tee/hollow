@@ -118,6 +118,20 @@ function M.setup(hollow, host_api, state)
     end
 
     hollow.util.merge_tables(state.config.values, hollow.util.clone_value(opts))
+    local legacy_unfocused = type(opts.unfocused_pane) == "table" and opts.unfocused_pane.cursor
+    local has_canonical_unfocused = type(opts.cursor) == "table" and opts.cursor.unfocused ~= nil
+    if
+      not has_canonical_unfocused
+      and type(opts.unfocused_pane) == "table"
+      and legacy_unfocused ~= nil
+    then
+      local cursor = state.config.values.cursor
+      if type(cursor) ~= "table" then
+        cursor = {}
+        state.config.values.cursor = cursor
+      end
+      cursor.unfocused = legacy_unfocused
+    end
     sync_runtime_package_paths(state.config.values)
 
     local resolved_theme = resolve_config_theme(state.config.values)

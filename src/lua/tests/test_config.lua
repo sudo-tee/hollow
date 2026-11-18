@@ -29,6 +29,16 @@ describe("config test suite", function()
         "config.set should update stored state"
       )
     end)
+
+    it("reads legacy unfocused cursors through the canonical option", function()
+      hollow.config.set({ unfocused_pane = { cursor = false } })
+      harness.assert_equal(hollow.config.get("cursor").unfocused, false)
+      hollow.config.set({
+        cursor = { unfocused = "block_hollow" },
+        unfocused_pane = { cursor = "bar" },
+      })
+      harness.assert_equal(hollow.config.get("cursor").unfocused, "block_hollow")
+    end)
   end)
 
   describe("config.snapshot", function()

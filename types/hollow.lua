@@ -396,13 +396,26 @@
 ---@field bold_italic? string
 ---@field fallbacks? string[]
 
+---@class HollowCursorTrailConfig
+---@field decay? integer
+---@field min_distance? number
+---@field color? string|false
+
 ---@class HollowCursorConfig
 ---@field style? HollowCursorStyle
 ---@field blink? boolean
 ---@field blink_rate? integer
+---@field blink_timeout? integer
+---@field bar_thickness? integer|false
+---@field underline_thickness? integer
+---@field hollow_thickness? integer
+---@field trail? HollowCursorTrailConfig|false
+---@field busy? HollowCursorStyle|false
+---@field unfocused? HollowCursorStyle|false
+---@field rounded? boolean
 
 ---@class HollowUnfocusedPaneConfig
----@field cursor? HollowCursorStyle|false
+---@field cursor? HollowCursorStyle|false Legacy alias for `cursor.unfocused`.
 ---@field dim? boolean|number
 ---@field dim_opacity? number
 

@@ -49,8 +49,10 @@ hollow.config.set({
   restore_window_placement = true, -- Windows: remember window size, position, and maximized state
   top_bar_mode = "always",
   split_width = 1,
+  cursor = {
+    unfocused = "block_hollow",
+  },
   unfocused_pane = {
-    cursor = "block_hollow",
     dim = 0.2,
   },
   window_titlebar_show = true,

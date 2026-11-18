@@ -313,6 +313,7 @@ pub const App = struct {
     override_config_path: ?[]u8 = null,
     frame_count: usize = 0,
     last_input_activity_ns: i128 = 0,
+    cursor_blink_start_ns: i128 = 0,
     last_resize_activity_ns: i128 = 0,
     last_visual_activity_ns: i128 = 0,
     previous_frame_slow: bool = false,
@@ -463,6 +464,13 @@ pub const App = struct {
         if (!self.action_queue.push(ev)) return false;
         const now_ns = io.nanoTimestamp();
         self.last_input_activity_ns = now_ns;
+        switch (ev) {
+            .key => |key| if (key.action != .release) {
+                self.cursor_blink_start_ns = now_ns;
+            },
+            .char, .paste, .paste_clipboard => self.cursor_blink_start_ns = now_ns,
+            else => {},
+        }
         self.last_visual_activity_ns = now_ns;
         input.signalWake(self);
         return true;
@@ -1050,6 +1058,7 @@ pub const App = struct {
             .allocator = allocator,
             .config = Config.init(allocator),
             .htp_codec = HtpCodec.init(allocator),
+            .cursor_blink_start_ns = io.nanoTimestamp(),
         };
     }
 
@@ -2225,7 +2234,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    pane.applyTerminalTheme(runtime, &self.config.terminal_theme);
+                    pane.applyTerminalConfig(runtime, &self.config);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domainName().len > 0) pane.domainName() else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
@@ -3648,7 +3657,7 @@ test "Lua panes survive app ticks and terminal-only input without terminal handl
     try std.testing.expectEqual(@as(u16, 10), pane.rows);
     try std.testing.expect(pane.asLua().?.dirty);
     pane.asLua().?.dirty = false;
-    pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
+    pane.applyTerminalConfig(runtime, &app.config);
     try std.testing.expect(pane.asLua().?.dirty);
     pane.asLua().?.dirty = false;
     try app.sendFocus(false);

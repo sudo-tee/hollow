@@ -22,7 +22,7 @@ pub fn yIsDown(target: Target) bool {
 
 pub const max_source_bytes = 256 * 1024;
 pub const max_log_bytes = 4096;
-pub const slot_count = 16;
+pub const slot_count = 18;
 
 pub const CursorStyle = enum(i32) {
     block = 0,
@@ -57,6 +57,9 @@ const macros =
     \\#define iCursorText hollow_globals[13].xyz
     \\#define iSelectionForegroundColor hollow_globals[14].xyz
     \\#define iSelectionBackgroundColor hollow_globals[15].xyz
+    \\#define iCursorTrailDecay hollow_globals[16].x
+    \\#define iCursorTrailMinDistance hollow_globals[16].y
+    \\#define iCursorTrailColor hollow_globals[17].xyz
     \\
     \\#define CURSORSTYLE_BLOCK        0
     \\#define CURSORSTYLE_BLOCK_HOLLOW 1
@@ -84,7 +87,7 @@ const macros =
 const block_version = "#version 430 core\n";
 const block_prefix =
     \\layout(std140, binding = 0) uniform Globals {
-    \\    vec4 hollow_globals[16];
+    \\    vec4 hollow_globals[18];
     \\    float iChannelTime[4];
     \\    vec3 iChannelResolution[4];
     \\    vec3 iPalette[256];
@@ -97,7 +100,7 @@ const block_prefix =
 // Linux requests a GL 3.3 core context.
 const plain_version = "#version 330 core\n";
 const plain_prefix =
-    \\uniform vec4 hollow_globals[16];
+    \\uniform vec4 hollow_globals[18];
     \\uniform float iChannelTime[4];
     \\uniform vec3 iChannelResolution[4];
     \\uniform vec3 iPalette[256];
@@ -145,6 +148,9 @@ pub const Uniforms = struct {
     foreground: [3]f32 = .{ 1, 1, 1 },
     cursor_color: [3]f32 = .{ 1, 1, 1 },
     cursor_text: [3]f32 = .{ 0, 0, 0 },
+    cursor_trail_decay: f32 = 0.3,
+    cursor_trail_min_distance: f32 = 0,
+    cursor_trail_color: [3]f32 = .{ 1, 1, 1 },
     selection_foreground: [3]f32 = .{ 0, 0, 0 },
     selection_background: [3]f32 = .{ 1, 1, 1 },
     palette: [256][3]f32 = std.mem.zeroes([256][3]f32),
@@ -185,6 +191,8 @@ pub const Uniforms = struct {
             f.rgb(self.cursor_text),
             f.rgb(self.selection_foreground),
             f.rgb(self.selection_background),
+            .{ self.cursor_trail_decay, self.cursor_trail_min_distance, 0, 0 },
+            f.rgb(self.cursor_trail_color),
         };
     }
 
@@ -352,7 +360,7 @@ test "shadertoy: GL keeps the user source after the plain prefix" {
     var log: Log = .{};
     const glsl = try compileFragment(testing.allocator, cursor_shader, .glsl, &log);
     defer testing.allocator.free(glsl);
-    try testing.expect(std.mem.startsWith(u8, glsl, "#version 330 core\n#define HOLLOW_Y_DOWN 0\nuniform vec4 hollow_globals[16];"));
+    try testing.expect(std.mem.startsWith(u8, glsl, "#version 330 core\n#define HOLLOW_Y_DOWN 0\nuniform vec4 hollow_globals[18];"));
     try testing.expect(std.mem.endsWith(u8, glsl, cursor_shader));
 }
 
@@ -373,10 +381,13 @@ test "shadertoy: rejects oversized sources" {
 }
 
 test "shadertoy: packs uniforms for both layouts" {
-    try testing.expectEqual(@as(usize, 4480), @sizeOf(Std140));
-    try testing.expectEqual(@as(usize, 3392), @sizeOf(Native));
+    try testing.expectEqual(@as(usize, 4512), @sizeOf(Std140));
+    try testing.expectEqual(@as(usize, 3424), @sizeOf(Native));
     var u: Uniforms = .{ .resolution = .{ 800, 600 }, .time = 2, .frame = 7, .cursor_visible = true, .current_cursor_style = .bar, .layer_opacity = 0.5, .window_alpha = 0.8 };
     u.palette[1] = .{ 1, 0.5, 0.25 };
+    u.cursor_trail_decay = 0.75;
+    u.cursor_trail_min_distance = 8;
+    u.cursor_trail_color = .{ 0, 0.5, 1 };
     var std140: Std140 = undefined;
     u.packStd140(&std140);
     try testing.expectEqual([4]f32{ 800, 600, 1, 2 }, std140.globals[0]);
@@ -385,8 +396,11 @@ test "shadertoy: packs uniforms for both layouts" {
     try testing.expectEqual(@as(f32, 0.5), std140.globals[9][2]);
     try testing.expectEqual(@as(f32, 0.8), std140.globals[9][3]);
     try testing.expectEqual([4]f32{ 1, 0.5, 0.25, 0 }, std140.palette[1]);
+    try testing.expectEqual([4]f32{ 0.75, 8, 0, 0 }, std140.globals[16]);
+    try testing.expectEqual([4]f32{ 0, 0.5, 1, 1 }, std140.globals[17]);
     var native: Native = undefined;
     u.packNative(&native);
+    try testing.expectEqual(std140.globals[16..18].*, native.globals[16..18].*);
     try testing.expectEqual([3]f32{ 1, 0.5, 0.25 }, native.palette[1]);
     try testing.expectEqual([3]f32{ 800, 600, 1 }, native.channel_resolution[0]);
 }

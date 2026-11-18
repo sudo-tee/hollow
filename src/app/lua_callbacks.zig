@@ -605,7 +605,7 @@ pub fn luaRefreshLiveConfigCallback(app_ptr: *anyopaque) void {
     if (app.ghostty) |*runtime| {
         if (app.mux) |*mux| {
             var panes = mux.paneIterator();
-            while (panes.next()) |pane| pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
+            while (panes.next()) |pane| pane.applyTerminalConfig(runtime, &app.config);
         }
     }
     mux_ops.invalidateAllPanes(app);

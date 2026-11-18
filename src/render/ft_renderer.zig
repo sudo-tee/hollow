@@ -45,7 +45,6 @@ const contrastTextColor = color_math.contrastTextColor;
 const effectiveCursorColor = color_math.effectiveCursorColor;
 const lerpByte = color_math.lerpByte;
 const mixColor = color_math.mixColor;
-const CURSOR_BLINK_INTERVAL_MS = color_math.CURSOR_BLINK_INTERVAL_MS;
 const RowSelectionBounds = color_math.RowSelectionBounds;
 const rowSelectionBounds = color_math.rowSelectionBounds;
 const encodeUtf8 = text_util.encodeUtf8;
