@@ -12,11 +12,24 @@ local levels = {
 return sheet.define("topbar", {
   divider = { fg = "divider" },
   new_tab = {
-    bg = "tab_inactive_bg",
     fg = "tab_inactive_fg",
     radius = 4,
     padding = { left = 5, right = 5, top = 1, bottom = 2 },
     margin = { left = 1 },
+    hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
+  },
+  close_button = {
+    fg = "tab_inactive_fg",
+    radius = 4,
+    padding = { left = 8, right = 8, top = 1, bottom = 2 },
+    margin = { left = 1 },
+    hover = { bg = "#C42B1C", fg = "#FFFFFF" },
+  },
+  split_button = {
+    fg = "tab_inactive_fg",
+    padding = { left = 6, right = 6, top = 2, bottom = 2 },
+    margin = { right = 4 },
+    radius = 4,
     hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
   },
   attention_button = {

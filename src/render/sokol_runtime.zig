@@ -3836,6 +3836,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
     }
+    if (app.pending_window_minimize) {
+        app.pending_window_minimize = false;
+        c.hollow_minimize_window();
+    }
+
     if (g_ft_renderer) |*renderer| {
         renderer.translucent_bg = app.config.background.translucentCells();
         renderer.cell_bg_alpha = app.config.background.cellAlpha();

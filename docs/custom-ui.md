@@ -133,6 +133,23 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 }))
 ```
 
+Split and window buttons are hidden by default and can be enabled independently:
+
+```lua
+hollow.ui.topbar.configure({
+  split_right = true,
+  split_down = true,
+  minimize = true,
+  close = true,
+})
+```
+
+Split buttons act on the active pane.
+Minimize and Close act on the Hollow window, not the current tab or pane.
+Top-bar buttons and single-icon `hollow.ui.components.button` labels are horizontally centered using the visible glyph.
+Use equal left and right padding instead of compensating for a particular icon font.
+Use `false` to hide a button again, or pass a table such as `close = { text = "Close" }` to customize it.
+
 Bar-level primitives live under `hollow.ui.bar` and can be reused by
 other bars:
 

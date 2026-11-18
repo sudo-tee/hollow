@@ -729,6 +729,16 @@ pub fn luaRequestRedrawCallback(app_ptr: *anyopaque) void {
     app.requestRedraw();
 }
 
+pub fn luaRequestWindowMinimizeCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.pending_window_minimize = true;
+}
+
+pub fn luaRequestWindowCloseCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.pending_quit = true;
+}
+
 pub fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_selection);

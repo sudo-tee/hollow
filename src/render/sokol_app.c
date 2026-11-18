@@ -18,6 +18,20 @@
 #include "fontstash.h"
 #include "util/sokol_fontstash.h"
 
+void hollow_minimize_window(void) {
+#if defined(_WIN32)
+    HWND window = (HWND) sapp_win32_get_hwnd();
+    if (window) PostMessageW(window, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+#else
+    Display* display = (Display*) sapp_x11_get_display();
+    Window window = (Window) (uintptr_t) sapp_x11_get_window();
+    XWindowAttributes attrs;
+    if (!display || !window || !XGetWindowAttributes(display, window, &attrs)) return;
+    XIconifyWindow(display, window, XScreenNumberOfScreen(attrs.screen));
+    XFlush(display);
+#endif
+}
+
 /* Read the completed swapchain pass before present. Pixels are top-down RGBA. */
 bool hollow_capture_frame(uint8_t* rgba, int width, int height) {
     if (!rgba || width <= 0 || height <= 0) return false;

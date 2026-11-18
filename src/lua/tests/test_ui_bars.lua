@@ -130,6 +130,95 @@ describe("UI bars test suite", function()
       )
       hollow.ui.overlay.clear()
     end)
+
+    it("shows split and window buttons only when enabled and dispatches their clicks", function()
+      hollow.ui.topbar.configure({ cwd = false, key_legend = false, time = false })
+
+      local function button(id)
+        for _, item in ipairs(hollow.ui._topbar_state().items) do
+          if item.id == id then
+            return item
+          end
+        end
+      end
+
+      assert.is_nil(button("split-right-button"))
+      assert.is_nil(button("split-down-button"))
+      assert.is_nil(button("window-minimize-button"))
+      assert.is_nil(button("window-close-button"))
+
+      hollow.ui.topbar.configure({ split_right = true })
+      assert.equals("", button("split-right-button").text)
+      assert.is_nil(button("split-down-button"))
+      assert.is_nil(button("window-minimize-button"))
+      assert.is_nil(button("window-close-button"))
+
+      hollow.ui.topbar.configure({
+        split_down = true,
+        minimize = true,
+        close = { id = "close-test", text = "Close" },
+      })
+      assert.equals("", button("split-down-button").text)
+      assert.equals("−", button("window-minimize-button").text)
+      assert.equals("Close", button("close-test").text)
+      assert.equals(9, button("window-minimize-button").style.margin.left)
+      assert.equals(1, button("close-test").style.margin.left)
+
+      hollow.ui.topbar.configure({ minimize = false })
+      assert.equals(9, button("close-test").style.margin.left)
+      hollow.ui.topbar.configure({ minimize = true })
+
+      local items = hollow.ui._topbar_state().items
+      local on_right = false
+      for _, item in ipairs(items) do
+        if item.kind == "spacer" then
+          on_right = true
+        elseif item.id == "split-right-button" or item.id == "split-down-button" then
+          assert.is_true(on_right)
+          assert.is_nil(item.style.bg)
+          assert.same({ left = 7, right = 7, top = 2, bottom = 2 }, item.style.padding)
+        end
+      end
+
+      hollow._emit_builtin_event("topbar:hover", { id = "split-right-button" })
+      assert.is_not_nil(button("split-right-button").style.bg)
+      assert.is_nil(button("split-down-button").style.bg)
+      hollow._emit_builtin_event("topbar:leave", {})
+      assert.is_nil(button("split-right-button").style.bg)
+
+      local close_bg = button("close-test").style.bg
+      hollow._emit_builtin_event("topbar:hover", { id = "close-test" })
+      assert.equals("#c42b1c", button("close-test").style.bg:lower())
+      hollow._emit_builtin_event("topbar:leave", {})
+      assert.equals(close_bg, button("close-test").style.bg)
+
+      local split = stub(host_api, "split_pane")
+      local minimize = stub(host_api, "request_window_minimize")
+      local close = stub(host_api, "request_window_close")
+
+      hollow._emit_builtin_event("topbar:click", { id = "split-right-button" })
+      hollow._emit_builtin_event("topbar:click", { id = "split-down-button" })
+      hollow._emit_builtin_event("topbar:click", { id = "window-minimize-button" })
+      hollow._emit_builtin_event("topbar:click", { id = "close-test" })
+      assert.stub(split).was.called_with({ direction = "vertical" })
+      assert.stub(split).was.called_with({ direction = "horizontal" })
+      assert.stub(minimize).was.called(1)
+      assert.stub(close).was.called(1)
+      split:revert()
+      minimize:revert()
+      close:revert()
+
+      hollow.ui.topbar.configure({
+        split_right = false,
+        split_down = false,
+        minimize = false,
+        close = false,
+      })
+      assert.is_nil(button("split-right-button"))
+      assert.is_nil(button("split-down-button"))
+      assert.is_nil(button("window-minimize-button"))
+      assert.is_nil(button("close-test"))
+    end)
   end)
 
   describe("tabs max_width", function()

@@ -1084,6 +1084,14 @@
 ---@field format? string
 ---@field style? HollowUiNodeStyle|HollowHexColor
 
+---@class HollowUiTopbarButtonOptions
+---@field id? string
+---@field text? string
+---@field style? HollowUiNodeStyle
+
+---@class HollowUiTopbarNewTabOptions: HollowUiTopbarButtonOptions
+---@field shifted_text? string
+
 ---@class HollowUiTopbarConfigureOptions
 ---@field height? integer
 ---@field style? HollowUiNodeStyle|HollowHexColor
@@ -1091,7 +1099,11 @@
 ---@field workspace? false|HollowUiBarWorkspaceOptions
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
----@field new_tab? false|{ id?: string, text?: string, shifted_text?: string, style?: HollowUiNodeStyle }
+---@field new_tab? false|HollowUiTopbarNewTabOptions
+---@field split_right? boolean|HollowUiTopbarButtonOptions Split the active pane side by side. Off by default.
+---@field split_down? boolean|HollowUiTopbarButtonOptions Split the active pane top to bottom. Off by default.
+---@field minimize? boolean|HollowUiTopbarButtonOptions Minimize the window. Off by default.
+---@field close? boolean|HollowUiTopbarButtonOptions Close the window. Off by default.
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions
 ---@field time? false|string|HollowUiTopbarTimeOptions

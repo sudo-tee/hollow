@@ -414,6 +414,10 @@ hollow.ui.topbar.invalidate()       -- redraw
 `configure` is for partial tweaks; the shipped top bar stays put.
 `mount` is for a complete replacement.
 
+`split_right`, `split_down`, `minimize`, and `close` are off by default.
+Set an option to `true` to show its button, `false` to hide it, or pass `{ id?, text?, style? }` to show and customize it.
+See [Custom UI](../../custom-ui.md#top-bar) for an example.
+
 ## Bottom bar
 
 ```lua

@@ -266,6 +266,8 @@ pub const AppCallbacks = struct {
     set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
     request_layout_refresh: *const fn (app: *anyopaque) void,
     request_redraw: ?*const fn (app: *anyopaque) void = null,
+    request_window_minimize: ?*const fn (app: *anyopaque) void = null,
+    request_window_close: ?*const fn (app: *anyopaque) void = null,
     copy_selection: *const fn (app: *anyopaque) void,
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
     clipboard_read: ?*const fn (app: *anyopaque) []const u8 = null,
@@ -2615,6 +2617,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_request_redraw, 1);
         api.set_field(self.state, -2, "request_redraw");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_request_window_minimize, 1);
+        api.set_field(self.state, -2, "request_window_minimize");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_request_window_close, 1);
+        api.set_field(self.state, -2, "request_window_close");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
@@ -7039,6 +7049,18 @@ fn l_request_redraw(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const cbs = ctx.app_callbacks orelse return 0;
     if (cbs.request_redraw) |callback| callback(cbs.app) else cbs.request_layout_refresh(cbs.app);
+    return 0;
+}
+
+fn l_request_window_minimize(state: *State) callconv(.c) c_int {
+    const cbs = bridgeContext(state).app_callbacks orelse return 0;
+    if (cbs.request_window_minimize) |callback| callback(cbs.app);
+    return 0;
+}
+
+fn l_request_window_close(state: *State) callconv(.c) c_int {
+    const cbs = bridgeContext(state).app_callbacks orelse return 0;
+    if (cbs.request_window_close) |callback| callback(cbs.app);
     return 0;
 }
 
