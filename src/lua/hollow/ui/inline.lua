@@ -13,6 +13,11 @@ ui.styles = require("hollow.ui.recipes.common")
 local bar = ui.bar or {}
 ui.bar = bar
 
+--- Request a frame without invalidating UI layout.
+function ui.request_redraw()
+  require("hollow.state").get().host_api.request_redraw()
+end
+
 --- Whether the Hollow window, not merely its active pane, has OS focus.
 function ui.is_focused()
   local state = require("hollow.state").get()

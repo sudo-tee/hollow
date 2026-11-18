@@ -51,6 +51,7 @@ hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
+hollow.ui.request_redraw()          -- request a frame without invalidating layout
 hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
 hollow.ui.each(list, fn)            -- map dense list to child fragment
 hollow.ui.join(items, sep)          -- join truthy children
@@ -905,6 +906,7 @@ hollow.ui.select.open({
   search_text = function(item) return item.name end,
   detail = function(item) return item.desc end,
   prompt = "Workspaces",
+  on_selection_changed = function(item) end, -- preview; nil when no matches
   query = "",
   fuzzy = true,
   width = 60, height = 20, max_height = 30,
@@ -919,6 +921,18 @@ hollow.ui.select.open({
 })
 hollow.ui.select.close()
 ```
+
+`on_selection_changed(item)` fires on mount and when the selected item changes.
+Changes include navigation, clicks, filtering, and live updates.
+It receives `nil` when there is no selection.
+It does not run for unchanged redraws.
+Live table items are compared by `id` when present, otherwise by table reference.
+Grouped headings pass their `group_item` payload, or `nil` if none is configured.
+The callback runs before an action on a newly selected row.
+It is picker-local, not a global event, and does not confirm or close the picker.
+Keep it fast; debounce expensive previews in your plugin.
+Use `on_cancel` to restore a cancelled preview.
+Use `on_unmount` for cleanup on every close, including programmatic close.
 
 Labels and details can be plain strings, span nodes, or shorthand
 `{ "text", fg = "...", bold = true }` tables. `search_text` controls

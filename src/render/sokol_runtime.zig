@@ -3,6 +3,8 @@ const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
+const BackgroundImage = @import("background_image.zig").BackgroundImage;
+const post_shader = @import("post_shader.zig");
 const window_placement = if (builtin.os.tag == .windows) @import("window_placement_windows.zig") else struct {};
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
@@ -20,7 +22,8 @@ const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 const terminal_render_app = @import("terminal_render_app.zig");
 const FtRendererConfig = @import("font_config.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
-const PaneCache = @import("pane_cache.zig").PaneCache;
+const pane_cache = @import("pane_cache.zig");
+const PaneCache = pane_cache.PaneCache;
 const Pane = @import("../pane.zig").Pane;
 const TerminalPane = @import("../term/terminal_pane.zig").TerminalPane;
 const selection = @import("../selection.zig");
@@ -51,6 +54,58 @@ const LuaPanePrepare = struct {
     changed: bool = false,
 };
 var g_lua_pane_prepare: ?*LuaPanePrepare = null;
+/// The window surface carries alpha. Decided once before the window opens.
+var g_transparent_surface = false;
+var g_requested_backdrop: ?Config.Background.Backdrop = null;
+var g_backdrop_active = false;
+var g_background_image: BackgroundImage = .{};
+var g_post_chain: post_shader.Chain = .{};
+
+fn rgbUniform(color: ghostty.ColorRgb) [3]f32 {
+    return .{
+        @as(f32, @floatFromInt(color.r)) / 255.0,
+        @as(f32, @floatFromInt(color.g)) / 255.0,
+        @as(f32, @floatFromInt(color.b)) / 255.0,
+    };
+}
+
+/// Feed the focused pane's cursor and colours to the custom shader chain.
+/// `ox`/`oy` place the pane in the framebuffer.
+fn notePostShaderPane(app: *App, renderer: *FtRenderer, runtime: *ghostty.Runtime, pane: *Pane, ox: f32, oy: f32, fb_h: f32, now_ns: i128) void {
+    if (!g_post_chain.anyActive()) return;
+    const term = readyTerminal(pane) orelse return;
+    const cfg = &app.config;
+    const pad = if (term.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) cfg.alternate_screen_padding else cfg.terminal_padding;
+    const pad_x = (cfg.fonts.padding_x + @as(f32, @floatFromInt(pad.left))) * renderer.dpi_scale;
+    const pad_y = (cfg.fonts.padding_y + @as(f32, @floatFromInt(pad.top))) * renderer.dpi_scale;
+    const state = terminal_render_app.shaderState(renderer, runtime, cfg, app, pane, term.render_state, pad_x, pad_y) orelse return;
+
+    const u = &g_post_chain.uniforms;
+    u.background = rgbUniform(state.background);
+    u.foreground = rgbUniform(state.foreground);
+    u.cursor_color = rgbUniform(state.cursor);
+    u.cursor_text = rgbUniform(state.cursor_text);
+    u.selection_background = rgbUniform(state.selection_bg);
+    u.selection_foreground = rgbUniform(state.selection_fg);
+    for (&u.palette, state.palette) |*dst, src| dst.* = rgbUniform(src);
+
+    if (state.cursor_rect) |r| {
+        const left = ox + r[0];
+        const top = oy + r[1];
+        // Like Ghostty, the rect origin is the cursor's left +Y edge in the
+        // backend's native fragment coordinates.
+        const rect: [4]f32 = if (post_shader.y_is_down) .{ left, top + r[3], r[2], r[3] } else .{ left, fb_h - top, r[2], r[3] };
+        const rgb = u.cursor_color;
+        g_post_chain.noteCursor(now_ns, rect, .{ rgb[0], rgb[1], rgb[2], 1 });
+    }
+    const style: post_shader.CursorStyle = if (state.cursor_style) |s| switch (s) {
+        .block => .block,
+        .block_hollow => .block_hollow,
+        .bar => .bar,
+        .underline => .underline,
+    } else u.current_cursor_style;
+    g_post_chain.noteCursorStyle(style, state.cursor_visible);
+}
 
 fn prepareLuaPane(runtime: *lua_mod.Runtime) void {
     const ctx = g_lua_pane_prepare orelse return;
@@ -697,6 +752,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_CAPTION_COLOR: u32 = 35;
     const DWMWA_TEXT_COLOR: u32 = 36;
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
@@ -1010,6 +1066,9 @@ const PaneCacheEntry = struct {
     /// one full clear so the padding and any untouched pixels match the new theme.
     last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
     has_bg_color: bool = false,
+    last_translucent_bg: bool = false,
+    last_cell_bg_alpha: u8 = 255,
+    last_powerline_generation: u32 = 0,
     /// Open-addressing map: opaque, scroll-stable row ID → cell-content hash.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
     row_map_keys: [ROW_MAP_CAP]ghostty.RowId = @splat(ROW_MAP_EMPTY),
@@ -2219,10 +2278,14 @@ fn roundedRectRowInset(h: f32, radius: f32, sample_y: f32) f32 {
 }
 
 fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8, a: u8) void {
+    drawRoundedRectWithAlphaMode(x, y, w, h, radius, r, g, b, a, false);
+}
+
+fn drawRoundedRectWithAlphaMode(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) void {
     if (w <= 0 or h <= 0) return;
     const clamped_radius = @min(radius, @min(w, h) * 0.5);
     if (clamped_radius <= 0.5) {
-        drawBorderRect(x, y, w, h, r, g, b, a);
+        drawBorderRectWithAlphaMode(x, y, w, h, r, g, b, a, preserve_alpha);
         return;
     }
 
@@ -2240,15 +2303,15 @@ fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b:
         const fringe = full_inset - inset;
         const row_x = x + full_inset;
         const row_w = w - full_inset * 2.0;
-        if (row_w > 0) drawBorderRect(row_x, row_y, row_w, row_h, r, g, b, a);
+        if (row_w > 0) drawBorderRectWithAlphaMode(row_x, row_y, row_w, row_h, r, g, b, a, preserve_alpha);
 
         if (fringe > 0.001 and a > 0) {
             const fringe_alpha = @as(u8, @intFromFloat(@round(std.math.clamp(fringe, 0.0, 1.0) * @as(f32, @floatFromInt(a)))));
             if (fringe_alpha > 0) {
                 const left_x = x + full_inset - 1.0;
                 const right_x = x + w - full_inset;
-                if (left_x >= x) drawBorderRect(left_x, row_y, 1.0, row_h, r, g, b, fringe_alpha);
-                if (right_x + 1.0 <= x + w) drawBorderRect(right_x, row_y, 1.0, row_h, r, g, b, fringe_alpha);
+                if (left_x >= x) drawBorderRectWithAlphaMode(left_x, row_y, 1.0, row_h, r, g, b, fringe_alpha, preserve_alpha);
+                if (right_x + 1.0 <= x + w) drawBorderRectWithAlphaMode(right_x, row_y, 1.0, row_h, r, g, b, fringe_alpha, preserve_alpha);
             }
         }
     }
@@ -2313,7 +2376,11 @@ fn drawRoundedRectOutline(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness
 }
 
 fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
-    if (style.bg) |bg| drawRoundedRect(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255);
+    drawBarBackgroundWithAlphaMode(x, y, w, h, style, false);
+}
+
+fn drawBarBackgroundWithAlphaMode(x: f32, y: f32, w: f32, h: f32, style: BarStyle, preserve_alpha: bool) void {
+    if (style.bg) |bg| drawRoundedRectWithAlphaMode(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255, preserve_alpha);
     if (style.border) |border| {
         drawRoundedRectOutline(x, y, w, h, style.radius, 1.0, border.r, border.g, border.b, 72);
     }
@@ -2620,7 +2687,9 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
     const frame_w = frame.width;
     const frame_h = frame.height;
     if (widget.style.bg != null or widget.style.border != null) {
-        drawBarBackground(frame_x, frame_y, frame_w, frame_h, widget.style);
+        // Tint the existing background without covering its desktop material.
+        // Child tab highlights and labels still use ordinary opaque UI paint.
+        drawBarBackgroundWithAlphaMode(frame_x, frame_y, frame_w, frame_h, widget.style, g_transparent_surface);
     }
 
     const content_y = frame_y + widget.layout.padding.top;
@@ -2749,6 +2818,7 @@ const WidgetRenderCtx = struct {
 
 var g_widget_render_ctx: ?WidgetRenderCtx = null;
 var g_rect_pip: c.sgl_pipeline = .{ .id = 0 };
+var g_background_overlay_pip: c.sgl_pipeline = .{ .id = 0 };
 
 const WidgetPreRasterCtx = struct {
     app: *App,
@@ -3295,6 +3365,8 @@ pub fn run(app: *App) !void {
     @memset(g_last_window_title[0..], 0);
     g_gui_ready_fired = false;
     g_window_chrome_applied = false;
+    g_requested_backdrop = null;
+    g_backdrop_active = false;
     g_prev_wnd_proc = 0;
     g_subclassed_hwnd = null;
     g_window_iconified = false;
@@ -3352,6 +3424,7 @@ pub fn run(app: *App) !void {
     g_drag_node = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
+    g_transparent_surface = app.config.background.opacity < 1.0;
 
     var host = WindowHost.init(.{
         .context = app,
@@ -3365,6 +3438,7 @@ pub fn run(app: *App) !void {
         .height = @intCast(app.config.window_height),
         .title = titleCString(app.config.windowTitle()),
         .vsync = app.config.vsync,
+        .transparent = g_transparent_surface,
         .background = defaultClearColor(app),
         .before_show = if (builtin.os.tag == .windows) beforeShowCb else null,
     });
@@ -3457,10 +3531,11 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     sg_desc.max_commit_listeners = MAX_PANE_CACHES * 2 + 64;
     // Each pane cache ends up consuming a surprising number of sg pipelines:
     // one sokol_gl context default pipeline (5 backend pipelines) plus one
-    // extra pane atlas pipeline (another 5). With 6 panes we exceed sokol_gfx's
-    // default pipeline pool size of 64 and crash during cache creation. Lua
+    // extra pane atlas and solid RGBA pipelines (another 10). With 6 panes we
+    // exceed sokol_gfx's default pipeline pool size of 64. Lua
     // panes may lazily add a straight-alpha rectangle pipeline (another 5).
-    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 18 + 64;
+    // Terminal panes may lazily add a Powerline cell fade pipeline (another 5).
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 28 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -3478,7 +3553,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
     // context and drops overlays like the cursor. Size the pool to our cache cap.
     sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
-    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 3 + 16;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 5 + 16;
     c.sgl_setup(&sgl_desc);
 
     const swapchain = c.sglue_swapchain();
@@ -3487,15 +3562,12 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     else
         c.sglue_environment().defaults.color_format;
 
-    var rect_pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
-    rect_pip_desc.colors[0].blend.enabled = true;
-    rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
-    rect_pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
-    rect_pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    var rect_pip_desc = pane_cache.uiRectPipelineDescriptor();
     rect_pip_desc.colors[0].pixel_format = swapchain_color_format;
     rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
+    rect_pip_desc.colors[0].blend = backgroundTintBlend();
+    g_background_overlay_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     if (!g_window_chrome_applied) g_window_chrome_applied = applyWindowChrome(app);
     if (builtin.os.tag == .windows and app.config.restore_window_placement) {
@@ -3598,6 +3670,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (builtin.os.tag == .windows and !g_window_chrome_applied) {
         g_window_chrome_applied = applyWindowChrome(app);
     }
+    if (builtin.os.tag == .windows and g_requested_backdrop != app.config.background.backdrop) {
+        if (c.sapp_win32_get_hwnd()) |hwnd| {
+            applyWindowBackdrop(@ptrCast(@constCast(hwnd)), app);
+        }
+    }
     g_frame_index += 1;
     if (g_frames_since_drag_release < std.math.maxInt(usize)) g_frames_since_drag_release += 1;
     if (g_ignore_resize_frames > 0) g_ignore_resize_frames -= 1;
@@ -3633,12 +3710,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    const current_shader_bg = g_post_chain.background_options orelse app.config.background;
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app);
+        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
+            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, current_shader_bg);
     }
-    const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
+    var use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
     if (g_drag_node == null and !visually_active) {
         // With vsync on, a long pre-render idle sleep can push a newly-active
@@ -3652,17 +3731,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             g_idle_frame_ns;
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
-        const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        var idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        if (g_post_chain.backgroundDeadline(current_shader_bg)) |shader_deadline_ns| {
+            idle_deadline_ns = @min(idle_deadline_ns, shader_deadline_ns);
+        }
         if (profile_start != null) profile_before_idle_ns = io.nanoTimestamp() - frame_start_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
         busy_start_ns = io.nanoTimestamp();
         // Returning without also suppressing the backend present rotates to an
         // unrendered flip-model buffer on D3D11, producing a black flash.
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending) {
+        const shader_wake = g_post_chain.wantsFrame(busy_start_ns, app.config.custom_shader.animation, current_shader_bg);
+        if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending and !shader_wake) {
             c.sapp_skip_present();
             return;
         }
+        if (shader_wake) use_idle_frame_cap = false;
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
@@ -3686,6 +3770,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (app.pending_renderer_refresh) {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
+    }
+    if (g_ft_renderer) |*renderer| {
+        renderer.translucent_bg = app.config.background.translucentCells();
+        renderer.cell_bg_alpha = app.config.background.cellAlpha();
     }
 
     // Resolve background color for the clear pass.
@@ -3783,7 +3871,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             invalidatePaneCacheForPane(pane);
         }
     }
-    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame;
+    // Direct rendering redraws partially over the swapchain, which cannot
+    // leave default-background cells clear.
+    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame and !app.config.background.translucentCells();
     const use_safe_render = app.config.renderer_safe_mode and !sync_cache_supported;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
     const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !sync_cache_supported;
@@ -3915,7 +4005,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
                         }
                     }
+                    const translucent_bg = cfg.background.translucentCells();
+                    const cell_bg_alpha = cfg.background.cellAlpha();
                     const background_changed = !cache_entry.has_bg_color or
+                        cache_entry.last_translucent_bg != translucent_bg or
+                        cache_entry.last_cell_bg_alpha != cell_bg_alpha or
+                        cache_entry.last_powerline_generation != cfg.background.powerline.generation or
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
@@ -4149,6 +4244,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.pty_burst_active = pty_active;
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
+                    cache_entry.last_translucent_bg = translucent_bg;
+                    cache_entry.last_cell_bg_alpha = cell_bg_alpha;
+                    cache_entry.last_powerline_generation = cfg.background.powerline.generation;
                     cache_entry.prev_cursor_row = cursor_row;
                     cache_entry.last_cursor_row = cursor_row;
                     cache_entry.last_cursor_col = cursor_col;
@@ -4382,11 +4480,66 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         _ = renderer.uploadGlyphVerts();
     }
 
+    g_background_image.sync(app.allocator, app.config.background.image);
+    var shader_notice: @import("shaders/shadertoy.zig").Log = .{};
+    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background, app.config.custom_shader.generation, &shader_notice);
+    const shader_bg = g_post_chain.background_options orelse app.config.background;
+    const shader_now_ns = io.nanoTimestamp();
+    if (g_post_chain.anyActive()) {
+        g_post_chain.noteFocus(shader_now_ns, app.window_focused);
+        if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| if (app.activePane()) |active_pane| {
+            var ox: f32 = 0;
+            var oy: f32 = 0;
+            for (leaves) |leaf| if (leaf.pane == active_pane) {
+                ox = @floatFromInt(leaf.bounds.x);
+                oy = @floatFromInt(leaf.bounds.y);
+            };
+            notePostShaderPane(app, renderer, runtime, active_pane, ox, oy, height, shader_now_ns);
+        };
+        g_post_chain.beginFrame(shader_now_ns, width, height);
+    }
+
+    const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
+    g_post_chain.prepareBackground(shader_bg, @intFromFloat(width), @intFromFloat(height), shader_now_ns, clear_alpha);
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
-    g_swapchain_pass.swapchain = c.sglue_swapchain();
+    const shader_scene = g_post_chain.sceneAttachments(@intFromFloat(width), @intFromFloat(height));
+    if (shader_scene) |attachments| {
+        g_swapchain_pass.attachments = attachments;
+    } else {
+        g_swapchain_pass.swapchain = c.sglue_swapchain();
+    }
     g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-    g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+    g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
+    g_post_chain.drawBackground(shader_bg.shader_opacity, shader_bg.shader_brightness, clear_alpha);
+    // Background layers must precede even terminal geometry queued before this pass.
+    c.sgl_layer(-4);
+    if (g_ft_renderer) |*renderer| {
+        const bg = app.config.background;
+        g_background_image.draw(renderer.atlas_pip, bg.image_fit, bg.image_opacity, width, height);
+    }
+    if (app.config.background.overlay_color) |color| {
+        const opacity = app.config.background.overlay_opacity;
+        if (opacity > 0) {
+            c.sgl_defaults();
+            c.sgl_viewport(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+            c.sgl_scissor_rect(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+            c.sgl_load_pipeline(g_background_overlay_pip);
+            c.sgl_matrix_mode_projection();
+            c.sgl_load_identity();
+            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+            const scale = opacity / 255.0;
+            c.sgl_begin_quads();
+            c.sgl_c4f(@as(f32, @floatFromInt(color.r)) * scale, @as(f32, @floatFromInt(color.g)) * scale, @as(f32, @floatFromInt(color.b)) * scale, opacity);
+            c.sgl_v2f(0, 0);
+            c.sgl_v2f(width, 0);
+            c.sgl_v2f(width, height);
+            c.sgl_v2f(0, height);
+            c.sgl_end();
+            c.sgl_load_default_pipeline();
+        }
+    }
+    c.sgl_layer(0);
     var swapchain_panes_ns: i128 = 0;
     var swapchain_ui_ns: i128 = 0;
     var swapchain_glyph_ns: i128 = 0;
@@ -4699,6 +4852,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     updateLuaPaneHover(app);
 
     // Flush all queued geometry — exactly once per frame.
+    c.sgl_draw_layer(-4);
     c.sgl_draw_layer(-3);
     c.sgl_draw_layer(-2);
     c.sgl_draw();
@@ -4732,16 +4886,26 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
+    if (shader_scene != null) g_post_chain.run();
     if (cmd_ipc.hasPendingScreenshot(app)) {
         const frame_width: usize = @intFromFloat(width);
         const frame_height: usize = @intFromFloat(height);
         const pixels = app.allocator.alloc(u8, frame_width * frame_height * 4) catch null;
         if (pixels) |rgba| {
             defer app.allocator.free(rgba);
-            cmd_ipc.finishScreenshot(app, if (c.hollow_capture_frame(rgba.ptr, @intCast(frame_width), @intCast(frame_height))) rgba else null, frame_width, frame_height);
+            const captured = c.hollow_capture_frame(rgba.ptr, @intCast(frame_width), @intCast(frame_height));
+            // Premultiplied pixels over black: export opaque, as PNG alpha is straight.
+            if (captured and g_transparent_surface) {
+                var i: usize = 3;
+                while (i < rgba.len) : (i += 4) rgba[i] = 255;
+            }
+            cmd_ipc.finishScreenshot(app, if (captured) rgba else null, frame_width, frame_height);
         } else cmd_ipc.finishScreenshot(app, null, 0, 0);
     }
     c.sg_commit();
+    if (shader_notice.slice().len != 0) {
+        if (app.lua) |*runtime| runtime.notifyError(shader_notice.slice());
+    }
     profile_rendered = true;
     const after_commit_ns = io.nanoTimestamp();
     if (profile_start != null) profile_active_wall = profile_before_idle_ns + after_commit_ns - busy_start_ns;
@@ -5095,6 +5259,8 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     g_grid_debug.deinit();
     for (&g_native_bars) |*surface| surface.deinit();
     g_native_debug.deinit();
+    if (appFromUserData(user_data)) |app| g_background_image.deinit(app.allocator);
+    g_post_chain.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window
@@ -5131,6 +5297,10 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_destroy_pipeline(g_rect_pip);
         g_rect_pip = .{ .id = 0 };
     }
+    if (g_background_overlay_pip.id != 0) {
+        c.sgl_destroy_pipeline(g_background_overlay_pip);
+        g_background_overlay_pip = .{ .id = 0 };
+    }
     c.sgl_shutdown();
     c.sg_shutdown();
 }
@@ -5154,7 +5324,7 @@ fn beforeShowCb(hwnd_raw: ?*const anyopaque, user_data: ?*anyopaque) callconv(.c
 }
 
 fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
-    applyNativeWindowColors(hwnd, app);
+    applyWindowBackdrop(hwnd, app);
 
     if (app.config.window_titlebar_show) return true;
 
@@ -5194,9 +5364,7 @@ fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
         @sizeOf(i32),
     );
 
-    const caption_color: u32 = @as(u32, app.config.top_bar_bg.r) |
-        (@as(u32, app.config.top_bar_bg.g) << 8) |
-        (@as(u32, app.config.top_bar_bg.b) << 16);
+    const caption_color = nativeCaptionColor(app.config.top_bar_bg, g_backdrop_active);
     _ = win32.DwmSetWindowAttribute(
         hwnd,
         win32.DWMWA_CAPTION_COLOR,
@@ -5213,14 +5381,53 @@ fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
     );
 }
 
+fn nativeCaptionColor(color: ghostty.ColorRgb, backdrop_active: bool) u32 {
+    // A forced caption colour overrides the material even under custom chrome
+    // when DWM extends the frame across the client area.
+    if (backdrop_active) return 0xFFFFFFFF; // DWMWA_COLOR_DEFAULT
+    return @as(u32, color.r) | (@as(u32, color.g) << 8) | (@as(u32, color.b) << 16);
+}
+
+test "native caption releases its solid tint for system backdrops and restores the theme" {
+    const theme = ghostty.ColorRgb{ .r = 0x24, .g = 0x20, .b = 0x38 };
+    try std.testing.expectEqual(@as(u32, 0x00382024), nativeCaptionColor(theme, false));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), nativeCaptionColor(theme, true));
+    try std.testing.expectEqual(@as(u32, 0x00382024), nativeCaptionColor(theme, false));
+}
+
+fn applyWindowBackdrop(hwnd: win32.HWND, app: *App) void {
+    if (builtin.os.tag != .windows) return;
+
+    const requested = app.config.background.backdrop;
+    if (g_requested_backdrop == requested) {
+        applyNativeWindowColors(hwnd, app);
+        return;
+    }
+    g_requested_backdrop = requested;
+    const was_active = g_backdrop_active;
+    const backdrop: u32 = @backingInt(requested);
+    // Older Windows versions reject this attribute. Keep the existing
+    // transparency path and do not retry a rejected request every frame.
+    const result = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, @sizeOf(u32));
+    g_backdrop_active = result >= 0 and requested != .none;
+    if (result < 0 and requested != .none) {
+        std.log.warn("Windows backdrop {s} unavailable (HRESULT 0x{x}); keeping existing transparency", .{ @tagName(requested), @as(u32, @bitCast(result)) });
+    }
+    // Update this on live material changes as well as during window creation.
+    applyNativeWindowColors(hwnd, app);
+    if (g_backdrop_active or was_active) extendDwmFrame(hwnd);
+}
+
 fn extendDwmFrame(hwnd: win32.HWND) void {
     if (builtin.os.tag != .windows) return;
 
+    // Extend the material across the client area, not only the resize border.
+    const margin: i32 = if (g_backdrop_active) -1 else 1;
     const margins = win32.MARGINS{
-        .cxLeftWidth = 1,
-        .cxRightWidth = 1,
-        .cyTopHeight = 1,
-        .cyBottomHeight = 1,
+        .cxLeftWidth = margin,
+        .cxRightWidth = margin,
+        .cyTopHeight = margin,
+        .cyBottomHeight = margin,
     };
     _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
 
@@ -6853,21 +7060,61 @@ fn readLineFromFile(path: []const u8, buf: []u8) ![]u8 {
 /// Draw a filled RGBA rectangle using the current sokol_gl projection.
 /// Assumes the default pipeline (no texture) is active.
 fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {
-    const rf = @as(f32, @floatFromInt(r)) / 255.0;
-    const gf = @as(f32, @floatFromInt(g)) / 255.0;
-    const bf = @as(f32, @floatFromInt(b)) / 255.0;
-    const af = @as(f32, @floatFromInt(a)) / 255.0;
-    if (g_rect_pip.id != 0) {
-        c.sgl_load_pipeline(g_rect_pip);
+    drawBorderRectWithAlphaMode(x, y, w, h, r, g, b, a, false);
+}
+
+fn backgroundTintBlend() c.sg_blend_state {
+    var blend = std.mem.zeroes(c.sg_blend_state);
+    blend.enabled = true;
+    blend.src_factor_rgb = c.SG_BLENDFACTOR_DST_ALPHA;
+    blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.src_factor_alpha = c.SG_BLENDFACTOR_DST_ALPHA;
+    blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    return blend;
+}
+
+fn rectPaintColor(r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) [4]f32 {
+    const alpha = @as(f32, @floatFromInt(a)) / 255.0;
+    const scale = (if (preserve_alpha) alpha else @as(f32, 1)) / 255.0;
+    return .{ @as(f32, @floatFromInt(r)) * scale, @as(f32, @floatFromInt(g)) * scale, @as(f32, @floatFromInt(b)) * scale, alpha };
+}
+
+fn drawBorderRectWithAlphaMode(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8, preserve_alpha: bool) void {
+    const color = rectPaintColor(r, g, b, a, preserve_alpha);
+    const pipeline = if (preserve_alpha) g_background_overlay_pip else g_rect_pip;
+    if (pipeline.id != 0) {
+        c.sgl_load_pipeline(pipeline);
     }
     c.sgl_begin_quads();
-    c.sgl_c4f(rf, gf, bf, af);
+    c.sgl_c4f(color[0], color[1], color[2], color[3]);
     c.sgl_v2f(x, y);
     c.sgl_v2f(x + w, y);
     c.sgl_v2f(x + w, y + h);
     c.sgl_v2f(x, y + h);
     c.sgl_end();
     c.sgl_load_default_pipeline();
+}
+
+test "bar surface tint preserves backdrop alpha including rounded edge coverage" {
+    const blend = backgroundTintBlend();
+    try std.testing.expect(blend.enabled);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_DST_ALPHA), blend.src_factor_rgb);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), blend.dst_factor_rgb);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_DST_ALPHA), blend.src_factor_alpha);
+    try std.testing.expectEqual(@as(c_uint, c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA), blend.dst_factor_alpha);
+    for ([_]f32{ 0, 0.2, 0.8, 1 }) |destination_alpha| {
+        for ([_]u8{ 0, 64, 128, 255 }) |coverage| {
+            const tint = rectPaintColor(255, 128, 0, coverage, true);
+            const result_alpha = tint[3] * destination_alpha + destination_alpha * (1 - tint[3]);
+            try std.testing.expectApproxEqAbs(destination_alpha, result_alpha, 0.00001);
+            try std.testing.expectApproxEqAbs(tint[3], tint[0], 0.00001);
+            try std.testing.expectApproxEqAbs(tint[3] * (128.0 / 255.0), tint[1], 0.00001);
+        }
+    }
+    // Text and tab highlights keep straight-alpha paint, independent of the backdrop.
+    const solid = rectPaintColor(255, 128, 0, 255, false);
+    try std.testing.expectEqual(@as(f32, 1), solid[0]);
+    try std.testing.expectEqual(@as(f32, 1), solid[3]);
 }
 
 test "Alt+F4 is the window close chord, not pane input" {

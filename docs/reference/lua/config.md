@@ -128,6 +128,45 @@ hollow.config.set({
 })
 ```
 
+### Background
+
+```lua
+hollow.config.set({
+  background = {
+    opacity = 0.9,          -- 0..1, window transparency (startup decides the surface)
+    backdrop = "acrylic",   -- Windows 11 22H2+; default "none"
+    cell_opacity = 0.7,     -- explicit cell backgrounds; default 1
+    powerline_opacity = true, -- fade separators with cell_opacity; default false
+    powerline_glyphs = { "◀", "▶" }, -- extend U+E0B0..U+E0BF; default {}
+    image = {               -- or a path string, or false
+      path = "/home/me/wallpaper.png",
+      fit = "cover",        -- "cover" | "contain" | "stretch" | "tile" | "center"
+      opacity = 0.5,
+    },
+    shader = {              -- or a path string, or false
+      path = "/home/me/shaders/aurora_background.glsl",
+      opacity = 1,
+      animate = true,       -- request animation redraws
+      max_fps = 30,         -- optional background-only refresh cap; default 0
+      render_scale = 0.5,   -- optional background-only resolution scale; default 1
+    },
+  },
+})
+```
+
+See [Background and transparency](../../background.md).
+
+### Custom Shaders
+
+```lua
+hollow.config.set({
+  custom_shader = "/home/me/shaders/cursor_smear.glsl", -- or a list, or false
+  shader_animation = "cursor", -- "cursor" | "always" | "off", or a boolean
+})
+```
+
+See [Custom shaders](../../custom-shaders.md).
+
 ### Mouse Cursor
 
 This option defaults to `true`. Set it to `false` to keep the OS mouse cursor

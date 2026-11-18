@@ -110,6 +110,11 @@ pub const QueueOptions = struct {
     row_map_keys: ?[]ghostty.RowId = null,
     row_map_vals: ?[]u64 = null,
     row_map_skip: bool = false,
+    /// Leave default-background cells clear so window layers show through.
+    translucent_bg: bool = false,
+    /// Alpha for explicit cell backgrounds over the window layers.
+    cell_bg_alpha: u8 = 255,
+    powerline: ?*const @import("../powerline.zig").Config = null,
     colors: QueueColors,
 
     inline fn useRowMap(self: @This()) bool {
@@ -227,13 +232,14 @@ pub fn queueTerminal(
 
     self.last_pass2_glyph_ns = pass2_glyph_ns;
     self.last_pass2_decoration_ns = pass2_decoration_ns;
+    c.sgl_load_default_pipeline();
 }
 
 // ── Pass management ───────────────────────────────────────────────────────────
 
 pub fn setupViewport(self: *FtRenderer, offset_x: f32, offset_y: f32, pane_w: f32, pane_h: f32) void {
-    _ = self;
     c.sgl_defaults();
+    c.sgl_load_pipeline(self.solid_pip);
     c.sgl_viewport(
         @as(c_int, @intFromFloat(offset_x)),
         @as(c_int, @intFromFloat(offset_y)),
@@ -289,7 +295,8 @@ pub fn queueBackgroundAndRasterPass(
 
     var row_y: usize = 0;
     var quads_open = false;
-    if (queue.force_full) {
+    // Translucent targets are already cleared to transparent.
+    if (queue.force_full and !queue.translucent_bg) {
         // Default background sits behind every image layer. Explicit cell
         // backgrounds remain on layer 0, above below-background images.
         c.sgl_layer(-3);
@@ -329,7 +336,12 @@ pub fn queueBackgroundAndRasterRow(
             c.sgl_begin_quads();
             quads_open.* = true;
         }
-        c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
+        // The default pipeline does not blend, so a transparent quad erases
+        // the row's previous pixels.
+        if (queue.translucent_bg)
+            c.sgl_c4b(0, 0, 0, 0)
+        else
+            c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
         c.sgl_v2f(0.0, row.py);
         c.sgl_v2f(pane_w, row.py);
         c.sgl_v2f(pane_w, row.py + self.cell_h);
@@ -345,6 +357,7 @@ pub fn queueBackgroundAndRasterRow(
     var last_style_valid = false;
     var last_style_info: CachedStyleInfo = undefined;
     var background_run_color: ?ghostty.ColorRgb = null;
+    var background_run_alpha: u8 = 255;
     var background_run_start = col_px;
     while (runtime.nextCell(queue.row_cells.*)) : ({
         col_x += 1;
@@ -395,13 +408,21 @@ pub fn queueBackgroundAndRasterRow(
         else
             null;
         if (background) |bg| {
-            if (background_run_color == null or !colorsEqual(background_run_color.?, bg)) {
-                flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+            // Selection, search and the block cursor stay opaque.
+            const in_block_cursor = if (queue.cursor_block) if (row.cursor_col) |cursor_col|
+                col_x >= cursor_col and col_x < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
+            else
+                false else false;
+            const fade_powerline = powerlineCell(self, runtime, queue, row, raw_cell, is_selected, col_x);
+            const alpha: u8 = if (is_selected or has_search_highlight or in_block_cursor or fade_powerline) 255 else queue.cell_bg_alpha;
+            if (background_run_color == null or !colorsEqual(background_run_color.?, bg) or background_run_alpha != alpha) {
+                flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
                 background_run_color = bg;
+                background_run_alpha = alpha;
                 background_run_start = col_px;
             }
         } else {
-            flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+            flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
         }
 
         switch (content_tag) {
@@ -500,7 +521,7 @@ pub fn queueBackgroundAndRasterRow(
             else => flushQueuedRun(self, .raster, run_buf, &run, row.py),
         }
     }
-    flushBackgroundRun(self, &background_run_color, background_run_start, col_px, row.py, quads_open);
+    flushBackgroundRun(self, &background_run_color, background_run_alpha, background_run_start, col_px, row.py, quads_open);
     flushQueuedRun(self, .raster, run_buf, &run, row.py);
 }
 
@@ -517,6 +538,7 @@ pub fn queueGlyphPass(
     if (!queue.helpersReady()) return stats;
     if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return stats;
 
+    c.sgl_load_pipeline(self.solid_pip);
     var row_y: usize = 0;
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
         const overlay_row = if (queue.overlay_row_fn) |callback| callback(queue.overlay_context, row_y) else false;
@@ -584,6 +606,23 @@ pub fn queueGlyphRow(
         } else null;
         const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
         const has_block_cursor = has_cursor and queue.cursor_block;
+
+        if (powerlineCell(self, runtime, queue, row, raw_cell, is_selected, col_x)) {
+            // Fade the foreground and its cell background together after glyph
+            // drawing. Fading only the glyph would double-blend coloured joins.
+            c.sgl_layer(2);
+            c.sgl_load_pipeline(self.powerline_pip);
+            c.sgl_disable_texture();
+            c.sgl_begin_quads();
+            c.sgl_c4b(0, 0, 0, queue.cell_bg_alpha);
+            c.sgl_v2f(col_px, row.py);
+            c.sgl_v2f(col_px + self.cell_w, row.py);
+            c.sgl_v2f(col_px + self.cell_w, row.py + self.cell_h);
+            c.sgl_v2f(col_px, row.py + self.cell_h);
+            c.sgl_end();
+            c.sgl_layer(0);
+            c.sgl_load_pipeline(self.solid_pip);
+        }
 
         if (queue.overlay_label_fn) |callback| {
             if (callback(queue.overlay_context, row.row_y, col_x)) |label_ch| {
@@ -723,7 +762,7 @@ pub fn queueCursorShapeRow(self: *FtRenderer, queue: *const QueueContext, row: R
 
     const cursor_width = if (row.cursor_wide and cursor_style != .bar) self.cell_w * 2.0 else self.cell_w;
     const px = columnPixelX(self, cursor_col, queue.col_count);
-    c.sgl_load_default_pipeline();
+    c.sgl_load_pipeline(self.solid_pip);
     drawCursor(px, row.py, cursor_width, self.cell_h, queue.colors.cursor_bg, cursor_style);
 }
 
@@ -777,7 +816,7 @@ pub fn drawRowDecorations(
         if (underline == 0 and !strikethrough and !overline and !hovered_link_visual) continue;
 
         if (!dec_quads_open) {
-            c.sgl_load_default_pipeline();
+            c.sgl_load_pipeline(self.solid_pip);
             c.sgl_begin_quads();
             dec_quads_open = true;
         }
@@ -942,9 +981,34 @@ pub fn resolveCellBackground(
     return bg;
 }
 
+fn powerlineCell(self: *FtRenderer, runtime: *ghostty.Runtime, queue: *const QueueContext, row: RowRenderInfo, raw_cell: u64, selected: bool, col: usize) bool {
+    if (self.powerline_pip.id == 0) return false;
+    if (!runtime.cellHasTextRaw(raw_cell)) return false;
+    const policy = queue.powerline orelse return false;
+    if (!policy.fades(runtime.cellCodepointRaw(raw_cell), queue.cell_bg_alpha, false)) return false;
+    const highlighted = (if (queue.search_cell_fn) |callback|
+        callback(queue.search_highlight_context, row.row_y, col) != null
+    else
+        false) or (if (row.search_highlight) |highlight|
+        col >= highlight.start_col and col < highlight.end_col
+    else
+        false);
+    const cursor = if (row.cursor_col) |cursor_col|
+        col >= cursor_col and col < cursor_col + @as(usize, if (row.cursor_wide) 2 else 1)
+    else
+        false;
+    const overlay = if (queue.overlay_row_fn) |callback| callback(queue.overlay_context, row.row_y) else false;
+    return !selected and !highlighted and !cursor and !overlay;
+}
+
+inline fn premultiply(channel: u8, alpha: u8) u8 {
+    return @intCast((@as(u16, channel) * alpha + 127) / 255);
+}
+
 pub fn flushBackgroundRun(
     self: *FtRenderer,
     color: *?ghostty.ColorRgb,
+    alpha: u8,
     start_x: f32,
     end_x: f32,
     py: f32,
@@ -953,7 +1017,9 @@ pub fn flushBackgroundRun(
     const bg = color.* orelse return;
     self.last_bg_rects += 1;
     openQuadBatch(self, quads_open);
-    c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+    // The pane target is premultiplied and this pipeline writes without
+    // blending, so a translucent run replaces the row's previous pixels.
+    c.sgl_c4b(premultiply(bg.r, alpha), premultiply(bg.g, alpha), premultiply(bg.b, alpha), alpha);
     c.sgl_v2f(start_x, py);
     c.sgl_v2f(end_x, py);
     c.sgl_v2f(end_x, py + self.cell_h);

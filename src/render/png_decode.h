@@ -24,6 +24,16 @@ bool hollow_decode_png_bytes(
     size_t* out_len
 );
 
+/* PNG or JPEG. Free with hollow_decode_png_bytes_free. */
+bool hollow_decode_image_bytes(
+    const uint8_t* data,
+    size_t data_len,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint8_t** out_pixels,
+    size_t* out_len
+);
+
 void hollow_decode_png_bytes_free(uint8_t* pixels);
 
 #endif

@@ -158,6 +158,8 @@ pub const FtRenderer = struct {
     atlas_ui_smp: c.sg_sampler,
     kitty_image_smp: c.sg_sampler,
     atlas_pip: c.sgl_pipeline,
+    solid_pip: c.sgl_pipeline,
+    powerline_pip: c.sgl_pipeline = .{ .id = 0 },
     /// Atlas page currently bound for sgl UI draws.
     sgl_bound_atlas: u8 = 0,
 
@@ -275,6 +277,10 @@ pub const FtRenderer = struct {
     shaped_run_read_idx: usize = 0,
     style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = @splat(null),
     render_colors_scratch: ghostty.RenderStateColors = undefined,
+    /// Leave default-background cells transparent. Set once per frame.
+    translucent_bg: bool = false,
+    /// Alpha for explicit cell backgrounds. Set once per frame.
+    cell_bg_alpha: u8 = 255,
     offscreen_pass_scratch: c.sg_pass = std.mem.zeroes(c.sg_pass),
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
@@ -411,13 +417,10 @@ pub const FtRenderer = struct {
 
         // Pipeline: alpha-blend using the coverage stored in the alpha channel.
         // UI atlas stores grey coverage in all 4 RGBA channels for sgl multiply.
-        var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
-        pip_desc.colors[0].blend.enabled = true;
-        pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
-        pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
-        pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        const pip_desc = pane_cache_mod.atlasPipelineDescriptor();
         const atlas_pip = c.sgl_make_pipeline(&pip_desc);
+        const solid_desc = pane_cache_mod.solidPipelineDescriptor();
+        const solid_pip = c.sgl_make_pipeline(&solid_desc);
 
         // ── Custom glyph shader pipeline ──────────────────────────────────
         // Uses a gamma-correct (perceptual luminance) fragment shader.
@@ -599,6 +602,7 @@ pub const FtRenderer = struct {
             .atlas_ui_smp = atlas_ui_smp,
             .kitty_image_smp = kitty_image_smp,
             .atlas_pip = atlas_pip,
+            .solid_pip = solid_pip,
             .sgl_bound_atlas = 0,
             .atlas_dirty = true,
             .atlas_reset_this_frame = false,
@@ -763,6 +767,7 @@ pub const FtRenderer = struct {
         c.sg_destroy_sampler(self.atlas_smp);
         c.sg_destroy_sampler(self.atlas_ui_smp);
         c.sg_destroy_sampler(self.kitty_image_smp);
+        c.sgl_destroy_pipeline(self.solid_pip);
         // Custom glyph pipeline resources.
         self.allocator.free(self.glyph_verts_cpu);
         c.sg_destroy_buffer(self.glyph_ibuf);
@@ -859,9 +864,15 @@ pub const FtRenderer = struct {
         // own vertex / command buffers (isolated from the main context).
         c.sgl_set_context(cache.sgl_ctx);
 
-        // Temporarily swap in the context-specific atlas pipeline.
+        // Temporarily swap in the context-specific atlas and solid pipelines.
         const saved_pip = self.atlas_pip;
+        const saved_solid_pip = self.solid_pip;
         self.atlas_pip = cache.atlas_pip;
+        self.solid_pip = cache.solid_pip;
+        self.powerline_pip = if (options.powerline) |policy|
+            if (policy.enabled and options.cell_bg_alpha < 255) cache.powerlinePipeline() else .{ .id = 0 }
+        else
+            .{ .id = 0 };
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
@@ -869,8 +880,10 @@ pub const FtRenderer = struct {
         self.queueTerminal(runtime, options);
         const t_queue_end = if (options.debug_timing) io.nanoTimestamp() else 0;
 
-        // Restore atlas pipeline and default context.
+        // Restore the default-context pipelines before returning to that context.
         self.atlas_pip = saved_pip;
+        self.solid_pip = saved_solid_pip;
+        self.powerline_pip = .{ .id = 0 };
 
         // Upload glyph vertices to GPU BEFORE beginning the pass.
         // sg_update_buffer must not be called inside an active sg_pass on D3D11.
@@ -888,7 +901,10 @@ pub const FtRenderer = struct {
         self.offscreen_pass_scratch.attachments.colors[0] = cache.rt_att_view;
         if (options.force_full) {
             self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-            self.offscreen_pass_scratch.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+            self.offscreen_pass_scratch.action.colors[0].clear_value = if (options.translucent_bg)
+                .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 }
+            else
+                .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
         } else {
             self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_LOAD;
         }
@@ -904,6 +920,7 @@ pub const FtRenderer = struct {
         // Must happen after sgl_context_draw (avoids interleaving sgl and raw sg_*).
         // Vertices were already uploaded above via uploadGlyphVerts().
         self.drawGlyphQuads(options.viewport_width, options.viewport_height, true, srgbToLinearBg(clear_r, clear_g, clear_b));
+        c.sgl_context_draw_layer(cache.sgl_ctx, 2);
         c.sgl_context_draw_layer(cache.sgl_ctx, 1);
         c.sg_end_pass();
         const t_gpu_end = if (options.debug_timing) io.nanoTimestamp() else 0;

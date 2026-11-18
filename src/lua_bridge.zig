@@ -9,6 +9,8 @@ const platform = @import("platform.zig");
 const font_discovery = @import("render/font_discovery.zig");
 const ghostty = @import("term/ghostty.zig");
 const bar = @import("ui/bar.zig");
+const shader_validation = @import("render/shaders/validation.zig");
+const shadertoy = @import("render/shaders/shadertoy.zig");
 
 extern fn luaL_newstate() callconv(.c) ?*State;
 extern fn lua_close(*State) callconv(.c) void;
@@ -1106,6 +1108,23 @@ pub const Runtime = struct {
             logLuaError(api, self.state, "tab action");
         }
         return true;
+    }
+
+    /// Report a native UI error without interpolating its text into Lua code.
+    pub fn notifyError(self: *Runtime, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        for ([_][:0]const u8{ "ui", "notify", "error" }) |field| {
+            if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return;
+            api.get_field(self.state, -1, field);
+        }
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.function)) return;
+        api.push_lstring(self.state, message.ptr, message.len);
+        if (api.pcall(self.state, 1, 0, 0) != 0) logLuaError(api, self.state, "native notification");
     }
 
     /// Transform a local launch spec. Commit only after reading all fields.
@@ -2379,6 +2398,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_read_file, 1);
         api.set_field(self.state, -2, "read_file");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_shader_validate, 1);
+        api.set_field(self.state, -2, "shader_validate");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_write_file, 1);
@@ -3790,6 +3813,32 @@ fn l_read_file(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_shader_validate(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const result = blk: {
+        if (api.value_type(state, 1) != @backingInt(LuaType.string))
+            break :blk shader_validation.Result.failure(.invalid_argument, "hollow.shader.validate expects a string path");
+        var len: usize = 0;
+        const path = api.to_lstring(state, 1, &len) orelse
+            break :blk shader_validation.Result.failure(.invalid_argument, "hollow.shader.validate expects a string path");
+        break :blk shader_validation.validateFile(ctx.cfg.allocator, path[0..len], shadertoy.native_target);
+    };
+    api.create_table(state, 0, 4);
+    api.push_boolean(state, if (result.valid) 1 else 0);
+    api.set_field(state, -2, "valid");
+    const code = @tagName(result.code);
+    api.push_lstring(state, code.ptr, code.len);
+    api.set_field(state, -2, "code");
+    const message = result.log.slice();
+    api.push_lstring(state, message.ptr, message.len);
+    api.set_field(state, -2, "message");
+    const target = @tagName(shadertoy.native_target);
+    api.push_lstring(state, target.ptr, target.len);
+    api.set_field(state, -2, "target");
+    return 1;
+}
+
 fn l_write_file(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -4513,6 +4562,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "background") and value_type == .table) {
+            const background_idx = absoluteIndex(api, state, -1);
+            applyBackgroundTable(ctx.cfg, api, state, background_idx) catch |err| std.log.err("config background field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "bell") and value_type == .table) {
             const bell_idx = absoluteIndex(api, state, -1);
             applyBellTable(ctx.cfg, api, state, bell_idx) catch |err| std.log.err("config bell field failed: {s}", .{@errorName(err)});
@@ -4540,6 +4595,29 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         if (std.mem.eql(u8, key, "indexed") and value_type == .table) {
             const indexed_idx = absoluteIndex(api, state, -1);
             applyIndexedPalette(ctx.cfg, api, state, indexed_idx) catch |err| std.log.err("config indexed field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "custom_shader")) {
+            applyCustomShader(ctx.cfg, api, state, value_type) catch |err| std.log.err("config custom_shader failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "shader_animation")) {
+            const shader = &ctx.cfg.custom_shader;
+            switch (value_type) {
+                .boolean => shader.animation = if (api.to_boolean(state, -1) != 0) .always else .off,
+                .string => {
+                    var value_len: usize = 0;
+                    const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                    const value = value_ptr[0..value_len];
+                    shader.animation = std.meta.stringToEnum(config.Config.CustomShader.Animation, value) orelse {
+                        std.log.err("config shader_animation: unknown value '{s}'", .{value});
+                        continue;
+                    };
+                },
+                else => {},
+            }
             continue;
         }
 
@@ -4723,6 +4801,198 @@ fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_i
         if (std.mem.eql(u8, key, "dim_opacity") and value_type == .number) {
             cfg.unfocused_pane.dim = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
             continue;
+        }
+    }
+}
+
+fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    const background = &cfg.background;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
+            background.opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "cell_opacity") and value_type == .number) {
+            background.cell_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "powerline_opacity") and value_type == .boolean) {
+            background.powerline.enabled = api.to_boolean(state, -1) != 0;
+            background.powerline.generation +%= 1;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "powerline_glyphs") and value_type == .table) {
+            var next = background.powerline;
+            next.extra_len = 0;
+            const glyphs_idx = absoluteIndex(api, state, -1);
+            var i: c_int = 1;
+            while (true) : (i += 1) {
+                api.rawgeti(state, glyphs_idx, i);
+                defer pop(api, state, 1);
+                if (api.value_type(state, -1) == @backingInt(LuaType.nil_type)) break;
+                if (i > @import("powerline.zig").max_extra_glyphs) return error.ResourceExhausted;
+                if (api.value_type(state, -1) != @backingInt(LuaType.string)) return error.InvalidArgument;
+                var len: usize = 0;
+                const ptr = api.to_lstring(state, -1, &len) orelse return error.InvalidArgument;
+                try next.add(ptr[0..len]);
+                if (@import("text_width.zig").width(ptr[0..len]) != 1) return error.InvalidArgument;
+            }
+            next.generation +%= 1;
+            background.powerline = next;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "backdrop") and value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            if (std.meta.stringToEnum(config.Config.Background.Backdrop, value_ptr[0..value_len])) |backdrop| {
+                background.backdrop = backdrop;
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "overlay")) {
+            if (value_type == .boolean and api.to_boolean(state, -1) == 0) {
+                background.overlay_color = null;
+            } else if (value_type == .table) {
+                const idx = absoluteIndex(api, state, -1);
+                if (parseColorField(api, state, idx, "color")) |color| background.overlay_color = color;
+                api.get_field(state, idx, "opacity");
+                if (api.value_type(state, -1) == @backingInt(LuaType.number)) {
+                    background.overlay_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+                }
+                pop(api, state, 1);
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "image")) {
+            switch (value_type) {
+                .boolean => background.clearImage(cfg.allocator),
+                .string => {
+                    var value_len: usize = 0;
+                    const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                    if (value_len == 0) background.clearImage(cfg.allocator) else try background.setImage(cfg.allocator, value_ptr[0..value_len]);
+                },
+                .table => try applyBackgroundImageTable(cfg, api, state, absoluteIndex(api, state, -1)),
+                else => {},
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "shader")) {
+            cfg.custom_shader.bumpGeneration();
+            switch (value_type) {
+                .boolean => background.clearShader(cfg.allocator),
+                .string => {
+                    var value_len: usize = 0;
+                    const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                    if (value_len == 0) background.clearShader(cfg.allocator) else try background.setShader(cfg.allocator, value_ptr[0..value_len]);
+                    background.shader_max_fps = config.Config.Background.default_shader_max_fps;
+                    background.shader_render_scale = 1.0;
+                },
+                .table => try applyBackgroundShaderTable(cfg, api, state, absoluteIndex(api, state, -1)),
+                else => {},
+            }
+            continue;
+        }
+    }
+}
+
+fn applyBackgroundShaderTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    const background = &cfg.background;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
+            background.shader_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+        } else if (std.mem.eql(u8, key, "brightness") and value_type == .number) {
+            background.shader_brightness = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+        } else if (std.mem.eql(u8, key, "animate") and value_type == .boolean) {
+            background.shader_animate = api.to_boolean(state, -1) != 0;
+        } else if (std.mem.eql(u8, key, "max_fps") and value_type == .number) {
+            const fps = api.to_number(state, -1);
+            if (std.math.isFinite(fps)) background.shader_max_fps = @intFromFloat(std.math.clamp(fps, 0, 240));
+        } else if (std.mem.eql(u8, key, "render_scale") and value_type == .number) {
+            const scale = api.to_number(state, -1);
+            if (std.math.isFinite(scale)) background.shader_render_scale = @floatCast(std.math.clamp(scale, 0.25, 1.0));
+        } else if (std.mem.eql(u8, key, "path") and value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            if (value_len == 0) background.clearShader(cfg.allocator) else try background.setShader(cfg.allocator, value_ptr[0..value_len]);
+        }
+    }
+}
+
+/// `custom_shader` is a path, a list of paths applied in order, or false.
+fn applyCustomShader(cfg: *config.Config, api: Api, state: *State, value_type: LuaType) !void {
+    const shader = &cfg.custom_shader;
+    shader.clearPaths(cfg.allocator);
+    shader.bumpGeneration();
+    switch (value_type) {
+        .string => {
+            var len: usize = 0;
+            const ptr = api.to_lstring(state, -1, &len) orelse return;
+            if (len > 0) try shader.addPath(cfg.allocator, ptr[0..len]);
+        },
+        .table => {
+            const table_idx = absoluteIndex(api, state, -1);
+            var i: c_int = 1;
+            while (true) : (i += 1) {
+                api.rawgeti(state, table_idx, i);
+                defer pop(api, state, 1);
+                const item_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+                if (item_type != .string) break;
+                var len: usize = 0;
+                const ptr = api.to_lstring(state, -1, &len) orelse break;
+                if (len > 0) try shader.addPath(cfg.allocator, ptr[0..len]);
+            }
+        },
+        else => {},
+    }
+}
+
+fn applyBackgroundImageTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    const background = &cfg.background;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "opacity") and value_type == .number) {
+            background.image_opacity = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+
+        if (value_type != .string) continue;
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const value = value_ptr[0..value_len];
+        if (std.mem.eql(u8, key, "path")) {
+            if (value.len == 0) background.clearImage(cfg.allocator) else try background.setImage(cfg.allocator, value);
+        } else if (std.mem.eql(u8, key, "fit")) {
+            if (std.meta.stringToEnum(config.Config.Background.Fit, value)) |fit| background.image_fit = fit;
         }
     }
 }
@@ -8646,6 +8916,256 @@ test "set_config ignores window size once the GUI is ready" {
     try std.testing.expectEqual(@as(u32, 1920), cfg.window_width);
     try std.testing.expectEqual(@as(u32, 1080), cfg.window_height);
     try std.testing.expectEqual(@as(u16, 90), cfg.cols);
+}
+
+test "public shader validation reports diagnostics without changing active shaders" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io.get(), .{ .sub_path = "shader.glsl", .data = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }" });
+    const path = try tmp.dir.realPathFileAlloc(io.get(), "shader.glsl", allocator);
+    defer allocator.free(path);
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(@embedFile("lua/core.lua"));
+    const api = runtime.context.api;
+    api.push_lstring(runtime.state, path.ptr, path.len);
+    api.set_field(runtime.state, LUA_GLOBALSINDEX, "shader_test_path");
+    try runtime.runString(
+        \\host_api.set_config({custom_shader = 'active.glsl', background = {shader = 'background.glsl'}})
+        \\local result = hollow.shader.validate(shader_test_path)
+        \\assert(result.valid and result.code == 'ok' and result.message == '')
+        \\assert(result.target == (hollow.platform.is_windows and 'hlsl' or 'glsl'))
+    );
+    const generation = cfg.custom_shader.generation;
+    try tmp.dir.writeFile(io.get(), .{ .sub_path = "shader.glsl", .data = "vec4 color = vec4(1.0);" });
+    try runtime.runString(
+        \\local result = hollow.shader.validate(shader_test_path)
+        \\assert(not result.valid and result.code == 'shader_invalid')
+        \\assert(result.message:find('mainImage', 1, true))
+        \\assert(#result.message <= 4096)
+        \\assert(hollow.shader.validate().code == 'invalid_argument')
+        \\assert(hollow.shader.validate(42).code == 'invalid_argument')
+        \\assert(hollow.shader.validate('').code == 'invalid_argument')
+        \\assert(hollow.shader.validate('a\0b').code == 'invalid_argument')
+    );
+    try std.testing.expectEqual(generation, cfg.custom_shader.generation);
+    try std.testing.expectEqualStrings("active.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqualStrings("background.glsl", cfg.background.shader.?);
+}
+
+test "set_config parses background opacity and image" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(!cfg.background.translucentCells());
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 1.5 } })");
+    try std.testing.expectEqual(@as(f32, 1.0), cfg.background.opacity);
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 0.8, image = { path = '/tmp/bg.png', fit = 'tile', opacity = 0.25 } } })");
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
+    try std.testing.expectEqualStrings("/tmp/bg.png", cfg.background.image.?);
+    try std.testing.expectEqual(config.Config.Background.Fit.tile, cfg.background.image_fit);
+    try std.testing.expectEqual(@as(f32, 0.25), cfg.background.image_opacity);
+
+    try runtime.runString("host_api.set_config({ background = { image = '/tmp/other.jpg' } })");
+    try std.testing.expectEqualStrings("/tmp/other.jpg", cfg.background.image.?);
+
+    try runtime.runString("host_api.set_config({ background = { opacity = 1, image = false } })");
+    try std.testing.expect(cfg.background.image == null);
+    try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config extends Powerline defaults and invalidates cached opacity policy" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try std.testing.expect(!cfg.background.powerline.enabled);
+    try runtime.runString("host_api.set_config({ background = { powerline_opacity = true, powerline_glyphs = { '▶', '◀' } } })");
+    try std.testing.expect(cfg.background.powerline.enabled);
+    try std.testing.expect(cfg.background.powerline.contains(0x25b6));
+    try std.testing.expect(cfg.background.powerline.contains(0x25c0));
+    try std.testing.expect(cfg.background.powerline.contains(0xe0b6));
+    const generation = cfg.background.powerline.generation;
+    try runtime.runString("host_api.set_config({ background = { powerline_glyphs = {} } })");
+    try std.testing.expect(!cfg.background.powerline.contains(0x25b6));
+    try std.testing.expect(cfg.background.powerline.contains(0xe0b6));
+    try std.testing.expect(cfg.background.powerline.generation != generation);
+    try runtime.runString("host_api.set_config({ background = { powerline_opacity = false } })");
+    try std.testing.expect(!cfg.background.powerline.enabled);
+}
+
+test "Powerline config rejects invalid extensions without replacing the previous set" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("host_api.set_config({ background = { powerline_glyphs = { '▶' } } })");
+    const api = runtime.context.api;
+    const generation = cfg.background.powerline.generation;
+    const cases = .{
+        "invalid_powerline = { powerline_glyphs = { 'ab' } }",
+        "invalid_powerline = { powerline_glyphs = { '😀' } }",
+        "invalid_powerline = { powerline_glyphs = { 42 } }",
+    };
+    inline for (cases) |source| {
+        const top = api.get_top(runtime.state);
+        defer api.set_top(runtime.state, top);
+        try runtime.runString(source);
+        api.get_field(runtime.state, LUA_GLOBALSINDEX, "invalid_powerline");
+        try std.testing.expectError(error.InvalidArgument, applyBackgroundTable(&cfg, api, runtime.state, absoluteIndex(api, runtime.state, -1)));
+        pop(api, runtime.state, 1);
+        try std.testing.expect(cfg.background.powerline.contains(0x25b6));
+        try std.testing.expectEqual(generation, cfg.background.powerline.generation);
+    }
+    try runtime.runString("local glyphs = {}; for i = 1, 128 do glyphs[i] = '▶' end; host_api.set_config({ background = { powerline_glyphs = glyphs } }); invalid_powerline = { powerline_glyphs = glyphs }; glyphs[129] = '▶'");
+    try std.testing.expectEqual(@as(u8, 1), cfg.background.powerline.extra_len);
+    const bounded_generation = cfg.background.powerline.generation;
+    const top = api.get_top(runtime.state);
+    defer api.set_top(runtime.state, top);
+    api.get_field(runtime.state, LUA_GLOBALSINDEX, "invalid_powerline");
+    try std.testing.expectError(error.ResourceExhausted, applyBackgroundTable(&cfg, api, runtime.state, absoluteIndex(api, runtime.state, -1)));
+    try std.testing.expectEqual(bounded_generation, cfg.background.powerline.generation);
+}
+
+test "set_config parses Windows backdrops without changing opacity" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    const Backdrop = config.Config.Background.Backdrop;
+    try std.testing.expectEqual(Backdrop.none, cfg.background.backdrop);
+
+    inline for (.{ Backdrop.acrylic, Backdrop.mica, Backdrop.mica_alt, Backdrop.none }) |backdrop| {
+        try runtime.runString("host_api.set_config({ background = { backdrop = '" ++ @tagName(backdrop) ++ "' } })");
+        try std.testing.expectEqual(backdrop, cfg.background.backdrop);
+        try std.testing.expectEqual(@as(f32, 1), cfg.background.opacity);
+        try std.testing.expect(!cfg.background.translucentCells());
+    }
+    try runtime.runString("host_api.set_config({ background = { opacity = 0.8, backdrop = 'acrylic' } })");
+    try runtime.runString("host_api.set_config({ background = { backdrop = 'invalid' } })");
+    try runtime.runString("host_api.set_config({ background = { backdrop = false } })");
+    try std.testing.expectEqual(Backdrop.acrylic, cfg.background.backdrop);
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
+    try runtime.runString("host_api.set_config({ background = { backdrop = 'none' } })");
+    try std.testing.expectEqual(Backdrop.none, cfg.background.backdrop);
+    try std.testing.expectEqual(@as(f32, 0.8), cfg.background.opacity);
+}
+
+test "set_config parses and removes a background overlay" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expect(!cfg.background.translucentCells());
+    try runtime.runString("host_api.set_config({ background = { overlay = { color = '#242038', opacity = 0.4 } } })");
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 0x24, .g = 0x20, .b = 0x38 }, cfg.background.overlay_color.?);
+    try std.testing.expectEqual(@as(f32, 0.4), cfg.background.overlay_opacity);
+    try std.testing.expect(cfg.background.translucentCells());
+    try runtime.runString("host_api.set_config({ background = { overlay = { opacity = 2 } } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.overlay_opacity);
+    try runtime.runString("host_api.set_config({ background = { overlay = false } })");
+    try std.testing.expect(cfg.background.overlay_color == null);
+    try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses background cell opacity" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ background = { cell_opacity = 0.6 } })");
+    try std.testing.expectEqual(@as(f32, 0.6), cfg.background.cell_opacity);
+    // Without layers behind the panes, cells stay opaque.
+    try std.testing.expectEqual(@as(u8, 255), cfg.background.cellAlpha());
+    try runtime.runString("host_api.set_config({ background = { overlay = { color = '#242038' } } })");
+    try std.testing.expectEqual(@as(u8, 153), cfg.background.cellAlpha());
+    try runtime.runString("host_api.set_config({ background = { cell_opacity = -1 } })");
+    try std.testing.expectEqual(@as(u8, 0), cfg.background.cellAlpha());
+}
+
+test "set_config parses a background shader" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    const first_generation = cfg.custom_shader.generation;
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/stars.glsl' } })");
+    try std.testing.expectEqualStrings("/tmp/stars.glsl", cfg.background.shader.?);
+    try std.testing.expect(cfg.custom_shader.generation != first_generation);
+    try std.testing.expect(cfg.background.translucentCells());
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
+
+    try std.testing.expectEqual(@as(u32, 60), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', opacity = 0.5, brightness = 0.3, animate = false, max_fps = 30 } } })");
+    try std.testing.expectEqualStrings("/tmp/waves.glsl", cfg.background.shader.?);
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_opacity);
+    try std.testing.expectEqual(@as(f32, 0.3), cfg.background.shader_brightness);
+    try std.testing.expect(!cfg.background.shader_animate);
+    try std.testing.expectEqual(@as(u32, 30), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { max_fps = 500 } } })");
+    try std.testing.expectEqual(@as(u32, 240), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { max_fps = 0 } } })");
+    try std.testing.expectEqual(@as(u32, 0), cfg.background.shader_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(u32, 60), cfg.background.shader_max_fps);
+
+    try runtime.runString("host_api.set_config({ background = { shader = { brightness = -1 } } })");
+    try std.testing.expectEqual(@as(f32, 0), cfg.background.shader_brightness);
+    try runtime.runString("host_api.set_config({ background = { shader = { brightness = 2 } } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_brightness);
+
+    try runtime.runString("host_api.set_config({ background = { shader = false } })");
+    try std.testing.expect(cfg.background.shader == null);
+    try std.testing.expect(!cfg.background.translucentCells());
+}
+
+test "set_config parses background shader render scale" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', render_scale = 0.5 } } })");
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { render_scale = 0/0 } } })");
+    try std.testing.expectEqual(@as(f32, 0.5), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = { render_scale = 0.1 } } })");
+    try std.testing.expectEqual(@as(f32, 0.25), cfg.background.shader_render_scale);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_render_scale);
+}
+
+test "set_config parses custom shaders in order" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try runtime.runString("host_api.set_config({ custom_shader = { '/tmp/a.glsl', '/tmp/b.glsl' }, shader_animation = 'always' })");
+    try std.testing.expectEqual(@as(usize, 2), cfg.custom_shader.paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/a.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqualStrings("/tmp/b.glsl", cfg.custom_shader.paths.items[1]);
+    try std.testing.expectEqual(config.Config.CustomShader.Animation.always, cfg.custom_shader.animation);
+
+    const first_generation = cfg.custom_shader.generation;
+    try runtime.runString("host_api.set_config({ custom_shader = '/tmp/c.glsl', shader_animation = false })");
+    try std.testing.expect(cfg.custom_shader.generation != first_generation);
+    try std.testing.expectEqual(@as(usize, 1), cfg.custom_shader.paths.items.len);
+    try std.testing.expectEqualStrings("/tmp/c.glsl", cfg.custom_shader.paths.items[0]);
+    try std.testing.expectEqual(config.Config.CustomShader.Animation.off, cfg.custom_shader.animation);
+
+    try runtime.runString("host_api.set_config({ custom_shader = false })");
+    try std.testing.expectEqual(@as(usize, 0), cfg.custom_shader.paths.items.len);
 }
 
 test "set_config toggles window placement restoration" {

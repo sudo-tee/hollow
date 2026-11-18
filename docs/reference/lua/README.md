@@ -26,6 +26,7 @@ namespace you need. The full type schema lives in
 | Namespace | Doc |
 | --- | --- |
 | `hollow.config` | [config.md](config.md) |
+| `hollow.shader` | [shader.md](shader.md) |
 | `hollow.term` | [term.md](term.md) |
 | `hollow.events` | [events.md](events.md) |
 | `hollow.activity` | [activity.md](activity.md) |

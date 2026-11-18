@@ -1,4 +1,5 @@
 const std = @import("std");
+const ShaderLibs = @import("src/shader_build.zig").Libs;
 
 fn ghosttyOptimizeMode(optimize: std.builtin.OptimizeMode) std.builtin.OptimizeMode {
     return switch (optimize) {
@@ -29,7 +30,8 @@ fn addShellIntegrationOptions(b: *std.Build, target: std.Build.ResolvedTarget, o
 
 // Native runtime C sources and libraries shared by the GUI executable and the
 // unit tests that compile the same root module.
-fn addNativeRuntime(b: *std.Build, module: *std.Build.Module, os_tag: std.Target.Os.Tag, fontdeps_dep: *std.Build.Dependency, zluajit_dep: *std.Build.Dependency) void {
+fn addNativeRuntime(b: *std.Build, module: *std.Build.Module, os_tag: std.Target.Os.Tag, fontdeps_dep: *std.Build.Dependency, zluajit_dep: *std.Build.Dependency, shader_libs: ShaderLibs) void {
+    shader_libs.link(module);
     module.linkLibrary(fontdeps_dep.artifact("freetype"));
     module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
     module.linkLibrary(zluajit_dep.artifact("lua"));
@@ -206,6 +208,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = dep_optimize,
     }) orelse return;
+    const shader_libs = @import("src/shader_build.zig").libs(b, target, dep_optimize) orelse return;
     const zluajit_dep = b.dependency("zluajit", .{
         .target = target,
         .optimize = dep_optimize,
@@ -398,9 +401,9 @@ pub fn build(b: *std.Build) void {
 
         gui_exe.root_module.addObjectFile(res_file);
         gui_exe.subsystem = .windows;
-        addNativeRuntime(b, gui_root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
+        addNativeRuntime(b, gui_root_module, target.result.os.tag, fontdeps_dep, zluajit_dep, shader_libs);
         // Tests compile root_module, which no Windows executable links.
-        addNativeRuntime(b, root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
+        addNativeRuntime(b, root_module, target.result.os.tag, fontdeps_dep, zluajit_dep, shader_libs);
         const install_gui_exe = b.addInstallArtifact(gui_exe, .{});
         b.getInstallStep().dependOn(&install_gui_exe.step);
         gui_step.dependOn(&install_gui_exe.step);
@@ -428,7 +431,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = if (target.result.os.tag == .windows) launcher_root_module else root_module,
         });
-        addNativeRuntime(b, exe.root_module, target.result.os.tag, fontdeps_dep, zluajit_dep);
+        addNativeRuntime(b, exe.root_module, target.result.os.tag, fontdeps_dep, zluajit_dep, shader_libs);
         const install_exe = b.addInstallArtifact(exe, .{});
         b.getInstallStep().dependOn(&install_exe.step);
         gui_step.dependOn(&install_exe.step);

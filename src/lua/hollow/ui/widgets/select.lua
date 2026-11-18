@@ -409,8 +409,33 @@ function ui.select.open(opts)
     return entries
   end
 
+  local mounted = false
+  local selection_reported = false
+  local selection_kind, selection_key
+  local function notify_selection(entries)
+    if not mounted or not opts.on_selection_changed then
+      return
+    end
+    entries = entries or current_entries()
+    local nav = selectable.nav
+    nav.index = clamp_index(nav.index, entries)
+    local entry = entries[nav.index]
+    local item, kind, key
+    if entry then
+      item = entry.item
+      kind = entry.is_group and "group" or type(item)
+      key = entry.is_group and entry.group or (type(item) == "table" and item.id or item)
+    end
+    if selection_reported and kind == selection_kind and key == selection_key then
+      return
+    end
+    selection_reported, selection_kind, selection_key = true, kind, key
+    opts.on_selection_changed(item)
+  end
+
   local function activate(action_index, selected_index)
     local entries = current_entries()
+    notify_selection(entries)
     local entry = entries[clamp_index(selected_index, entries)]
     if action_index == 1 and entry and entry.is_group then
       sections.toggle(entry.group, filter.value)
@@ -490,6 +515,7 @@ function ui.select.open(opts)
 
     local entries = refresh_entries()
     nav.index = clamp_index(nav.index, entries)
+    notify_selection(entries)
     local measured = viewport_metrics(ctx)
     if measured then
       clay_row_budget = math.max(1, math.min(MAX_LIST_ROWS, math.floor(measured.height / line_h)))
@@ -578,9 +604,16 @@ function ui.select.open(opts)
     layout_live = opts.layout_live == true or (opts.layout_live == nil and live_items),
     layout_events = opts.layout_events,
     semantic_hover = opts.semantic_hover ~= false and type(opts.layout_label) == "function",
-    on_mount = opts.on_mount,
+    on_mount = function()
+      mounted = true
+      ui.fire(opts.on_mount)
+      notify_selection()
+    end,
     layout_refresh_after = opts.layout_refresh_after,
-    on_unmount = opts.on_unmount,
+    on_unmount = function()
+      mounted = false
+      ui.fire(opts.on_unmount)
+    end,
     render = render,
     width = opts.width,
     height = opts.height,
@@ -592,6 +625,7 @@ function ui.select.open(opts)
       local consumed = keys(key, mods)
       if consumed then
         reveal_start = false
+        notify_selection()
       end
       return consumed
     end,
@@ -601,6 +635,9 @@ function ui.select.open(opts)
         or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)
       if consumed and scrolled then
         reveal_start = true
+      end
+      if consumed then
+        notify_selection()
       end
       return consumed
     end,

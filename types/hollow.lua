@@ -406,6 +406,37 @@
 ---@field dim? boolean|number
 ---@field dim_opacity? number
 
+---@alias HollowBackgroundImageFit "cover"|"contain"|"stretch"|"tile"|"center"
+
+---@class HollowBackgroundImageConfig
+---@field path string PNG or JPEG file
+---@field fit? HollowBackgroundImageFit Defaults to "cover"
+---@field opacity? number 0..1, defaults to 1
+
+---@class HollowBackgroundConfig
+---@field backdrop? "none"|"acrylic"|"mica"|"mica_alt" Windows 11 22H2+ system material; default "none". Requires startup opacity below 1 to show through; ignored elsewhere
+---@field opacity? number Default terminal background opacity, 0..1. Below 1 shows the desktop when the window was created transparent (decided at startup).
+---@field image? string|HollowBackgroundImageConfig|false Image drawn behind the panes; false removes it
+---@field shader? string|HollowBackgroundShaderConfig|false Ghostty-compatible GLSL shader drawn under the image; false removes it
+---@field overlay? HollowBackgroundOverlayConfig|false Solid color over the shader and image; false removes it
+---@field cell_opacity? number 0..1, default 1. Opacity of explicit cell backgrounds over the shader, image or overlay; selection, search and the block cursor stay opaque
+---@field powerline_opacity? boolean Fade Powerline separators with cell_opacity, preserving normal text; default false
+---@field powerline_glyphs? string[] Additional single-column Unicode characters; extends U+E0B0..U+E0BF, maximum 128 entries. Empty table clears extensions.
+
+---@class HollowBackgroundOverlayConfig
+---@field color? HollowHexColor Solid overlay color
+---@field opacity? number 0..1, default 1
+
+---@class HollowBackgroundShaderConfig
+---@field path? string Shader file path
+---@field opacity? number 0..1, default 1. Mix with the background colour; the shader's alpha is ignored and window transparency still applies
+---@field brightness? number 0..1, default 1. Multiply shader RGB toward black independently of opacity
+---@field animate? boolean Request redraws to animate the background (default true); false renders a static cached layer
+---@field max_fps? integer Background shader refresh cap, 1..240 (default 60); 0 imposes no cap
+---@field render_scale? number Background shader resolution per axis, clamped to 0.25..1 (default 1)
+
+---@alias HollowShaderAnimation "cursor"|"always"|"off"
+
 ---@class HollowScrollbarConfig
 ---@field enabled? boolean
 ---@field width? integer
@@ -505,6 +536,9 @@
 ---@field quick_select? HollowQuickSelectConfig
 ---@field cursor? HollowCursorConfig
 ---@field unfocused_pane? HollowUnfocusedPaneConfig
+---@field background? HollowBackgroundConfig
+---@field custom_shader? string|string[]|false Ghostty-compatible post-process GLSL shaders, applied in order (max 8)
+---@field shader_animation? HollowShaderAnimation|boolean "cursor" (default) animates briefly after cursor or focus changes; "always" every frame; false/"off" never
 ---@field shell? string|string[]
 ---@field default_domain? string
 ---@field domains? table<string, string|HollowDomainConfig>
@@ -1223,6 +1257,7 @@
 ---@field score number
 
 ---@class HollowUiSelectOptions
+---@field on_selection_changed? fun(item: any|nil) Initial selection and changes; nil when empty. Live table items should have stable id values or references.
 ---@field layout_live? boolean Callable sources default to live rebuilding; false requires explicit layout events or invalidation.
 ---@field layout_events? string[] Native snapshot invalidation events while mounted.
 ---@field layout_refresh_after? fun(): number|nil Native snapshot refresh delay in milliseconds.
@@ -1504,6 +1539,22 @@ function config.get(key) end
 function config.snapshot() end
 
 function config.reload() end
+
+---@alias HollowShaderValidationCode "ok"|"invalid_argument"|"read_failed"|"resource_exhausted"|"shader_invalid"|"translation_failed"|"out_of_memory"
+
+---@class HollowShaderValidationResult
+---@field valid boolean Compiler validation succeeded; not a GPU or visual correctness guarantee
+---@field code HollowShaderValidationCode
+---@field message string Compiler diagnostic or file error; empty on success, at most 4096 bytes
+---@field target "glsl"|"hlsl" Native backend: HLSL on Windows, GLSL elsewhere
+
+---@class HollowShaderNamespace
+local shader = {}
+
+---Synchronously validate one shader file without applying it or allocating GPU resources.
+---@param path string Native-host path, absolute or relative to Hollow's working directory
+---@return HollowShaderValidationResult
+function shader.validate(path) end
 
 ---@class HollowThemeNamespace
 local theme = {}
@@ -2900,6 +2951,9 @@ function leader_preview.configure(opts) end
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
+--- Request a frame without invalidating UI layout.
+function ui.request_redraw() end
+
 --- True when Hollow's window has OS focus, not merely when a pane is active.
 ---@return boolean
 function ui.is_focused() end
@@ -3310,6 +3364,7 @@ function plugins.sync() end
 ---@field default_shell string
 
 ---@class HollowHostBridge
+---@field shader_validate fun(path: string): HollowShaderValidationResult
 ---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field term_session_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
@@ -3439,6 +3494,7 @@ function plugins.sync() end
 ---@field activity HollowActivityNamespace
 ---@field action HollowActionNamespace
 ---@field config HollowConfigNamespace
+---@field shader HollowShaderNamespace
 ---@field fonts HollowFontsNamespace
 ---@field json HollowJsonNamespace
 ---@field term HollowTermNamespace
@@ -3471,6 +3527,7 @@ function plugins.sync() end
 hollow = {}
 
 hollow.config = config
+hollow.shader = shader
 hollow.host = host
 hollow.fonts = {}
 hollow.json = json

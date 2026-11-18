@@ -277,6 +277,120 @@ pub const Config = struct {
         }
     };
 
+    pub const Background = struct {
+        pub const Fit = enum { cover, contain, stretch, tile, center };
+        pub const default_shader_max_fps: u32 = 60;
+        /// Values match DWM_SYSTEMBACKDROP_TYPE (Windows 11 22H2+).
+        pub const Backdrop = enum(u32) { none = 1, mica = 2, acrylic = 3, mica_alt = 4 };
+
+        /// Opacity of the default terminal background. Range: 0..1. Values
+        /// below 1 show the desktop only when the window surface was created
+        /// transparent, which is decided at startup.
+        opacity: f32 = 1.0,
+        /// Native Windows material behind the transparent window.
+        backdrop: Backdrop = .none,
+        /// Image drawn behind the terminal panes. PNG or JPEG.
+        image: ?[]u8 = null,
+        image_fit: Fit = .cover,
+        /// Range: 0..1.
+        image_opacity: f32 = 1.0,
+        /// Solid overlay above background images and shaders.
+        overlay_color: ?ghostty.ColorRgb = null,
+        overlay_opacity: f32 = 1.0,
+        /// Opacity of explicit cell backgrounds over the window layers.
+        /// Range: 0..1. Selection, search and cursor stay opaque.
+        cell_opacity: f32 = 1.0,
+        powerline: @import("powerline.zig").Config = .{},
+        /// Ghostty-compatible shader drawn under the image. Its generation
+        /// is `CustomShader.generation`.
+        shader: ?[]u8 = null,
+        /// Range: 0..1.
+        shader_opacity: f32 = 1.0,
+        /// Shader RGB multiplier, range 0..1.
+        shader_brightness: f32 = 1.0,
+        /// Request redraws for background animation.
+        shader_animate: bool = true,
+        /// Background cache refresh cap. Zero imposes no cap.
+        shader_max_fps: u32 = default_shader_max_fps,
+        /// Background shader target scale, range 0.25..1.
+        shader_render_scale: f32 = 1.0,
+
+        pub fn deinit(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.image);
+            freeOwned(allocator, &self.shader);
+        }
+
+        /// Default-background cells are left clear so the layers behind the
+        /// panes show through.
+        pub fn translucentCells(self: Background) bool {
+            return self.opacity < 1.0 or self.image != null or self.shader != null or self.overlay_color != null;
+        }
+
+        /// Alpha for explicit cell backgrounds; opaque unless cells are
+        /// already translucent.
+        pub fn cellAlpha(self: Background) u8 {
+            if (!self.translucentCells()) return 255;
+            return @intFromFloat(@round(std.math.clamp(self.cell_opacity, 0.0, 1.0) * 255.0));
+        }
+
+        pub fn setShader(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
+            try replaceOwned(allocator, &self.shader, value);
+        }
+
+        pub fn clearShader(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.shader);
+            self.shader_max_fps = default_shader_max_fps;
+            self.shader_render_scale = 1.0;
+        }
+
+        pub fn setImage(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
+            try replaceOwned(allocator, &self.image, value);
+        }
+
+        pub fn clearImage(self: *Background, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.image);
+        }
+    };
+
+    pub const CustomShader = struct {
+        pub const Animation = enum { cursor, always, off };
+        pub const max_paths = 8;
+
+        /// Post-process shaders applied in order. Ghostty-compatible GLSL.
+        paths: std.ArrayList([]u8) = .empty,
+        /// `cursor` renders extra frames for a moment after the cursor or
+        /// focus changes; `always` renders every frame.
+        animation: Animation = .cursor,
+        /// Bumped whenever `paths` or `Background.shader` is set, so
+        /// reloading the config recompiles shaders whose files changed.
+        generation: u32 = 0,
+
+        /// Process-wide, because reloading recreates the config.
+        var last_generation: u32 = 0;
+
+        pub fn bumpGeneration(self: *CustomShader) void {
+            last_generation +%= 1;
+            self.generation = last_generation;
+        }
+
+        pub fn deinit(self: *CustomShader, allocator: std.mem.Allocator) void {
+            self.clearPaths(allocator);
+            self.paths.deinit(allocator);
+        }
+
+        pub fn clearPaths(self: *CustomShader, allocator: std.mem.Allocator) void {
+            for (self.paths.items) |path| allocator.free(path);
+            self.paths.clearRetainingCapacity();
+        }
+
+        pub fn addPath(self: *CustomShader, allocator: std.mem.Allocator, path: []const u8) !void {
+            if (self.paths.items.len >= max_paths) return error.ResourceExhausted;
+            const owned = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned);
+            try self.paths.append(allocator, owned);
+        }
+    };
+
     pub const Bell = struct {
         /// Draw a brief flash overlay on the pane that received the BEL.
         visual: bool = true,
@@ -317,6 +431,8 @@ pub const Config = struct {
     hyperlinks: Hyperlinks = .{},
     unfocused_pane: UnfocusedPane = .{},
     bell: Bell = .{},
+    background: Background = .{},
+    custom_shader: CustomShader = .{},
     lib_dir: ?[]u8 = null,
     top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,
@@ -377,6 +493,8 @@ pub const Config = struct {
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
         self.hyperlinks.deinit(self.allocator);
+        self.background.deinit(self.allocator);
+        self.custom_shader.deinit(self.allocator);
         for (self.watch_dirs.items) |dir| self.allocator.free(dir);
         self.watch_dirs.deinit(self.allocator);
     }
