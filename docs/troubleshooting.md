@@ -109,6 +109,12 @@ hollow.config.set({
 The prefixes and delimiters also matter; see
 [`hollow.config` → hyperlinks](reference/lua/config.md#hyperlinks).
 
+### Dragging sends mouse input instead of selecting terminal text
+
+Hold `Shift` before starting a left-button drag to select text even when the terminal program captures the mouse.
+`Ctrl` (or `Command` on macOS) also overrides mouse capture.
+Shift-clicking an active hyperlink still opens it, so start the selection outside the link.
+
 ### Copy mode keybindings do not work
 
 Copy-mode bindings are mode-scoped. A binding set without

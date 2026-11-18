@@ -6368,9 +6368,9 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
 
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-            const wants_selection = selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
+            const wants_selection = terminalMouseSelectsText(mods, paneMouseTracking(hit.pane));
             if (wants_selection) {
-                const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
+                const extend = (mods & ghostty.Mods.shift) != 0;
                 const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
 
                 // Detect double/triple click: same position within 500 ms.
@@ -6594,7 +6594,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
             const hover_link = hyperlinkHoverActive(app, event.modifiers);
             g_hover_hyperlink = hover_link;
-            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or paneMouseTracking(hit.pane) == 0;
+            const wants_text_cursor = g_selection_pointer_active or terminalMouseSelectsText(ghosttyMods(event.modifiers), paneMouseTracking(hit.pane));
             setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
         } else {
             g_hover_hyperlink = false;
@@ -6954,10 +6954,19 @@ fn shouldPasteOnKeyDown(key_code: c.sapp_keycode, mods: u32) bool {
     return key_code == c.SAPP_KEYCODE_V;
 }
 
-fn selectionModifierActive(modifiers: u32) bool {
-    const mods = ghosttyMods(modifiers);
+fn terminalMouseSelectsText(mods: u32, tracking: u32) bool {
     const primary = if (builtin.os.tag == .macos) ghostty.Mods.super else ghostty.Mods.ctrl;
-    return (mods & primary) != 0;
+    return tracking == 0 or (mods & (ghostty.Mods.shift | primary)) != 0;
+}
+
+test "Shift drag selects terminal text even when the application tracks the mouse" {
+    const tracking = 1;
+    const primary = if (builtin.os.tag == .macos) ghostty.Mods.super else ghostty.Mods.ctrl;
+    try std.testing.expect(terminalMouseSelectsText(ghostty.Mods.shift, tracking));
+    try std.testing.expect(terminalMouseSelectsText(primary, tracking));
+    try std.testing.expect(!terminalMouseSelectsText(ghostty.Mods.none, tracking));
+    try std.testing.expect(!terminalMouseSelectsText(ghostty.Mods.alt, tracking));
+    try std.testing.expect(terminalMouseSelectsText(ghostty.Mods.none, 0));
 }
 
 fn hyperlinkHoverActive(app: *App, modifiers: u32) bool {
