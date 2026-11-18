@@ -3710,11 +3710,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    const current_shader_bg = g_post_chain.background_options orelse app.config.background;
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
         visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
-            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, app.config.background);
+            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, current_shader_bg);
     }
     var use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -3731,7 +3732,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
         var idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
-        if (g_post_chain.backgroundDeadline(app.config.background)) |shader_deadline_ns| {
+        if (g_post_chain.backgroundDeadline(current_shader_bg)) |shader_deadline_ns| {
             idle_deadline_ns = @min(idle_deadline_ns, shader_deadline_ns);
         }
         if (profile_start != null) profile_before_idle_ns = io.nanoTimestamp() - frame_start_ns;
@@ -3740,7 +3741,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Returning without also suppressing the backend present rotates to an
         // unrendered flip-model buffer on D3D11, producing a black flash.
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        const shader_wake = g_post_chain.wantsFrame(busy_start_ns, app.config.custom_shader.animation, app.config.background);
+        const shader_wake = g_post_chain.wantsFrame(busy_start_ns, app.config.custom_shader.animation, current_shader_bg);
         if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending and !shader_wake) {
             c.sapp_skip_present();
             return;
@@ -4480,7 +4481,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     g_background_image.sync(app.allocator, app.config.background.image);
-    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background, app.config.custom_shader.generation);
+    var shader_notice: @import("shaders/shadertoy.zig").Log = .{};
+    g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background, app.config.custom_shader.generation, &shader_notice);
+    const shader_bg = g_post_chain.background_options orelse app.config.background;
     const shader_now_ns = io.nanoTimestamp();
     if (g_post_chain.anyActive()) {
         g_post_chain.noteFocus(shader_now_ns, app.window_focused);
@@ -4497,17 +4500,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     const clear_alpha: f32 = if (g_transparent_surface) app.config.background.opacity else 1.0;
-    g_post_chain.prepareBackground(app.config.background, @intFromFloat(width), @intFromFloat(height), shader_now_ns, clear_alpha);
+    g_post_chain.prepareBackground(shader_bg, @intFromFloat(width), @intFromFloat(height), shader_now_ns, clear_alpha);
     g_swapchain_pass = std.mem.zeroes(c.sg_pass);
-    if (g_post_chain.active()) {
-        g_swapchain_pass.attachments = g_post_chain.sceneAttachments(@intFromFloat(width), @intFromFloat(height));
+    const shader_scene = g_post_chain.sceneAttachments(@intFromFloat(width), @intFromFloat(height));
+    if (shader_scene) |attachments| {
+        g_swapchain_pass.attachments = attachments;
     } else {
         g_swapchain_pass.swapchain = c.sglue_swapchain();
     }
     g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
     g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r * clear_alpha, .g = clear_g * clear_alpha, .b = clear_b * clear_alpha, .a = clear_alpha };
     c.sg_begin_pass(&g_swapchain_pass);
-    g_post_chain.drawBackground(app.config.background.shader_opacity, app.config.background.shader_brightness, clear_alpha);
+    g_post_chain.drawBackground(shader_bg.shader_opacity, shader_bg.shader_brightness, clear_alpha);
     // Background layers must precede even terminal geometry queued before this pass.
     c.sgl_layer(-4);
     if (g_ft_renderer) |*renderer| {
@@ -4882,7 +4886,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
-    g_post_chain.run();
+    if (shader_scene != null) g_post_chain.run();
     if (cmd_ipc.hasPendingScreenshot(app)) {
         const frame_width: usize = @intFromFloat(width);
         const frame_height: usize = @intFromFloat(height);
@@ -4899,6 +4903,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         } else cmd_ipc.finishScreenshot(app, null, 0, 0);
     }
     c.sg_commit();
+    if (shader_notice.slice().len != 0) {
+        if (app.lua) |*runtime| runtime.notifyError(shader_notice.slice());
+    }
     profile_rendered = true;
     const after_commit_ns = io.nanoTimestamp();
     if (profile_start != null) profile_active_wall = profile_before_idle_ns + after_commit_ns - busy_start_ns;

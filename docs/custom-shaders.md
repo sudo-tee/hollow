@@ -29,7 +29,10 @@ Use absolute paths; relative paths resolve against Hollow's working directory.
 
 Shader files are compiled when the config sets `custom_shader`.
 After editing a shader, run `hollow.config.reload()` to recompile it.
-A shader that fails to compile is skipped and the error goes to the log file.
+If any pass fails to load, Hollow keeps the previous post-process chain intact.
+A failed background shader replacement likewise keeps the previous background shader.
+Hollow shows a notification and logs the error; if no previous shader was loaded, the failed layer stays off.
+If allocating the post-process render targets fails, Hollow draws the frame directly and retries at a new window size or on shader reload.
 
 ## Validate before applying
 
@@ -196,3 +199,21 @@ uv.y = 1.0 - uv.y; // y now grows upwards on every platform
 - Shaders are disabled when the window uses multisampling.
 - Only `iChannel0` is bound; `iChannel1` to `iChannel3` are not declared.
 - `iMouse` is always zero.
+
+## Live GPU smoke check
+
+Use [`scripts/shader-smoke/init.lua`](../scripts/shader-smoke/init.lua) as `HOLLOW_CONFIG_PATH` (an absolute path on the GUI host) and launch a separate Hollow window.
+Run the same check on Windows/Direct3D 11 and Linux/OpenGL with a compositor that supports transparent windows.
+
+1. In blank terminal areas, expect blue on top, red on the bottom, and a brighter blue strip at the top-left.
+   The strip checks pass order and coordinate orientation.
+   Put a contrasting window behind Hollow and check that the same desktop content is visible through both bands.
+2. Resize the window in both dimensions.
+   The dividing line should remain halfway down the window, the strip should remain at the top-left, and text should stay sharp.
+3. Press F7 to load a deliberately broken second pass.
+   Expect a notification naming `broken.glsl` and no change to the bands or strip.
+4. Press F8 to disable post-processing.
+   The strip should disappear, with red on top and blue on the bottom.
+   Press F9 to restore both passes and verify the original colors and strip return.
+
+This check uses the real GPU pipelines; compiler-only tests cannot cover it.

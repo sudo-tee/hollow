@@ -82,19 +82,28 @@ const Target = struct {
     texture: c.sg_view,
 
     fn init(w: u32, h: u32, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format) Target {
+        var result: Target = .{
+            .image = .{ .id = 0 },
+            .attachment = .{ .id = 0 },
+            .texture = .{ .id = 0 },
+        };
+        const limit: u32 = @intCast(c.sg_query_limits().max_image_size_2d);
+        if (w == 0 or h == 0 or w > limit or h > limit) return result;
         var img_desc = std.mem.zeroes(c.sg_image_desc);
         img_desc.width = @intCast(w);
         img_desc.height = @intCast(h);
         img_desc.pixel_format = color_format;
         img_desc.usage.color_attachment = true;
         img_desc.label = "post-shader-rt";
-        const image = c.sg_make_image(&img_desc);
+        result.image = c.sg_make_image(&img_desc);
+        if (c.sg_query_image_state(result.image) != c.SG_RESOURCESTATE_VALID) return result;
 
         var att_desc = std.mem.zeroes(c.sg_view_desc);
-        att_desc.color_attachment.image = image;
+        att_desc.color_attachment.image = result.image;
         var tex_desc = std.mem.zeroes(c.sg_view_desc);
-        tex_desc.texture.image = image;
-        var result: Target = .{ .image = image, .attachment = c.sg_make_view(&att_desc), .texture = c.sg_make_view(&tex_desc) };
+        tex_desc.texture.image = result.image;
+        result.attachment = c.sg_make_view(&att_desc);
+        result.texture = c.sg_make_view(&tex_desc);
 
         if (depth_format != c.SG_PIXELFORMAT_NONE) {
             var depth_desc = std.mem.zeroes(c.sg_image_desc);
@@ -104,11 +113,21 @@ const Target = struct {
             depth_desc.usage.depth_stencil_attachment = true;
             depth_desc.label = "post-shader-depth";
             result.depth = c.sg_make_image(&depth_desc);
+            if (c.sg_query_image_state(result.depth) != c.SG_RESOURCESTATE_VALID) return result;
             var depth_view = std.mem.zeroes(c.sg_view_desc);
             depth_view.depth_stencil_attachment.image = result.depth;
             result.depth_attachment = c.sg_make_view(&depth_view);
         }
         return result;
+    }
+
+    fn valid(self: Target, depth_format: c.sg_pixel_format) bool {
+        return c.sg_query_image_state(self.image) == c.SG_RESOURCESTATE_VALID and
+            c.sg_query_view_state(self.attachment) == c.SG_RESOURCESTATE_VALID and
+            c.sg_query_view_state(self.texture) == c.SG_RESOURCESTATE_VALID and
+            (depth_format == c.SG_PIXELFORMAT_NONE or
+                (c.sg_query_image_state(self.depth) == c.SG_RESOURCESTATE_VALID and
+                    c.sg_query_view_state(self.depth_attachment) == c.SG_RESOURCESTATE_VALID));
     }
 
     fn deinit(self: Target) void {
@@ -156,7 +175,10 @@ const EmptyTexture = struct {
         const image = c.sg_make_image(&img_desc);
         var view_desc = std.mem.zeroes(c.sg_view_desc);
         view_desc.texture.image = image;
-        return .{ .image = image, .view = c.sg_make_view(&view_desc) };
+        return .{ .image = image, .view = if (c.sg_query_image_state(image) == c.SG_RESOURCESTATE_VALID)
+            c.sg_make_view(&view_desc)
+        else
+            .{ .id = 0 } };
     }
 
     fn deinit(self: EmptyTexture) void {
@@ -176,6 +198,7 @@ pub const Chain = struct {
     background_copy_pass: ?Pass = null,
     background_target: ?Target = null,
     background_size: [2]u32 = .{ 0, 0 },
+    background_options: ?Background = null,
     background_refresh: BackgroundRefresh = .{},
     background_frame: u32 = 0,
     empty_texture: ?EmptyTexture = null,
@@ -193,8 +216,19 @@ pub const Chain = struct {
     }
 
     fn releaseGpu(self: *Chain) void {
+        self.releasePost();
+        self.releaseBackground();
+        if (self.sampler.id != 0) c.sg_destroy_sampler(self.sampler);
+        self.sampler = .{ .id = 0 };
+    }
+
+    fn releasePost(self: *Chain) void {
         for (self.passes[0..self.pass_count]) |pass| pass.deinit();
         self.pass_count = 0;
+        self.releaseTargets();
+    }
+
+    fn releaseBackground(self: *Chain) void {
         self.releaseBackgroundTarget();
         if (self.background_cache_pipeline) |pip| c.sg_destroy_pipeline(pip);
         self.background_cache_pipeline = null;
@@ -202,11 +236,10 @@ pub const Chain = struct {
         self.background_copy_pass = null;
         if (self.background) |pass| pass.deinit();
         self.background = null;
+        self.background_options = null;
         if (self.empty_texture) |t| t.deinit();
         self.empty_texture = null;
-        self.releaseTargets();
-        if (self.sampler.id != 0) c.sg_destroy_sampler(self.sampler);
-        self.sampler = .{ .id = 0 };
+        self.background_frame = 0;
     }
 
     fn releaseBackgroundTarget(self: *Chain) void {
@@ -240,48 +273,108 @@ pub const Chain = struct {
 
     /// Rebuild the chain when the config generation changed. Must run
     /// outside a render pass.
-    pub fn sync(self: *Chain, alloc: std.mem.Allocator, paths: []const []const u8, bg: Background, generation: u32) void {
+    pub fn sync(self: *Chain, alloc: std.mem.Allocator, paths: []const []const u8, bg: Background, generation: u32, notice: *shadertoy.Log) void {
         if (self.generation == generation) return;
         self.generation = generation;
-        self.releaseGpu();
-        if (paths.len == 0 and bg.shader == null) return;
+        if (paths.len == 0 and bg.shader == null) {
+            self.releaseGpu();
+            self.start_ns = 0;
+            return;
+        }
 
         const swapchain = c.sglue_swapchain();
         if (swapchain.sample_count > 1) {
-            std.log.err("custom_shader: disabled with MSAA swapchain (sample_count={d})", .{swapchain.sample_count});
+            self.releaseGpu();
+            notice.set("Shaders are disabled with multisampling.");
+            std.log.err("{s}", .{notice.slice()});
             return;
         }
-        for (paths[0..@min(paths.len, max_passes)]) |path| {
-            const pass = buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, false) catch |err| {
-                std.log.err("custom_shader '{s}' failed: {s}", .{ path, @errorName(err) });
-                continue;
-            };
-            self.passes[self.pass_count] = pass;
-            self.pass_count += 1;
+        if (self.sampler.id == 0) {
+            var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
+            smp_desc.min_filter = c.SG_FILTER_LINEAR;
+            smp_desc.mag_filter = c.SG_FILTER_LINEAR;
+            smp_desc.wrap_u = c.SG_WRAP_CLAMP_TO_EDGE;
+            smp_desc.wrap_v = c.SG_WRAP_CLAMP_TO_EDGE;
+            smp_desc.label = "post-shader-smp";
+            const sampler = c.sg_make_sampler(&smp_desc);
+            if (c.sg_query_sampler_state(sampler) != c.SG_RESOURCESTATE_VALID) {
+                c.sg_destroy_sampler(sampler);
+                notice.set("Could not allocate the shader sampler. See hollow.log.");
+                std.log.err("{s}", .{notice.slice()});
+                return;
+            }
+            self.sampler = sampler;
         }
-        if (bg.shader) |path| {
-            if (buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, true)) |pass| {
-                self.background = pass;
-                self.empty_texture = EmptyTexture.init();
-                if (!bg.shader_animate or bg.shader_max_fps > 0 or bg.shader_render_scale < 1) {
-                    self.initBackgroundCache(alloc, pass, swapchain, bg.shader_render_scale < 1);
-                }
-            } else |err| std.log.err("background shader '{s}' failed: {s}", .{ path, @errorName(err) });
-        }
-        if (!self.anyActive()) return;
 
-        var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
-        smp_desc.min_filter = c.SG_FILTER_LINEAR;
-        smp_desc.mag_filter = c.SG_FILTER_LINEAR;
-        smp_desc.wrap_u = c.SG_WRAP_CLAMP_TO_EDGE;
-        smp_desc.wrap_v = c.SG_WRAP_CLAMP_TO_EDGE;
-        smp_desc.label = "post-shader-smp";
-        self.sampler = c.sg_make_sampler(&smp_desc);
+        // Stage each replacement independently. In particular a bad pass must
+        // not turn a multi-pass chain into a partially updated one.
+        const post_changed = self.syncPost(alloc, paths, swapchain, notice);
+        const background_changed = self.syncBackground(alloc, bg, swapchain, notice);
+        if (!self.anyActive()) {
+            self.releaseGpu();
+            self.start_ns = 0;
+            return;
+        }
+        // Don't reset the shared timeline if either side kept its old shader.
+        if (!post_changed or !background_changed) {
+            if (self.start_ns != 0) return;
+        }
         self.start_ns = io.nanoTimestamp();
         self.last_frame_ns = self.start_ns;
         self.uniforms = .{};
         self.focus_known = false;
-        self.background_frame = 0;
+    }
+
+    fn syncPost(self: *Chain, alloc: std.mem.Allocator, paths: []const []const u8, swapchain: c.sg_swapchain, notice: *shadertoy.Log) bool {
+        var staged: [max_passes]Pass = undefined;
+        var count: usize = 0;
+        for (paths[0..@min(paths.len, max_passes)]) |path| {
+            var log: shadertoy.Log = .{};
+            staged[count] = buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, false, &log) catch |err| {
+                for (staged[0..count]) |pass| pass.deinit();
+                reportFailure("Post-process shader", path, err, log, notice);
+                return false;
+            };
+            count += 1;
+        }
+        self.releasePost();
+        @memcpy(self.passes[0..count], staged[0..count]);
+        self.pass_count = count;
+        return true;
+    }
+
+    fn syncBackground(self: *Chain, alloc: std.mem.Allocator, bg: Background, swapchain: c.sg_swapchain, notice: *shadertoy.Log) bool {
+        const path = bg.shader orelse {
+            self.releaseBackground();
+            return true;
+        };
+        var log: shadertoy.Log = .{};
+        const pass = buildPass(alloc, path, swapchain.color_format, swapchain.depth_format, true, &log) catch |err| {
+            reportFailure("Background shader", path, err, log, notice);
+            return false;
+        };
+        const empty = EmptyTexture.init();
+        if (c.sg_query_view_state(empty.view) != c.SG_RESOURCESTATE_VALID) {
+            empty.deinit();
+            pass.deinit();
+            reportFailure("Background shader", path, error.GpuAllocationFailed, log, notice);
+            return false;
+        }
+
+        self.releaseBackground();
+        self.background = pass;
+        self.empty_texture = empty;
+        self.background_options = .{
+            .shader_opacity = bg.shader_opacity,
+            .shader_brightness = bg.shader_brightness,
+            .shader_animate = bg.shader_animate,
+            .shader_max_fps = bg.shader_max_fps,
+            .shader_render_scale = bg.shader_render_scale,
+        };
+        if (!bg.shader_animate or bg.shader_max_fps > 0 or bg.shader_render_scale < 1) {
+            self.initBackgroundCache(alloc, pass, swapchain, bg.shader_render_scale < 1);
+        }
+        return true;
     }
 
     fn initBackgroundCache(self: *Chain, alloc: std.mem.Allocator, pass: Pass, swapchain: c.sg_swapchain, upscale: bool) void {
@@ -298,17 +391,28 @@ pub const Chain = struct {
 
     /// Attachments for the scene pass, resized to the framebuffer. Must run
     /// outside a render pass.
-    pub fn sceneAttachments(self: *Chain, w: u32, h: u32) c.sg_attachments {
+    pub fn sceneAttachments(self: *Chain, w: u32, h: u32) ?c.sg_attachments {
+        if (!self.active()) return null;
         if (self.target_size[0] != w or self.target_size[1] != h) {
             self.releaseTargets();
             const swapchain = c.sglue_swapchain();
             // A single pass reads the scene and writes the swapchain, so the
             // second target is only needed for chains.
             const count: usize = if (self.pass_count > 1) 2 else 1;
-            for (self.targets[0..count]) |*slot| slot.* = Target.init(w, h, swapchain.color_format, swapchain.depth_format);
+            for (self.targets[0..count]) |*slot| {
+                const scene = Target.init(w, h, swapchain.color_format, swapchain.depth_format);
+                slot.* = scene;
+                if (!scene.valid(swapchain.depth_format)) {
+                    self.releaseTargets();
+                    // Don't retry on each frame. A new size or chain retries.
+                    self.target_size = .{ w, h };
+                    std.log.err("Post-process targets unavailable at {d}x{d}; rendering directly", .{ w, h });
+                    return null;
+                }
+            }
             self.target_size = .{ w, h };
         }
-        return self.targets[0].?.attachments();
+        return if (self.targets[0]) |scene| scene.attachments() else null;
     }
 
     pub fn secondsSince(self: *const Chain, ns: i128) f32 {
@@ -353,6 +457,7 @@ pub const Chain = struct {
             if (now_ns >= (self.backgroundDeadline(bg) orelse return true)) return true;
         }
         if (!self.active()) return false;
+        if (self.targets[0] == null and self.target_size[0] != 0) return false;
         return switch (animation) {
             .always => true,
             .off => false,
@@ -372,10 +477,7 @@ pub const Chain = struct {
         if (!std.meta.eql(size, self.background_size)) {
             self.releaseBackgroundTarget();
             const t = Target.init(size[0], size[1], background_cache_format, c.SG_PIXELFORMAT_NONE);
-            if (c.sg_query_image_state(t.image) != c.SG_RESOURCESTATE_VALID or
-                c.sg_query_view_state(t.attachment) != c.SG_RESOURCESTATE_VALID or
-                c.sg_query_view_state(t.texture) != c.SG_RESOURCESTATE_VALID)
-            {
+            if (!t.valid(c.SG_PIXELFORMAT_NONE)) {
                 t.deinit();
                 // Remember the size to avoid trying again on every frame.
                 self.background_size = size;
@@ -504,18 +606,32 @@ fn date(now_ns: i128) [4]f32 {
 /// `premultiplied_blend` mixes the output into the target for the
 /// background layer: colour `src + dst * (1 - a)`, alpha
 /// `dst * a + dst * (1 - a)`, so the window alpha is unchanged.
-fn buildPass(alloc: std.mem.Allocator, path: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format, premultiplied_blend: bool) !Pass {
+fn reportFailure(kind: []const u8, path: []const u8, err: anyerror, log: shadertoy.Log, notice: *shadertoy.Log) void {
+    std.log.err("{s} '{s}' failed: {s} {s}", .{ kind, path, @errorName(err), log.slice() });
+    if (notice.slice().len != 0) return;
+    const detail = if (log.slice().len != 0) log.slice() else @errorName(err);
+    var buf: [2048]u8 = undefined;
+    notice.set(std.fmt.bufPrint(&buf, "{s} failed: {s}\n{s}\nSee hollow.log for details.", .{
+        kind, path[0..@min(path.len, 512)], detail[0..@min(detail.len, 1024)],
+    }) catch unreachable);
+}
+
+fn buildPass(alloc: std.mem.Allocator, path: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format, premultiplied_blend: bool, log: *shadertoy.Log) !Pass {
     const source = try std.Io.Dir.cwd().readFileAlloc(io.get(), path, alloc, .limited(shadertoy.max_source_bytes));
     defer alloc.free(source);
-    return buildSourcePass(alloc, source, path, color_format, depth_format, premultiplied_blend);
+    return buildSourcePassLogged(alloc, source, color_format, depth_format, premultiplied_blend, log);
 }
 
 fn buildSourcePass(alloc: std.mem.Allocator, source: []const u8, label: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format, premultiplied_blend: bool) !Pass {
     var log: shadertoy.Log = .{};
-    const fragment = shadertoy.compileFragment(alloc, source, target, &log) catch |err| {
-        std.log.err("custom_shader '{s}': {s}", .{ label, log.slice() });
+    return buildSourcePassLogged(alloc, source, color_format, depth_format, premultiplied_blend, &log) catch |err| {
+        std.log.err("{s}: {s} {s}", .{ label, @errorName(err), log.slice() });
         return err;
     };
+}
+
+fn buildSourcePassLogged(alloc: std.mem.Allocator, source: []const u8, color_format: c.sg_pixel_format, depth_format: c.sg_pixel_format, premultiplied_blend: bool, log: *shadertoy.Log) !Pass {
+    const fragment = try shadertoy.compileFragment(alloc, source, target, log);
     defer alloc.free(fragment);
 
     var desc = std.mem.zeroes(c.sg_shader_desc);
@@ -622,6 +738,34 @@ test "an animated background shader renders every frame" {
     try std.testing.expect(!chain.active());
     try std.testing.expect(chain.wantsFrame(10 * std.time.ns_per_s, .off, .{}));
     try std.testing.expect(!chain.wantsFrame(10 * std.time.ns_per_s, .off, .{ .shader_animate = false }));
+}
+
+test "post-process target failure does not keep an idle window repainting" {
+    var chain: Chain = .{ .pass_count = 2, .target_size = .{ 800, 600 } };
+    try std.testing.expectEqual(@as(?c.sg_attachments, null), chain.sceneAttachments(800, 600));
+    try std.testing.expect(!chain.wantsFrame(0, .always, .{}));
+    chain.target_size = .{ 0, 0 };
+    try std.testing.expect(chain.wantsFrame(0, .always, .{}));
+}
+
+test "live smoke shader fixtures compile except for the broken replacement" {
+    const alloc = std.testing.allocator;
+    for ([_][]const u8{ "bands", "mark", "swap", "broken" }) |name| {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "scripts/shader-smoke/{s}.glsl", .{name});
+        const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, alloc, .limited(shadertoy.max_source_bytes));
+        defer alloc.free(source);
+        for ([_]shadertoy.Target{ .glsl, .hlsl }) |backend| {
+            var log: shadertoy.Log = .{};
+            const compiled = shadertoy.compileFragment(alloc, source, backend, &log);
+            if (std.mem.eql(u8, name, "broken")) {
+                try std.testing.expectError(error.ShaderInvalid, compiled);
+                try std.testing.expect(std.mem.indexOf(u8, log.slice(), "intentional_compile_error") != null);
+            } else {
+                alloc.free(try compiled);
+            }
+        }
+    }
 }
 
 test "cached background wakes only at its own refresh deadline" {

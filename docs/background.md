@@ -137,7 +137,8 @@ Hollow renders an animated background shader into a cached layer and refreshes i
 Terminal redraws are not capped; frames between refreshes reuse the cached layer.
 Set `max_fps` to 1–240 to change the cap.
 For a slow decorative background, `max_fps = 30` saves more GPU time; on one integrated GPU, 30 used about a third of the uncapped load and 60 about half.
-Set `max_fps = 0` to remove the cap: the shader then draws directly on every rendered frame, which keeps the GPU busy.
+Set `max_fps = 0` to remove the cap.
+An animated, full-resolution shader then draws directly on every rendered frame; static and scaled shaders still use the cache when supported.
 The cache adds one GPU texture and a composite draw per rendered frame, so very cheap shaders may run faster uncapped.
 Set `animate = false` for static shaders; Hollow renders them once into a cached layer and re-renders only on resize or a layer change, such as window opacity.
 

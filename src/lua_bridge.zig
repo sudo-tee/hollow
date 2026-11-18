@@ -1110,6 +1110,23 @@ pub const Runtime = struct {
         return true;
     }
 
+    /// Report a native UI error without interpolating its text into Lua code.
+    pub fn notifyError(self: *Runtime, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        for ([_][:0]const u8{ "ui", "notify", "error" }) |field| {
+            if (api.value_type(self.state, -1) != @backingInt(LuaType.table)) return;
+            api.get_field(self.state, -1, field);
+        }
+        if (api.value_type(self.state, -1) != @backingInt(LuaType.function)) return;
+        api.push_lstring(self.state, message.ptr, message.len);
+        if (api.pcall(self.state, 1, 0, 0) != 0) logLuaError(api, self.state, "native notification");
+    }
+
     /// Transform a local launch spec. Commit only after reading all fields.
     /// Caller supplies an arena whose lifetime includes PTY creation.
     pub fn filterSpawn(self: *Runtime, allocator: std.mem.Allocator, spec: *@import("pty/spawn_spec.zig").SpawnSpec) !void {
