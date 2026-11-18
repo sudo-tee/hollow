@@ -103,13 +103,13 @@ describe("UI bars test suite", function()
       )
       harness.assert_equal(
         hollow.ui._topbar_state().items[1].style.padding.left,
-        2,
-        "shifted icon should use compensated left padding"
+        5,
+        "shifted icon should keep the same left padding"
       )
       harness.assert_equal(
         hollow.ui._topbar_state().items[1].style.padding.right,
-        7,
-        "shifted icon should use compensated right padding"
+        5,
+        "shifted icon should keep the same right padding"
       )
 
       hollow._emit_builtin_event("topbar:hover", { id = "new-tab-button", shifted = false })

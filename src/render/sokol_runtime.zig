@@ -544,7 +544,11 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
             clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
                 const text = command.renderData.text;
                 const color = text.textColor;
-                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
+                if (text.fontId >= 2) {
+                    const node: *const clay.HollowClayNode = @ptrCast(@alignCast(command.userData orelse continue));
+                    b.x += node.ink_offset;
+                }
+                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), @intCast(text.fontId & 1));
                 c.sgl_load_default_pipeline();
             },
             clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
@@ -592,6 +596,21 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
     if (interactive) {
         surface.mouse_x = g_mouse_x - offset_x;
         surface.mouse_y = g_mouse_y - offset_y;
+    }
+    for (surface.nodes[0..surface.len]) |*node| {
+        if (!node.button_label) continue;
+        node.center_ink = false;
+        if (node.text.length <= 0 or node.wrap != clay.CLAY_TEXT_WRAP_NONE) continue;
+        const text = node.text.chars[0..@intCast(node.text.length)];
+        const cluster = text_width.next(text) orelse continue;
+        if (cluster.len != text.len or cluster.width == 0 or text[0] <= ' ') continue;
+        const ink = renderer.labelInk(text, if (node.bold) 1 else 0) orelse continue;
+        const cells = @as(f32, @floatFromInt(cluster.width)) * renderer.cell_w;
+        const extra = @ceil(barLabelWidth(cells, ink) - cells);
+        if (extra > 32766) continue;
+        node.center_ink = true;
+        node.ink_extra = @intFromFloat(extra);
+        node.ink_offset = barLabelOffset(cells + extra, ink);
     }
     const commands = surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
     const context = surface.context;
@@ -2552,8 +2571,39 @@ test "tab segment fitting keeps styles and the clickable suffix" {
     try std.testing.expectEqualStrings("..", fitTabSegments(&wide, 2, &out, &buf)[0].text);
 }
 
-fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
-    return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+fn topbarButtonInk(renderer: *FtRenderer, view: *const BarSegmentView) ?FtRenderer.LabelInk {
+    if (view.segment.id == null) return null;
+    const text = view.segment.text;
+    if (!segmentViewShowsFullSegments(view, text)) {
+        return renderer.labelInk(text, if (view.segment.bold or view.style.bold) 1 else 0);
+    }
+    var bounds: ?FtRenderer.LabelInk = null;
+    var pen: f32 = 0;
+    for (view.segments[0..view.segments_len]) |seg| {
+        if (renderer.labelInk(seg.text, if (seg.bold) 1 else 0)) |ink| {
+            FtRenderer.LabelInk.include(&bounds, pen + ink.left, pen + ink.right);
+        }
+        pen += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+    }
+    return bounds;
+}
+
+fn barLabelWidth(cells: f32, ink: ?FtRenderer.LabelInk) f32 {
+    return if (ink) |bounds| @max(cells, bounds.right - bounds.left) else cells;
+}
+
+fn barLabelOffset(width: f32, ink: ?FtRenderer.LabelInk) f32 {
+    return if (ink) |bounds| (width - bounds.left - bounds.right) / 2 else 0;
+}
+
+test "bar button centers visible ink and reserves room for wide icons" {
+    const narrow: FtRenderer.LabelInk = .{ .left = 4, .right = 10 };
+    const wide: FtRenderer.LabelInk = .{ .left = 2, .right = 17 };
+    try std.testing.expectEqual(@as(f32, 10), barLabelWidth(10, narrow));
+    try std.testing.expectEqual(@as(f32, -2), barLabelOffset(10, narrow));
+    try std.testing.expectEqual(@as(f32, 15), barLabelWidth(10, wide));
+    try std.testing.expectEqual(@as(f32, -2), barLabelOffset(15, wide));
+    try std.testing.expectEqual(@as(f32, 0), barLabelOffset(10, null));
 }
 
 fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
@@ -2586,7 +2636,7 @@ fn nativePadding(box: BarBox) clay.Clay_Padding {
     return .{ .left = native_surface.edge(box.left), .right = native_surface.edge(box.right), .top = native_surface.edge(box.top), .bottom = native_surface.edge(box.bottom) };
 }
 
-fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width: f32, height: f32, widget: *const BarWidgetView) bool {
+fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width: f32, height: f32, widget: *const BarWidgetView, ink: []const ?FtRenderer.LabelInk) bool {
     const Surface = native_surface.Surface;
     const fixed = native_surface.fixed;
     const grow = native_surface.grow;
@@ -2613,7 +2663,9 @@ fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width
             },
             .segment => {
                 const view = &item.segment;
-                const desired = segmentViewFullWidth(renderer, view);
+                const cell_width = @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+                const text_width_px = barLabelWidth(cell_width, if (i < ink.len) ink[i] else null);
+                const desired = view.style.margin.horizontal() + view.style.padding.horizontal() + text_width_px;
                 Surface.preferred(id, .{ .sizing = .{
                     .width = if (right) fixed(desired) else native_surface.fit(),
                     .height = fixed(barItemHeight(renderer, view.style) + view.style.margin.vertical()),
@@ -2665,21 +2717,25 @@ test "native bars reserve right items and grow tabs before the spacer" {
     widget.items[2].segment.segment.text = "right";
     var layout = native_surface.Surface{};
     defer layout.deinit();
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 80), layout.bounds(11).width, 0.02);
     try std.testing.expectApproxEqAbs(@as(f32, 350), layout.bounds(210).x, 0.02);
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 100, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 100, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 25), layout.bounds(11).width, 0.02);
     try std.testing.expectApproxEqAbs(@as(f32, 50), layout.bounds(210).x, 0.02);
     widget.items[0].tabs.max_width = 0;
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 175), layout.bounds(11).width, 0.02);
 }
 
 fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: *const BarWidgetView) void {
     if (bar_h <= 0) return;
     const layout = &g_native_bars[@backingInt(surface)];
-    if (!layoutNativeBar(layout, renderer, width, bar_h, widget)) return;
+    var ink: [@typeInfo(@FieldType(BarWidgetView, "items")).array.len]?FtRenderer.LabelInk = @splat(null);
+    if (surface == .top) for (widget.items[0..widget.len], 0..) |*item, i| {
+        if (item.kind == .segment) ink[i] = topbarButtonInk(renderer, &item.segment);
+    };
+    if (!layoutNativeBar(layout, renderer, width, bar_h, widget, &ink)) return;
     const cache = if (surface == .top) &g_top_bar_cache else &g_bottom_bar_cache;
     const default_fg = ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
 
@@ -2714,7 +2770,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     @max(1, @as(usize, @intFromFloat(available_text_w / renderer.cell_w)))
                 else
                     0;
-                const display = if (max_chars > 0 and segmentViewCodepoints(view) > max_chars)
+                const nominal_width = @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+                const preferred_width = barLabelWidth(nominal_width, ink[item_index]);
+                const centered = ink[item_index] != null and preferred_width <= available_text_w + 0.01;
+                const display = if (centered)
+                    view.segment.text
+                else if (max_chars > 0 and segmentViewCodepoints(view) > max_chars)
                     takeTrailingCodepoints(view.segment.text, max_chars)
                 else if (max_chars == 0)
                     ""
@@ -2726,7 +2787,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 const bg_h = barItemHeight(renderer, view.style);
                 const bg_x = cursor_x + view.style.margin.left;
                 const bg_y = bar_y + item_box.y + view.style.margin.top;
-                const bg_w = view.style.padding.left + text_w + view.style.padding.right;
+                const bg_w = view.style.padding.left + (if (centered) preferred_width else text_w) + view.style.padding.right;
                 var bg_style = view.style;
                 if (bg_style.bg == null) bg_style.bg = view.segment.bg;
                 if (bg_style.fg == null) bg_style.fg = view.segment.fg;
@@ -2742,13 +2803,14 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 }
 
                 const text_x = bg_x + view.style.padding.left;
+                const draw_x = text_x + if (centered) barLabelOffset(preferred_width, ink[item_index]) else 0;
                 const text_y = bg_y + view.style.padding.top;
                 const fg = bg_style.fg orelse default_fg;
                 if (segmentViewShowsFullSegments(view, display)) {
                     cacheBarSegmentArray(cache, renderer, text_x, text_w, view.segments[0..view.segments_len], null);
-                    drawSegmentArray(renderer, text_x, text_y, text_w, view.segments[0..view.segments_len], fg);
+                    drawSegmentArray(renderer, draw_x, text_y, text_w, view.segments[0..view.segments_len], fg);
                 } else {
-                    renderer.drawLabelFace(text_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
+                    renderer.drawLabelFace(draw_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
                 }
             },

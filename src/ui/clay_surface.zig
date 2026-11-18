@@ -44,6 +44,7 @@ const Field = enum {
     align_y,
     wrap,
     text_align,
+    button_label,
     clickable,
     text_cursor,
     padding,
@@ -219,6 +220,7 @@ pub const Surface = struct {
                 .align_y => node.align_y = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .wrap => node.wrap = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .text_align => node.text_align = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
+                .button_label => node.button_label = api.to_boolean(state, -1) != 0,
                 .padding => if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
                     const padding = lua.absoluteIndex(api, state, -1);
                     inline for (.{ "top", "right", "bottom", "left" }) |side| {

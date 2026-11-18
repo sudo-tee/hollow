@@ -298,6 +298,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#eceff4",
       "kind": 2,
       "text": "×",
@@ -425,6 +426,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -552,6 +554,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -679,6 +682,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -806,6 +810,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -933,6 +938,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1060,6 +1066,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1187,6 +1194,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1314,6 +1322,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1441,6 +1450,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1568,6 +1578,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1695,6 +1706,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1822,6 +1834,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -1949,6 +1962,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2076,6 +2090,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2203,6 +2218,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2330,6 +2346,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2457,6 +2474,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2584,6 +2602,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2711,6 +2730,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2838,6 +2858,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -2965,6 +2986,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",
@@ -3092,6 +3114,7 @@
       "radius": 4
     },
     {
+      "button_label": true,
       "fg": "#81a1c1",
       "kind": 2,
       "text": "×",

@@ -122,7 +122,7 @@ local function configured_topbar_new_tab(value)
     render = function()
       local shifted = state.ui.topbar_hovered_id == id and state.ui.topbar_hovered_shifted
       if shifted then
-        return ui.span(options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT, s.new_tab_shifted)
+        return options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT
       end
       return options.text or DEFAULT_NEW_TAB_TEXT
     end,

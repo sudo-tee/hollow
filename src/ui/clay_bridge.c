@@ -25,10 +25,13 @@ static void on_error(Clay_ErrorData error) {
 }
 
 static Clay_Dimensions measure(Clay_StringSlice text, Clay_TextElementConfig *config, void *data) {
-    (void)config;
     HollowClay *surface = data;
     size_t columns = hollow_text_width(text.chars, (size_t)text.length);
-    return (Clay_Dimensions){ columns * surface->cell_w, surface->cell_h };
+    // Including the extra width in the font ID also keys Clay's text cache.
+    const HollowClayNode *ink = config->fontId >= 2 ? config->userData : NULL;
+    float extra = ink && text.chars == ink->text.chars && text.length == ink->text.length
+        ? (config->fontId - 2) / 2 : 0;
+    return (Clay_Dimensions){ columns * surface->cell_w + extra, surface->cell_h };
 }
 
 // Plain layouts stay small; Clay's inspector adds several elements per
@@ -96,7 +99,9 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
     int index = (*cursor)++;
     HollowClayNode *node = &nodes[index];
     if (node->kind == 2) {
-        CLAY_TEXT(node->text, { .textColor = hover_fg.a ? hover_fg : node->fg, .fontId = node->bold ? 1 : 0,
+        CLAY_TEXT(node->text, { .textColor = hover_fg.a ? hover_fg : node->fg,
+            .userData = node->center_ink ? node : NULL,
+            .fontId = (node->bold ? 1 : 0) + (node->center_ink ? 2 + 2 * node->ink_extra : 0),
             .fontSize = (uint16_t)surface->cell_h, .lineHeight = (uint16_t)surface->cell_h,
             .textAlignment = node->text_align == 1 ? CLAY_TEXT_ALIGN_CENTER : (node->text_align == 2 ? CLAY_TEXT_ALIGN_RIGHT : CLAY_TEXT_ALIGN_LEFT),
             .wrapMode = (Clay_TextElementConfigWrapMode)node->wrap });

@@ -338,6 +338,27 @@ test "Clay text alignment positions shorter wrapped lines within their text box"
     }
 }
 
+test "Clay button icon width and paint offset survive text layout" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 0, 0, 1), node(2, 0, 0, 0) };
+    nodes[1].text = .{ .chars = "+", .length = 1, .isStaticallyAllocated = true };
+    nodes[1].wrap = c.CLAY_TEXT_WRAP_NONE;
+    nodes[1].center_ink = true;
+    nodes[1].ink_offset = -2;
+    for ([_]u16{ 4, 8 }) |extra| {
+        nodes[1].ink_extra = extra;
+        const commands = layout(surface, &nodes, 200, 100, 0);
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_TEXT) continue;
+            try std.testing.expectEqual(@as(f32, @floatFromInt(8 + extra)), command.boundingBox.width);
+            const payload: *const c.HollowClayNode = @ptrCast(@alignCast(command.userData.?));
+            try std.testing.expectEqual(@as(f32, -2), payload.ink_offset);
+            break;
+        } else return error.MissingTextCommand;
+    }
+}
+
 test "Clay FIT and GROW constraints bound dimensions while FIXED stays authoritative" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);

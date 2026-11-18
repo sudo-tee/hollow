@@ -175,6 +175,7 @@ return function(root, palette, namespace, ctx, focus)
     if kind == 2 then
       local style = text_style(node.style)
       serialized.fg, serialized.bold = focus_fg or style.fg, style.bold
+      serialized.button_label = node.button_label == true or nil
     else
       local entry = container_style(node.style)
       local style, paint = entry.style, entry.paint

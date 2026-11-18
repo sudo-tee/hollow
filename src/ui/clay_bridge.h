@@ -26,6 +26,10 @@ typedef struct HollowClayNode {
     bool border_width_set;
     bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure;
     bool text_cursor; // Hovering shows the text (I-beam) cursor; for focusable inputs.
+    bool button_label;
+    bool center_ink;
+    uint16_t ink_extra; // Extra measured pixels, encoded in the Clay font ID.
+    float ink_offset; // Paint origin relative to the measured text box.
     int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
     int text_align; // Wrapped line alignment: 0 left, 1 center, 2 right.
     int align_y; // Child alignment: 0 start, 1 center, 2 end.
