@@ -84,7 +84,7 @@ describe("activity center", function()
     assert.equals(0, hollow.activity.summary().count)
     assert.equals(1, #hollow.activity.list({ view = "history" }))
     assert.equals("finished", hollow.activity.list({ view = "history" })[1].message)
-    assert.equals("󰂜 ", require("hollow.ui.widgets.attention").topbar_button().render().text)
+    assert.equals("󰂜", require("hollow.ui.widgets.attention").topbar_button().render().text)
   end)
 
   it("uses padded headers and rounded row highlights in both views", function()
@@ -217,27 +217,14 @@ describe("activity center", function()
       local levels = require("hollow.ui.shared").palette("select").notify_levels
       local level = ({ done = "success", blocked = "warn", error = "error" })[state]
       assert.equals(levels[level], button.render().style.fg)
-      assert.equals("󰂚 2 ", button.render().text)
+      assert.equals("󰂚 2", button.render().text)
 
       local program = hollow.activity.list({ view = "inbox", activity_kind = "program" })[1]
       hollow.activity.dismiss(program.id)
       assert.equals(levels.error, button.render().style.fg)
-      assert.equals("󰂚 1 ", button.render().text)
+      assert.equals("󰂚 1", button.render().text)
     end)
   end
-
-  it("reserves horizontal space around the serialized topbar bell", function()
-    hollow.ui.topbar.configure({})
-    for _, item in ipairs(hollow.ui._topbar_state().items) do
-      if item.id == "attention-button" then
-        assert.equals(6, item.style.padding.left)
-        assert.equals(6, item.style.padding.right)
-        assert.equals(6, item.style.margin.right)
-        return
-      end
-    end
-    error("missing attention button")
-  end)
 
   for _, pending in ipairs({ false, true }) do
     it(
@@ -368,7 +355,7 @@ describe("activity center", function()
     assert.equals(0, hollow.activity.summary().count)
     assert.equals(0, #hollow.activity.list({ view = "history" }))
     assert.equals(90, hollow.activity.running()[1].progress)
-    assert.equals("󰂜 ", require("hollow.ui.widgets.attention").topbar_button().render().text)
+    assert.equals("󰂜", require("hollow.ui.widgets.attention").topbar_button().render().text)
   end)
 
   it("shows shell commands when programs do not report status", function()

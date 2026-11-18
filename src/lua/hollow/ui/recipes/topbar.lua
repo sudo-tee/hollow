@@ -22,7 +22,6 @@ return sheet.define("topbar", {
   new_tab_shifted = { padding = { left = 2, right = 7 } },
   attention_button = {
     padding = { left = 6, right = 6 },
-    margin = { right = 6 },
     radius = 4,
     hover = { bg = "tab_hover_bg" },
   },
