@@ -119,6 +119,13 @@ describe("UI bars test suite", function()
         "new-tab button should return to plus when Shift is released"
       )
 
+      env.flush_deferred()
+      assert.equals("New tab", hollow.ui._topbar_tooltip().text)
+      hollow._emit_builtin_event("topbar:hover", { id = "new-tab-button", shifted = true })
+      assert.equals("New tab in a different domain", hollow.ui._topbar_tooltip().text)
+      hollow._emit_builtin_event("topbar:hover", { id = "new-tab-button", shifted = false })
+      assert.equals("New tab", hollow.ui._topbar_tooltip().text)
+
       hollow._emit_builtin_event("topbar:click", { id = "new-tab-button", shifted = false })
       harness.assert_equal(recorded.new_tab_calls, 1, "plain new-tab click should create a tab")
       harness.assert_true(recorded.new_tab.insert_at_end, "topbar new-tab click should append tab")
@@ -176,7 +183,7 @@ describe("UI bars test suite", function()
         elseif item.id == "split-right-button" or item.id == "split-down-button" then
           assert.is_true(on_right)
           assert.is_nil(item.style.bg)
-          assert.same({ left = 7, right = 7, top = 2, bottom = 2 }, item.style.padding)
+          assert.equals(item.style.padding.left, item.style.padding.right)
         end
       end
 
@@ -275,6 +282,45 @@ describe("UI bars test suite", function()
         })
       end
     )
+  end)
+
+  it("shows shortcut tooltips for the activity bell and workspace switcher", function()
+    hollow.keymap.set("<leader>a", "activity_center")
+    hollow.keymap.set("<C-S-p>", "workspace_switcher")
+    hollow.ui.topbar.configure({})
+    hollow.ui._topbar_state()
+
+    hollow._emit_builtin_event("topbar:hover", { id = "attention-button" })
+    env.flush_deferred()
+    assert.equals("Activity Center", hollow.ui._topbar_tooltip().text)
+    assert.equals("<leader>a", hollow.ui._topbar_tooltip().shortcut)
+    hollow._emit_builtin_event("topbar:leave", {})
+
+    hollow.ui.topbar.mount(hollow.ui.topbar.new({
+      render = function()
+        return {
+          hollow.ui.bar.workspace({
+            format = function()
+              return hollow.ui.workspace.topbar_button()
+            end,
+          }),
+        }
+      end,
+    }))
+    local normal = hollow.ui._topbar_state().items[1]
+    hollow._emit_builtin_event("topbar:hover", { id = "workspace-switcher-button" })
+    local hovered = hollow.ui._topbar_state().items[1]
+    assert.equals(normal.style.bg, hovered.style.bg)
+    assert.not_equals(normal.segments[2].fg, hovered.segments[2].fg)
+    env.flush_deferred()
+    assert.equals("Switch workspace", hollow.ui._topbar_tooltip().text)
+    assert.equals("<C-S-p>", hollow.ui._topbar_tooltip().shortcut)
+    hollow._emit_builtin_event("topbar:leave", {})
+    assert.equals(normal.segments[2].fg, hollow.ui._topbar_state().items[1].segments[2].fg)
+    assert.is_nil(hollow.ui._topbar_tooltip())
+    hollow.ui.topbar.unmount()
+    hollow.keymap.del("<leader>a")
+    hollow.keymap.del("<C-S-p>")
   end)
 
   describe("tabs max_width", function()

@@ -2553,6 +2553,8 @@ local workspace = {}
 
 ---@class HollowUiWorkspaceTopbarOptions
 ---@field id? string
+---@field tooltip? boolean|string Shows “Switch workspace” by default. Use `false` to hide it or a string to replace it.
+---@field tooltip_shortcut? boolean Set to false to hide the workspace switcher shortcut.
 ---@field text? string
 ---@field prefix? string
 ---@field suffix? string

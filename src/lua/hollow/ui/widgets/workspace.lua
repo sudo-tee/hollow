@@ -667,30 +667,36 @@ function ui.workspace.topbar_button(opts)
     local colors = workspace_name_color(current and current.name or "workspace")
     style = util.merge_tables({ bg = colors.bg, fg = colors.fg }, style)
   end
+  local id = opts.id or "workspace-switcher-button"
+  local palette = shared.bar_palette()
+  style.hover = shared.merge_styles({
+    fg = color.brighten_hex_color(style.fg, 0.25, palette.tab_hover_fg),
+  }, style.hover)
+  style.id = id
+  style = shared.apply_hover(style, require("hollow.state").get().ui.topbar_hovered_id)
 
-  if opts.text ~= nil then
-    return ui.button({
-      id = opts.id or "workspace-switcher-button",
-      text = opts.text,
-      style = style,
+  local function button(text, button_style)
+    local topbar = require("hollow.ui.widgets.bars.topbar")
+    local spec = {
+      id = id,
+      text = text,
+      style = button_style,
       on_click = function()
         ui.workspace.open_switcher(opts.switcher or {})
       end,
-    })
+    }
+    return ui.button(topbar.with_tooltip(spec, opts, "Switch workspace", "workspace_switcher"))
+  end
+
+  if opts.text ~= nil then
+    return button(opts.text, style)
   end
 
   local parts = workspace_parts(opts.prefix, opts.suffix)
   local edge = { bg = style.bg, fg = color.brighten_hex_color(style.bg, 0.3, style.fg) }
   return {
     ui.span(parts.prefix, ui.style(edge)),
-    ui.button({
-      text = parts.name,
-      style = ui.style({ bold = true, bg = style.bg, fg = style.fg }),
-      id = opts.id or "workspace-switcher-button",
-      on_click = function()
-        ui.workspace.open_switcher(opts.switcher or {})
-      end,
-    }),
+    button(parts.name, ui.style({ bold = true, bg = style.bg, fg = style.fg })),
     ui.span(parts.suffix, ui.style(edge)),
   }
 end

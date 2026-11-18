@@ -127,12 +127,12 @@ local function shortcut_hint(action)
   return bindings[1]
 end
 
-local function with_tooltip(node, options, label, action)
+function M.with_tooltip(node, options, label, action)
   local text = options.tooltip
   if text == nil or text == true then
     text = label
   end
-  if type(text) ~= "string" or text == "" then
+  if type(text) ~= "function" and (type(text) ~= "string" or text == "") then
     return node
   end
   local click = node.on_click
@@ -144,10 +144,19 @@ local function with_tooltip(node, options, label, action)
   node.on_mouse_enter = function()
     dismiss_tooltip()
     local ticket = tooltip_ticket
+    local mounted = state.ui.mounted_topbar
     state.host_api.defer(function()
-      if tooltip_ticket == ticket and state.ui.topbar_hovered_id == node.id then
-        tooltip =
-          { id = node.id, text = text, action = options.tooltip_shortcut ~= false and action }
+      if
+        tooltip_ticket == ticket
+        and state.ui.topbar_hovered_id == node.id
+        and state.ui.mounted_topbar == mounted
+      then
+        tooltip = {
+          id = node.id,
+          text = text,
+          action = options.tooltip_shortcut ~= false and action,
+          mounted = mounted,
+        }
         ui.request_redraw()
       end
     end, TOOLTIP_DELAY_MS)
@@ -156,7 +165,11 @@ local function with_tooltip(node, options, label, action)
 end
 
 function ui._topbar_tooltip()
-  if not tooltip or state.ui.mounted_topbar or state.ui.topbar_hovered_id ~= tooltip.id then
+  if
+    not tooltip
+    or state.ui.mounted_topbar ~= tooltip.mounted
+    or state.ui.topbar_hovered_id ~= tooltip.id
+  then
     return nil
   end
   for _, widget in ipairs(state.ui.overlay_stack) do
@@ -172,7 +185,7 @@ function ui._topbar_tooltip()
   local palette = shared.palette("overlay")
   return {
     id = tooltip.id,
-    text = tooltip.text,
+    text = type(tooltip.text) == "function" and tooltip.text() or tooltip.text,
     shortcut = action and shortcut_hint(action) or nil,
     bg = palette.bg,
     fg = palette.fg,
@@ -191,7 +204,7 @@ local function configured_topbar_new_tab(value)
   local style = M.merge_tables(s.new_tab, options.style)
   style.id = id
 
-  return with_tooltip(
+  return M.with_tooltip(
     ui.bar.custom({
       id = id,
       style = style,
@@ -211,7 +224,9 @@ local function configured_topbar_new_tab(value)
       end,
     }),
     options,
-    "New tab",
+    function()
+      return state.ui.topbar_hovered_shifted and "New tab in a different domain" or "New tab"
+    end,
     function()
       return state.ui.topbar_hovered_shifted and "new_tab_in_domain" or "new_tab"
     end
@@ -228,7 +243,7 @@ local function configured_topbar_button(value, id, text, on_click, recipe, label
   local style = M.merge_tables(styles(shared.bar_palette())[recipe or "new_tab"], options.style)
   style.id = id
 
-  return with_tooltip(
+  return M.with_tooltip(
     ui.bar.custom({
       id = id,
       style = style,
@@ -347,7 +362,7 @@ function M.widget()
         :get()
       local right_items = tbl({
           opts.hidden_panes ~= false and hidden_panes.topbar_button(ctx),
-          attention.topbar_button(),
+          M.with_tooltip(attention.topbar_button(), {}, "Activity Center", "activity_center"),
           right_split,
           down_split,
           cwd or false,
