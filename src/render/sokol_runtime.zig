@@ -969,7 +969,7 @@ var g_scrollbar_drag_pane: ?*Pane = null;
 var g_scrollbar_drag_metrics: ?App.ScrollbarMetrics = null;
 var g_scrollbar_drag_grab_y: f32 = 0.0;
 var g_scrollbar_hover_pane: ?*Pane = null;
-var g_hover_hyperlink: bool = false;
+var g_terminal_pointer_mods: ?u32 = null;
 var g_skip_mouse_release: ?ghostty.MouseButton = null;
 var g_skip_mouse_move_frames: u32 = 0;
 var g_block_left_mouse_until_up: bool = false;
@@ -3386,7 +3386,7 @@ pub fn run(app: *App) !void {
     g_scrollbar_drag_metrics = null;
     g_scrollbar_drag_grab_y = 0.0;
     g_scrollbar_hover_pane = null;
-    g_hover_hyperlink = false;
+    g_terminal_pointer_mods = null;
     g_skip_mouse_release = null;
     g_skip_mouse_move_frames = 0;
     g_block_left_mouse_until_up = false;
@@ -3695,6 +3695,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         std.log.info("sokol first frame (ft renderer)", .{});
     }
     app.tick() catch {};
+    updateTerminalPointerCursor(app);
     if (!app.config.hide_mouse_cursor_when_typing) setMouseCursorHidden(false);
     // Release cached render textures for panes destroyed during tick()
     // (closed tab, closed split, dead PTY). Must happen after tick() so the
@@ -5704,6 +5705,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        g_terminal_pointer_mods = null;
         updateLuaPaneHover(app);
         setMouseCursorHidden(false);
         updateSidebarHover(app, 0, 0, 0, true);
@@ -5839,16 +5841,21 @@ fn flushPendingMouseMove(app: *App) void {
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
     app.keyboard_navigation = true;
-    if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const key = mapKey(event.key_code);
+    const modifier = modifierBitForKey(key);
+    if (modifier == 0 and !g_selection_pointer_active and app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     if (key == .alt_right) g_right_alt_down = true;
     // Physical key-down: this modifier is genuinely held, clear any stale
     // "released" flag so its OS bit is trusted again.
-    g_released_mods &= ~modifierBitForKey(key);
+    g_released_mods &= ~modifier;
     const mods = ghosttyMods(event.modifiers);
     const is_altgr = key != .alt_right and text_helpers.isAltGrMods(mods, g_right_alt_down);
 
     setPhysicalShiftState(key, true);
+    if (modifier != 0 and g_terminal_pointer_mods != null) {
+        g_terminal_pointer_mods = mods | modifier;
+        updateTerminalPointerCursor(app);
+    }
     if ((key == .shift_left or key == .shift_right) and g_mouse_over_window) {
         _ = updateBarHover(app, g_mouse_x, g_mouse_y, c.sapp_widthf(), event.modifiers);
     }
@@ -5989,6 +5996,10 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
     if (key == .alt_right) g_right_alt_down = false;
     setPhysicalShiftState(key, false);
     g_released_mods |= modifierBitForKey(key);
+    if (modifierBitForKey(key) != 0 and g_terminal_pointer_mods != null) {
+        g_terminal_pointer_mods = ghosttyMods(event.modifiers);
+        updateTerminalPointerCursor(app);
+    }
     if ((key == .shift_left or key == .shift_right) and g_mouse_over_window) {
         var modifiers = event.modifiers;
         if (physicalShiftHeld()) {
@@ -6006,7 +6017,7 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
-    if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
+    if (!g_selection_pointer_active and app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const char_claimed = g_char_claimed;
     g_char_claimed = false;
     const had_key = g_pending_text_key != null;
@@ -6135,7 +6146,12 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         if (g_selection_pointer_active) {
             g_selection_pointer_active = false;
             g_selection_pointer_pane = null;
+            g_mouse_button_down = null;
+            if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
             _ = app.enqueueMouse(.selection_end);
+            // Restore hover at the release point even if the mouse stops here.
+            if (g_mouse_over_window) g_pending_mouse_move = event;
+            return;
         }
         if (g_drag_node != null) {
             _ = app.enqueueMouse(.divider_commit);
@@ -6393,6 +6409,9 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
                 g_selection_pointer_active = true;
                 g_selection_pointer_pane = hit.pane;
+                g_terminal_pointer_mods = null;
+                setMouseCursorHidden(false);
+                setTextSelectionCursor(.ibeam);
                 if (g_click_count >= 3) {
                     _ = app.enqueueMouse(.{ .selection_begin_line = .{
                         .pane = hit.pane,
@@ -6438,6 +6457,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
+    g_terminal_pointer_mods = null;
     defer updateLuaPaneHover(app);
     setMouseCursorHidden(false);
     if (g_linux_window_resize_active) {
@@ -6457,6 +6477,32 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         return;
     }
 
+    // The selection owns the pointer until button-up, including over links,
+    // overlays and dividers. Clamp motion to the pane where the drag started.
+    if (g_selection_pointer_active) {
+        setTextSelectionCursor(.ibeam);
+        if (g_selection_pointer_pane) |pane| {
+            if (app.cellPointInPane(pane, event.mouse_x, event.mouse_y)) |point| {
+                const mods = ghosttyMods(event.modifiers);
+                const motion = MotionCell{
+                    .pane = pane,
+                    .point = point,
+                    .held_button = .left,
+                    .mods = mods,
+                    .tracking = paneMouseTracking(pane),
+                    .layout_generation = app.currentLayoutGeneration(),
+                };
+                if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
+                    if (app.enqueueMouse(.{ .selection_update = .{ .pane = pane, .point = point } })) {
+                        g_last_motion_cell = motion;
+                        g_motion_outside_terminal = false;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     if (g_lua_pane_button != null) {
         setTextSelectionCursor(.arrow);
         return;
@@ -6467,7 +6513,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             g_scrollbar_drag_pane = null;
             g_scrollbar_drag_metrics = null;
             g_scrollbar_drag_grab_y = 0.0;
-            g_hover_hyperlink = false;
             break :blk null;
         };
         if (metrics) |scroll_metrics| {
@@ -6547,7 +6592,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (bar_hit.inBar()) {
         updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;
-        g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
         return;
     }
@@ -6558,7 +6602,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (overlay_scrollbar or overlay_hit != null) {
         updateSidebarHover(app, event.mouse_x, event.mouse_y, event.modifiers, true);
         g_scrollbar_hover_pane = null;
-        g_hover_hyperlink = false;
         setTextSelectionCursor(if (overlay_hit) |hit| (if (hit.text_cursor) .ibeam else .hand) else .arrow);
         return;
     }
@@ -6567,14 +6610,12 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     // Drags that started in a pane keep updating across the sidebar.
     if (g_mouse_button_down == null and sidebarContains(event.mouse_x, event.mouse_y)) {
         g_scrollbar_hover_pane = null;
-        g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
         return;
     }
 
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
         g_scrollbar_hover_pane = scrollbar_hit.pane;
-        g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
         return;
     }
@@ -6588,43 +6629,14 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         });
     } else {
         if (hitTestLuaPane(app, event.mouse_x, event.mouse_y)) |hit| {
-            g_hover_hyperlink = false;
-            if (!g_selection_pointer_active) {
-                setTextSelectionCursor(if (hit.id != null) (if (hit.text_cursor) .ibeam else .hand) else .arrow);
-                return;
-            }
+            setTextSelectionCursor(if (hit.id != null) (if (hit.text_cursor) .ibeam else .hand) else .arrow);
+            return;
         }
-        if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-            const hover_link = hyperlinkHoverActive(app, event.modifiers);
-            g_hover_hyperlink = hover_link;
-            const wants_text_cursor = g_selection_pointer_active or terminalMouseSelectsText(ghosttyMods(event.modifiers), paneMouseTracking(hit.pane));
-            setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
+        if (app.hitTestPane(event.mouse_x, event.mouse_y) != null) {
+            // The app probes the new cell after consuming the motion event.
+            g_terminal_pointer_mods = ghosttyMods(event.modifiers);
         } else {
-            g_hover_hyperlink = false;
             setTextSelectionCursor(.arrow);
-        }
-    }
-
-    if (g_selection_pointer_active) {
-        if (g_selection_pointer_pane) |pane| {
-            if (app.cellPointInPane(pane, event.mouse_x, event.mouse_y)) |point| {
-                const mods = ghosttyMods(event.modifiers);
-                const motion = MotionCell{
-                    .pane = pane,
-                    .point = point,
-                    .held_button = .left,
-                    .mods = mods,
-                    .tracking = paneMouseTracking(pane),
-                    .layout_generation = app.currentLayoutGeneration(),
-                };
-                if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
-                    if (app.enqueueMouse(.{ .selection_update = .{ .pane = pane, .point = point } })) {
-                        g_last_motion_cell = motion;
-                        g_motion_outside_terminal = false;
-                    }
-                }
-                return;
-            }
         }
     }
 
@@ -6972,10 +6984,14 @@ test "Shift drag selects terminal text even when the application tracks the mous
     try std.testing.expect(terminalMouseSelectsText(ghostty.Mods.none, 0));
 }
 
-fn hyperlinkHoverActive(app: *App, modifiers: u32) bool {
-    _ = modifiers;
-    if (!app.config.hyperlinks.enabled) return false;
-    return app.hovered_hyperlink != null;
+fn updateTerminalPointerCursor(app: *App) void {
+    const mods = g_terminal_pointer_mods orelse return;
+    if (!g_mouse_over_window or g_selection_pointer_active or (g_clay_surface.active and g_clay_surface.owner_index == 0)) return;
+    const hit = app.hitTestPane(g_mouse_x, g_mouse_y) orelse return setTextSelectionCursor(.arrow);
+    const link = app.config.hyperlinks.enabled and
+        app.pointer_x == g_mouse_x and app.pointer_y == g_mouse_y and
+        input.hoveredHyperlinkAtPointer(app) != null;
+    setTextSelectionCursor(if (link) .hand else if (terminalMouseSelectsText(mods, paneMouseTracking(hit.pane))) .ibeam else .arrow);
 }
 
 const SelectionCursor = enum {
