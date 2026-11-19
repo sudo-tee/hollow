@@ -18,11 +18,18 @@ return sheet.define("topbar", {
     margin = { left = 1 },
     hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
   },
+  window_button = {
+    fg = "tab_inactive_fg",
+    radius = 4,
+    padding = { left = 12, right = 12, top = 1, bottom = 2 },
+    margin = { left = 4 },
+    hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
+  },
   close_button = {
     fg = "tab_inactive_fg",
     radius = 4,
-    padding = { left = 8, right = 8, top = 1, bottom = 2 },
-    margin = { left = 1 },
+    padding = { left = 12, right = 12, top = 1, bottom = 2 },
+    margin = { left = 4 },
     hover = { bg = "#C42B1C", fg = "#FFFFFF" },
   },
   split_button = {

@@ -1102,9 +1102,10 @@
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
 ---@field new_tab? false|HollowUiTopbarNewTabOptions
----@field split_right? boolean|HollowUiTopbarButtonOptions Split the active pane side by side. Off by default.
----@field split_down? boolean|HollowUiTopbarButtonOptions Split the active pane top to bottom. Off by default.
+---@field split_right? boolean|HollowUiTopbarButtonOptions Split the active pane side by side. Enabled in the shipped config.
+---@field split_down? boolean|HollowUiTopbarButtonOptions Split the active pane top to bottom. Enabled in the shipped config.
 ---@field minimize? boolean|HollowUiTopbarButtonOptions Minimize the window. Off by default.
+---@field maximize? boolean|HollowUiTopbarButtonOptions Toggle window maximization. Off by default.
 ---@field close? boolean|HollowUiTopbarButtonOptions Close the window. Off by default.
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions

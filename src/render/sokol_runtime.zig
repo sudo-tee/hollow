@@ -813,6 +813,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     ) callconv(.c) i32;
     extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
     extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
+    extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.c) i32;
     extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
     extern "user32" fn IsIconic(hWnd: HWND) callconv(.c) i32;
     extern "user32" fn IsZoomed(hWnd: HWND) callconv(.c) i32;
@@ -3840,6 +3841,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_window_minimize = false;
         c.hollow_minimize_window();
     }
+    if (app.pending_window_toggle_maximize) {
+        app.pending_window_toggle_maximize = false;
+        c.hollow_toggle_maximize_window();
+    }
 
     const current_shader_bg = g_post_chain.background_options orelse app.config.background;
     var visually_active = true;
@@ -5645,22 +5650,26 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
             extendDwmFrame(hWnd);
         },
         win32.WM_NCHITTEST => {
-            var rect: win32.RECT = undefined;
-            if (win32.GetWindowRect(hWnd, &rect) != 0) {
-                const local_x = getXLParam(lParam) - rect.left;
-                const local_y = getYLParam(lParam) - rect.top;
-                const width = rect.right - rect.left;
-                const height = rect.bottom - rect.top;
+            const screen_x = getXLParam(lParam);
+            const screen_y = getYLParam(lParam);
+            // Borderless chrome extends the client area into the resize border.
+            // Use the same client coordinates as Sokol's mouse events so that
+            // controls take precedence there, but leave empty edges resizable.
+            if (g_gui_ready_fired) {
                 if (appFromUserData(c.sapp_userdata())) |app| {
-                    if (g_gui_ready_fired and !app.config.window_titlebar_show) {
-                        const border = windowFrameBorder();
-                        const top_bar_h: i32 = @intCast(app.tabBarHeight());
-                        if (top_bar_h > 0 and local_y >= border.y and local_y < border.y + top_bar_h) {
-                            const hit = topBarHitTest(app, @floatFromInt(local_x), @floatFromInt(local_y - border.y), @floatFromInt(width));
-                            if (hit.inBar()) return @as(win32.LRESULT, @intCast(win32.HTCLIENT));
-                        }
+                    var point = win32.POINT{ .x = screen_x, .y = screen_y };
+                    if (!app.config.window_titlebar_show and win32.ScreenToClient(hWnd, &point) != 0) {
+                        const hit = topBarHitTest(app, @floatFromInt(point.x), @floatFromInt(point.y), c.sapp_widthf());
+                        if (hit.node_id != null or hit.tab_index != null) return win32.HTCLIENT;
                     }
                 }
+            }
+            var rect: win32.RECT = undefined;
+            if (win32.GetWindowRect(hWnd, &rect) != 0) {
+                const local_x = screen_x - rect.left;
+                const local_y = screen_y - rect.top;
+                const width = rect.right - rect.left;
+                const height = rect.bottom - rect.top;
                 const hit = borderHitTest(local_x, local_y, width, height);
                 if (hit != win32.HTCLIENT) return @as(win32.LRESULT, @intCast(hit));
             }

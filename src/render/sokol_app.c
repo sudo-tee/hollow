@@ -32,6 +32,49 @@ void hollow_minimize_window(void) {
 #endif
 }
 
+void hollow_toggle_maximize_window(void) {
+#if defined(_WIN32)
+    HWND window = (HWND) sapp_win32_get_hwnd();
+    if (window) PostMessageW(window, WM_SYSCOMMAND, IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE, 0);
+#else
+    Display* display = (Display*) sapp_x11_get_display();
+    Window window = (Window) (uintptr_t) sapp_x11_get_window();
+    XWindowAttributes attrs;
+    if (!display || !window || !XGetWindowAttributes(display, window, &attrs)) return;
+
+    const Atom state = XInternAtom(display, "_NET_WM_STATE", False);
+    const Atom vert = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+    const Atom horz = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+    Atom actual_type;
+    int format;
+    unsigned long count, remaining;
+    unsigned char* data = NULL;
+    bool vertical = false, horizontal = false;
+    if (XGetWindowProperty(display, window, state, 0, 64, False, XA_ATOM,
+            &actual_type, &format, &count, &remaining, &data) == Success &&
+            actual_type == XA_ATOM && format == 32) {
+        const Atom* atoms = (const Atom*)data;
+        for (unsigned long i = 0; i < count; ++i) {
+            if (atoms[i] == vert) vertical = true;
+            if (atoms[i] == horz) horizontal = true;
+        }
+    }
+    if (data) XFree(data);
+
+    XEvent event = {0};
+    event.xclient.type = ClientMessage;
+    event.xclient.window = window;
+    event.xclient.message_type = state;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = vertical && horizontal ? 0 : 1; /* REMOVE or ADD */
+    event.xclient.data.l[1] = vert;
+    event.xclient.data.l[2] = horz;
+    event.xclient.data.l[3] = 1; /* Normal application source. */
+    XSendEvent(display, attrs.root, False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(display);
+#endif
+}
+
 /* Read the completed swapchain pass before present. Pixels are top-down RGBA. */
 bool hollow_capture_frame(uint8_t* rgba, int width, int height) {
     if (!rgba || width <= 0 || height <= 0) return false;

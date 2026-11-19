@@ -346,6 +346,7 @@ pub const App = struct {
     /// The runtime should call sapp_request_quit().
     pending_quit: bool = false,
     pending_window_minimize: bool = false,
+    pending_window_toggle_maximize: bool = false,
     hovered_tab_index: ?usize = null,
     hovered_close_tab_index: ?usize = null,
     startup_command: ?[]u8 = null,
@@ -1368,6 +1369,7 @@ pub const App = struct {
             .request_layout_refresh = lua_callbacks.luaRequestLayoutRefreshCallback,
             .request_redraw = lua_callbacks.luaRequestRedrawCallback,
             .request_window_minimize = lua_callbacks.luaRequestWindowMinimizeCallback,
+            .request_window_toggle_maximize = lua_callbacks.luaRequestWindowToggleMaximizeCallback,
             .request_window_close = lua_callbacks.luaRequestWindowCloseCallback,
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,

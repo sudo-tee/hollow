@@ -12,6 +12,7 @@ local DEFAULT_NEW_TAB_TEXT = "+"
 local DEFAULT_SHIFTED_NEW_TAB_TEXT = ""
 local DEFAULT_SPLIT_RIGHT_TEXT = "" -- Codicon split-horizontal: side-by-side panes.
 local DEFAULT_SPLIT_DOWN_TEXT = "" -- Codicon split-vertical: stacked panes.
+local DEFAULT_MINIMIZE_TEXT = "" -- Codicon chrome-minimize: full-width line.
 local RIGHT_GROUP_GAP = 8
 local TOOLTIP_DELAY_MS = 500
 local tooltip_ticket, tooltip = 0, nil
@@ -269,6 +270,10 @@ local function minimize_window()
   state.host_api.request_window_minimize()
 end
 
+local function toggle_maximize_window()
+  state.host_api.request_window_toggle_maximize()
+end
+
 local function close_window()
   state.host_api.request_window_close()
 end
@@ -325,10 +330,18 @@ function M.widget()
       local minimize = configured_topbar_button(
         opts.minimize,
         "window-minimize-button",
-        "−",
+        DEFAULT_MINIMIZE_TEXT,
         minimize_window,
-        nil,
+        "window_button",
         "Minimize window"
+      )
+      local maximize = configured_topbar_button(
+        opts.maximize,
+        "window-maximize-button",
+        "□",
+        toggle_maximize_window,
+        "window_button",
+        "Maximize or restore window"
       )
       local close = configured_topbar_button(
         opts.close,
@@ -365,6 +378,7 @@ function M.widget()
           -- An empty span reserves width without painting or taking clicks.
           ui.span("", { padding = { right = RIGHT_GROUP_GAP } }),
           minimize,
+          maximize,
           close,
         })
         :filter(function(item)

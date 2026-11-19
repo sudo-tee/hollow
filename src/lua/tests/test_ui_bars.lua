@@ -152,6 +152,7 @@ describe("UI bars test suite", function()
       assert.is_nil(button("split-right-button"))
       assert.is_nil(button("split-down-button"))
       assert.is_nil(button("window-minimize-button"))
+      assert.is_nil(button("window-maximize-button"))
       assert.is_nil(button("window-close-button"))
 
       hollow.ui.topbar.configure({ split_right = true })
@@ -163,16 +164,21 @@ describe("UI bars test suite", function()
       hollow.ui.topbar.configure({
         split_down = true,
         minimize = true,
+        maximize = true,
         close = { id = "close-test", text = "Close" },
       })
       assert.equals("", button("split-down-button").text)
-      assert.equals("−", button("window-minimize-button").text)
+      assert.equals("", button("window-minimize-button").text)
+      assert.equals("□", button("window-maximize-button").text)
       assert.equals("Close", button("close-test").text)
-      assert.equals(1, button("window-minimize-button").style.margin.left)
-      assert.equals(1, button("close-test").style.margin.left)
+      assert.equals(4, button("window-minimize-button").style.margin.left)
+      assert.equals(4, button("window-maximize-button").style.margin.left)
+      assert.equals(4, button("close-test").style.margin.left)
+      assert.equals(12, button("window-minimize-button").style.padding.left)
+      assert.equals(12, button("close-test").style.padding.left)
 
       hollow.ui.topbar.configure({ minimize = false })
-      assert.equals(1, button("close-test").style.margin.left)
+      assert.equals(4, button("close-test").style.margin.left)
       hollow.ui.topbar.configure({ minimize = true })
 
       local items = hollow.ui._topbar_state().items
@@ -201,29 +207,35 @@ describe("UI bars test suite", function()
 
       local split = stub(host_api, "split_pane")
       local minimize = stub(host_api, "request_window_minimize")
+      local maximize = stub(host_api, "request_window_toggle_maximize")
       local close = stub(host_api, "request_window_close")
 
       hollow._emit_builtin_event("topbar:click", { id = "split-right-button" })
       hollow._emit_builtin_event("topbar:click", { id = "split-down-button" })
       hollow._emit_builtin_event("topbar:click", { id = "window-minimize-button" })
+      hollow._emit_builtin_event("topbar:click", { id = "window-maximize-button" })
       hollow._emit_builtin_event("topbar:click", { id = "close-test" })
       assert.stub(split).was.called_with({ direction = "vertical" })
       assert.stub(split).was.called_with({ direction = "horizontal" })
       assert.stub(minimize).was.called(1)
+      assert.stub(maximize).was.called(1)
       assert.stub(close).was.called(1)
       split:revert()
       minimize:revert()
+      maximize:revert()
       close:revert()
 
       hollow.ui.topbar.configure({
         split_right = false,
         split_down = false,
         minimize = false,
+        maximize = false,
         close = false,
       })
       assert.is_nil(button("split-right-button"))
       assert.is_nil(button("split-down-button"))
       assert.is_nil(button("window-minimize-button"))
+      assert.is_nil(button("window-maximize-button"))
       assert.is_nil(button("close-test"))
       local items = hollow.ui._topbar_state().items
       assert.equals("attention-button", items[#items - 1].id)
