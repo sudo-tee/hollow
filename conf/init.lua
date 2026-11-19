@@ -86,6 +86,8 @@ hollow.ui.topbar.configure({
   cwd = false,
   key_legend = false,
   time = false,
+  split_right = true,
+  split_down = true,
   workspace = {
     style = function()
       return {

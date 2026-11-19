@@ -1084,6 +1084,16 @@
 ---@field format? string
 ---@field style? HollowUiNodeStyle|HollowHexColor
 
+---@class HollowUiTopbarButtonOptions
+---@field id? string
+---@field text? string
+---@field style? HollowUiNodeStyle
+---@field tooltip? boolean|string Shows the built-in label by default. Use `false` to hide it or a string to replace it.
+---@field tooltip_shortcut? boolean Set to false to hide the action’s shortcut.
+
+---@class HollowUiTopbarNewTabOptions: HollowUiTopbarButtonOptions
+---@field shifted_text? string
+
 ---@class HollowUiTopbarConfigureOptions
 ---@field height? integer
 ---@field style? HollowUiNodeStyle|HollowHexColor
@@ -1091,7 +1101,12 @@
 ---@field workspace? false|HollowUiBarWorkspaceOptions
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
----@field new_tab? false|{ id?: string, text?: string, shifted_text?: string, style?: HollowUiNodeStyle }
+---@field new_tab? false|HollowUiTopbarNewTabOptions
+---@field split_right? boolean|HollowUiTopbarButtonOptions Split the active pane side by side. Enabled in the shipped config.
+---@field split_down? boolean|HollowUiTopbarButtonOptions Split the active pane top to bottom. Enabled in the shipped config.
+---@field minimize? boolean|HollowUiTopbarButtonOptions Minimize the window. Off by default.
+---@field maximize? boolean|HollowUiTopbarButtonOptions Toggle window maximization. Off by default.
+---@field close? boolean|HollowUiTopbarButtonOptions Close the window. Off by default.
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions
 ---@field time? false|string|HollowUiTopbarTimeOptions
@@ -2539,6 +2554,8 @@ local workspace = {}
 
 ---@class HollowUiWorkspaceTopbarOptions
 ---@field id? string
+---@field tooltip? boolean|string Shows “Switch workspace” by default. Use `false` to hide it or a string to replace it.
+---@field tooltip_shortcut? boolean Set to false to hide the workspace switcher shortcut.
 ---@field text? string
 ---@field prefix? string
 ---@field suffix? string

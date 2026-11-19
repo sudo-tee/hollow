@@ -691,6 +691,60 @@ pub const FtRenderer = struct {
         }
     }
 
+    pub const LabelInk = struct {
+        left: f32,
+        right: f32,
+
+        pub fn include(bounds: *?LabelInk, left: f32, right: f32) void {
+            bounds.* = if (bounds.*) |ink|
+                .{ .left = @min(ink.left, left), .right = @max(ink.right, right) }
+            else
+                .{ .left = left, .right = right };
+        }
+    };
+
+    /// Measure the same cached bitmaps that drawLabelFace will paint.
+    /// Call after pre-rasterization; do not add glyphs to the atlas here.
+    pub fn labelInk(self: *FtRenderer, text: []const u8, face_idx: u8) ?LabelInk {
+        var bounds: ?LabelInk = null;
+        var pen: f32 = 0;
+        var i: usize = 0;
+        while (text_width.next(text[i..])) |cp| : (i += cp.len) {
+            defer pen += self.cell_w * @as(f32, @floatFromInt(cp.width));
+            if (cp.len == 1 and glyph_batch.isAsciiFastPathCandidate(cp.text[0], face_idx)) {
+                if (self.faceForRasterIndex(face_idx)) |face| {
+                    const glyph_id = ft.FT_Get_Char_Index(face, cp.text[0]);
+                    const glyph = self.glyph_cache.get(.{
+                        .glyph_index = glyph_id,
+                        .face_index = face_idx,
+                        .raster_mode = .ui,
+                    });
+                    if (glyph) |bitmap| {
+                        if (bitmap.bw > 0 and bitmap.bh > 0) {
+                            const left = @round(pen + @as(f32, @floatFromInt(bitmap.bear_x)));
+                            LabelInk.include(&bounds, left, left + @as(f32, @floatFromInt(bitmap.bw)));
+                        }
+                        continue;
+                    }
+                }
+            }
+            const result = self.getOrShape(cp.text, face_idx) orelse return null;
+            var offset: f32 = 0;
+            for (result.glyphs) |inst| {
+                defer offset += inst.x_advance;
+                const glyph = self.glyph_cache.get(.{
+                    .glyph_index = inst.glyph_id,
+                    .face_index = result.raster_face_index,
+                    .raster_mode = .ui,
+                }) orelse return null;
+                if (glyph.bw == 0 or glyph.bh == 0) continue;
+                const left = @round(pen + offset + inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
+                LabelInk.include(&bounds, left, left + @as(f32, @floatFromInt(glyph.bw)));
+            }
+        }
+        return bounds;
+    }
+
     /// Draw a UTF-8 string at absolute pixel position (x, y) using the atlas pipeline.
     /// Must be called with the full-framebuffer projection already set up by the caller
     /// (sgl_defaults + sgl_viewport full-fb + sgl_ortho(0, w, h, 0, -1, 1)).

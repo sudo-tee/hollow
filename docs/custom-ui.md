@@ -133,6 +133,42 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 }))
 ```
 
+The shipped configuration shows Split Right and Split Down by default.
+Minimize, Maximize/Restore, and Close remain hidden unless enabled.
+Each button can be configured independently:
+
+```lua
+hollow.ui.topbar.configure({
+  split_right = false,
+  split_down = false,
+  minimize = true,
+  maximize = true,
+  close = true,
+})
+```
+
+Split buttons act on the active pane.
+Minimize, Maximize/Restore, and Close act on the Hollow window, not the current tab or pane.
+Top-bar buttons and single-icon `hollow.ui.components.button` labels are horizontally centered using the visible glyph.
+Hollow's clickable buttons get a brief tint on pointer press, including in bars, dialogs, the sidebar, and Lua panes.
+This is visual feedback only: it does not move the button or change when its action runs.
+Use equal left and right padding instead of compensating for a particular icon font.
+Use `false` to hide a button again, or pass a table such as `close = { text = "Close" }` to customize it.
+
+New Tab, Split Right, Split Down, Minimize, Maximize/Restore, and Close show their built-in labels on hover by default.
+The Activity Center bell and workspace switcher also show tooltips, and the workspace switcher highlights on hover.
+Set `tooltip = false` to disable a button’s tooltip or use a string to customize its label.
+The tooltip appears after 500 ms and shows the action’s current shortcut when one is bound.
+Set `tooltip_shortcut = false` to show only the label.
+
+```lua
+hollow.ui.topbar.configure({
+  split_right = true,
+  split_down = { tooltip = "Split down" },
+  close = { tooltip = false },
+})
+```
+
 Bar-level primitives live under `hollow.ui.bar` and can be reused by
 other bars:
 

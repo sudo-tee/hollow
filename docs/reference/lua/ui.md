@@ -414,6 +414,14 @@ hollow.ui.topbar.invalidate()       -- redraw
 `configure` is for partial tweaks; the shipped top bar stays put.
 `mount` is for a complete replacement.
 
+The shipped configuration enables `split_right` and `split_down`, while `minimize`, `maximize`, and `close` are opt-in.
+The `maximize` button toggles between maximized and restored window sizes.
+Set an option to `true` to show its button, `false` to hide it, or pass `{ id?, text?, style? }` to show and customize it.
+These buttons and `new_tab` show their built-in labels on hover by default.
+Set `tooltip = false` to disable a button’s tooltip or `tooltip = "Custom label"` to customize it.
+Tooltips show the current shortcut when available unless `tooltip_shortcut = false`.
+See [Custom UI](../../custom-ui.md#top-bar) for an example.
+
 ## Bottom bar
 
 ```lua

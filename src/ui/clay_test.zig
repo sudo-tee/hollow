@@ -25,6 +25,30 @@ test "Clay button hover switches descendant text color and restores it on leave"
     }
 }
 
+test "Clay pressed feedback paints a transparent button without changing hits or bounds" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 200, 100, 1), node(1, 60, 30, 0) };
+    nodes[1].clickable = true;
+    nodes[1].bg.a = 0;
+    _ = layout(surface, &nodes, 300, 200, 0);
+    const bounds = c.hollow_clay_bounds(surface, &nodes, 1).boundingBox;
+    for ([_]c_int{ -1, 1, -1 }) |index| {
+        c.hollow_clay_set_pressed(surface, index, .{ .r = 240, .g = 240, .b = 240, .a = 255 });
+        const commands = layout(surface, &nodes, 300, 200, 0);
+        var found = false;
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE) continue;
+            if (!std.meta.eql(command.boundingBox, bounds)) continue;
+            try std.testing.expectEqual(@as(f32, c.HOLLOW_UI_PRESS_ALPHA), command.renderData.rectangle.backgroundColor.a);
+            found = true;
+        }
+        try std.testing.expectEqual(index == 1, found);
+        try std.testing.expectEqual(bounds, c.hollow_clay_bounds(surface, &nodes, 1).boundingBox);
+        try std.testing.expectEqual(@as(c_int, 1), c.hollow_clay_hit(surface, &nodes, nodes.len, bounds.x + 1, bounds.y + 1));
+    }
+}
+
 test "Clay workspace windows retire disjoint clipped columns within scroll capacity" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);
@@ -335,6 +359,27 @@ test "Clay text alignment positions shorter wrapped lines within their text box"
             lines += 1;
         }
         try std.testing.expectEqual(@as(usize, 2), lines);
+    }
+}
+
+test "Clay button icon width and paint offset survive text layout" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 0, 0, 1), node(2, 0, 0, 0) };
+    nodes[1].text = .{ .chars = "+", .length = 1, .isStaticallyAllocated = true };
+    nodes[1].wrap = c.CLAY_TEXT_WRAP_NONE;
+    nodes[1].center_ink = true;
+    nodes[1].ink_offset = -2;
+    for ([_]u16{ 4, 8 }) |extra| {
+        nodes[1].ink_extra = extra;
+        const commands = layout(surface, &nodes, 200, 100, 0);
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_TEXT) continue;
+            try std.testing.expectEqual(@as(f32, @floatFromInt(8 + extra)), command.boundingBox.width);
+            const payload: *const c.HollowClayNode = @ptrCast(@alignCast(command.userData.?));
+            try std.testing.expectEqual(@as(f32, -2), payload.ink_offset);
+            break;
+        } else return error.MissingTextCommand;
     }
 }
 

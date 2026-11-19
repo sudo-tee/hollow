@@ -28,7 +28,7 @@ function M.topbar_button()
       local selected_level = program_level or summary.level
       local level = pending and LEVELS[selected_level] and selected_level or nil
       return ui.span(
-        pending and (icons.bell .. " " .. summary.count .. " ") or (icons.bell_outline .. " "),
+        pending and (icons.bell .. " " .. summary.count) or icons.bell_outline,
         styles(shared.palette("select"), { variant = level }).attention
       )
     end,

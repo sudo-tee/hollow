@@ -9,6 +9,8 @@ struct HollowClay {
     int32_t elements;
     float cell_w, cell_h;
     bool failed, debug, debug_closed, pointer_down;
+    int pressed_index_plus_one;
+    Clay_Color pressed_ink;
     Clay_String error;
     HollowClayFrame frame;
     float width, height;
@@ -25,10 +27,13 @@ static void on_error(Clay_ErrorData error) {
 }
 
 static Clay_Dimensions measure(Clay_StringSlice text, Clay_TextElementConfig *config, void *data) {
-    (void)config;
     HollowClay *surface = data;
     size_t columns = hollow_text_width(text.chars, (size_t)text.length);
-    return (Clay_Dimensions){ columns * surface->cell_w, surface->cell_h };
+    // Including the extra width in the font ID also keys Clay's text cache.
+    const HollowClayNode *ink = config->fontId >= 2 ? config->userData : NULL;
+    float extra = ink && text.chars == ink->text.chars && text.length == ink->text.length
+        ? (config->fontId - 2) / 2 : 0;
+    return (Clay_Dimensions){ columns * surface->cell_w + extra, surface->cell_h };
 }
 
 // Plain layouts stay small; Clay's inspector adds several elements per
@@ -91,12 +96,23 @@ static void hash_ids(HollowClayNode *nodes, int count) {
         nodes[i].element_id = nodes[i].id.length ? Clay_GetElementId(nodes[i].id) : CLAY_IDI("hollow.layout", i);
 }
 
+static Clay_Color pressed_background(Clay_Color bg, Clay_Color ink) {
+    // Composite the same tint as the bars, including on transparent buttons.
+    float tint = HOLLOW_UI_PRESS_ALPHA;
+    float base = bg.a * (1.0f - tint / 255.0f);
+    float alpha = base + tint;
+    return (Clay_Color){ (bg.r * base + ink.r * tint) / alpha,
+        (bg.g * base + ink.g * tint) / alpha, (bg.b * base + ink.b * tint) / alpha, alpha };
+}
+
 static void declare_node(HollowClayNode *nodes, int count, int *cursor, int depth, HollowClay *surface, Clay_Color hover_fg) {
     if (*cursor >= count || depth > 32) { surface->failed = true; return; }
     int index = (*cursor)++;
     HollowClayNode *node = &nodes[index];
     if (node->kind == 2) {
-        CLAY_TEXT(node->text, { .textColor = hover_fg.a ? hover_fg : node->fg, .fontId = node->bold ? 1 : 0,
+        CLAY_TEXT(node->text, { .textColor = hover_fg.a ? hover_fg : node->fg,
+            .userData = node->center_ink ? node : NULL,
+            .fontId = (node->bold ? 1 : 0) + (node->center_ink ? 2 + 2 * node->ink_extra : 0),
             .fontSize = (uint16_t)surface->cell_h, .lineHeight = (uint16_t)surface->cell_h,
             .textAlignment = node->text_align == 1 ? CLAY_TEXT_ALIGN_CENTER : (node->text_align == 2 ? CLAY_TEXT_ALIGN_RIGHT : CLAY_TEXT_ALIGN_LEFT),
             .wrapMode = (Clay_TextElementConfigWrapMode)node->wrap });
@@ -123,7 +139,9 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
             .padding = node->padding, .childGap = node->gap,
             .childAlignment = { .y = node->align_y == 1 ? CLAY_ALIGN_Y_CENTER : (node->align_y == 2 ? CLAY_ALIGN_Y_BOTTOM : CLAY_ALIGN_Y_TOP) },
             .layoutDirection = node->kind == 1 ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM },
-        .backgroundColor = node->hover_bg.a && Clay_Hovered() ? node->hover_bg : node->bg,
+        .backgroundColor = index + 1 == surface->pressed_index_plus_one
+            ? pressed_background(node->hover_bg.a && Clay_Hovered() ? node->hover_bg : node->bg, surface->pressed_ink)
+            : (node->hover_bg.a && Clay_Hovered() ? node->hover_bg : node->bg),
         .cornerRadius = CLAY_CORNER_RADIUS(node->radius),
         .border = { .color = node->border, .width = node->border_width_set ? node->border_width : (Clay_BorderWidth)CLAY_BORDER_ALL(node->border_size) },
         // Clay clip flags opt into overflow sizing on that axis. Only scroll
@@ -281,6 +299,11 @@ void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame) { surface->fr
 void hollow_clay_set_debug(HollowClay *surface, bool enabled) { surface->debug = enabled; }
 
 void hollow_clay_set_pointer_down(HollowClay *surface, bool down) { surface->pointer_down = down; }
+
+void hollow_clay_set_pressed(HollowClay *surface, int index, Clay_Color ink) {
+    surface->pressed_index_plus_one = index + 1;
+    surface->pressed_ink = ink;
+}
 
 Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index) {
     (void)nodes;

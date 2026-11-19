@@ -139,10 +139,20 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
             runtime.withLockedState(void, prepareLuaPane);
         }
     }
-    if (surface.clayState()) |tree| tree.area = .{ .x = @floatFromInt(bounds.x), .y = @floatFromInt(bounds.y), .width = pw, .height = ph };
+    var pressed: ?usize = null;
+    var press_changed = false;
+    if (surface.clayState()) |tree| {
+        tree.area = .{ .x = @floatFromInt(bounds.x), .y = @floatFromInt(bounds.y), .width = pw, .height = ph };
+        if (g_button_press.target != null and g_button_press.target.? == .pane and
+            g_button_press.target.?.pane == pane.id and !luaPanePointerBlocked(app, g_mouse_x, g_mouse_y))
+        {
+            pressed = pressedClayNode(tree, .{ .pane = pane.id }, .clickable_root);
+        }
+        press_changed = tree.painted_press != pressed;
+    }
     const entry = getOrCreatePaneCacheEntry(pane, @intFromFloat(pw), @intFromFloat(ph)) orelse return;
     const atlas_stale = entry.last_atlas_reset_epoch != renderer.atlas_reset_epoch or entry.atlas_repair_pending;
-    if (!ctx.changed and pane.render_dirty == .false_value and entry.validity == .valid and !entry.needs_clear and !atlas_stale) return;
+    if (!ctx.changed and !press_changed and pane.render_dirty == .false_value and entry.validity == .valid and !entry.needs_clear and !atlas_stale) return;
     if (surface.clayState()) |tree| tree.preRasterize(renderer);
     renderer.flushAtlas();
     c.sgl_set_context(entry.cache.sgl_ctx);
@@ -162,7 +172,8 @@ fn renderLuaPaneToCache(app: *App, renderer: *FtRenderer, pane: *Pane, bounds: P
     if (surface.clayState()) |tree| {
         tree.mouse_x = surface.pointer_x;
         tree.mouse_y = surface.pointer_y;
-        drawClaySurface(tree, renderer, pw, ph, 0, 0, false);
+        drawClaySurface(tree, renderer, pw, ph, 0, 0, false, pressed, app.config.terminal_theme.foreground);
+        tree.painted_press = pressed;
         tree.area.x = @floatFromInt(bounds.x);
         tree.area.y = @floatFromInt(bounds.y);
     }
@@ -544,7 +555,11 @@ fn paintClayCommands(renderer: *FtRenderer, commands: clay.Clay_RenderCommandArr
             clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
                 const text = command.renderData.text;
                 const color = text.textColor;
-                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
+                if (text.fontId >= 2) {
+                    const node: *const clay.HollowClayNode = @ptrCast(@alignCast(command.userData orelse continue));
+                    b.x += node.ink_offset;
+                }
+                if (text.stringContents.length > 0 and color.a > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), @intCast(text.fontId & 1));
                 c.sgl_load_default_pipeline();
             },
             clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
@@ -585,7 +600,7 @@ test "sidebar semantic ids drop the layout surface namespace" {
     try std.testing.expectEqualStrings("plain", layoutLocalId("plain"));
 }
 
-fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32, sidebar: bool) void {
+fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32, sidebar: bool, pressed: ?usize, press_ink: ghostty.ColorRgb) void {
     if (!surface.active) return;
     surface.area = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
     const interactive = surface.owner_index > 0 or sidebar;
@@ -593,6 +608,27 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
         surface.mouse_x = g_mouse_x - offset_x;
         surface.mouse_y = g_mouse_y - offset_y;
     }
+    for (surface.nodes[0..surface.len]) |*node| {
+        if (!node.button_label) continue;
+        node.center_ink = false;
+        if (node.text.length <= 0 or node.wrap != clay.CLAY_TEXT_WRAP_NONE) continue;
+        const text = node.text.chars[0..@intCast(node.text.length)];
+        const cluster = text_width.next(text) orelse continue;
+        if (cluster.len != text.len or cluster.width == 0 or text[0] <= ' ') continue;
+        const ink = renderer.labelInk(text, if (node.bold) 1 else 0) orelse continue;
+        const cells = @as(f32, @floatFromInt(cluster.width)) * renderer.cell_w;
+        const extra = @ceil(barLabelWidth(cells, ink) - cells);
+        if (extra > 32766) continue;
+        node.center_ink = true;
+        node.ink_extra = @intFromFloat(extra);
+        node.ink_offset = barLabelOffset(cells + extra, ink);
+    }
+    clay.hollow_clay_set_pressed(surface.context, if (pressed) |index| @intCast(index) else -1, .{
+        .r = @floatFromInt(press_ink.r),
+        .g = @floatFromInt(press_ink.g),
+        .b = @floatFromInt(press_ink.b),
+        .a = 255,
+    });
     const commands = surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
     const context = surface.context;
     const nodes = &surface.nodes;
@@ -636,19 +672,29 @@ fn drawClaySurface(surface: *ClaySurface, renderer: *FtRenderer, width: f32, hei
 }
 
 // A standalone Clay surface is modal. Never leak its pointer/keyboard input to PTYs.
-fn claySurfaceEvent(event: c.sapp_event) bool {
+fn claySurfaceEvent(app: *App, event: c.sapp_event) bool {
     if (!g_clay_surface.active or g_clay_surface.owner_index > 0) return false;
     switch (event.type) {
         c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            g_mouse_x = event.mouse_x;
+            g_mouse_y = event.mouse_y;
             g_clay_surface.mouse_x = event.mouse_x;
             g_clay_surface.mouse_y = event.mouse_y;
+            if (g_button_press.target != null) app.requestRedraw();
             const hit = g_clay_surface.hitTest(.clickable, event.mouse_x, event.mouse_y);
             setTextSelectionCursor(if (hit) |index| (if (g_clay_surface.nodes[index].text_cursor) .ibeam else .hand) else .arrow);
         },
         c.SAPP_EVENTTYPE_MOUSE_DOWN, c.SAPP_EVENTTYPE_MOUSE_UP => {
             g_clay_surface.mouse_x = event.mouse_x;
             g_clay_surface.mouse_y = event.mouse_y;
-            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) g_clay_surface.pointerButton(event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN, event.mouse_x, event.mouse_y);
+            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+                const down = event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN;
+                g_clay_surface.pointerButton(down, event.mouse_x, event.mouse_y);
+                if (down) {
+                    const id = g_clay_surface.pressed_id[0..g_clay_surface.pressed_len];
+                    beginButtonPress(app, .{ .clay = g_clay_surface.surface_id }, id);
+                }
+            }
         },
         c.SAPP_EVENTTYPE_MOUSE_SCROLL => {
             g_clay_surface.mouse_x = event.mouse_x;
@@ -794,6 +840,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     ) callconv(.c) i32;
     extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
     extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
+    extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.c) i32;
     extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
     extern "user32" fn IsIconic(hWnd: HWND) callconv(.c) i32;
     extern "user32" fn IsZoomed(hWnd: HWND) callconv(.c) i32;
@@ -1235,6 +1282,85 @@ const BarHit = struct {
         return self.surface != null;
     }
 };
+
+const ButtonPressTarget = union(enum) {
+    bar: struct { surface: BarSurface, tab_id: ?usize },
+    clay: f64,
+    pane: usize,
+    notice: u64,
+};
+
+const ButtonPress = struct {
+    const minimum_ns = 85 * std.time.ns_per_ms;
+
+    target: ?ButtonPressTarget = null,
+    id: [512]u8 = undefined,
+    len: usize = 0,
+    until_ns: i128 = 0,
+    held: bool = false,
+
+    fn begin(self: *ButtonPress, target: ButtonPressTarget, id: []const u8, now: i128) void {
+        self.target = null;
+        if (id.len > self.id.len or (id.len == 0 and (target == .clay or target == .pane))) return;
+        @memcpy(self.id[0..id.len], id);
+        self.len = id.len;
+        self.target = target;
+        self.until_ns = now + minimum_ns;
+        self.held = true;
+    }
+
+    fn expire(self: *ButtonPress, now: i128) bool {
+        if (self.target == null or self.held or now < self.until_ns) return false;
+        self.target = null;
+        return true;
+    }
+
+    fn matches(self: *const ButtonPress, target: ButtonPressTarget, id: []const u8) bool {
+        const current = self.target orelse return false;
+        return std.meta.eql(current, target) and std.mem.eql(u8, self.id[0..self.len], id);
+    }
+};
+
+var g_button_press: ButtonPress = .{};
+
+fn barTabId(app: *App, index: usize) ?usize {
+    const mux = if (app.mux) |*value| value else return null;
+    const workspace = mux.activeWorkspace() orelse return null;
+    return if (index < workspace.tabs.items.len) workspace.tabs.items[index].id else null;
+}
+
+fn beginButtonPress(app: *App, target: ButtonPressTarget, id: []const u8) void {
+    g_button_press.begin(target, id, io.nanoTimestamp());
+    app.requestRedraw();
+}
+
+fn pressedClayNode(surface: *ClaySurface, target: ButtonPressTarget, kind: ClaySurface.Target) ?usize {
+    const current = g_button_press.target orelse return null;
+    if (!surface.active or !g_mouse_over_window or !std.meta.eql(current, target)) return null;
+    const index = surface.hitTest(kind, g_mouse_x, g_mouse_y) orelse return null;
+    if (surface.nodes[index].text_cursor or !g_button_press.matches(target, surface.nodeId(index))) return null;
+    return index;
+}
+
+test "button press owns its target and keeps quick clicks visible without extending holds" {
+    var press: ButtonPress = .{};
+    var id = [_]u8{ 'o', 'k' };
+    const target: ButtonPressTarget = .{ .bar = .{ .surface = .top, .tab_id = null } };
+    press.begin(target, &id, 0);
+    id[0] = 'n';
+    try std.testing.expect(press.matches(target, "ok"));
+    try std.testing.expect(!press.matches(target, "nk"));
+    try std.testing.expect(!press.matches(.{ .bar = .{ .surface = .bottom, .tab_id = null } }, "ok"));
+    press.held = false;
+    try std.testing.expect(!press.expire(ButtonPress.minimum_ns - 1));
+    try std.testing.expect(press.expire(ButtonPress.minimum_ns));
+    try std.testing.expect(!press.matches(target, "ok"));
+
+    press.begin(target, "ok", 0);
+    try std.testing.expect(!press.expire(2 * ButtonPress.minimum_ns));
+    press.held = false;
+    try std.testing.expect(press.expire(2 * ButtonPress.minimum_ns));
+}
 
 const MAX_BAR_HIT_REGIONS = 256;
 const MAX_OVERLAY_SURFACES = 32;
@@ -1947,6 +2073,9 @@ fn drawSessionNotice(app: *App, renderer: *FtRenderer, value: session_notice.Not
         c.sgl_load_default_pipeline();
     }
     drawBorderRect(panel.x, panel.y, panel.width, panel.height, bg.r, bg.g, bg.b, 255);
+    if (g_mouse_over_window and panel.contains(g_mouse_x, g_mouse_y) and g_button_press.matches(.{ .notice = value.id }, "")) {
+        drawPressTint(panel.x, panel.y, panel.width, panel.height, 0, fg);
+    }
     drawBorderRect(panel.x, panel.y, panel.width, 2, accent.r, accent.g, accent.b, 255);
     const x = panel.x + renderer.cell_w;
     var y = panel.y + renderer.cell_h * 0.5;
@@ -2381,6 +2510,10 @@ fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
     drawBarBackgroundWithAlphaMode(x, y, w, h, style, false);
 }
 
+fn drawPressTint(x: f32, y: f32, w: f32, h: f32, radius: f32, ink: ghostty.ColorRgb) void {
+    drawRoundedRect(x, y, w, h, radius, ink.r, ink.g, ink.b, clay.HOLLOW_UI_PRESS_ALPHA);
+}
+
 fn drawBarBackgroundWithAlphaMode(x: f32, y: f32, w: f32, h: f32, style: BarStyle, preserve_alpha: bool) void {
     if (style.bg) |bg| drawRoundedRectWithAlphaMode(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255, preserve_alpha);
     if (style.border) |border| {
@@ -2552,8 +2685,39 @@ test "tab segment fitting keeps styles and the clickable suffix" {
     try std.testing.expectEqualStrings("..", fitTabSegments(&wide, 2, &out, &buf)[0].text);
 }
 
-fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
-    return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+fn topbarButtonInk(renderer: *FtRenderer, view: *const BarSegmentView) ?FtRenderer.LabelInk {
+    if (view.segment.id == null) return null;
+    const text = view.segment.text;
+    if (!segmentViewShowsFullSegments(view, text)) {
+        return renderer.labelInk(text, if (view.segment.bold or view.style.bold) 1 else 0);
+    }
+    var bounds: ?FtRenderer.LabelInk = null;
+    var pen: f32 = 0;
+    for (view.segments[0..view.segments_len]) |seg| {
+        if (renderer.labelInk(seg.text, if (seg.bold) 1 else 0)) |ink| {
+            FtRenderer.LabelInk.include(&bounds, pen + ink.left, pen + ink.right);
+        }
+        pen += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+    }
+    return bounds;
+}
+
+fn barLabelWidth(cells: f32, ink: ?FtRenderer.LabelInk) f32 {
+    return if (ink) |bounds| @max(cells, bounds.right - bounds.left) else cells;
+}
+
+fn barLabelOffset(width: f32, ink: ?FtRenderer.LabelInk) f32 {
+    return if (ink) |bounds| (width - bounds.left - bounds.right) / 2 else 0;
+}
+
+test "bar button centers visible ink and reserves room for wide icons" {
+    const narrow: FtRenderer.LabelInk = .{ .left = 4, .right = 10 };
+    const wide: FtRenderer.LabelInk = .{ .left = 2, .right = 17 };
+    try std.testing.expectEqual(@as(f32, 10), barLabelWidth(10, narrow));
+    try std.testing.expectEqual(@as(f32, -2), barLabelOffset(10, narrow));
+    try std.testing.expectEqual(@as(f32, 15), barLabelWidth(10, wide));
+    try std.testing.expectEqual(@as(f32, -2), barLabelOffset(15, wide));
+    try std.testing.expectEqual(@as(f32, 0), barLabelOffset(10, null));
 }
 
 fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
@@ -2586,7 +2750,7 @@ fn nativePadding(box: BarBox) clay.Clay_Padding {
     return .{ .left = native_surface.edge(box.left), .right = native_surface.edge(box.right), .top = native_surface.edge(box.top), .bottom = native_surface.edge(box.bottom) };
 }
 
-fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width: f32, height: f32, widget: *const BarWidgetView) bool {
+fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width: f32, height: f32, widget: *const BarWidgetView, ink: []const ?FtRenderer.LabelInk) bool {
     const Surface = native_surface.Surface;
     const fixed = native_surface.fixed;
     const grow = native_surface.grow;
@@ -2613,7 +2777,9 @@ fn layoutNativeBar(layout: *native_surface.Surface, renderer: *FtRenderer, width
             },
             .segment => {
                 const view = &item.segment;
-                const desired = segmentViewFullWidth(renderer, view);
+                const cell_width = @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+                const text_width_px = barLabelWidth(cell_width, if (i < ink.len) ink[i] else null);
+                const desired = view.style.margin.horizontal() + view.style.padding.horizontal() + text_width_px;
                 Surface.preferred(id, .{ .sizing = .{
                     .width = if (right) fixed(desired) else native_surface.fit(),
                     .height = fixed(barItemHeight(renderer, view.style) + view.style.margin.vertical()),
@@ -2665,23 +2831,56 @@ test "native bars reserve right items and grow tabs before the spacer" {
     widget.items[2].segment.segment.text = "right";
     var layout = native_surface.Surface{};
     defer layout.deinit();
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 80), layout.bounds(11).width, 0.02);
     try std.testing.expectApproxEqAbs(@as(f32, 350), layout.bounds(210).x, 0.02);
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 100, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 100, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 25), layout.bounds(11).width, 0.02);
     try std.testing.expectApproxEqAbs(@as(f32, 50), layout.bounds(210).x, 0.02);
     widget.items[0].tabs.max_width = 0;
-    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget));
+    try std.testing.expect(layoutNativeBar(&layout, &renderer, 400, 30, widget, &.{}));
     try std.testing.expectApproxEqAbs(@as(f32, 175), layout.bounds(11).width, 0.02);
+}
+
+/// Spans may handle clicks independently, but the containing bar item owns
+/// the background (e.g. the workspace switcher's icon, name, and count).
+fn barItemOwnsPress(item_id: ?[]const u8, spans: []const bar.Segment, pressed_id: []const u8) bool {
+    if (pressed_id.len == 0) return false;
+    if (item_id) |id| if (std.mem.eql(u8, id, pressed_id)) return true;
+    for (spans) |span| {
+        if (span.id) |id| if (std.mem.eql(u8, id, pressed_id)) return true;
+    }
+    return false;
+}
+
+test "workspace bar item owns press feedback for its clickable name span" {
+    const spans = [_]bar.Segment{
+        .{ .text = "icon " },
+        .{ .text = "default", .id = "workspace-switcher-button" },
+        .{ .text = " 1/1" },
+    };
+    try std.testing.expect(barItemOwnsPress(null, &spans, "workspace-switcher-button"));
+    try std.testing.expect(!barItemOwnsPress(null, &spans, "new-tab"));
+    try std.testing.expect(barItemOwnsPress("new-tab", &.{}, "new-tab"));
+    try std.testing.expect(!barItemOwnsPress(null, &spans, ""));
 }
 
 fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: *const BarWidgetView) void {
     if (bar_h <= 0) return;
     const layout = &g_native_bars[@backingInt(surface)];
-    if (!layoutNativeBar(layout, renderer, width, bar_h, widget)) return;
+    var ink: [@typeInfo(@FieldType(BarWidgetView, "items")).array.len]?FtRenderer.LabelInk = @splat(null);
+    if (surface == .top) for (widget.items[0..widget.len], 0..) |*item, i| {
+        if (item.kind == .segment) ink[i] = topbarButtonInk(renderer, &item.segment);
+    };
+    if (!layoutNativeBar(layout, renderer, width, bar_h, widget, &ink)) return;
     const cache = if (surface == .top) &g_top_bar_cache else &g_bottom_bar_cache;
     const default_fg = ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+    const press_ink = app.config.terminal_theme.foreground;
+    const bar_press = if (g_button_press.target) |target|
+        g_mouse_over_window and target == .bar and target.bar.surface == surface and g_mouse_y >= bar_y and g_mouse_y < bar_y + bar_h
+    else
+        false;
+    const pressed_id = if (bar_press) g_button_press.id[0..g_button_press.len] else "";
 
     const frame = layout.bounds(1);
     const frame_x = frame.x;
@@ -2714,7 +2913,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     @max(1, @as(usize, @intFromFloat(available_text_w / renderer.cell_w)))
                 else
                     0;
-                const display = if (max_chars > 0 and segmentViewCodepoints(view) > max_chars)
+                const nominal_width = @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
+                const preferred_width = barLabelWidth(nominal_width, ink[item_index]);
+                const centered = ink[item_index] != null and preferred_width <= available_text_w + 0.01;
+                const display = if (centered)
+                    view.segment.text
+                else if (max_chars > 0 and segmentViewCodepoints(view) > max_chars)
                     takeTrailingCodepoints(view.segment.text, max_chars)
                 else if (max_chars == 0)
                     ""
@@ -2726,7 +2930,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 const bg_h = barItemHeight(renderer, view.style);
                 const bg_x = cursor_x + view.style.margin.left;
                 const bg_y = bar_y + item_box.y + view.style.margin.top;
-                const bg_w = view.style.padding.left + text_w + view.style.padding.right;
+                const bg_w = view.style.padding.left + (if (centered) preferred_width else text_w) + view.style.padding.right;
                 var bg_style = view.style;
                 if (bg_style.bg == null) bg_style.bg = view.segment.bg;
                 if (bg_style.fg == null) bg_style.fg = view.segment.fg;
@@ -2740,15 +2944,21 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 if (bg_style.bg != null or bg_style.border != null) {
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                 }
+                const segment_press = bar_press and g_button_press.target.?.bar.tab_id == null and
+                    g_mouse_x >= cursor_x and g_mouse_x < cursor_x + view.style.margin.horizontal() + bg_w;
+                const spans = if (segmentViewShowsFullSegments(view, display)) view.segments[0..view.segments_len] else &.{};
+                const paint_press = segment_press and barItemOwnsPress(view.segment.id, spans, pressed_id);
+                if (paint_press) drawPressTint(bg_x, bg_y, bg_w, bg_h, bg_style.radius, press_ink);
 
                 const text_x = bg_x + view.style.padding.left;
+                const draw_x = text_x + if (centered) barLabelOffset(preferred_width, ink[item_index]) else 0;
                 const text_y = bg_y + view.style.padding.top;
                 const fg = bg_style.fg orelse default_fg;
-                if (segmentViewShowsFullSegments(view, display)) {
-                    cacheBarSegmentArray(cache, renderer, text_x, text_w, view.segments[0..view.segments_len], null);
-                    drawSegmentArray(renderer, text_x, text_y, text_w, view.segments[0..view.segments_len], fg);
+                if (spans.len > 0) {
+                    cacheBarSegmentArray(cache, renderer, text_x, text_w, spans, null);
+                    drawSegmentArray(renderer, draw_x, text_y, text_w, spans, fg);
                 } else {
-                    renderer.drawLabelFace(text_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
+                    renderer.drawLabelFace(draw_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
                 }
             },
@@ -2773,6 +2983,14 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                         record.add(.tab, ti, tx, tab_w, .{ .x = bg_x, .y = bg_y, .width = bg_w, .height = bg_h }, paint, ti == active_idx, tab.segment.text);
                     }
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
+                    // Tabs keep their per-span click handlers, but press paint follows
+                    // the rounded tab background, not the span's text bounds.
+                    if (bar_press and g_button_press.target.?.bar.tab_id != null and
+                        g_button_press.target.?.bar.tab_id == barTabId(app, ti) and
+                        g_mouse_x >= tx and g_mouse_x < tx + tab_w)
+                    {
+                        drawPressTint(bg_x, bg_y, bg_w, bg_h, bg_style.radius, press_ink);
+                    }
                     if (tab.style.radius <= 0 and tab.style.bg == null and tab.segment.bg == null and ti == active_idx) {
                         const accent = bg_style.selection_accent.?;
                         if (surface == .top) {
@@ -2874,6 +3092,65 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
     return false;
 }
 
+fn renderTopbarTooltip(api: Api, state: *State, ui_idx: c_int, renderer: *FtRenderer, viewport: ?[2]f32) void {
+    const saved_top = api.get_top(state);
+    defer api.set_top(state, saved_top);
+    api.get_field(state, ui_idx, "_topbar_tooltip");
+    if (api.value_type(state, -1) != @backingInt(LuaType.function) or
+        api.pcall(state, 0, 1, 0) != 0 or api.value_type(state, -1) != @backingInt(LuaType.table)) return;
+    const tooltip_idx = absoluteIndex(api, state, -1);
+    const field = struct {
+        fn text(a: Api, s: *State, idx: c_int, name: [:0]const u8) ?[]const u8 {
+            a.get_field(s, idx, name);
+            defer pop(a, s, 1);
+            var len: usize = 0;
+            const ptr = a.to_lstring(s, -1, &len) orelse return null;
+            if (len == 0 or len > 512) return null;
+            return ptr[0..len];
+        }
+    }.text;
+    const label = field(api, state, tooltip_idx, "text") orelse return;
+    const shortcut = field(api, state, tooltip_idx, "shortcut");
+    if (viewport == null) {
+        renderer.preRasterizeLabelFace(label, 0);
+        if (shortcut) |text| renderer.preRasterizeLabelFace(text, 1);
+        return;
+    }
+    const id = field(api, state, tooltip_idx, "id") orelse return;
+    if (!g_top_bar_cache.enabled) return;
+    const hit = for (g_top_bar_cache.hits[0..g_top_bar_cache.hit_count]) |region| {
+        if (region.node_id) |node_id| if (std.mem.eql(u8, id, node_id)) break region;
+    } else return;
+    const bg = parseHexColor(field(api, state, tooltip_idx, "bg") orelse "") orelse ghostty.ColorRgb{ .r = 35, .g = 39, .b = 47 };
+    const fg = parseHexColor(field(api, state, tooltip_idx, "fg") orelse "") orelse ghostty.ColorRgb{ .r = 235, .g = 235, .b = 235 };
+    const shortcut_fg = parseHexColor(field(api, state, tooltip_idx, "shortcut_fg") orelse "") orelse fg;
+    const padding = 7.0;
+    const gap = 4.0;
+    const shortcut_gap = 8.0;
+    const label_width = @as(f32, @floatFromInt(countCodepoints(label))) * renderer.cell_w;
+    var width = label_width + 2 * padding;
+    var show_shortcut = false;
+    if (shortcut) |text| {
+        const extra = shortcut_gap + @as(f32, @floatFromInt(countCodepoints(text))) * renderer.cell_w;
+        if (width + extra + 2 * gap <= viewport.?[0]) {
+            show_shortcut = true;
+            width += extra;
+        }
+    }
+    const height = renderer.cell_h + 8;
+    const y = g_top_bar_cache.y + g_top_bar_cache.height + gap;
+    if (width + 2 * gap > viewport.?[0] or y + height > viewport.?[1]) return;
+    const x = @round(std.math.clamp(hit.x + (hit.width - width) / 2, gap, viewport.?[0] - width - gap));
+    drawRoundedRect(x, y, width, height, 6, bg.r, bg.g, bg.b, 255);
+    drawRoundedRectOutline(x, y, width, height, 6, 1, fg.r, fg.g, fg.b, 64);
+    renderer.drawLabelFace(x + padding, y + 4, label, fg.r, fg.g, fg.b, 0);
+    c.sgl_load_default_pipeline();
+    if (show_shortcut) {
+        renderer.drawLabelFace(x + padding + label_width + shortcut_gap, y + 4, shortcut.?, shortcut_fg.r, shortcut_fg.g, shortcut_fg.b, 1);
+        c.sgl_load_default_pipeline();
+    }
+}
+
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_surface_count = 0;
     g_overlay_has_modal = false;
@@ -2966,7 +3243,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         g_sidebar_bounds = .{ .x = panel_x, .y = panel_y, .width = sidebar_width, .height = @max(0, panel_h) };
         if (g_sidebar_clay.active and panel_h > 0) {
             // Clay owns background, segments, clipping and scrolling.
-            drawClaySurface(&g_sidebar_clay, ctx.renderer, sidebar_width, panel_h, panel_x, panel_y, true);
+            const pressed = pressedClayNode(&g_sidebar_clay, .{ .clay = g_sidebar_clay.surface_id }, .clickable);
+            drawClaySurface(&g_sidebar_clay, ctx.renderer, sidebar_width, panel_h, panel_x, panel_y, true, pressed, ctx.app.config.terminal_theme.foreground);
         }
     }
     pop(api, state, 1);
@@ -3027,7 +3305,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (backdrop_color) |bg| {
                         if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
                     }
-                    drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h, false);
+                    const pressed = pressedClayNode(surface.?, .{ .clay = surface.?.surface_id }, .clickable);
+                    drawClaySurface(surface.?, ctx.renderer, content_w, content_h, content_x, top_h, false, pressed, ctx.app.config.terminal_theme.foreground);
                     if (g_overlay_surface_count < g_overlay_surfaces.len) {
                         g_overlay_surfaces[g_overlay_surface_count] = surface.?;
                         g_overlay_surface_count += 1;
@@ -3038,6 +3317,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             pop(api, state, 1);
         }
     }
+    renderTopbarTooltip(api, state, ui_idx, ctx.renderer, .{ ctx.width, ctx.height });
     pop(api, state, 3);
 }
 
@@ -3100,6 +3380,7 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
 
     process_bar.run(api, state, renderer, scratch, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state");
     process_bar.run(api, state, renderer, scratch, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
+    renderTopbarTooltip(api, state, ui_idx, renderer, null);
 
     pop(api, state, 2);
 }
@@ -3702,6 +3983,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // mux has already removed dead panes from its lists.
     if (app.mux != null) evictStalePaneCaches(app);
     const after_tick_ns = io.nanoTimestamp();
+    if (g_button_press.expire(after_tick_ns)) app.requestRedraw();
+    const quick_press = g_button_press.target != null and !g_button_press.held;
 
     if (app.pending_quit) {
         // Keep the quit request path non-blocking. Full teardown can wait for
@@ -3713,11 +3996,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    if (app.pending_window_minimize) {
+        app.pending_window_minimize = false;
+        c.hollow_minimize_window();
+    }
+    if (app.pending_window_toggle_maximize) {
+        app.pending_window_toggle_maximize = false;
+        c.hollow_toggle_maximize_window();
+    }
+
     const current_shader_bg = g_post_chain.background_options orelse app.config.background;
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
+        visually_active = quick_press or app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
             g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, current_shader_bg);
     }
     var use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
@@ -4845,7 +5137,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             g_overlay_surface_count = 0;
             g_overlay_has_modal = false;
         }
-        if (g_clay_surface.owner_index == 0) drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false);
+        if (g_clay_surface.owner_index == 0) {
+            const pressed = pressedClayNode(&g_clay_surface, .{ .clay = g_clay_surface.surface_id }, .clickable_root);
+            drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false, pressed, app.config.terminal_theme.foreground);
+        }
         drawGridDebug(app, renderer, width, height);
     }
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
@@ -5517,22 +5812,26 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
             extendDwmFrame(hWnd);
         },
         win32.WM_NCHITTEST => {
-            var rect: win32.RECT = undefined;
-            if (win32.GetWindowRect(hWnd, &rect) != 0) {
-                const local_x = getXLParam(lParam) - rect.left;
-                const local_y = getYLParam(lParam) - rect.top;
-                const width = rect.right - rect.left;
-                const height = rect.bottom - rect.top;
+            const screen_x = getXLParam(lParam);
+            const screen_y = getYLParam(lParam);
+            // Borderless chrome extends the client area into the resize border.
+            // Use the same client coordinates as Sokol's mouse events so that
+            // controls take precedence there, but leave empty edges resizable.
+            if (g_gui_ready_fired) {
                 if (appFromUserData(c.sapp_userdata())) |app| {
-                    if (g_gui_ready_fired and !app.config.window_titlebar_show) {
-                        const border = windowFrameBorder();
-                        const top_bar_h: i32 = @intCast(app.tabBarHeight());
-                        if (top_bar_h > 0 and local_y >= border.y and local_y < border.y + top_bar_h) {
-                            const hit = topBarHitTest(app, @floatFromInt(local_x), @floatFromInt(local_y - border.y), @floatFromInt(width));
-                            if (hit.inBar()) return @as(win32.LRESULT, @intCast(win32.HTCLIENT));
-                        }
+                    var point = win32.POINT{ .x = screen_x, .y = screen_y };
+                    if (!app.config.window_titlebar_show and win32.ScreenToClient(hWnd, &point) != 0) {
+                        const hit = topBarHitTest(app, @floatFromInt(point.x), @floatFromInt(point.y), c.sapp_widthf());
+                        if (hit.node_id != null or hit.tab_index != null) return win32.HTCLIENT;
                     }
                 }
+            }
+            var rect: win32.RECT = undefined;
+            if (win32.GetWindowRect(hWnd, &rect) != 0) {
+                const local_x = screen_x - rect.left;
+                const local_y = screen_y - rect.top;
+                const width = rect.right - rect.left;
+                const height = rect.bottom - rect.top;
                 const hit = borderHitTest(local_x, local_y, width, height);
                 if (hit != win32.HTCLIENT) return @as(win32.LRESULT, @intCast(hit));
             }
@@ -5679,6 +5978,30 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const event = ev.*;
 
     if (event.type != c.SAPP_EVENTTYPE_CHAR and event.type != c.SAPP_EVENTTYPE_MOUSE_MOVE) flushPendingTextKey(app, event.frame_count);
+    if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and
+        (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN or event.type == c.SAPP_EVENTTYPE_MOUSE_UP))
+    {
+        flushPendingMouseMove(app);
+        g_mouse_x = event.mouse_x;
+        g_mouse_y = event.mouse_y;
+        if (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN) {
+            g_mouse_over_window = true;
+            if (g_button_press.target != null) {
+                g_button_press.target = null;
+                app.requestRedraw();
+            }
+        } else if (g_button_press.target != null) {
+            g_button_press.held = false;
+            _ = g_button_press.expire(io.nanoTimestamp());
+            app.requestRedraw();
+        }
+    }
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED or event.type == c.SAPP_EVENTTYPE_ICONIFIED or event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
+        if (g_button_press.target != null) {
+            g_button_press.target = null;
+            app.requestRedraw();
+        }
+    }
     if (g_lua_pane_button != null and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
     if (takeLuaPaneRelease(event)) {
         g_mouse_x = event.mouse_x;
@@ -5691,7 +6014,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     if (inspectorResizeEvent(app, event)) return;
     if (gridDebugEvent(app, event)) return;
     if (surfaceInspectorEvent(app, event)) return;
-    if (claySurfaceEvent(event)) return;
+    if (claySurfaceEvent(app, event)) return;
 
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE) {
         g_pending_mouse_move = event;
@@ -5705,6 +6028,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        app.emitLuaBuiltInEvent("topbar:leave", .none);
         g_terminal_pointer_mods = null;
         updateLuaPaneHover(app);
         setMouseCursorHidden(false);
@@ -5719,6 +6043,9 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
 
     if (event.type == c.SAPP_EVENTTYPE_QUIT_REQUESTED) {
         std.log.info("sokol quit requested", .{});
+    }
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED) {
+        app.emitLuaBuiltInEvent("topbar:leave", .none);
     }
 
     if (builtin.os.tag == .windows) {
@@ -6189,6 +6516,13 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            if (bar_hit.tab_index) |index| {
+                if (barTabId(app, index)) |id| {
+                    beginButtonPress(app, .{ .bar = .{ .surface = bar_hit.surface.?, .tab_id = id } }, "");
+                }
+            } else if (bar_hit.node_id) |id| {
+                beginButtonPress(app, .{ .bar = .{ .surface = bar_hit.surface.?, .tab_id = null } }, id);
+            }
             const click_mods = ghosttyMods(event.modifiers);
             const click_shifted = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0;
             if (bar_hit.node_id != null and bar_hit.tab_index == null) {
@@ -6240,6 +6574,13 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             return;
         }
         if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
+            if (!hit.text_cursor) {
+                for (g_overlay_surfaces[0..g_overlay_surface_count]) |surface| {
+                    if (surface.owner_index != hit.stack_index) continue;
+                    beginButtonPress(app, .{ .clay = surface.surface_id }, hit.id);
+                    break;
+                }
+            }
             app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{
                 .id = hit.id,
                 .index = hit.stack_index,
@@ -6252,6 +6593,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     // notice ID; cancellation/dismissal belongs to the frame-thread lifecycle.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
         if (hitTestSessionNotice(app, event.mouse_x, event.mouse_y)) |id| {
+            beginButtonPress(app, .{ .notice = id }, "");
             _ = app.enqueueMouse(.{ .session_notice_activate = id });
             g_block_left_mouse_until_up = true;
             g_mouse_button_down = null;
@@ -6264,6 +6606,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     if (action == .press and sidebarContains(event.mouse_x, event.mouse_y)) {
         if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
             if (hitTestSidebar(event.mouse_x, event.mouse_y)) |id| {
+                beginButtonPress(app, .{ .clay = g_sidebar_clay.surface_id }, id);
                 app.emitLuaBuiltInEvent("sidebar:click", .{ .sidebar_node = .{
                     .id = id,
                     .mods = ghosttyMods(event.modifiers),
@@ -6377,6 +6720,9 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             beginLuaPaneGesture(.left);
             if (hitTestOverlayWheel(event.mouse_x, event.mouse_y) == null) {
                 if (hit.surface.ref >= 0) {
+                    if (hit.id) |id| {
+                        if (!hit.text_cursor) beginButtonPress(app, .{ .pane = hit.pane.id }, id);
+                    }
                     queueLuaPanePointer(app, hit, .click, event.mouse_x - @as(f32, @floatFromInt(hit.bounds.x)), event.mouse_y - @as(f32, @floatFromInt(hit.bounds.y)), .{});
                 } else {
                     _ = app.enqueueMouse(.{ .button = .{ .action = action, .button = .left, .x = event.mouse_x, .y = event.mouse_y, .mods = mods } });
@@ -6457,6 +6803,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
+    if (g_button_press.target != null) app.requestRedraw();
     g_terminal_pointer_mods = null;
     defer updateLuaPaneHover(app);
     setMouseCursorHidden(false);

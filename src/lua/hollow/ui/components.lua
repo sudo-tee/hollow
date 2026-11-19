@@ -3,6 +3,7 @@
 ---@type HollowUi
 local ui = _G.hollow.ui
 local props = require("hollow.ui.components.props")
+local util = require("hollow.util")
 ---@type HollowUiComponents
 local M = {}
 
@@ -163,13 +164,14 @@ function M.button(value)
   end
   opts.label = opts.label or opts.text or ""
   opts.style = style
-  return M.column({
-    M.text(
-      opts.text,
-      { fg = style.fg, bold = style.bold },
-      { wrap = opts.wrap or "none", text_align = opts.text_align }
-    ),
-  }, opts)
+  local label = M.text(
+    opts.text,
+    { fg = style.fg, bold = style.bold },
+    { wrap = opts.wrap or "none", text_align = opts.text_align }
+  )
+  -- Keep normal and wrapped text on the standard cell layout.
+  label.button_label = label.wrap == "none" and #util.text_graphemes(label.text) == 1 or nil
+  return M.column({ label }, opts)
 end
 
 function M.demo()

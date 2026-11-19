@@ -3,6 +3,7 @@
 #include "../../third_party/clay/clay.h"
 
 #define HOLLOW_CLAY_MAX_NODES 512
+#define HOLLOW_UI_PRESS_ALPHA 10 // 4% on the 0–255 alpha scale.
 
 // A bounded preorder tree. Width/height: -1 = grow, 0 = fit, positive = pixels.
 typedef struct HollowClayNode {
@@ -26,6 +27,10 @@ typedef struct HollowClayNode {
     bool border_width_set;
     bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure;
     bool text_cursor; // Hovering shows the text (I-beam) cursor; for focusable inputs.
+    bool button_label;
+    bool center_ink;
+    uint16_t ink_extra; // Extra measured pixels, encoded in the Clay font ID.
+    float ink_offset; // Paint origin relative to the measured text box.
     int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
     int text_align; // Wrapped line alignment: 0 left, 1 center, 2 right.
     int align_y; // Child alignment: 0 start, 1 center, 2 end.
@@ -62,6 +67,8 @@ void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame);
 void hollow_clay_set_debug(HollowClay *surface, bool enabled);
 // Primary button state for the inspector; ignored while debug is off.
 void hollow_clay_set_pointer_down(HollowClay *surface, bool down);
+// Paint-only feedback. Pass -1 for no pressed node.
+void hollow_clay_set_pressed(HollowClay *surface, int index, Clay_Color ink);
 Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index);
 Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index);
 
