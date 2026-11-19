@@ -1,5 +1,4 @@
 local attention = require("hollow.ui.widgets.attention")
-local box = require("hollow.ui.style.box")
 local hidden_panes = require("hollow.ui.widgets.hidden_panes")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.topbar")
@@ -13,7 +12,7 @@ local DEFAULT_NEW_TAB_TEXT = "+"
 local DEFAULT_SHIFTED_NEW_TAB_TEXT = ""
 local DEFAULT_SPLIT_RIGHT_TEXT = "" -- Codicon split-horizontal: side-by-side panes.
 local DEFAULT_SPLIT_DOWN_TEXT = "" -- Codicon split-vertical: stacked panes.
-local WINDOW_CONTROL_GROUP_GAP = 8
+local RIGHT_GROUP_GAP = 8
 local TOOLTIP_DELAY_MS = 500
 local tooltip_ticket, tooltip = 0, nil
 local DEFAULT_TOPBAR_LAYOUT = {
@@ -339,12 +338,6 @@ function M.widget()
         "close_button",
         "Close window"
       )
-      local first_window_control = minimize or close
-      if (right_split or down_split) and first_window_control then
-        local margin = box.normalize(first_window_control.style.margin, true)
-        margin.left = margin.left + WINDOW_CONTROL_GROUP_GAP
-        first_window_control.style.margin = margin
-      end
       local expanding_tabs = tabs ~= false and tabs.fit ~= "content"
       local separator = configured_topbar_separator(opts.separator)
       local cwd = configured_topbar_cwd(ctx, opts.cwd)
@@ -368,6 +361,9 @@ function M.widget()
           cwd or false,
           key_legend ~= false and ui.bar.key_legend(key_legend),
           configured_topbar_time(opts.time),
+          -- Space after the activity group, even when window controls are hidden.
+          -- An empty span reserves width without painting or taking clicks.
+          ui.span("", { padding = { right = RIGHT_GROUP_GAP } }),
           minimize,
           close,
         })

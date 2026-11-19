@@ -168,11 +168,11 @@ describe("UI bars test suite", function()
       assert.equals("", button("split-down-button").text)
       assert.equals("−", button("window-minimize-button").text)
       assert.equals("Close", button("close-test").text)
-      assert.equals(9, button("window-minimize-button").style.margin.left)
+      assert.equals(1, button("window-minimize-button").style.margin.left)
       assert.equals(1, button("close-test").style.margin.left)
 
       hollow.ui.topbar.configure({ minimize = false })
-      assert.equals(9, button("close-test").style.margin.left)
+      assert.equals(1, button("close-test").style.margin.left)
       hollow.ui.topbar.configure({ minimize = true })
 
       local items = hollow.ui._topbar_state().items
@@ -225,6 +225,11 @@ describe("UI bars test suite", function()
       assert.is_nil(button("split-down-button"))
       assert.is_nil(button("window-minimize-button"))
       assert.is_nil(button("close-test"))
+      local items = hollow.ui._topbar_state().items
+      assert.equals("attention-button", items[#items - 1].id)
+      assert.equals("", items[#items].text)
+      assert.is_nil(items[#items].id)
+      assert.equals(8, items[#items].style.padding.right)
     end)
     it(
       "reveals default tooltips with the current modal-style shortcut and cancels stale hovers",
