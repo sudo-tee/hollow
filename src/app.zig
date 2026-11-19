@@ -1375,6 +1375,7 @@ pub const App = struct {
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
             .clipboard_read = lua_callbacks.luaClipboardReadCallback,
             .clipboard_read_authorize = lua_callbacks.luaClipboardReadAuthorizeCallback,
+            .paste_confirm = lua_callbacks.luaPasteConfirmCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
             .scroll_active = lua_callbacks.luaScrollActiveCallback,
             .scroll_active_page = lua_callbacks.luaScrollActivePageCallback,

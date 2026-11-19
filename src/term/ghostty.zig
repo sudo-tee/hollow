@@ -1917,7 +1917,9 @@ pub const Runtime = struct {
     }
 
     /// Native mode-aware paste. Output goes through the terminal's write callback.
-    pub fn pasteText(_: *Runtime, terminal: ?*anyopaque, text: []const u8) !void {
+    /// `allow_unsafe` skips the command-injection check (newlines when
+    /// unbracketed, or an embedded bracketed-paste terminator).
+    pub fn pasteText(_: *Runtime, terminal: ?*anyopaque, text: []const u8, allow_unsafe: bool) !void {
         const Source = struct {
             fn read(context: ?*anyopaque, _: String, writer: Writer) callconv(.c) bool {
                 const bytes: *const []const u8 = @ptrCast(@alignCast(context.?));
@@ -1926,7 +1928,7 @@ pub const Runtime = struct {
         };
         var source = text;
         const mime: String = .{ .ptr = "text/plain", .len = "text/plain".len };
-        const paste: Paste = .{ .mimes = @ptrCast(&mime), .reader = .{ .read = Source.read, .userdata = @ptrCast(&source) } };
+        const paste: Paste = .{ .mimes = @ptrCast(&mime), .reader = .{ .read = Source.read, .userdata = @ptrCast(&source) }, .allow_unsafe = allow_unsafe };
         switch (ghostty_terminal_paste(terminal, &paste, null)) {
             success => {},
             -7 => return error.UnsafePaste,
@@ -2112,16 +2114,19 @@ test "native paste sanitizes controls and refuses command injection without outp
     };
     runtime.setTerminalUserdata(terminal, &output);
     runtime.setWritePtyCallback(terminal, Sink.write);
-    try runtime.pasteText(terminal, "hello\x1bworld");
+    try runtime.pasteText(terminal, "hello\x1bworld", false);
     try std.testing.expectEqualStrings("hello world", output.bytes.items);
     output.bytes.clearRetainingCapacity();
-    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "echo safe\necho unsafe"));
+    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "echo safe\necho unsafe", false));
     try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
+    try runtime.pasteText(terminal, "echo safe\necho unsafe", true);
+    try std.testing.expectEqualStrings("echo safe\recho unsafe", output.bytes.items);
+    output.bytes.clearRetainingCapacity();
     runtime.terminalWrite(terminal, "\x1b[?2004h");
-    try runtime.pasteText(terminal, "a\nb");
+    try runtime.pasteText(terminal, "a\nb", false);
     try std.testing.expectEqualStrings("\x1b[200~a\nb\x1b[201~", output.bytes.items);
     output.bytes.clearRetainingCapacity();
-    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "evil\x1b[201~command"));
+    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "evil\x1b[201~command", false));
     try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
 }
 

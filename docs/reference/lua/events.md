@@ -135,6 +135,7 @@ for an observational event does not change its host behavior.
 | `term:program_status_changed` | `{ pane }` (`pane.program_status` contains the current OSC 7501 records) |
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
 | `term:notification` | `{ pane, title, message, level, id?, ttl_ms?, close }` |
+| `term:paste_blocked` | `{ pane_id, generation, bytes, lines, reason }` (see [clipboard](../clipboard.md#writes-and-paste)) |
 | `key:unhandled` | `{ key, mods }` |
 | `window:resized` | `{ size }` (`size` has `rows`, `cols`, `width`, `height`) |
 | `window:files_dropped` | `{ paths, pane, pane_id, x, y, text }` |

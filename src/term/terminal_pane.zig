@@ -58,6 +58,7 @@ pub const TerminalPane = struct {
     /// Borrowed only during synchronous bracketed-paste encoding.
     paste_output: ?*ghostty.PasteOutput = null,
     clipboard_read: @import("clipboard_read.zig").State = .{},
+    paste_confirm: @import("paste_confirm.zig").State = .{},
     pending_cwd: ?[]u8 = null,
     read_buf: *[read_buffer_size]u8 = &shared_pty_read_buf,
     logged_first_pty_read: bool = false,
@@ -258,6 +259,7 @@ pub const TerminalPane = struct {
 
     pub fn deinitBuffers(self: *TerminalPane, allocator: std.mem.Allocator) void {
         self.clipboard_read.revoke(allocator);
+        self.paste_confirm.clear(allocator);
         self.job_output.deinit(allocator);
         if (self.pending_cwd) |value| allocator.free(value);
         self.pending_cwd = null;

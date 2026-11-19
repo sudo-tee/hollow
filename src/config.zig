@@ -469,6 +469,9 @@ pub const Config = struct {
     floating_inactive_color: ghostty.ColorRgb = .{ .r = 72, .g = 90, .b = 110 },
     debug_overlay: bool = false,
     debug_terminal_trace: bool = false,
+    /// Reject pastes that could run commands: newlines when the program has
+    /// not enabled bracketed paste, or an embedded bracketed-paste terminator.
+    paste_protection: bool = true,
     /// Hold terminal content while DEC synchronized output is active. The
     /// terminal parser continues tracking mode 2026 when this is disabled.
     synchronized_output: bool = true,

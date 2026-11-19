@@ -70,6 +70,22 @@ inherit write permission. Hollow's own paste shortcuts retain the existing
 inline/bracketed-paste encoding and unsafe-paste checks; installing clipboard
 read support does not opt these shortcuts into Kitty's deferred paste events.
 
+A paste is unsafe when it could run commands: it contains a newline or carriage return while the program has not enabled bracketed paste (`CSI ? 2004 h`), or it contains the bracketed-paste terminator `ESC [ 201 ~`.
+Hollow writes nothing and asks **Paste anyway?** with **Cancel** selected.
+Choosing **Paste anyway** sends exactly the blocked text to the same pane, only while the window is focused and that pane is active.
+Escape, switching panes, closing the pane, or leaving the window cancels the paste.
+If another dialog is already open, the paste is cancelled and a **Paste blocked** notification is shown instead.
+
+The blocked text stays in Hollow's native code and is never passed to Lua.
+Lua sees only the `term:paste_blocked` event, with `pane_id`, `generation`, `bytes`, `lines`, and `reason` (`"newline"` or `"terminator"`).
+Blocked pastes larger than 4 MiB cannot be confirmed and only show the notification.
+
+To skip both the check and the dialog:
+
+```lua
+hollow.config.set({ paste_protection = false })
+```
+
 The Ghostty C read callback is synchronous: its request and reply function are
 valid only until the callback returns. Hollow therefore uses upfront one-shot
 approval and application retry instead of blocking the GUI for a prompt or

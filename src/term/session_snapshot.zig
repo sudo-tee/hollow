@@ -259,6 +259,6 @@ test "session mirror suppresses query replies without swallowing user paste" {
     output.bytes.clearRetainingCapacity();
     runtime.terminalWriteMirror(terminal, "\x1b[5n\x1b[6n\x1b[?2004h", Sink.write);
     try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
-    try runtime.pasteText(terminal, "user input");
+    try runtime.pasteText(terminal, "user input", false);
     try std.testing.expectEqualStrings("\x1b[200~user input\x1b[201~", output.bytes.items);
 }
