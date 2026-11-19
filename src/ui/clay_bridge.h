@@ -3,6 +3,7 @@
 #include "../../third_party/clay/clay.h"
 
 #define HOLLOW_CLAY_MAX_NODES 512
+#define HOLLOW_UI_PRESS_ALPHA 10 // 4% on the 0–255 alpha scale.
 
 // A bounded preorder tree. Width/height: -1 = grow, 0 = fit, positive = pixels.
 typedef struct HollowClayNode {

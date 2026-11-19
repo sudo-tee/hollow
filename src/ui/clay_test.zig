@@ -40,7 +40,7 @@ test "Clay pressed feedback paints a transparent button without changing hits or
         for (commands.internalArray[0..@intCast(commands.length)]) |command| {
             if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE) continue;
             if (!std.meta.eql(command.boundingBox, bounds)) continue;
-            try std.testing.expectApproxEqAbs(@as(f32, 56.1), command.renderData.rectangle.backgroundColor.a, 0.01);
+            try std.testing.expectEqual(@as(f32, c.HOLLOW_UI_PRESS_ALPHA), command.renderData.rectangle.backgroundColor.a);
             found = true;
         }
         try std.testing.expectEqual(index == 1, found);

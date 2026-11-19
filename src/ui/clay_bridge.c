@@ -97,9 +97,9 @@ static void hash_ids(HollowClayNode *nodes, int count) {
 }
 
 static Clay_Color pressed_background(Clay_Color bg, Clay_Color ink) {
-    // Composite a 22% tint over the existing fill, including transparent buttons.
-    float base = bg.a * 0.78f;
-    float tint = 255 * 0.22f;
+    // Composite the same tint as the bars, including on transparent buttons.
+    float tint = HOLLOW_UI_PRESS_ALPHA;
+    float base = bg.a * (1.0f - tint / 255.0f);
     float alpha = base + tint;
     return (Clay_Color){ (bg.r * base + ink.r * tint) / alpha,
         (bg.g * base + ink.g * tint) / alpha, (bg.b * base + ink.b * tint) / alpha, alpha };

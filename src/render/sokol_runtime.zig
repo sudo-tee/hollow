@@ -1801,17 +1801,12 @@ fn segmentArrayFieldIndex(api: Api, state: *State, item_idx: c_int) ?c_int {
     return null;
 }
 
-fn drawSegmentArray(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment, default_fg: ghostty.ColorRgb, pressed_id: []const u8, ink: ghostty.ColorRgb) void {
+fn drawSegmentArray(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment, default_fg: ghostty.ColorRgb) void {
     var cursor_x = x;
     for (segments) |seg| {
         if (seg.text.len == 0) continue;
         const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
         if (cursor_x + seg_w > x + max_width) break;
-        if (seg.id) |id| if (pressed_id.len > 0 and std.mem.eql(u8, id, pressed_id) and
-            g_mouse_x >= cursor_x and g_mouse_x < cursor_x + seg_w)
-        {
-            drawPressTint(cursor_x, y, seg_w, renderer.cell_h, 2, ink);
-        };
         const fg = seg.fg orelse default_fg;
         renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
@@ -2516,7 +2511,7 @@ fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
 }
 
 fn drawPressTint(x: f32, y: f32, w: f32, h: f32, radius: f32, ink: ghostty.ColorRgb) void {
-    drawRoundedRect(x, y, w, h, radius, ink.r, ink.g, ink.b, 56);
+    drawRoundedRect(x, y, w, h, radius, ink.r, ink.g, ink.b, clay.HOLLOW_UI_PRESS_ALPHA);
 }
 
 fn drawBarBackgroundWithAlphaMode(x: f32, y: f32, w: f32, h: f32, style: BarStyle, preserve_alpha: bool) void {
@@ -2847,6 +2842,29 @@ test "native bars reserve right items and grow tabs before the spacer" {
     try std.testing.expectApproxEqAbs(@as(f32, 175), layout.bounds(11).width, 0.02);
 }
 
+/// Spans may handle clicks independently, but the containing bar item owns
+/// the background (e.g. the workspace switcher's icon, name, and count).
+fn barItemOwnsPress(item_id: ?[]const u8, spans: []const bar.Segment, pressed_id: []const u8) bool {
+    if (pressed_id.len == 0) return false;
+    if (item_id) |id| if (std.mem.eql(u8, id, pressed_id)) return true;
+    for (spans) |span| {
+        if (span.id) |id| if (std.mem.eql(u8, id, pressed_id)) return true;
+    }
+    return false;
+}
+
+test "workspace bar item owns press feedback for its clickable name span" {
+    const spans = [_]bar.Segment{
+        .{ .text = "icon " },
+        .{ .text = "default", .id = "workspace-switcher-button" },
+        .{ .text = " 1/1" },
+    };
+    try std.testing.expect(barItemOwnsPress(null, &spans, "workspace-switcher-button"));
+    try std.testing.expect(!barItemOwnsPress(null, &spans, "new-tab"));
+    try std.testing.expect(barItemOwnsPress("new-tab", &.{}, "new-tab"));
+    try std.testing.expect(!barItemOwnsPress(null, &spans, ""));
+}
+
 fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: *const BarWidgetView) void {
     if (bar_h <= 0) return;
     const layout = &g_native_bars[@backingInt(surface)];
@@ -2928,16 +2946,17 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 }
                 const segment_press = bar_press and g_button_press.target.?.bar.tab_id == null and
                     g_mouse_x >= cursor_x and g_mouse_x < cursor_x + view.style.margin.horizontal() + bg_w;
-                const paint_press = segment_press and view.segment.id != null and std.mem.eql(u8, view.segment.id.?, pressed_id);
+                const spans = if (segmentViewShowsFullSegments(view, display)) view.segments[0..view.segments_len] else &.{};
+                const paint_press = segment_press and barItemOwnsPress(view.segment.id, spans, pressed_id);
                 if (paint_press) drawPressTint(bg_x, bg_y, bg_w, bg_h, bg_style.radius, press_ink);
 
                 const text_x = bg_x + view.style.padding.left;
                 const draw_x = text_x + if (centered) barLabelOffset(preferred_width, ink[item_index]) else 0;
                 const text_y = bg_y + view.style.padding.top;
                 const fg = bg_style.fg orelse default_fg;
-                if (segmentViewShowsFullSegments(view, display)) {
-                    cacheBarSegmentArray(cache, renderer, text_x, text_w, view.segments[0..view.segments_len], null);
-                    drawSegmentArray(renderer, draw_x, text_y, text_w, view.segments[0..view.segments_len], fg, if (segment_press and !paint_press) pressed_id else "", press_ink);
+                if (spans.len > 0) {
+                    cacheBarSegmentArray(cache, renderer, text_x, text_w, spans, null);
+                    drawSegmentArray(renderer, draw_x, text_y, text_w, spans, fg);
                 } else {
                     renderer.drawLabelFace(draw_x, text_y, display, fg.r, fg.g, fg.b, if (view.segment.bold or view.style.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
@@ -2996,10 +3015,10 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                         var fitted_text: [1024]u8 = undefined;
                         const fitted = fitTabSegments(tab.segments[0..tab.segments_len], max_label_chars, &fitted_buf, &fitted_text);
                         cacheBarSegmentArray(cache, renderer, label_x, label_space, fitted, ti);
-                        drawSegmentArray(renderer, label_x, text_y, label_space, fitted, fg, "", press_ink);
+                        drawSegmentArray(renderer, label_x, text_y, label_space, fitted, fg);
                     } else if (tabViewShowsFullSegments(tab, display_title)) {
                         cacheBarSegmentArray(cache, renderer, label_x, label_space, tab.segments[0..tab.segments_len], ti);
-                        drawSegmentArray(renderer, label_x, text_y, label_space, tab.segments[0..tab.segments_len], fg, "", press_ink);
+                        drawSegmentArray(renderer, label_x, text_y, label_space, tab.segments[0..tab.segments_len], fg);
                     } else if (display_title.len > 0) {
                         renderer.drawLabelFace(label_x, text_y, display_title, fg.r, fg.g, fg.b, if (tab.segment.bold or tab.style.bold) 1 else 0);
                         c.sgl_load_default_pipeline();
