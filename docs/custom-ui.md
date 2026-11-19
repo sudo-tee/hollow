@@ -150,6 +150,8 @@ hollow.ui.topbar.configure({
 Split buttons act on the active pane.
 Minimize, Maximize/Restore, and Close act on the Hollow window, not the current tab or pane.
 Top-bar buttons and single-icon `hollow.ui.components.button` labels are horizontally centered using the visible glyph.
+Hollow's clickable buttons get a brief tint on pointer press, including in bars, dialogs, the sidebar, and Lua panes.
+This is visual feedback only: it does not move the button or change when its action runs.
 Use equal left and right padding instead of compensating for a particular icon font.
 Use `false` to hide a button again, or pass a table such as `close = { text = "Close" }` to customize it.
 

@@ -73,6 +73,8 @@ pub const Surface = struct {
     area: inspector.Rect = .{},
     pressed_id: [128]u8 = undefined,
     pressed_len: usize = 0,
+    /// Last feedback painted into a Lua pane's cached texture.
+    painted_press: ?usize = null,
     click_id: [128]u8 = undefined,
     click_len: usize = 0,
     close: bool = false,

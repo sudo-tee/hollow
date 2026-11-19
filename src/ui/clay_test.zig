@@ -25,6 +25,30 @@ test "Clay button hover switches descendant text color and restores it on leave"
     }
 }
 
+test "Clay pressed feedback paints a transparent button without changing hits or bounds" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 200, 100, 1), node(1, 60, 30, 0) };
+    nodes[1].clickable = true;
+    nodes[1].bg.a = 0;
+    _ = layout(surface, &nodes, 300, 200, 0);
+    const bounds = c.hollow_clay_bounds(surface, &nodes, 1).boundingBox;
+    for ([_]c_int{ -1, 1, -1 }) |index| {
+        c.hollow_clay_set_pressed(surface, index, .{ .r = 240, .g = 240, .b = 240, .a = 255 });
+        const commands = layout(surface, &nodes, 300, 200, 0);
+        var found = false;
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE) continue;
+            if (!std.meta.eql(command.boundingBox, bounds)) continue;
+            try std.testing.expectApproxEqAbs(@as(f32, 56.1), command.renderData.rectangle.backgroundColor.a, 0.01);
+            found = true;
+        }
+        try std.testing.expectEqual(index == 1, found);
+        try std.testing.expectEqual(bounds, c.hollow_clay_bounds(surface, &nodes, 1).boundingBox);
+        try std.testing.expectEqual(@as(c_int, 1), c.hollow_clay_hit(surface, &nodes, nodes.len, bounds.x + 1, bounds.y + 1));
+    }
+}
+
 test "Clay workspace windows retire disjoint clipped columns within scroll capacity" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);

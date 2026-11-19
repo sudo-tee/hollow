@@ -66,6 +66,8 @@ void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame);
 void hollow_clay_set_debug(HollowClay *surface, bool enabled);
 // Primary button state for the inspector; ignored while debug is off.
 void hollow_clay_set_pointer_down(HollowClay *surface, bool down);
+// Paint-only feedback. Pass -1 for no pressed node.
+void hollow_clay_set_pressed(HollowClay *surface, int index, Clay_Color ink);
 Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index);
 Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index);
 
