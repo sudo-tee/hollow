@@ -21,7 +21,9 @@
 void hollow_minimize_window(void) {
 #if defined(_WIN32)
     HWND window = (HWND) sapp_win32_get_hwnd();
-    if (window) PostMessageW(window, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    /* DefWindowProc can ignore SC_MINIMIZE while Sokol has mouse capture.
+       Queue the show-state change directly, without waiting for button-up. */
+    if (window) ShowWindowAsync(window, SW_MINIMIZE);
 #else
     Display* display = (Display*) sapp_x11_get_display();
     Window window = (Window) (uintptr_t) sapp_x11_get_window();
@@ -35,7 +37,7 @@ void hollow_minimize_window(void) {
 void hollow_toggle_maximize_window(void) {
 #if defined(_WIN32)
     HWND window = (HWND) sapp_win32_get_hwnd();
-    if (window) PostMessageW(window, WM_SYSCOMMAND, IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE, 0);
+    if (window) ShowWindowAsync(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
 #else
     Display* display = (Display*) sapp_x11_get_display();
     Window window = (Window) (uintptr_t) sapp_x11_get_window();
