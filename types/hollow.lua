@@ -517,6 +517,8 @@
 ---@field vsync? boolean
 ---@field synchronized_output? boolean Hold terminal content during DEC synchronized output
 ---@field paste_protection? boolean Ask before pastes that could run commands, e.g. multiline text without bracketed paste (default true)
+---@field terminal_menu? boolean Enable terminal context menus (default true)
+---@field terminal_menu_items? (HollowTerminalMenuID|HollowTerminalMenuCallback)[] Replace the default flat terminal menu
 ---@field hide_mouse_cursor_when_typing? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean
@@ -932,6 +934,39 @@
 ---@field id string
 ---@field mods HollowKeyMods
 ---@field shifted boolean
+---@field bounds? HollowUiMenuAnchor Rendered bounds in window pixels, when available
+
+---@alias HollowTerminalMenuID "copy"|"paste"|"split_right"|"split_down"|"float"|"hide"|"zoom"|"dock"|"close"|"separator"
+
+---@class HollowTerminalMenuCallback
+---@field label string
+---@field icon? string Optional leading glyph
+---@field action fun(pane: HollowPane)
+
+---@class HollowUiMenuAnchor
+---@field x number
+---@field y number
+---@field width? number
+---@field height? number
+
+---@class HollowUiMenuItem
+---@field label? string
+---@field icon? string Optional leading glyph
+---@field action? fun()
+---@field submenu? HollowUiMenuItem[] Show a single level of child items instead of running an action
+---@field disabled? boolean
+---@field separator? boolean
+
+---@alias HollowUiMenuCloseReason "escape"|"outside"|"selection"|"invalidated"
+
+---@class HollowUiMenuOptions
+---@field anchor HollowUiMenuAnchor Pointer position or bounds in window pixels
+---@field items HollowUiMenuItem[]
+---@field valid? fun(): boolean Rechecked before interaction and rendering
+---@field on_close? fun(reason: HollowUiMenuCloseReason)
+
+---@class HollowUiMenu
+---@field close fun(reason?: HollowUiMenuCloseReason)
 
 ---@class HollowUiBarTabsOptions: HollowUiBarNodeOptionsBase
 ---@field fit? "fill"|"content"
@@ -2983,6 +3018,11 @@ function leader_preview.configure(opts) end
 ---@field components HollowUiComponents Clay node constructors and components for overlays and Lua panes.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
+
+--- Open a flat menu, unless an exclusive modal already owns input.
+---@param opts HollowUiMenuOptions
+---@return HollowUiMenu?
+function ui.menu(opts) end
 
 --- Request a frame without invalidating UI layout.
 function ui.request_redraw() end

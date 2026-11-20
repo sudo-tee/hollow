@@ -1206,16 +1206,45 @@ function M.setup(hollow, host_api)
     category = "pane",
   })
 
-  register(hollow, "new_tab_in_domain", {
-    run = function(opts)
-      pick_domain_and_run(function(item)
+  local function open_domain_tab(opts)
+    return function(item)
+      if item then
         open_in_domain(item.domain_name, "right", function()
           host_api.new_tab({
             domain = item.domain_name,
             insert_at_end = opts and opts.insert_at_end,
           })
         end)
-      end)
+      end
+    end
+  end
+
+  hollow.ui._open_domain_menu = function(anchor, anchor_id)
+    local entries = palette.build_domain_entries()
+    local open = open_domain_tab({ insert_at_end = true })
+    if #entries == 1 then
+      open(entries[1])
+    elseif #entries > 1 and anchor then
+      local items = {}
+      for _, entry in ipairs(entries) do
+        local item = entry
+        items[#items + 1] = {
+          label = item.name,
+          action = function()
+            local domains = hollow.config.get("domains")
+            if domains and domains[item.domain_name] then
+              open(item)
+            end
+          end,
+        }
+      end
+      hollow.ui.menu({ anchor = anchor, items = items, anchor_id = anchor_id })
+    end
+  end
+
+  register(hollow, "new_tab_in_domain", {
+    run = function(opts)
+      pick_domain_and_run(open_domain_tab(opts))
     end,
     desc = "Create new tab with a domain",
     category = "tab",

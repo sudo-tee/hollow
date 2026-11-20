@@ -57,7 +57,7 @@ describe("UI bars test suite", function()
       )
     end)
 
-    it("creates a tab from the topbar button and opens domain picker when shifted", function()
+    it("creates a tab from the topbar button and opens a menu when shifted", function()
       hollow.config.set({
         domains = {
           main = { shell = "sh" },
@@ -130,10 +130,14 @@ describe("UI bars test suite", function()
       harness.assert_equal(recorded.new_tab_calls, 1, "plain new-tab click should create a tab")
       harness.assert_true(recorded.new_tab.insert_at_end, "topbar new-tab click should append tab")
 
-      hollow._emit_builtin_event("topbar:click", { id = "new-tab-button", shifted = true })
+      hollow._emit_builtin_event("topbar:click", {
+        id = "new-tab-button",
+        shifted = true,
+        bounds = { x = 100, y = 0, width = 20, height = 20 },
+      })
       harness.assert_true(
         hollow.ui.overlay.depth() > 0,
-        "shifted new-tab click should open domain picker"
+        "shifted new-tab click should open a flat domain menu"
       )
       hollow.ui.overlay.clear()
     end)

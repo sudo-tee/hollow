@@ -11,6 +11,32 @@ const PaneBounds = types.PaneBounds;
 const LayoutLeaf = types.LayoutLeaf;
 const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
 
+test "an explicit split targets an inactive pane and focuses only the new pane" {
+    const a = std.testing.allocator;
+    var tab = Tab.init(a, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(a);
+            a.destroy(root);
+        }
+        tab.panes.deinit(a);
+    }
+    var clicked = Pane.init(a);
+    clicked.id = 1;
+    var active = Pane.init(a);
+    active.id = 2;
+    var created = Pane.init(a);
+    created.id = 3;
+    try tab.appendPane(&clicked);
+    try tab.splitActivePane(&active, .vertical, 0.5);
+    try std.testing.expectEqual(&active, tab.activePane().?);
+
+    try tab.splitPane(&clicked, &created, .horizontal, 0.5);
+    try std.testing.expectEqual(&created, tab.activePane().?);
+    try std.testing.expectEqual(clicked.id, created.restore_anchor_id);
+    try std.testing.expect(created.restore_split_horizontal);
+}
+
 pub const Tab = struct {
     allocator: std.mem.Allocator,
     id: usize,
@@ -131,6 +157,10 @@ pub const Tab = struct {
 
     pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const current_pane = self.active_pane orelse return error.NoActivePane;
+        return self.splitPane(current_pane, new_pane, direction, ratio);
+    }
+
+    pub fn splitPane(self: *Tab, current_pane: *Pane, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
         try self.panes.ensureUnusedCapacity(self.allocator, 1);
 
@@ -482,6 +512,10 @@ pub const Tab = struct {
     }
 
     pub fn setPaneFloating(self: *Tab, pane: *Pane, floating: bool) bool {
+        return self.setPaneFloatingWithFocus(pane, floating, true);
+    }
+
+    pub fn setPaneFloatingWithFocus(self: *Tab, pane: *Pane, floating: bool, focus: bool) bool {
         if (pane.is_floating == floating) return floating;
         if (floating) {
             if (self.active_pane) |active| {
@@ -499,11 +533,11 @@ pub const Tab = struct {
             pane.floating_y = 0.1;
             pane.floating_width = 0.7;
             pane.floating_height = 0.75;
-            self.active_pane = pane;
+            if (focus) self.active_pane = pane;
             return true;
         }
         if (self.maximized_pane == pane and floating) self.maximized_pane = null;
-        if (floating) self.active_pane = pane;
+        if (floating and focus) self.active_pane = pane;
         return pane.is_floating;
     }
 

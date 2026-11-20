@@ -472,6 +472,7 @@ pub const Config = struct {
     /// Reject pastes that could run commands: newlines when the program has
     /// not enabled bracketed paste, or an embedded bracketed-paste terminator.
     paste_protection: bool = true,
+    terminal_menu: bool = true,
     /// Hold terminal content while DEC synchronized output is active. The
     /// terminal parser continues tracking mode 2026 when this is disabled.
     synchronized_output: bool = true,

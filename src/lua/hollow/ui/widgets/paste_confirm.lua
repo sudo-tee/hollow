@@ -34,8 +34,9 @@ local function warn_blocked()
 end
 
 function M.open(req)
-  local pane = hollow.term.current_pane()
-  if not pane or pane.id ~= req.pane_id or not ui.is_focused() then
+  -- Context-menu pastes may target a visible pane other than the focused one;
+  -- native confirmation rechecks visibility and window focus.
+  if not host.pane_exists(req.pane_id) or not ui.is_focused() then
     answer_request(req, false)
     return nil
   end

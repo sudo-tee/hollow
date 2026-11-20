@@ -175,6 +175,7 @@ function M.setup(hollow, state, term_helpers)
       id = payload.id,
       mods = hollow.keymap.format_mods(payload.mods),
       shifted = payload.shifted == true,
+      bounds = payload.bounds,
     }
   end
 

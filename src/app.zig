@@ -1346,6 +1346,8 @@ pub const App = struct {
             .pane_is_focused = lua_callbacks.luaPaneIsFocusedCallback,
             .pane_has_bell = lua_callbacks.luaPaneHasBellCallback,
             .pane_exists = lua_callbacks.luaPaneExistsCallback,
+            .menu_query = @import("app/context_menu.zig").queryCallback,
+            .menu_action = @import("app/context_menu.zig").actionCallback,
             .switch_tab_by_id = lua_callbacks.luaSwitchTabByIdCallback,
             .close_tab_by_id = lua_callbacks.luaCloseTabByIdCallback,
             .close_pane_by_id = lua_callbacks.luaClosePaneByIdCallback,
@@ -2082,6 +2084,11 @@ pub const App = struct {
     }
 
     pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
+        return self.hitTestVisiblePane(x, y) orelse if (self.activePane()) |pane| .{ .pane = pane, .x = x, .y = y } else null;
+    }
+
+    pub fn hitTestVisiblePane(self: *App, x: f32, y: f32) ?HitTestResult {
+        if (x < 0 or y < 0) return null;
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
         const ix = @as(u32, @intFromFloat(@max(0, x)));
@@ -2105,7 +2112,6 @@ pub const App = struct {
                 };
             }
         }
-        if (self.activePane()) |pane| return .{ .pane = pane, .x = x, .y = y };
         return null;
     }
 
