@@ -273,6 +273,7 @@ pub const AppCallbacks = struct {
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
     clipboard_read: ?*const fn (app: *anyopaque) []const u8 = null,
     clipboard_read_authorize: ?*const fn (app: *anyopaque, pane_id: usize, allow: bool, generation: ?usize) bool = null,
+    paste_confirm: ?*const fn (app: *anyopaque, pane_id: usize, generation: usize, allow: bool) bool = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
@@ -672,6 +673,7 @@ pub const BuiltInPayload = union(enum) {
         complete: bool = true,
     },
     clipboard_read_request: struct { pane_id: usize, generation: usize },
+    paste_blocked: struct { pane_id: usize, generation: usize, bytes: usize, lines: usize, reason: []const u8 },
     quick_select: struct {
         active: bool,
         action: []const u8,
@@ -2712,6 +2714,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "clipboard_read_authorize");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_paste_confirm, 1);
+        api.set_field(self.state, -2, "paste_confirm");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_paste_clipboard, 1);
         api.set_field(self.state, -2, "paste_clipboard");
 
@@ -3411,6 +3417,19 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "pane_id");
             api.push_number(state, @floatFromInt(value.generation));
             api.set_field(state, -2, "generation");
+        },
+        .paste_blocked => |value| {
+            api.create_table(state, 0, 5);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            api.push_number(state, @floatFromInt(value.generation));
+            api.set_field(state, -2, "generation");
+            api.push_number(state, @floatFromInt(value.bytes));
+            api.set_field(state, -2, "bytes");
+            api.push_number(state, @floatFromInt(value.lines));
+            api.set_field(state, -2, "lines");
+            try pushOwnedString(allocator, api, state, value.reason);
+            api.set_field(state, -2, "reason");
         },
         .quick_select_action => |value| {
             api.create_table(state, 0, 4);
@@ -5398,6 +5417,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "synchronized_output")) {
         cfg.synchronized_output = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "paste_protection")) {
+        cfg.paste_protection = value;
         return;
     }
     if (std.mem.eql(u8, key, "alternate_screen_resize_nudge")) {
@@ -8248,6 +8271,17 @@ fn l_copy_mode_copy(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.copy_mode_copy(cbs.app);
     return 0;
+}
+
+fn l_paste_confirm(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const callback = cbs.paste_confirm orelse return 0;
+    const pane_id = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    const generation = luaPaneIdArg(ctx.api, state, 2) orelse return 0;
+    const allow = ctx.api.to_boolean(state, 3) != 0;
+    ctx.api.push_boolean(state, if (callback(cbs.app, pane_id, generation, allow)) 1 else 0);
+    return 1;
 }
 
 fn l_clipboard_read_authorize(state: *State) callconv(.c) c_int {

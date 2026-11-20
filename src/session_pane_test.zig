@@ -141,7 +141,7 @@ test "session pane output is credited once on receipt and preserves user paste" 
     try poll(&pane, &runtime);
     try std.testing.expectEqual(@as(usize, 0), connection.client.buffered);
     try std.testing.expect(connection.client.nextWrite() == null); // No duplicate credit or query replies.
-    try runtime.pasteText(pane.content.terminal.terminal, "user paste");
+    try runtime.pasteText(pane.content.terminal.terminal, "user paste", false);
     const input = connection.client.nextWrite().?;
     defer input.deinit();
     try std.testing.expectEqual(p.Kind.input, input.kind);

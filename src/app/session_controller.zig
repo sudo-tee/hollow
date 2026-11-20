@@ -26,6 +26,7 @@ const SplitCommandMode = app_mod.SplitCommandMode;
 const Pane = @import("../pane.zig").Pane;
 const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
 const pane_lifecycle = @import("pane_lifecycle.zig");
+const paste_confirm = @import("../term/paste_confirm.zig");
 const SessionController = @import("../session/controller.zig").Controller;
 const SessionTransport = @import("../session/transport.zig");
 const SessionConnection = SessionTransport.Connection;
@@ -414,6 +415,44 @@ pub fn invalidateAllPanes(self: *App) void {
 }
 
 pub fn sendPaste(self: *App, text: []const u8) !void {
+    return pasteActive(self, text, !self.config.paste_protection);
+}
+
+/// Pastes a held blocked paste after the user confirmed it in `pane`.
+pub fn confirmBlockedPaste(self: *App, pane_id: usize, generation: usize, allow: bool) bool {
+    const pane = self.findPaneById(pane_id) orelse return false;
+    const term = pane.asTerminal() orelse return false;
+    const text = term.paste_confirm.take(generation) orelse return false;
+    defer paste_confirm.free(self.allocator, text);
+    if (!allow) return true;
+    if (!self.window_focused or self.activePane() != pane) return false;
+    pasteActive(self, text, true) catch |err| {
+        std.log.err("confirmed paste failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    return true;
+}
+
+fn holdBlockedPaste(self: *App, pane: *Pane, text: []const u8) !void {
+    const term = pane.asTerminal().?;
+    if (self.lua != null) {
+        if (term.paste_confirm.hold(self.allocator, text)) |generation| {
+            const terminator = std.mem.indexOf(u8, text, "\x1b[201~") != null;
+            self.emitLuaBuiltInEvent("term:paste_blocked", .{ .paste_blocked = .{
+                .pane_id = pane.id,
+                .generation = generation,
+                .bytes = text.len,
+                .lines = std.mem.count(u8, text, "\n") + 1,
+                .reason = if (terminator) "terminator" else "newline",
+            } });
+            return;
+        } else |_| {}
+    }
+    try term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator). Set paste_protection = false to allow.", .warn);
+    self.signalWake();
+}
+
+fn pasteActive(self: *App, text: []const u8, allow_unsafe: bool) !void {
     const pane = self.activePane() orelse return;
     const term = pane.asTerminal() orelse return error.NotATerminal;
     const rt = if (self.ghostty) |*r| r else {
@@ -432,11 +471,8 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     // follow-up request cannot be serviced asynchronously by this C API.
     rt.setClipboardReadCallback(term.terminal, null);
     defer rt.setClipboardReadCallback(term.terminal, @import("terminal_callbacks.zig").terminalCallbacks().clipboard_read);
-    rt.pasteText(term.terminal, text) catch |err| {
-        if (err == error.UnsafePaste) {
-            try term.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
-            self.signalWake();
-        }
+    rt.pasteText(term.terminal, text, allow_unsafe) catch |err| {
+        if (err == error.UnsafePaste) try holdBlockedPaste(self, pane, text);
         return err;
     };
     if (output.failure) |err| return err;
@@ -1425,6 +1461,25 @@ test "paste capture clears borrowed output on success and unsafe rejection" {
     try sendPaste(app, "first\nsecond");
     try std.testing.expect(term.paste_output == null);
     try std.testing.expectEqualStrings("startup\rsafe\x1b[200~first\nsecond\x1b[201~", term.pending_startup_input);
+
+    try std.testing.expect(runtime.setTerminalMode(term.terminal, .bracketed_paste, false));
+    app.config.paste_protection = false;
+    try sendPaste(app, "third\nfourth");
+    try std.testing.expectEqualStrings("startup\rsafe\x1b[200~first\nsecond\x1b[201~third\rfourth", term.pending_startup_input);
+    app.config.paste_protection = true;
+    const before = term.pending_startup_input.len;
+
+    const stale = try term.paste_confirm.hold(allocator, "stale\n");
+    const held = try term.paste_confirm.hold(allocator, "held\n");
+    try std.testing.expect(!confirmBlockedPaste(app, pane.id, stale, true));
+    app.window_focused = false;
+    try std.testing.expect(!confirmBlockedPaste(app, pane.id, held, true));
+    try std.testing.expect(!confirmBlockedPaste(app, pane.id, held, true));
+    app.window_focused = true;
+    try std.testing.expect(confirmBlockedPaste(app, pane.id, try term.paste_confirm.hold(allocator, "deny\n"), false));
+    try std.testing.expectEqual(before, term.pending_startup_input.len);
+    try std.testing.expect(confirmBlockedPaste(app, pane.id, try term.paste_confirm.hold(allocator, "ok\n"), true));
+    try std.testing.expectEqualStrings("ok\r", term.pending_startup_input[before..]);
 }
 
 fn mockAttachedSessionConnection(allocator: std.mem.Allocator) !*SessionConnection {

@@ -785,6 +785,11 @@ pub fn luaClipboardReadAuthorizeCallback(app_ptr: *anyopaque, pane_id: usize, al
     return true;
 }
 
+pub fn luaPasteConfirmCallback(app_ptr: *anyopaque, pane_id: usize, generation: usize, allow: bool) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return mux_ops.confirmBlockedPaste(app, pane_id, generation, allow);
+}
+
 pub fn luaScrollActiveCallback(app_ptr: *anyopaque, delta: isize) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.{ .scroll_active_delta = delta });

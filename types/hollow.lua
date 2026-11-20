@@ -194,6 +194,7 @@
 ---| "term:bell"
 ---| "term:notification"
 ---| "term:clipboard_read_requested"
+---| "term:paste_blocked"
 ---| "key:unhandled"
 ---| "window:resized"
 ---| "window:files_dropped"
@@ -250,6 +251,7 @@
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
 ---@field ["term:clipboard_read_requested"] { pane_id: integer, generation: integer } Already-denied read; default UI asks to approve one retry.
+---@field ["term:paste_blocked"] { pane_id: integer, generation: integer, bytes: integer, lines: integer, reason: "newline"|"terminator" } Unsafe paste held natively; default UI asks "Paste anyway?".
 ---@field ["key:unhandled"] { key: string, mods: string }
 ---@field ["window:resized"] { size: HollowSize }
 ---@field ["window:files_dropped"] HollowFileDropEvent
@@ -514,6 +516,7 @@
 ---@field backend? string
 ---@field vsync? boolean
 ---@field synchronized_output? boolean Hold terminal content during DEC synchronized output
+---@field paste_protection? boolean Ask before pastes that could run commands, e.g. multiline text without bracketed paste (default true)
 ---@field hide_mouse_cursor_when_typing? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean

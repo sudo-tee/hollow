@@ -54,6 +54,7 @@ in the shipped base config.
 | `synchronized_output`                                                             | boolean                        | Hold last frame during DEC mode 2026 (default `true`)           |
 | `alternate_screen_resize_nudge`                                                   | boolean                        | Delayed resize cycle on alternate-screen entry (default `true`) |
 | `hide_mouse_cursor_when_typing`                                                   | boolean                        | Hide OS mouse cursor during keyboard input                      |
+| `paste_protection`                                                                | boolean                        | Confirm pastes that could run commands (default `true`)         |
 | `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                            |
 | `command_timing`                                                                  | boolean                        | On-screen command timing overlay                                |
 | `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                       |
