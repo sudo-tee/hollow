@@ -276,10 +276,6 @@ pub const FtRenderer = struct {
     shaped_run_read_idx: usize = 0,
     style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = @splat(null),
     render_colors_scratch: ghostty.RenderStateColors = undefined,
-    /// Leave default-background cells transparent. Set once per frame.
-    translucent_bg: bool = false,
-    /// Alpha for explicit cell backgrounds. Set once per frame.
-    cell_bg_alpha: u8 = 255,
     offscreen_pass_scratch: c.sg_pass = std.mem.zeroes(c.sg_pass),
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.

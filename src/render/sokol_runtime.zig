@@ -4066,11 +4066,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.pending_renderer_refresh = false;
         rebuildFtRenderer(app);
     }
-    if (g_ft_renderer) |*renderer| {
-        renderer.translucent_bg = app.config.background.translucentCells();
-        renderer.cell_bg_alpha = app.config.background.cellAlpha();
-    }
-
     // Resolve background color for the clear pass.
     const default_clear = defaultClearColor(app);
     var clear_r: f32 = @as(f32, @floatFromInt(default_clear[0])) / 255.0;
@@ -4139,15 +4134,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
         break :blk false;
     };
+    // Direct rendering batches backgrounds and glyphs separately, so it
+    // cannot reliably stack overlapping panes. Prefer composited surfaces
+    // for floats whenever they fit in the cache table.
+    const composite_floats = leaves.len <= MAX_PANE_CACHES and for (leaves) |leaf| {
+        if (leaf.pane.is_floating) break true;
+    } else false;
     // A synchronized split needs retained per-pane surfaces so unrelated
     // panes can continue presenting. Fall back to the old whole-frame hold
     // only when the visible pane count exceeds the cache table.
     const sync_cache_supported = visible_sync_output and
         leaves.len > 0 and
         leaves.len <= MAX_PANE_CACHES and
-        leaves.len <= MAX_CACHED_VISIBLE_PANES and
-        !app.config.renderer_safe_mode and
-        !app.config.renderer_disable_multi_pane_cache;
+        (composite_floats or (leaves.len <= MAX_CACHED_VISIBLE_PANES and
+            !app.config.renderer_safe_mode and !app.config.renderer_disable_multi_pane_cache));
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const viewport_scroll_active = if (leaves.len > 0)
         for (leaves) |leaf| {
@@ -4169,9 +4169,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Direct rendering redraws partially over the swapchain, which cannot
     // leave default-background cells clear.
     const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame and !app.config.background.translucentCells();
-    const use_safe_render = app.config.renderer_safe_mode and !sync_cache_supported;
+    const use_safe_render = app.config.renderer_safe_mode and !composite_floats and !sync_cache_supported;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
-    const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !sync_cache_supported;
+    const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !composite_floats and !sync_cache_supported;
     const sync_cache_unready = if (!visible_sync_output or use_safe_render or use_direct_multi_pane or use_direct_render)
         false
     else if (leaves.len > 0)
@@ -4300,11 +4300,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
                         }
                     }
-                    const translucent_bg = cfg.background.translucentCells();
-                    const cell_bg_alpha = cfg.background.cellAlpha();
+                    const bg = terminal_render_app.paneBackground(cfg.background, pane);
                     const background_changed = !cache_entry.has_bg_color or
-                        cache_entry.last_translucent_bg != translucent_bg or
-                        cache_entry.last_cell_bg_alpha != cell_bg_alpha or
+                        cache_entry.last_translucent_bg != bg.translucent or
+                        cache_entry.last_cell_bg_alpha != bg.cell_alpha or
                         cache_entry.last_powerline_generation != cfg.background.powerline.generation or
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
@@ -4352,7 +4351,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
-                    const settled_clean = dirty_level == .false_value and selection_redraw_range == null and !pty_active and !cache_entry.pty_burst_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
+                    const settled_clean = dirty_level == .false_value and selection_redraw_range == null and !pty_active and !cache_entry.pty_burst_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed and !background_changed;
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         if (cfg.debug_terminal_trace and focused) {
                             std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
@@ -4540,8 +4539,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.pty_burst_active = pty_active;
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
-                    cache_entry.last_translucent_bg = translucent_bg;
-                    cache_entry.last_cell_bg_alpha = cell_bg_alpha;
+                    cache_entry.last_translucent_bg = bg.translucent;
+                    cache_entry.last_cell_bg_alpha = bg.cell_alpha;
                     cache_entry.last_powerline_generation = cfg.background.powerline.generation;
                     cache_entry.prev_cursor_row = cursor_row;
                     cache_entry.last_cursor_row = cursor_row;

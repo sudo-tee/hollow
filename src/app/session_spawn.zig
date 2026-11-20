@@ -391,6 +391,10 @@ fn mockApp() !*App {
 }
 
 fn mockWorkspace(app: *App, session_id: []const u8) !*@import("../mux/workspace.zig").Workspace {
+    return mockWorkspaceWithLayout(app, session_id, &.{.{ .id = 1, .cols = 80, .rows = 24 }}, null);
+}
+
+fn mockWorkspaceWithLayout(app: *App, session_id: []const u8, panes: []const p.PaneInfo, layout: ?[]const u8) !*@import("../mux/workspace.zig").Workspace {
     const a = app.allocator;
     const connection = try a.create(transport.Connection);
     var owned = false;
@@ -408,7 +412,7 @@ fn mockWorkspace(app: *App, session_id: []const u8) !*@import("../mux/workspace.
     connection.poll().?.deinit();
     const request = try connection.request(.{ .id = 0, .op = .attach, .session = session_id });
     connection.client.nextWrite().?.deinit();
-    const info: p.SessionInfo = .{ .id = session_id, .attached = true, .revision = 0, .panes = &.{.{ .id = 1, .cols = 80, .rows = 24 }} };
+    const info: p.SessionInfo = .{ .id = session_id, .attached = true, .revision = 0, .panes = panes, .layout = layout orelse "" };
     try mockReply(connection, .{ .id = request, .session = info });
     connection.poll().?.deinit();
     const workspace = try @import("session_controller.zig").addSessionWorkspace(app, connection, info, "bound");
@@ -1144,6 +1148,72 @@ test "session borrowers workspace rename persists without another layout action"
     const layout = try @import("../session/layout.zig").decode(a, request.value.layout.?, &.{1});
     defer layout.deinit();
     try std.testing.expectEqualStrings("renamed-session", layout.value.name.?);
+}
+
+test "session borrowers save float-only tabs and prune floated leaves from mixed tabs" {
+    const a = std.testing.allocator;
+    const app = try mockApp();
+    defer a.destroy(app);
+    defer app.deinit();
+    const ws = app.activeWorkspace().?;
+    const tab = ws.active_tab.?;
+    const controller = ws.session_controller.?;
+    const pane = tab.activePane().?;
+    const actions = @import("session_controller.zig");
+    const codec = @import("../session/layout.zig");
+
+    const second = try app.mux.?.addSessionPane(&app.ghostty.?, @import("terminal_callbacks.zig").terminalCallbacks(), app.config, controller, ws.id, .{ .id = 2, .cols = 80, .rows = 24 }, "bound", null, .{ .split = .{
+        .tab_id = tab.id,
+        .source_id = pane.id,
+        .direction = .horizontal,
+        .ratio = 0.4,
+    } });
+    actions.setPaneFloatingById(app, second.id, true);
+    actions.setFloatingPaneBoundsById(app, second.id, 0.25, 0.125, 0.5, 0.75);
+    const original_root = tab.root_split.?;
+    controller.layout_due_ns = 0;
+    saveLayouts(app);
+    const save = controller.connection.client.nextWrite().?;
+    defer save.deinit();
+    const request = try p.parse(p.Request, a, save.payload);
+    defer request.deinit();
+    try std.testing.expectEqual(.layout, request.value.op);
+    const mixed = try codec.decode(a, request.value.layout.?, &.{ 1, 2 });
+    defer mixed.deinit();
+    const mixed_tab = mixed.value.tabs[0];
+    try std.testing.expectEqual(@as(usize, 1), mixed_tab.nodes.len);
+    try std.testing.expectEqual(@as(?u32, 1), mixed_tab.nodes[mixed_tab.root.?].pane);
+    try std.testing.expectEqual(@as(usize, 1), mixed_tab.floating.len);
+    try std.testing.expectEqual(@as(u32, 2), mixed_tab.active_pane);
+    try std.testing.expectEqual(@as(?u32, 1), mixed_tab.floating[0].anchor);
+    try std.testing.expectEqual(@as(f32, 0.25), mixed_tab.floating[0].x);
+    try std.testing.expectEqual(original_root, tab.root_split.?);
+
+    actions.setPaneFloatingById(app, pane.id, true);
+    const bytes = try @import("../mux/session_layout.zig").capture(a, ws, null);
+    defer a.free(bytes);
+    const all_floating = try codec.decode(a, bytes, &.{ 1, 2 });
+    defer all_floating.deinit();
+    try std.testing.expectEqual(@as(?usize, null), all_floating.value.tabs[0].root);
+    try std.testing.expectEqual(@as(usize, 0), all_floating.value.tabs[0].nodes.len);
+    try std.testing.expectEqual(@as(usize, 2), all_floating.value.tabs[0].floating.len);
+    try std.testing.expectEqual(@as(usize, 0), app.session_notices.count);
+
+    actions.setPaneFloatingById(app, second.id, false);
+    try std.testing.expect(!second.is_floating);
+    try std.testing.expectEqual(original_root, tab.root_split.?);
+
+    const restored = try mockWorkspaceWithLayout(app, "restored-floats", &.{
+        .{ .id = 1, .cols = 80, .rows = 24 },
+        .{ .id = 2, .cols = 80, .rows = 24 },
+    }, bytes);
+    const restored_tab = restored.active_tab.?;
+    const restored_pane = restored_tab.activePane().?;
+    try std.testing.expect(restored_pane.is_floating);
+    try std.testing.expect(restored_tab.root_split == null);
+    actions.setPaneFloatingById(app, restored_pane.id, false);
+    try std.testing.expect(!restored_pane.is_floating);
+    try std.testing.expectEqual(restored_pane, restored_tab.root_split.?.pane.?);
 }
 
 test "session borrowers disconnected layouts neither save nor schedule wakes or notices" {

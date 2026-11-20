@@ -254,6 +254,7 @@ pub fn buildQueueOptions(
         .end_col = value.end_col,
     } else null;
     const quick_select_visible = pane != null and app.quick_select_active and app.quick_select_pane == pane.? and !app.quick_select_pending_capture;
+    const bg = paneBackground(cfg.background, pane);
     return .{
         .render_state = render_state,
         .row_iterator = row_iterator,
@@ -265,8 +266,8 @@ pub fn buildQueueOptions(
         .viewport_width = pane_w,
         .viewport_height = pane_h,
         .force_full = force_full,
-        .translucent_bg = renderer.translucent_bg,
-        .cell_bg_alpha = renderer.cell_bg_alpha,
+        .translucent_bg = bg.translucent,
+        .cell_bg_alpha = bg.cell_alpha,
         .powerline = &cfg.background.powerline,
         .debug_timing = cfg.debug_overlay,
         .focused = is_focused,
@@ -358,6 +359,24 @@ fn quickSelectLabelAt(context: ?*anyopaque, row: usize, col: usize) ?u8 {
         if (col >= candidate.start_col and col - candidate.start_col < label.len) return label[col - candidate.start_col];
     }
     return null;
+}
+
+pub fn paneBackground(background: Config.Background, pane: ?*const Pane) struct { translucent: bool, cell_alpha: u8 } {
+    // A floating terminal is drawn over other terminal content, not just
+    // window decoration. Neither default nor explicit cells should show it.
+    if (pane) |p| if (p.is_floating) return .{ .translucent = false, .cell_alpha = 255 };
+    return .{ .translucent = background.translucentCells(), .cell_alpha = background.cellAlpha() };
+}
+
+test "floating terminal backgrounds are opaque without changing tiled opacity" {
+    const background: Config.Background = .{ .opacity = 0.8, .cell_opacity = 0.25 };
+    var pane = Pane.init(std.testing.allocator);
+    for ([_]bool{ false, true, false }) |floating| {
+        pane.is_floating = floating;
+        const bg = paneBackground(background, &pane);
+        try std.testing.expectEqual(!floating, bg.translucent);
+        try std.testing.expectEqual(@as(u8, if (floating) 255 else 64), bg.cell_alpha);
+    }
 }
 
 pub fn queueInViewport(

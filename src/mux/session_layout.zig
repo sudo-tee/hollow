@@ -149,21 +149,35 @@ fn captureDocks(a: std.mem.Allocator, docks: *std.ArrayList(codec.Dock), ids: *s
     }
 }
 
-fn captureNode(a: std.mem.Allocator, nodes: *std.ArrayList(codec.Node), node: *SplitNode, depth: usize) anyerror!usize {
+fn captureNode(a: std.mem.Allocator, nodes: *std.ArrayList(codec.Node), node: *SplitNode, depth: usize) anyerror!?usize {
     if (depth >= codec.max_depth or nodes.items.len >= codec.max_panes * 2) return error.InvalidSessionLayout;
     const index = nodes.items.len;
-    try nodes.append(a, .{});
     if (node.kind == .pane) {
-        nodes.items[index].pane = try ownerId(node.pane orelse return error.InvalidSessionLayout);
-    } else {
-        const first = try captureNode(a, nodes, node.first orelse return error.InvalidSessionLayout, depth + 1);
-        const second = try captureNode(a, nodes, node.second orelse return error.InvalidSessionLayout, depth + 1);
-        nodes.items[index] = .{
-            .first = first,
-            .second = second,
-            .direction = if (node.direction == .horizontal) .horizontal else .vertical,
-            .ratio = node.ratio,
-        };
+        const pane = node.pane orelse return error.InvalidSessionLayout;
+        // A floated tile can keep its original leaf as an unfloat shortcut.
+        // The wire layout represents it only in the floating list.
+        if (pane.is_floating) return null;
+        try nodes.append(a, .{ .pane = try ownerId(pane) });
+        return index;
     }
+    try nodes.append(a, .{});
+    const first = try captureNode(a, nodes, node.first orelse return error.InvalidSessionLayout, depth + 1);
+    const second = try captureNode(a, nodes, node.second orelse return error.InvalidSessionLayout, depth + 1);
+    if (first == null or second == null) {
+        // Drop the collapsed split. Only its descendants can refer to the
+        // shifted indices; earlier nodes still precede this subtree.
+        _ = nodes.orderedRemove(index);
+        for (nodes.items[index..]) |*child| {
+            if (child.first) |i| child.first = i - 1;
+            if (child.second) |i| child.second = i - 1;
+        }
+        return if (first != null or second != null) index else null;
+    }
+    nodes.items[index] = .{
+        .first = first,
+        .second = second,
+        .direction = if (node.direction == .horizontal) .horizontal else .vertical,
+        .ratio = node.ratio,
+    };
     return index;
 }

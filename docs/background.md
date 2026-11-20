@@ -203,6 +203,7 @@ hollow.config.set({
 It ranges from `0` to `1` and defaults to `1` (opaque).
 It applies only when a shader, image, overlay or window transparency is set.
 Cells using the theme background colour stay fully clear.
+Floating terminal panes are an exception: their backgrounds stay opaque so text in the panes underneath does not show through.
 Selection, search matches and the block cursor stay opaque.
 This keeps highlights such as an inactive-window background, diff colours or the cursor line visible while the background still shows through.
 
