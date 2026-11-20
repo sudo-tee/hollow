@@ -118,6 +118,9 @@ function M.setup(hollow, host_api, state)
     end
 
     hollow.util.merge_tables(state.config.values, hollow.util.clone_value(opts))
+    if opts.terminal_menu_items ~= nil then
+      state.config.values.terminal_menu_items = hollow.util.clone_value(opts.terminal_menu_items)
+    end
     local legacy_unfocused = type(opts.unfocused_pane) == "table" and opts.unfocused_pane.cursor
     local has_canonical_unfocused = type(opts.cursor) == "table" and opts.cursor.unfocused ~= nil
     if

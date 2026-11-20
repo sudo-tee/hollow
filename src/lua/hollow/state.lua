@@ -44,6 +44,7 @@ function M.new(host_api)
       builtin_names = {
         ["config:reloaded"] = true,
         ["workspace:new"] = true,
+        ["term:context_menu"] = true,
         ["workspace:changed"] = true,
         ["workspace:closed"] = true,
         ["session:handoff"] = true,
@@ -82,6 +83,9 @@ function M.new(host_api)
         ["overlay:hover"] = true,
         ["overlay:leave"] = true,
         ["overlay:click"] = true,
+        ["overlay:outside"] = true,
+        ["overlay:menu_background"] = true,
+        ["overlay:invalidate_menu"] = true,
         ["selection:begin"] = true,
         ["selection:cleared"] = true,
         ["copy_mode:changed"] = true,

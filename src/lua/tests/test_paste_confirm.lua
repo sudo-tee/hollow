@@ -48,7 +48,20 @@ describe("blocked paste confirmation", function()
     assert.is_false(calls[1].allow)
   end)
 
-  it("denies other panes, focus loss, and exclusive dialogs", function()
+  it("confirms for an existing unfocused pane", function()
+    local host = require("hollow.state").get().host_api
+    local exists = host.pane_exists
+    host.pane_exists = function(id)
+      return id == 202 or exists(id)
+    end
+    blocked(8, 202)
+    assert.equals(1, ui.overlay.depth())
+    assert.is_true(ui.dispatch_overlay_key("arrow_right", 0))
+    assert.is_true(ui.dispatch_overlay_key("enter", 0))
+    assert.same({ id = 202, generation = 8, allow = true }, calls[1])
+  end)
+
+  it("denies missing panes, focus loss, and exclusive dialogs", function()
     blocked(5, env.hollow.term.current_pane().id + 100)
     assert.equals(0, ui.overlay.depth())
     assert.is_false(calls[1].allow)

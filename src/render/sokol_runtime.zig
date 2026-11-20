@@ -219,6 +219,37 @@ var g_grid_debug: clay_grid_debug.GridDebug = .{};
 
 fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_pre_raster_ctx orelse return;
+    const area = ctx.menu_area orelse return;
+    {
+        const api = runtime.context.api;
+        const state = runtime.state;
+        const top = api.get_top(state);
+        defer api.set_top(state, top);
+        api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+        api.get_field(state, -1, "ui");
+        api.create_table(state, 0, 4);
+        inline for (.{ "x", "y", "width", "height" }) |field| {
+            api.push_number(state, @floatFromInt(@field(area, field)));
+            api.set_field(state, -2, field);
+        }
+        api.set_field(state, -2, "_menu_area");
+        api.get_field(state, -1, "_menu_anchor_id");
+        var len: usize = 0;
+        if (api.to_lstring(state, -1, &len)) |ptr| {
+            const bounds = findTopbarAnchor(ptr[0..len]);
+            pop(api, state, 1);
+            if (bounds) |rect| {
+                api.create_table(state, 0, 4);
+                inline for (.{ "x", "y", "width", "height" }) |field| {
+                    api.push_number(state, @field(rect, field));
+                    api.set_field(state, -2, field);
+                }
+            } else {
+                api.push_boolean(state, 0);
+            }
+            api.set_field(state, -2, "_menu_anchor_bounds");
+        }
+    }
     g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     prepareSidebarClaySurface(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
     prepareLowerClayOverlays(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
@@ -876,6 +907,8 @@ var g_gui_ready_fired = false;
 var g_window_chrome_applied = false;
 var g_prev_wnd_proc: WinLongPtr = 0;
 var g_subclassed_hwnd: ?WinHwnd = null;
+/// Set once the caption is stripped; `windowProc` then handles chrome messages.
+var g_custom_chrome = false;
 var g_window_iconified = false;
 var g_restore_pending = false;
 var g_render_state_colors_scratch: ghostty.RenderStateColors = undefined;
@@ -1402,6 +1435,7 @@ const BarHit = struct {
     tab_index: ?usize = null,
     close_tab_index: ?usize = null,
     node_id: ?[]const u8 = null,
+    bounds: ?ui_semantics.Bounds = null,
 
     fn inBar(self: BarHit) bool {
         return self.surface != null;
@@ -3168,6 +3202,7 @@ var g_background_overlay_pip: c.sgl_pipeline = .{ .id = 0 };
 const WidgetPreRasterCtx = struct {
     app: *App,
     renderer: *FtRenderer,
+    menu_area: ?PaneBounds = null,
 };
 
 var g_widget_pre_raster_ctx: ?WidgetPreRasterCtx = null;
@@ -3558,12 +3593,24 @@ fn hitTestBar(cache: *const BarCache, surface: BarSurface, mouse_x: f32, mouse_y
 
         hit.tab_index = region.tab_index;
         hit.node_id = region.node_id;
+        hit.bounds = .{ .x = region.x, .y = cache.y, .width = region.width, .height = cache.height };
         if (region.has_close and mouse_x >= region.close_x and mouse_x < region.close_x + region.close_w) {
             hit.close_tab_index = region.tab_index;
         }
         return hit;
     }
     return hit;
+}
+
+fn findTopbarAnchor(id: []const u8) ?ui_semantics.Bounds {
+    const cache = &g_top_bar_cache;
+    if (!cache.enabled) return null;
+    for (cache.hits[0..cache.hit_count]) |hit| {
+        if (hit.width > 0 and hit.node_id != null and std.mem.eql(u8, id, hit.node_id.?)) {
+            return .{ .x = hit.x, .y = cache.y, .width = hit.width, .height = cache.height };
+        }
+    }
+    return null;
 }
 
 fn topBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
@@ -4870,7 +4917,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         if (app.lua) |*lua| {
             const now_ns = io.nanoTimestamp();
-            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
+            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer, .menu_area = app.contentBounds() };
             lua.withLockedState(void, prepareClaySurface);
             g_widget_pre_raster_ctx = null;
             const needs_topbar = app.barCacheNeedsRefresh(.topbar, now_ns);
@@ -5749,9 +5796,6 @@ fn beforeShowCb(hwnd_raw: ?*const anyopaque, user_data: ?*anyopaque) callconv(.c
 
 fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
     applyWindowBackdrop(hwnd, app);
-
-    if (app.config.window_titlebar_show) return true;
-
     if (g_subclassed_hwnd == null) {
         const new_proc: win32.WNDPROC = &windowProc;
         const new_proc_raw: WinLongPtr = @bitCast(@intFromPtr(new_proc));
@@ -5760,6 +5804,8 @@ fn applyWin32WindowChrome(hwnd: win32.HWND, app: *App) bool {
         g_prev_wnd_proc = prev_proc_raw;
         g_subclassed_hwnd = hwnd;
     }
+    if (app.config.window_titlebar_show) return true;
+    g_custom_chrome = true;
     var style = win32.GetWindowLongPtrW(hwnd, win32.GWL_STYLE);
     style &= ~@as(WinLongPtr, @intCast(win32.WS_CAPTION));
     style |= @as(WinLongPtr, @intCast(win32.WS_THICKFRAME));
@@ -5924,6 +5970,12 @@ fn adjustMaximizedClientRect(mmi: *win32.MINMAXINFO, hwnd: win32.HWND) void {
 }
 
 fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.winapi) win32.LRESULT {
+    if (Msg == 0x0215) clearMenuGestures(); // WM_CAPTURECHANGED
+    // Also subclassed with the native title bar, only to observe capture loss.
+    if (!g_custom_chrome and g_prev_wnd_proc != 0) {
+        const prev: win32.WNDPROC = @ptrFromInt(@as(usize, @intCast(g_prev_wnd_proc)));
+        return win32.CallWindowProcW(prev, hWnd, Msg, wParam, lParam);
+    }
     switch (Msg) {
         win32.WM_NCCALCSIZE => {
             if (wParam != 0) return 0;
@@ -6149,7 +6201,21 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             app.requestRedraw();
         }
     }
-    if (g_lua_pane_button != null and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
+    if (event.type == c.SAPP_EVENTTYPE_UNFOCUSED or event.type == c.SAPP_EVENTTYPE_ICONIFIED) {
+        if (g_menu_gesture.held != 0 or g_app_right_pane != null) g_pending_mouse_move = null;
+        clearMenuGestures();
+        app.emitLuaBuiltInEvent("overlay:invalidate_menu", .none);
+    }
+    if ((g_lua_pane_button != null or g_menu_gesture.held != 0 or g_app_right_pane != null) and event.type == c.SAPP_EVENTTYPE_MOUSE_UP) flushPendingMouseMove(app);
+    if (event.type == c.SAPP_EVENTTYPE_MOUSE_UP and finishMenuGesture(app, event)) {
+        c.sapp_consume_event();
+        return;
+    }
+    if (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN) {
+        const mask = menuButtonMask(event.mouse_button);
+        g_menu_gesture.newPress(mask);
+        if (mask == c.SAPP_MODIFIER_RMB) g_app_right_pane = null;
+    }
     if (takeLuaPaneRelease(event)) {
         g_mouse_x = event.mouse_x;
         g_mouse_y = event.mouse_y;
@@ -6544,6 +6610,159 @@ fn handleChar(app: *App, event: c.sapp_event) void {
     c.sapp_consume_event();
 }
 
+const MenuGesture = struct {
+    held: u32 = 0,
+    cancelled: u32 = 0,
+    /// Held buttons that were pressed inside an open menu; their release
+    /// activates the row under the pointer.
+    inside: u32 = 0,
+
+    fn newPress(self: *MenuGesture, mask: u32) void {
+        self.held &= ~mask;
+        self.cancelled &= ~mask;
+        self.inside &= ~mask;
+    }
+
+    fn takeRelease(self: *MenuGesture, mask: u32) bool {
+        const owned = (self.held | self.cancelled) & mask != 0;
+        self.newPress(mask);
+        return owned;
+    }
+
+    /// Like `takeRelease`, but also reports whether the release should
+    /// activate a menu row.
+    fn takeActivation(self: *MenuGesture, mask: u32) struct { owned: bool, activate: bool } {
+        const activate = self.held & self.inside & mask != 0;
+        return .{ .owned = self.takeRelease(mask), .activate = activate };
+    }
+
+    fn cancel(self: *MenuGesture, mask: u32) void {
+        self.cancelled |= self.held & mask;
+        self.held &= ~mask;
+        self.inside &= ~mask;
+    }
+};
+
+var g_menu_gesture: MenuGesture = .{};
+var g_app_right_pane: ?usize = null;
+
+fn clearMenuGestures() void {
+    g_menu_gesture.cancel(~@as(u32, 0));
+    if (g_app_right_pane != null) g_menu_gesture.cancelled |= c.SAPP_MODIFIER_RMB;
+    g_app_right_pane = null;
+}
+
+fn menuButtonMask(button: c.sapp_mousebutton) u32 {
+    return switch (button) {
+        c.SAPP_MOUSEBUTTON_LEFT => c.SAPP_MODIFIER_LMB,
+        c.SAPP_MOUSEBUTTON_RIGHT => c.SAPP_MODIFIER_RMB,
+        c.SAPP_MOUSEBUTTON_MIDDLE => c.SAPP_MODIFIER_MMB,
+        else => 0,
+    };
+}
+
+fn activateMenuRow(app: *App, x: f32, y: f32) void {
+    const menus = menuSurfaces(app) orelse return;
+    const surface = menus.at(x, y) orelse return;
+    const hit = overlayHit(surface, .clickable, x, y) orelse return;
+    app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = hit.id, .index = hit.stack_index } });
+}
+
+fn finishMenuGesture(app: *App, event: c.sapp_event) bool {
+    const mask = menuButtonMask(event.mouse_button);
+    const release = g_menu_gesture.takeActivation(mask);
+    if (release.activate) activateMenuRow(app, event.mouse_x, event.mouse_y);
+    if (release.owned) return true;
+    if (mask != c.SAPP_MODIFIER_RMB) return false;
+    const id = g_app_right_pane orelse return false;
+    g_app_right_pane = null;
+    _ = app.enqueueMouse(.{ .button = .{
+        .action = .release,
+        .button = .right,
+        .x = event.mouse_x,
+        .y = event.mouse_y,
+        .mods = ghosttyMods(event.modifiers),
+        .pane_id = id,
+    } });
+    return true;
+}
+
+test "menu gesture consumes its own releases after close or capture loss, not unrelated gestures" {
+    const left = c.SAPP_MODIFIER_LMB;
+    const right = c.SAPP_MODIFIER_RMB;
+    const middle = c.SAPP_MODIFIER_MMB;
+    var gesture: MenuGesture = .{ .held = right };
+    try std.testing.expect(!gesture.takeRelease(left));
+    try std.testing.expect(gesture.held & right != 0);
+    gesture.held |= left;
+    try std.testing.expect(gesture.takeRelease(right));
+    gesture.cancel(~@as(u32, 0));
+    try std.testing.expect(gesture.held == 0);
+    try std.testing.expect(!gesture.takeRelease(middle));
+    try std.testing.expect(gesture.takeRelease(left));
+    gesture.held |= right;
+    gesture.cancel(right);
+    gesture.newPress(right);
+    try std.testing.expect(!gesture.takeRelease(right));
+
+    // Presses inside the menu activate on release; the opening press and
+    // presses cancelled by focus or capture loss do not.
+    gesture = .{ .held = right };
+    const opening = gesture.takeActivation(right);
+    try std.testing.expect(opening.owned and !opening.activate);
+    gesture = .{ .held = left | right, .inside = left | right };
+    const inside = gesture.takeActivation(left);
+    try std.testing.expect(inside.owned and inside.activate);
+    gesture.cancel(right);
+    const lost = gesture.takeActivation(right);
+    try std.testing.expect(lost.owned and !lost.activate);
+    try std.testing.expect(gesture.inside == 0);
+}
+
+const MenuSurfaces = struct {
+    root: f64,
+    child: ?f64,
+
+    fn at(self: MenuSurfaces, x: f32, y: f32) ?*ClaySurface {
+        for ([_]?f64{ self.child, self.root }) |id| {
+            const surface = findMenuSurface(id orelse continue) orelse continue;
+            if (overlayHit(surface, .scroll, x, y) != null) return surface;
+        }
+        return null;
+    }
+};
+
+fn menuSurfaces(app: *App) ?MenuSurfaces {
+    const runtime = if (app.lua) |*rt| rt else return null;
+    const menus = runtime.menuSurfaces() orelse return null;
+    return .{ .root = menus.root, .child = menus.child };
+}
+
+fn findMenuSurface(id: f64) ?*ClaySurface {
+    for (g_overlay_surfaces[0..g_overlay_surface_count]) |surface| {
+        if (surface.surface_id == id) return surface;
+    }
+    return null;
+}
+
+const RightClickRoute = enum { legacy, app, menu, ignore };
+
+fn rightClickRoute(enabled: bool, hit: bool, tracking: bool, shifted: bool) RightClickRoute {
+    if (!enabled) return .legacy;
+    if (!hit) return .ignore;
+    return if (tracking and !shifted) .app else .menu;
+}
+
+test "right click routes on tracking and shift, independent of terminal selection" {
+    for ([_]bool{ false, true }) |tracking| {
+        for ([_]bool{ false, true }) |shifted| {
+            try std.testing.expect(rightClickRoute(false, true, tracking, shifted) == .legacy);
+            try std.testing.expect(rightClickRoute(true, false, tracking, shifted) == .ignore);
+            try std.testing.expectEqual(if (tracking and !shifted) RightClickRoute.app else .menu, rightClickRoute(true, true, tracking, shifted));
+        }
+    }
+}
+
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {
     if (action == .press) app.keyboard_navigation = false;
     const button = switch (event.mouse_button) {
@@ -6562,6 +6781,33 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
+    const mask = menuButtonMask(event.mouse_button);
+    if (action == .press) {
+        if (!g_block_all_mouse_until_up and (mask != c.SAPP_MODIFIER_LMB or !g_block_left_mouse_until_up)) {
+            if (menuSurfaces(app)) |menus| route: {
+                if (menus.at(event.mouse_x, event.mouse_y)) |surface| {
+                    g_menu_gesture.held |= mask;
+                    // Rows activate on release so press-drag-release works.
+                    if (mask & (c.SAPP_MODIFIER_LMB | c.SAPP_MODIFIER_RMB) != 0) g_menu_gesture.inside |= mask;
+                    if (mask == c.SAPP_MODIFIER_LMB and overlayHit(surface, .clickable, event.mouse_x, event.mouse_y) == null) {
+                        app.emitLuaBuiltInEvent("overlay:menu_background", .{ .overlay_node = .{ .id = "", .index = surface.owner_index } });
+                    }
+                } else if (mask == c.SAPP_MODIFIER_RMB) {
+                    // Dismiss without copying, then route the press normally so
+                    // it can reopen the menu at the new spot.
+                    app.emitLuaBuiltInEvent("overlay:invalidate_menu", .none);
+                    break :route;
+                } else {
+                    g_menu_gesture.held |= mask;
+                    app.emitLuaBuiltInEvent("overlay:outside", .none);
+                }
+                c.sapp_consume_event();
+                return;
+            }
+        }
+    }
+
+    const previous_button = g_mouse_button_down;
     if (action == .press) {
         g_mouse_button_down = button;
     }
@@ -6662,6 +6908,10 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
+        if (action == .press and mask == c.SAPP_MODIFIER_RMB and app.config.terminal_menu) {
+            g_menu_gesture.held |= mask;
+            g_mouse_button_down = previous_button;
+        }
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
             if (bar_hit.tab_index) |index| {
                 if (barTabId(app, index)) |id| {
@@ -6674,7 +6924,11 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             const click_shifted = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0;
             if (bar_hit.node_id != null and bar_hit.tab_index == null) {
                 if (bar_hit.surface == .top) {
-                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
+                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted, .bounds = bar_hit.bounds } });
+                    if (menuSurfaces(app) != null) {
+                        g_menu_gesture.held |= mask;
+                        g_mouse_button_down = null;
+                    }
                 } else if (bar_hit.surface == .bottom) {
                     app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 }
@@ -6751,6 +7005,10 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // The sidebar panel is opaque: presses on it never reach the terminal.
     if (action == .press and sidebarContains(event.mouse_x, event.mouse_y)) {
+        if (mask == c.SAPP_MODIFIER_RMB and app.config.terminal_menu) {
+            g_menu_gesture.held |= mask;
+            g_mouse_button_down = previous_button;
+        }
         if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
             if (hitTestSidebar(event.mouse_x, event.mouse_y)) |id| {
                 beginButtonPress(app, .{ .clay = g_sidebar_clay.surface_id }, id);
@@ -6792,6 +7050,41 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     }
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
+        const blocked = app.config.terminal_menu and (hitTestOverlayWheel(event.mouse_x, event.mouse_y) != null or
+            hitTestSessionNotice(app, event.mouse_x, event.mouse_y) != null or
+            app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6) != null or
+            app.hitTestScrollbar(event.mouse_x, event.mouse_y) != null);
+        const hit = if (app.config.terminal_menu and !blocked) app.hitTestVisiblePane(event.mouse_x, event.mouse_y) else null;
+        const pane = if (hit) |h| (if (h.pane.isTerminal()) h.pane else null) else null;
+        const mods = ghosttyMods(event.modifiers);
+        switch (rightClickRoute(app.config.terminal_menu, pane != null, if (pane) |p| paneMouseTracking(p) != 0 else false, mods & ghostty.Mods.shift != 0)) {
+            .legacy => {},
+            .ignore, .menu => |route| {
+                g_mouse_button_down = previous_button;
+                g_menu_gesture.held |= mask;
+                if (route == .menu)
+                    app.emitLuaBuiltInEvent("term:context_menu", .{ .terminal_menu = .{ .pane_id = pane.?.id, .x = event.mouse_x, .y = event.mouse_y } });
+                c.sapp_consume_event();
+                return;
+            },
+            .app => {
+                g_mouse_button_down = previous_button;
+                if (app.enqueueMouse(.{ .button = .{
+                    .action = action,
+                    .button = .right,
+                    .x = event.mouse_x,
+                    .y = event.mouse_y,
+                    .mods = mods,
+                    .pane_id = pane.?.id,
+                } })) {
+                    g_app_right_pane = pane.?.id;
+                } else {
+                    g_menu_gesture.held |= mask;
+                }
+                c.sapp_consume_event();
+                return;
+            },
+        }
         if (selection_mod.hasSelection(app)) {
             _ = app.enqueueMouse(.copy_selection);
             return;
@@ -7021,6 +7314,29 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         return;
     }
 
+    if (builtin.os.tag == .linux) {
+        g_menu_gesture.cancel(~event.modifiers);
+        if (g_app_right_pane != null and event.modifiers & c.SAPP_MODIFIER_RMB == 0) {
+            g_app_right_pane = null;
+            g_menu_gesture.cancelled |= c.SAPP_MODIFIER_RMB;
+        }
+    }
+    if (g_app_right_pane) |id| {
+        _ = app.enqueueMouse(.{ .motion = .{
+            .held_button = .right,
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .mods = ghosttyMods(event.modifiers),
+            .pane_id = id,
+        } });
+        return;
+    }
+    if ((g_menu_gesture.held != 0 and g_mouse_button_down == null) or menuSurfaces(app) != null) {
+        updateOverlayHover(app, event.mouse_x, event.mouse_y);
+        setTextSelectionCursor(.arrow);
+        return;
+    }
+
     if (g_scrollbar_drag_pane) |pane| {
         const metrics = if (scroll.scrollbarMetricsForPane(app, pane)) |m| m else blk: {
             g_scrollbar_drag_pane = null;
@@ -7200,6 +7516,19 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         return;
     }
 
+    if (menuSurfaces(app)) |menus| {
+        if (menus.at(event.mouse_x, event.mouse_y)) |surface| {
+            if (overlayHit(surface, .scroll, event.mouse_x, event.mouse_y)) |hit| {
+                if (event.scroll_y != 0) app.emitLuaBuiltInEvent("overlay:scroll", .{ .overlay_scroll = .{
+                    .id = hit.id,
+                    .index = hit.stack_index,
+                    .delta = event.scroll_y,
+                } });
+            }
+        }
+        c.sapp_consume_event();
+        return;
+    }
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
     if (bottomBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
 

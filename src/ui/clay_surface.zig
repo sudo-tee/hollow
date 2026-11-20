@@ -125,12 +125,13 @@ pub const Surface = struct {
     fn parseFrame(api: lua.Api, state: *lua.State, frame_idx: c_int, cell_w: f32, cell_h: f32) c.HollowClayFrame {
         var frame = std.mem.zeroes(c.HollowClayFrame);
         frame.enabled = true;
-        frame.width = @max(0, number(api, state, frame_idx, "width")) * cell_w;
-        frame.height = @max(0, number(api, state, frame_idx, "height")) * cell_h;
-        frame.max_height = @max(0, number(api, state, frame_idx, "max_height")) * cell_h;
+        const pixels = boolean(api, state, frame_idx, "pixels");
+        frame.width = @max(0, number(api, state, frame_idx, "width")) * if (pixels) @as(f32, 1) else cell_w;
+        frame.height = @max(0, number(api, state, frame_idx, "height")) * if (pixels) @as(f32, 1) else cell_h;
+        frame.max_height = @max(0, number(api, state, frame_idx, "max_height")) * if (pixels) @as(f32, 1) else cell_h;
         frame.align_x = @intFromFloat(number(api, state, frame_idx, "align_x"));
         frame.align_y = @intFromFloat(number(api, state, frame_idx, "align_y"));
-        frame.margin = .{ .left = @intFromFloat(cell_w), .right = @intFromFloat(cell_w), .top = @intFromFloat(cell_h), .bottom = @intFromFloat(cell_h) };
+        if (!pixels) frame.margin = .{ .left = @intFromFloat(cell_w), .right = @intFromFloat(cell_w), .top = @intFromFloat(cell_h), .bottom = @intFromFloat(cell_h) };
         api.get_field(state, frame_idx, "margin");
         if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
             const margin_idx = lua.absoluteIndex(api, state, -1);

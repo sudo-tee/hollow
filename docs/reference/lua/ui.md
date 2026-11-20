@@ -671,6 +671,51 @@ helpers are all overlays internally.
 Notifications, modals, and direct overlays use independent positioning stacks:
 showing or dismissing a notification does not move a picker or dialog.
 
+## Menus
+
+```lua
+local menu = hollow.ui.menu({
+  anchor = { x = 120, y = 80 }, -- window pixels; add width/height for bounds
+  items = {
+    { label = "Copy", icon = "", action = copy },
+    { separator = true },
+    { label = "Dock", submenu = {
+      { label = "Left", action = dock_left },
+      { label = "Right", action = dock_right, disabled = true },
+    } },
+  },
+  valid = function() return still_valid end, -- optional
+  on_close = function(reason) end,           -- optional
+})
+menu.close()
+```
+
+`hollow.ui.menu(opts)` opens a menu and returns a handle, or `nil` when an exclusive modal is open or no items are given.
+Only one menu is open at a time; opening another closes the first.
+The menu flips and clamps to stay inside the content area.
+
+Items take `label`, an optional `icon`, and either an `action` or a `submenu`.
+Set `disabled = true` to show an item without allowing it to be chosen.
+An item with `separator = true` draws a divider.
+Submenus are one level deep; nested `submenu` lists inside a submenu are ignored.
+Long labels are truncated with an ellipsis.
+
+Rows activate when the mouse button is released over them, so press-drag-release works.
+The menu closes before the chosen `action` runs.
+`valid` is rechecked before interaction and rendering; once it returns `false`, the menu closes.
+
+`on_close` receives the close reason:
+
+| Reason          | When                                                                      |
+| --------------- | ------------------------------------------------------------------------- |
+| `"selection"`   | An item was chosen                                                        |
+| `"escape"`      | Escape in the root menu                                                   |
+| `"outside"`     | Left or middle click outside the menu                                     |
+| `"invalidated"` | Right-click outside, `valid` failed, focus moved, or another modal opened |
+
+Notifications and other passive overlays appear below an open menu and do not close it.
+See [Context menus](../../context-menus.md) for the built-in terminal and top-bar menus.
+
 ## Composition helpers
 
 Stateful composition helpers live beside the render primitives on

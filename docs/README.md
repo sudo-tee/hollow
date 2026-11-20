@@ -17,6 +17,7 @@ The is the main entry point for Hollow's documentation.
 - [Window size and position](window-placement.md) — restore Windows window placement on reopen
 - [Keybindings](keybindings.md) — default keymaps, modal bindings, the leader key
 - [Panes, tabs, workspaces](panes-tabs-workspaces.md) — the three layout primitives
+- [Context menus](context-menus.md) — pane actions and top-bar domain selection
 - [Workspace picker](workspace-picker.md) — domain categories, SSH project/session loading, and creation actions
 - [Persistent sessions](persistent-sessions-guide.md) — experimental host-owned terminals and explicit reattachment
 - [Session diagnostics](session-diagnostics.md) — ownership tracing

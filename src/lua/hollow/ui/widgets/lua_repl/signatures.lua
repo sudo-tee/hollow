@@ -221,6 +221,7 @@ return {
   ["hollow.ui.lua_repl.close"] = "fun()",
   ["hollow.ui.lua_repl.dock"] = "fun(opts?: { direction?: \"horizontal\"|\"vertical\", ratio?: number }): HollowUiPane|nil",
   ["hollow.ui.lua_repl.open"] = "fun(opts?: HollowUiLuaReplOptions): HollowUiModalHandle? handle Nil if an exclusive dialog is active.",
+  ["hollow.ui.menu"] = "fun(opts: HollowUiMenuOptions): HollowUiMenu?",
   ["hollow.ui.modal"] = "fun(spec: HollowUiModalSpec): HollowUiModalHandle|nil Returns nil if an exclusive dialog is already open.",
   ["hollow.ui.mux_navigator.close"] = "fun()",
   ["hollow.ui.mux_navigator.open"] = "fun(opts?: HollowUiMuxNavigatorOptions)",

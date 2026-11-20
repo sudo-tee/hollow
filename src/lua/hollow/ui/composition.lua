@@ -1,6 +1,7 @@
 local ui = _G.hollow.ui
 
 ui.modal = require("hollow.ui.modal").modal
+ui.menu = require("hollow.ui.widgets.menu").open
 ui.keys = require("hollow.ui.keys").keys
 ui.fire = require("hollow.ui.fire").fire
 ui.list_nav = require("hollow.ui.behaviors.list_nav").list_nav
