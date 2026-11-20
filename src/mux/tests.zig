@@ -392,6 +392,13 @@ test "mixed Lua and terminal panes split float zoom move and close without reapi
     const floating = try mux.createLuaPane();
     try mux.splitActivePaneWith(floating, .horizontal, 0.3, true);
     try std.testing.expect(floating.is_floating);
+    try std.testing.expect(mux.setFloatingPaneBounds(floating, 0.25, 0.25, 0.5, 0.5));
+    mux.resizeActivePane(.vertical, 0.5);
+    mux.resizeActivePane(.horizontal, -0.125);
+    try std.testing.expectEqual(@as(f32, 0.25), floating.floating_x);
+    try std.testing.expectEqual(@as(f32, 0.25), floating.floating_y);
+    try std.testing.expectEqual(@as(f32, 0.75), floating.floating_width);
+    try std.testing.expectEqual(@as(f32, 0.375), floating.floating_height);
     try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
     try std.testing.expect(mux.movePaneToWorkspace(&runtime, id, 1));
     try std.testing.expect(mux.focusPaneById(id));

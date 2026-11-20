@@ -1394,7 +1394,22 @@ pub const Mux = struct {
         }
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
-        if (current.is_hidden or current.is_floating) return;
+        if (current.is_hidden) return;
+        if (current.is_floating) {
+            if (tab.maximized_pane == current) return;
+            const x = current.floating_x;
+            const y = current.floating_y;
+            const width = current.floating_width;
+            const height = current.floating_height;
+            _ = tab.setFloatingPaneBounds(
+                current,
+                x,
+                y,
+                if (direction == .vertical) @min(width + delta, 1 - x) else width,
+                if (direction == .horizontal) @min(height + delta, 1 - y) else height,
+            );
+            return;
+        }
         const root = tab.root_split orelse return;
         if (layout.findSplitContaining(root, current, direction)) |node| {
             node.ratio = std.math.clamp(node.ratio + delta, 0.05, 0.95);

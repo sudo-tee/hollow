@@ -556,7 +556,13 @@ pub const Tab = struct {
     }
 
     fn reinsertFloatingPane(self: *Tab, pane: *Pane) bool {
-        const root = self.root_split orelse return false;
+        const root = self.root_split orelse {
+            // A restored all-floating tab has no tiled tree yet.
+            const leaf = self.allocator.create(SplitNode) catch return false;
+            leaf.* = SplitNode.initPane(pane);
+            self.root_split = leaf;
+            return true;
+        };
 
         var anchor: ?*Pane = null;
         if (pane.restore_anchor_id != 0) {

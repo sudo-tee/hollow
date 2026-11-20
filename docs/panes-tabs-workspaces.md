@@ -126,7 +126,11 @@ hollow.term.split_pane({
 ### Floating and maximized
 
 A _floating_ pane is a child of the tab but does not participate in the
-tiled split tree. Bounds are normalized 0..1 in window space.
+tiled split tree.
+Bounds are normalized from 0 to 1 within the tab area, excluding docks.
+Drag the top edge to move the pane, or drag a side, the bottom edge, or a corner to resize it.
+Dragging inside the frame still selects text or goes to the running app.
+With the default bindings, Ctrl+Alt+H/J/K/L moves the focused float and Ctrl+Alt+arrow keys resizes it.
 
 ```lua
 hollow.term.split_pane({
