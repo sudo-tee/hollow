@@ -906,6 +906,131 @@ var g_perf_max_frame_ms: f32 = 0;
 // For horizontal:
 //   new_ratio = (mouse_y - bounds.y) / bounds.height
 var g_drag_node: ?*SplitNode = null;
+var g_floating_drag: ?FloatingDrag = null;
+
+const FloatingDrag = struct {
+    const Grip = enum {
+        move,
+        left,
+        right,
+        bottom,
+        top_left,
+        top_right,
+        bottom_left,
+        bottom_right,
+
+        fn cursor(self: Grip) c.sapp_mouse_cursor {
+            return switch (self) {
+                .move => c.SAPP_MOUSECURSOR_RESIZE_ALL,
+                .left, .right => c.SAPP_MOUSECURSOR_RESIZE_EW,
+                .bottom => c.SAPP_MOUSECURSOR_RESIZE_NS,
+                .top_left, .bottom_right => c.SAPP_MOUSECURSOR_RESIZE_NWSE,
+                .top_right, .bottom_left => c.SAPP_MOUSECURSOR_RESIZE_NESW,
+            };
+        }
+    };
+
+    pane_id: usize,
+    grip: Grip,
+    mouse_x: f32,
+    mouse_y: f32,
+    bounds: [4]f32,
+
+    fn movedBounds(self: FloatingDrag, dx: f32, dy: f32) [4]f32 {
+        const x, const y, const width, const height = self.bounds;
+        if (self.grip == .move) return .{
+            std.math.clamp(x + dx, 0, @max(0, 1 - width)),
+            std.math.clamp(y + dy, 0, @max(0, 1 - height)),
+            width,
+            height,
+        };
+        const left = switch (self.grip) {
+            .left, .top_left, .bottom_left => std.math.clamp(x + dx, 0, @max(0, x + width - 0.2)),
+            else => x,
+        };
+        const top = switch (self.grip) {
+            .top_left, .top_right => std.math.clamp(y + dy, 0, @max(0, y + height - 0.15)),
+            else => y,
+        };
+        const right = switch (self.grip) {
+            .right, .top_right, .bottom_right => std.math.clamp(x + width + dx, @min(1, x + 0.2), 1),
+            else => x + width,
+        };
+        const bottom = switch (self.grip) {
+            .bottom, .bottom_left, .bottom_right => std.math.clamp(y + height + dy, @min(1, y + 0.15), 1),
+            else => y + height,
+        };
+        return .{ left, top, right - left, bottom - top };
+    }
+};
+
+fn floatingGrip(app: *App, x: f32, y: f32) ?struct { pane: *Pane, grip: FloatingDrag.Grip } {
+    const mux = if (app.mux) |*m| m else return null;
+    const tab = mux.activeTab() orelse return null;
+    var buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&buf);
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        const w: f32 = @floatFromInt(leaf.bounds.width);
+        const h: f32 = @floatFromInt(leaf.bounds.height);
+        const px = x - @as(f32, @floatFromInt(leaf.bounds.x));
+        const py = y - @as(f32, @floatFromInt(leaf.bounds.y));
+        if (px < 0 or px >= w or py < 0 or py >= h) continue;
+        if (!leaf.pane.is_floating or leaf.pane == tab.maximized_pane) return null;
+        const edge_x = @min(6, w * 0.2);
+        const edge_y = @min(6, h * 0.2);
+        const left = px < edge_x;
+        const right = px >= w - edge_x;
+        const grip: FloatingDrag.Grip = if (py < edge_y)
+            (if (left) .top_left else if (right) .top_right else .move)
+        else if (py >= h - edge_y)
+            (if (left) .bottom_left else if (right) .bottom_right else .bottom)
+        else if (left) .left else if (right) .right else return null;
+        return .{ .pane = leaf.pane, .grip = grip };
+    }
+    return null;
+}
+
+fn updateFloatingDrag(app: *App, drag: FloatingDrag, x: f32, y: f32) void {
+    const mux = if (app.mux) |*m| m else return;
+    const tab = mux.activeTab() orelse return;
+    const pane = app.findPaneById(drag.pane_id) orelse return;
+    if (pane.is_hidden or !pane.is_floating or tab.maximized_pane == pane or !mux.activeTabContainsPane(pane)) return;
+    const region = app.activeLayoutBounds();
+    if (region.width == 0 or region.height == 0) return;
+    const dx = (x - drag.mouse_x) / @as(f32, @floatFromInt(region.width));
+    const dy = (y - drag.mouse_y) / @as(f32, @floatFromInt(region.height));
+    const bx, const by, const w, const h = drag.movedBounds(dx, dy);
+    if (@abs(pane.floating_x - bx) < 0.000001 and @abs(pane.floating_y - by) < 0.000001 and
+        @abs(pane.floating_width - w) < 0.000001 and @abs(pane.floating_height - h) < 0.000001) return;
+    @import("../app/session_controller.zig").setFloatingPaneBoundsById(app, pane.id, bx, by, w, h);
+}
+
+fn stopFloatingDrag() void {
+    g_floating_drag = null;
+    g_mouse_button_down = null;
+    if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+}
+
+test "floating drag clamps movement and keeps opposite resize edges anchored" {
+    var drag: FloatingDrag = .{
+        .pane_id = 1,
+        .grip = .move,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .bounds = .{ 0.25, 0.25, 0.5, 0.5 },
+    };
+    try std.testing.expectEqual([4]f32{ 0, 0.5, 0.5, 0.5 }, drag.movedBounds(-2, 2));
+    drag.grip = .top_left;
+    try std.testing.expectEqual([4]f32{ 0.375, 0.125, 0.375, 0.625 }, drag.movedBounds(0.125, -0.125));
+    const shrunk = drag.movedBounds(2, 2);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), shrunk[2], 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.15), shrunk[3], 0.000001);
+    drag.grip = .bottom_right;
+    try std.testing.expectEqual([4]f32{ 0.25, 0.25, 0.75, 0.75 }, drag.movedBounds(2, 2));
+}
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
@@ -3705,6 +3830,7 @@ pub fn run(app: *App) !void {
     g_last_frame_swapchain_glyph_ms = 0;
     g_last_frame_swapchain_submit_ms = 0;
     g_drag_node = null;
+    g_floating_drag = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
     g_transparent_surface = app.config.background.opacity < 1.0;
@@ -5976,6 +6102,28 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (g_floating_drag) |drag| {
+        switch (event.type) {
+            c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+                g_mouse_x = event.mouse_x;
+                g_mouse_y = event.mouse_y;
+                updateFloatingDrag(app, drag, event.mouse_x, event.mouse_y);
+                c.sapp_consume_event();
+                return;
+            },
+            c.SAPP_EVENTTYPE_MOUSE_UP => if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+                g_mouse_x = event.mouse_x;
+                g_mouse_y = event.mouse_y;
+                updateFloatingDrag(app, drag, event.mouse_x, event.mouse_y);
+                stopFloatingDrag();
+                setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+                c.sapp_consume_event();
+                return;
+            },
+            c.SAPP_EVENTTYPE_UNFOCUSED, c.SAPP_EVENTTYPE_ICONIFIED => stopFloatingDrag(),
+            else => {},
+        }
+    }
     if (event.type != c.SAPP_EVENTTYPE_CHAR and event.type != c.SAPP_EVENTTYPE_MOUSE_MOVE) flushPendingTextKey(app, event.frame_count);
     if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and
         (event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN or event.type == c.SAPP_EVENTTYPE_MOUSE_UP))
@@ -6652,6 +6800,25 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button press, check for a divider hit before forwarding to the terminal.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (floatingGrip(app, event.mouse_x, event.mouse_y)) |hit| {
+            const pane = hit.pane;
+            g_floating_drag = .{
+                .pane_id = pane.id,
+                .grip = hit.grip,
+                .mouse_x = event.mouse_x,
+                .mouse_y = event.mouse_y,
+                .bounds = .{ pane.floating_x, pane.floating_y, pane.floating_width, pane.floating_height },
+            };
+            g_mouse_button_down = null;
+            g_scrollbar_hover_pane = null;
+            g_terminal_pointer_mods = null;
+            setMouseCursor(hit.grip.cursor());
+            if (builtin.os.tag == .windows) {
+                if (c.sapp_win32_get_hwnd()) |hwnd| _ = win32.SetCapture(@ptrCast(@constCast(hwnd)));
+            }
+            c.sapp_consume_event();
+            return;
+        }
         const mods = ghosttyMods(event.modifiers);
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |_| {
             const wants_shift_click_link = app.config.hyperlinks.enabled and
@@ -6960,6 +7127,13 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         return;
     }
 
+    if (g_mouse_button_down == null) {
+        if (floatingGrip(app, event.mouse_x, event.mouse_y)) |hit| {
+            g_scrollbar_hover_pane = null;
+            setMouseCursor(hit.grip.cursor());
+            return;
+        }
+    }
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
         g_scrollbar_hover_pane = scrollbar_hit.pane;
         setTextSelectionCursor(.arrow);
