@@ -3759,6 +3759,12 @@ fn sleepUntilWakeOrDeadline(app: *App, wake_generation: u32, deadline_ns: i128) 
     }
 }
 
+/// `.always` shaders animate on their own, but an idle window still paces them
+/// with the idle frame cap. Only the idle wake-up renders them at full rate.
+fn activeShaderAnimation(animation: Config.CustomShader.Animation) Config.CustomShader.Animation {
+    return if (animation == .always) .off else animation;
+}
+
 fn shouldUseIdleFrameCap(app: *App, visually_active: bool, now_ns: i128) bool {
     if (app.config.vsync or visually_active or app.config.idle_max_fps == 0) return false;
     const recent_activity_grace_ns: i128 = 150_000_000;
@@ -4136,7 +4142,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
         visually_active = quick_press or app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app) or
-            g_post_chain.wantsFrame(after_tick_ns, app.config.custom_shader.animation, current_shader_bg);
+            g_post_chain.wantsFrame(after_tick_ns, activeShaderAnimation(app.config.custom_shader.animation), current_shader_bg);
     }
     var use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -7684,4 +7690,10 @@ test "altGrAdjustedModsFor strips synthetic ctrl+alt only while right alt is dow
     try std.testing.expectEqual(@as(u32, ghostty.Mods.shift), altGrAdjustedModsFor(ghostty.Mods.shift, true));
     try std.testing.expectEqual(@as(u32, 0), altGrAdjustedModsFor(0, true));
     try std.testing.expectEqual(@as(u32, 0), altGrAdjustedModsFor(0, false));
+}
+
+test "an always shader does not count as visual activity" {
+    try std.testing.expectEqual(Config.CustomShader.Animation.off, activeShaderAnimation(.always));
+    try std.testing.expectEqual(Config.CustomShader.Animation.cursor, activeShaderAnimation(.cursor));
+    try std.testing.expectEqual(Config.CustomShader.Animation.off, activeShaderAnimation(.off));
 }
