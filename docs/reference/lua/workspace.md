@@ -249,7 +249,7 @@ Name/path columns truncate within reserved widths rather than pushing pills out 
 
 - Primary action: switch to / open the selected workspace
 - `rename_key`: rename the active workspace (default `<C-r>`)
-- `close_key`: close the selected open workspace (default `<C-x>`); headings and status rows are not closable
+- `close_key`: close the selected open workspace without dismissing the switcher (default `<C-x>`); headings and status rows are not closable
 - `create_key`: create a new workspace in the selected row/header's domain (default `<C-n>`)
 - `refresh_key`: list persistent sessions and rescan sources (default `<C-l>`); shown for persistence or configured SSH project sources
 

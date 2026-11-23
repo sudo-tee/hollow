@@ -393,11 +393,11 @@ local function switcher_actions()
       key = switcher.close_key or DEFAULT_CLOSE_KEY,
       desc = switcher.close_desc or "close",
       fn = function(item)
-        if is_load_row(item) or (item and item.source == "domain_header") then
+        if not item or is_load_row(item) or item.source == "domain_header" then
           return
         end
-        ui.select.close()
-        if item and item.source == "session" then
+        if item.source == "session" then
+          ui.select.close()
           sessions.kill(item)
           return
         end
