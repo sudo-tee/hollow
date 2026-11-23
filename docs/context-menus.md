@@ -6,13 +6,19 @@ Shift+right-click opens Hollow's menu either way.
 
 ![Terminal context menu opened over a split tab, with Copy, Paste, split, layout, Dock, and Close Pane items](examples/context-menu-terminal.png)
 
-The menu offers Copy, Paste, Split Right, Split Down, Float/Unfloat, Hide, Zoom/Unzoom, Dock/Undock, and Close Pane.
+The menu offers Copy, Paste, Split Right, Split Down, Float/Unfloat, Hide, Zoom/Unzoom, Dock/Undock, Move, and Close Pane.
 Unavailable actions remain visible but disabled.
 Dock opens a submenu for the workspace's left, right, top, or bottom edge.
 Occupied edges are disabled.
 Undock is a direct action.
 
 ![Dock submenu open beside the terminal menu, listing Left, Right, Top, and Bottom](examples/context-menu-dock.png)
+
+Move → Left, Right, Top, or Bottom swaps a tiled pane with a neighbor or nudges a floating pane in that direction.
+Move → Tab lets you pick another tab in the same workspace and choose how to split it.
+Move → Workspace lets you pick another workspace and moves the pane into a new tab there.
+Moving a single pane to or from a persistent workspace is not supported.
+Undock a pane before moving it.
 
 Click a submenu row or press Right or Enter to open it; Left or Escape returns to the parent without copying.
 Rows activate when you release the mouse button over them, so you can press, drag to a row, and release.
@@ -42,6 +48,7 @@ hollow.config.set({
     "paste",
     "separator",
     "split_right",
+    "move",
     { label = "Ring bell", action = function(pane) hollow.term.bell(pane.id) end },
     "close",
   },

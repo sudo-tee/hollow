@@ -940,6 +940,12 @@ var g_perf_max_frame_ms: f32 = 0;
 //   new_ratio = (mouse_y - bounds.y) / bounds.height
 var g_drag_node: ?*SplitNode = null;
 var g_floating_drag: ?FloatingDrag = null;
+const layout_drag = @import("layout_drag.zig");
+const pane_drop = @import("../mux/pane_drop.zig");
+var g_layout_drag: ?layout_drag.Drag = null;
+var g_layout_drag_escape_up = false;
+const TiledDragHover = struct { pane: usize, tab: usize, hot: bool };
+var g_tiled_drag_hover: ?TiledDragHover = null;
 
 const FloatingDrag = struct {
     const Grip = enum {
@@ -1045,6 +1051,306 @@ fn stopFloatingDrag() void {
     g_floating_drag = null;
     g_mouse_button_down = null;
     if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+}
+
+fn layoutDragWorkspace(app: *App, drag: layout_drag.Drag) ?*@import("../mux.zig").Workspace {
+    const mux = if (app.mux) |*m| m else return null;
+    const ws = mux.activeWorkspace() orelse return null;
+    if (ws.id != drag.workspace or ws.active_tab == null or ws.active_tab.?.id != drag.active_tab or !mux_ops.canArrangeWorkspace(ws)) return null;
+    return ws;
+}
+
+fn beginLayoutDrag(app: *App, event: c.sapp_event, tab_id: usize, pane_id: ?usize) void {
+    const mux = if (app.mux) |*m| m else return;
+    const ws = mux.activeWorkspace() orelse return;
+    const active = ws.active_tab orelse return;
+    if (!mux_ops.canArrangeWorkspace(ws)) return;
+    g_layout_drag = .{ .workspace = ws.id, .tab = tab_id, .active_tab = active.id, .pane = pane_id, .x = event.mouse_x, .y = event.mouse_y };
+    g_mouse_button_down = null;
+    g_terminal_pointer_mods = null;
+    g_scrollbar_hover_pane = null;
+    if (pane_id != null) setMouseCursor(c.SAPP_MOUSECURSOR_POINTING_HAND);
+    if (builtin.os.tag == .windows) {
+        if (c.sapp_win32_get_hwnd()) |hwnd| _ = win32.SetCapture(@ptrCast(@constCast(hwnd)));
+    }
+    app.requestRedraw();
+    c.sapp_consume_event();
+}
+
+fn stopLayoutDrag(app: *App) void {
+    g_layout_drag = null;
+    if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+    setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+    app.requestRedraw();
+}
+
+fn layoutDragBlocked(x: f32, y: f32) bool {
+    return g_overlay_has_modal or hitTestOverlayWheel(x, y) != null;
+}
+
+fn topBarTabBounds(index: usize) ?ui_semantics.Bounds {
+    const cache = &g_top_bar_cache;
+    for (cache.hits[0..cache.hit_count]) |region| {
+        if (region.tab_index == index) return .{ .x = region.x, .y = cache.y, .width = region.width, .height = cache.height };
+    }
+    return null;
+}
+
+fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i128) void {
+    drag.drop = null;
+    if (!drag.track(x, y, @max(1, c.sapp_dpi_scale()))) return;
+    defer setMouseCursor(if (drag.canceled) c.SAPP_MOUSECURSOR_ARROW else if (drag.drop == null) c.SAPP_MOUSECURSOR_NOT_ALLOWED else c.SAPP_MOUSECURSOR_POINTING_HAND);
+    const ws = layoutDragWorkspace(app, drag.*) orelse {
+        drag.canceled = true;
+        return;
+    };
+    if (layoutDragBlocked(x, y)) return;
+    const source = ws.tabById(drag.tab) orelse return;
+    const hit = topBarHitTest(app, x, y, c.sapp_widthf());
+    const hovered_id = if (hit.tab_index) |index| barTabId(app, index) else null;
+    if (drag.pane == null) {
+        if (hit.surface != .top) return;
+        // Include the gaps between visible tabs, but not controls or empty bar.
+        const cache = &g_top_bar_cache;
+        var first_x: f32 = std.math.inf(f32);
+        var last_x: f32 = -std.math.inf(f32);
+        var nearest: ?BarHit = null;
+        var distance: f32 = std.math.inf(f32);
+        var seen_index: ?usize = null;
+        for (cache.hits[0..cache.hit_count]) |region| {
+            const index = region.tab_index orelse continue;
+            if (index == seen_index or region.width <= 0) continue;
+            seen_index = index;
+            first_x = @min(first_x, region.x);
+            last_x = @max(last_x, region.x + region.width);
+            const d = @abs(x - region.x - region.width / 2);
+            if (d < distance) {
+                distance = d;
+                nearest = .{ .tab_index = index };
+            }
+        }
+        const candidate = if (hovered_id != null) hit else nearest orelse return;
+        if (x < first_x or x >= last_x or (hit.node_id != null and hovered_id == null)) return;
+        const id = barTabId(app, candidate.tab_index.?) orelse return;
+        const b = topBarTabBounds(candidate.tab_index.?) orelse return;
+        const after = x >= b.x + b.width / 2;
+        if (id != drag.tab) drag.drop = .{ .reorder = .{
+            .id = id,
+            .after = after,
+            .marker = .{ .x = (if (after) b.x + b.width else b.x) - 1, .y = b.y + 2, .width = 3, .height = @max(0, b.height - 4) },
+        } };
+        return;
+    }
+    const pane = app.findPaneById(drag.pane.?) orelse return;
+    if (!pane_drop.eligible(source, pane)) return;
+    if (hit.surface == .top) {
+        if (drag.hover_tab != hovered_id) {
+            drag.hover_tab = hovered_id;
+            drag.hover_since = now;
+        }
+        if (hovered_id) |id| {
+            const dest = ws.tabById(id) orelse return;
+            if (dest.maximized_pane != null or dest.root_split == null) return;
+            if (now - drag.hover_since >= 350 * std.time.ns_per_ms) drag.preview_tab = if (id == drag.tab) null else id;
+            if (id != source.id and @import("../mux.zig").Mux.canMovePaneToTabRoot(dest)) {
+                const marker = topBarTabBounds(hit.tab_index.?) orelse return;
+                drag.drop = .{ .tab = .{ .id = id, .marker = marker } };
+            }
+        }
+        return;
+    }
+    drag.hover_tab = null;
+    const dest = ws.tabById(drag.preview_tab orelse drag.tab) orelse return;
+    var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.layoutContentForTab(app.contentBounds(), dest, &buffer);
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
+        if (app.mux.?.paneDock(leaf.pane) != null) return;
+        const zone = pane_drop.zoneAt(leaf.bounds, x, y);
+        _ = pane_drop.preview(source, pane, dest, leaf.pane, zone, app.activeLayoutBounds(), app.cell_width_px, app.cell_height_px) orelse return;
+        drag.drop = .{ .pane = .{ .id = leaf.pane.id, .tab = dest.id, .zone = zone, .marker = layout_drag.paneMarker(leaf.bounds, zone) } };
+        return;
+    }
+}
+
+fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
+    if (g_layout_drag_escape_up and event.type == c.SAPP_EVENTTYPE_KEY_UP and event.key_code == c.SAPP_KEYCODE_ESCAPE) {
+        g_layout_drag_escape_up = false;
+        c.sapp_consume_event();
+        return true;
+    }
+    const drag = if (g_layout_drag) |*value| value else return false;
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            g_mouse_x = event.mouse_x;
+            g_mouse_y = event.mouse_y;
+            setMouseCursorHidden(false);
+            updateLayoutDrag(app, drag, event.mouse_x, event.mouse_y, io.nanoTimestamp());
+            app.requestRedraw();
+        },
+        c.SAPP_EVENTTYPE_MOUSE_UP => {
+            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+                g_mouse_x = event.mouse_x;
+                g_mouse_y = event.mouse_y;
+                updateLayoutDrag(app, drag, event.mouse_x, event.mouse_y, io.nanoTimestamp());
+                const result = drag.*;
+                stopLayoutDrag(app);
+                if (!result.canceled) {
+                    if (result.drop) |drop| {
+                        switch (drop) {
+                            .tab => |item| mux_ops.movePaneToTab(app, result.pane.?, item.id, .vertical, 0.5),
+                            .pane => |item| mux_ops.dropTiledPane(app, result.tab, result.pane.?, item.tab, item.id, item.zone),
+                            .reorder => |item| if (layoutDragWorkspace(app, result)) |ws| {
+                                if (ws.reorderTab(result.tab, item.id, item.after)) {
+                                    app.requestLayoutRefresh();
+                                    app.emitLuaBuiltInEvent("term:tab_reordered", .{ .tab_id = result.tab });
+                                }
+                            },
+                        }
+                    } else if (result.pane == null and !result.started and layoutDragWorkspace(app, result) != null and !layoutDragBlocked(event.mouse_x, event.mouse_y)) {
+                        const hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
+                        if (hit.surface == .top and hit.close_tab_index == null) {
+                            if (hit.tab_index) |index| {
+                                if (barTabId(app, index) == result.tab) {
+                                    if (hit.node_id) |id| {
+                                        app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{
+                                            .id = id,
+                                            .mods = ghosttyMods(event.modifiers),
+                                            .shifted = false,
+                                            .bounds = hit.bounds,
+                                        } });
+                                    } else {
+                                        _ = app.enqueueMouse(.{ .switch_tab = index });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        c.SAPP_EVENTTYPE_KEY_DOWN => {
+            if (event.key_code != c.SAPP_KEYCODE_ESCAPE) return false;
+            drag.canceled = true;
+            setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+            g_layout_drag_escape_up = true;
+            app.requestRedraw();
+        },
+        c.SAPP_EVENTTYPE_UNFOCUSED, c.SAPP_EVENTTYPE_ICONIFIED => {
+            stopLayoutDrag(app);
+            g_layout_drag_escape_up = false;
+            g_skip_mouse_release = .left;
+            return false;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_DOWN, c.SAPP_EVENTTYPE_MOUSE_SCROLL => {},
+        else => return false,
+    }
+    c.sapp_consume_event();
+    return true;
+}
+
+fn tiledDragHoverAt(app: *App, x: f32, y: f32) ?TiledDragHover {
+    if (layoutDragBlocked(x, y)) return null;
+    const mux = if (app.mux) |*m| m else return null;
+    const ws = mux.activeWorkspace() orelse return null;
+    if (!mux_ops.canArrangeWorkspace(ws)) return null;
+    const tab = ws.active_tab orelse return null;
+    var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&buffer);
+    const scale = @max(1, c.sapp_dpi_scale());
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
+        if (leaf.bounds.width < 20 or !pane_drop.eligible(tab, leaf.pane) or !layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), x, y)) return null;
+        const h = layout_drag.handle(leaf.bounds, scale);
+        if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) return null;
+        return .{ .pane = leaf.pane.id, .tab = tab.id, .hot = layout_drag.contains(h, x, y) };
+    }
+    return null;
+}
+
+fn setTiledDragHover(app: *App, hover: ?TiledDragHover) void {
+    if (std.meta.eql(g_tiled_drag_hover, hover)) return;
+    g_tiled_drag_hover = hover;
+    app.requestRedraw();
+}
+
+fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) void {
+    const mux = if (app.mux) |*m| m else return;
+    const ws = mux.activeWorkspace() orelse return;
+    const tab = ws.active_tab orelse return;
+    if (!mux_ops.canArrangeWorkspace(ws) or g_overlay_has_modal) return;
+    const scale = @max(1, c.sapp_dpi_scale());
+    const fg = app.config.terminal_theme.foreground;
+    const bg = app.config.terminal_theme.background;
+    const accent = app.config.terminal_theme.palette[4];
+    if (g_layout_drag) |drag| {
+        if (drag.canceled or !drag.started) return;
+        if (drag.preview_tab) |id| if (ws.tabById(id)) |preview_tab| {
+            // A layout map previews inactive tabs without changing focus,
+            // resizing their PTYs, or persisting a temporary tab switch.
+            const b = app.activeLayoutBounds();
+            const r = layout_drag.rect(b);
+            drawBorderRect(r.x, r.y, r.width, r.height, bg.r, bg.g, bg.b, 255);
+            var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            for (preview_tab.computeLayoutInBounds(b, &buffer, app.cell_width_px, app.cell_height_px)) |leaf| {
+                const box = layout_drag.rect(leaf.bounds);
+                drawBorderRect(box.x, box.y, box.width, box.height, bg.r, bg.g, bg.b, 255);
+                drawRectOutline(box.x, box.y, box.width, box.height, 1, fg.r, fg.g, fg.b, 90);
+                if (box.width > 7 * renderer.cell_w and box.height > renderer.cell_h * 2) {
+                    var text: [48]u8 = undefined;
+                    var fit_buf: [256]u8 = undefined;
+                    const title = if (leaf.pane.title.len > 0) leaf.pane.title else std.fmt.bufPrint(&text, "Pane {d}", .{leaf.pane.id}) catch "Pane";
+                    const len: usize = @intFromFloat(box.width / renderer.cell_w - 2);
+                    const label = fitTabLabel(title, len, &fit_buf);
+                    renderer.drawLabel(box.x + renderer.cell_w, box.y + renderer.cell_h / 2, label, fg.r, fg.g, fg.b);
+                    c.sgl_load_default_pipeline();
+                }
+            }
+        };
+        if (drag.drop) |drop| {
+            const marker = switch (drop) {
+                inline else => |item| item.marker,
+            };
+            const reorder = drop == .reorder;
+            drawBorderRect(marker.x, marker.y, marker.width, marker.height, accent.r, accent.g, accent.b, if (reorder) 255 else 76);
+            if (!reorder) drawRectOutline(marker.x, marker.y, marker.width, marker.height, 2 * scale, accent.r, accent.g, accent.b, 255);
+            if (drop == .pane) {
+                const label = drop.pane.zone.label();
+                const w = renderer.cell_w * @as(f32, @floatFromInt(label.len + 2));
+                if (w < marker.width and renderer.cell_h < marker.height) {
+                    const x = marker.x + (marker.width - w) / 2;
+                    const y = marker.y + (marker.height - renderer.cell_h) / 2;
+                    drawRoundedRect(x, y, w, renderer.cell_h, 4 * scale, bg.r, bg.g, bg.b, 245);
+                    renderer.drawLabel(x + renderer.cell_w, y, label, fg.r, fg.g, fg.b);
+                    c.sgl_load_default_pipeline();
+                }
+            }
+        }
+        // Draw last so the dragged item stays visible even over a drop preview.
+        const size = 16 * scale;
+        const offset = 12 * scale;
+        const x = g_mouse_x + if (g_mouse_x + offset + size <= c.sapp_widthf()) offset else -offset - size;
+        const y = g_mouse_y + if (g_mouse_y + offset + size <= c.sapp_heightf()) offset else -offset - size;
+        drawRoundedRect(x, y, size, size, 3 * scale, accent.r, accent.g, accent.b, 216);
+        drawRoundedRectOutline(x, y, size, size, 3 * scale, scale, fg.r, fg.g, fg.b, 215);
+        return;
+    }
+    const hover = g_tiled_drag_hover orelse return;
+    if (!g_mouse_over_window or tab.id != hover.tab or tab.maximized_pane != null) return;
+    for (leaves) |leaf| {
+        if (leaf.pane.id != hover.pane or leaf.pane.is_floating or mux.paneDock(leaf.pane) != null or leaf.bounds.width < 20) continue;
+        if (!layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), g_mouse_x, g_mouse_y)) break;
+        const h = layout_drag.handle(leaf.bounds, scale);
+        if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) break;
+        drawRoundedRect(h.x + h.width / 4, h.y + 3 * scale, h.width / 2, 3 * scale, 1.5 * scale, fg.r, fg.g, fg.b, if (hover.hot) 220 else 145);
+        break;
+    }
 }
 
 test "floating drag clamps movement and keeps opposite resize edges anchored" {
@@ -3878,6 +4184,9 @@ pub fn run(app: *App) !void {
     g_last_frame_swapchain_submit_ms = 0;
     g_drag_node = null;
     g_floating_drag = null;
+    g_layout_drag = null;
+    g_layout_drag_escape_up = false;
+    g_tiled_drag_hover = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
     g_transparent_surface = app.config.background.opacity < 1.0;
@@ -4149,6 +4458,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         std.log.info("sokol first frame (ft renderer)", .{});
     }
     app.tick() catch {};
+    if (g_layout_drag) |*drag| {
+        if (layoutDragWorkspace(app, drag.*) == null or g_overlay_has_modal or quick_select.inputActive(app)) {
+            if (!drag.canceled) {
+                setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+                app.requestRedraw();
+            }
+            drag.canceled = true;
+        } else if (drag.hover_tab != null and drag.started and !drag.canceled) {
+            const before = drag.preview_tab;
+            updateLayoutDrag(app, drag, g_mouse_x, g_mouse_y, io.nanoTimestamp());
+            if (before != drag.preview_tab) app.requestRedraw();
+        }
+    }
     updateTerminalPointerCursor(app);
     if (!app.config.hide_mouse_cursor_when_typing) setMouseCursorHidden(false);
     // Release cached render textures for panes destroyed during tick()
@@ -5309,6 +5631,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             g_overlay_surface_count = 0;
             g_overlay_has_modal = false;
         }
+        c.sgl_layer(1);
+        drawLayoutDrag(app, renderer, leaves);
+        c.sgl_layer(0);
         if (g_clay_surface.owner_index == 0) {
             const pressed = pressedClayNode(&g_clay_surface, .{ .clay = g_clay_surface.surface_id }, .clickable_root);
             drawClaySurface(&g_clay_surface, renderer, width, height, 0, 0, false, pressed, app.config.terminal_theme.foreground);
@@ -6154,6 +6479,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (layoutDragEvent(app, event)) return;
     if (g_floating_drag) |drag| {
         switch (event.type) {
             c.SAPP_EVENTTYPE_MOUSE_MOVE => {
@@ -6241,6 +6567,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
+        setTiledDragHover(app, null);
         app.emitLuaBuiltInEvent("topbar:leave", .none);
         g_terminal_pointer_mods = null;
         updateLuaPaneHover(app);
@@ -6913,6 +7240,12 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             g_mouse_button_down = previous_button;
         }
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            if (bar_hit.surface == .top and bar_hit.close_tab_index == null and !layoutDragBlocked(event.mouse_x, event.mouse_y) and ghosttyMods(event.modifiers) == 0) {
+                if (bar_hit.tab_index) |index| if (barTabId(app, index)) |id| {
+                    beginLayoutDrag(app, event, id, null);
+                    if (g_layout_drag != null) return;
+                };
+            }
             if (bar_hit.tab_index) |index| {
                 if (barTabId(app, index)) |id| {
                     beginButtonPress(app, .{ .bar = .{ .surface = bar_hit.surface.?, .tab_id = id } }, "");
@@ -7112,6 +7445,14 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             c.sapp_consume_event();
             return;
         }
+        if (ghosttyMods(event.modifiers) == 0) {
+            if (tiledDragHoverAt(app, event.mouse_x, event.mouse_y)) |hit| {
+                if (hit.hot) {
+                    beginLayoutDrag(app, event, hit.tab, hit.pane);
+                    if (g_layout_drag != null) return;
+                }
+            }
+        }
         const mods = ghosttyMods(event.modifiers);
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |_| {
             const wants_shift_click_link = app.config.hyperlinks.enabled and
@@ -7259,6 +7600,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    var tiled_hover: ?TiledDragHover = null;
+    defer setTiledDragHover(app, tiled_hover);
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
@@ -7448,6 +7791,14 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             g_scrollbar_hover_pane = null;
             setMouseCursor(hit.grip.cursor());
             return;
+        }
+        if (ghosttyMods(event.modifiers) == 0) {
+            tiled_hover = tiledDragHoverAt(app, event.mouse_x, event.mouse_y);
+            if (tiled_hover) |hover| if (hover.hot) {
+                g_scrollbar_hover_pane = null;
+                setMouseCursor(c.SAPP_MOUSECURSOR_POINTING_HAND);
+                return;
+            };
         }
     }
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {

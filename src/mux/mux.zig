@@ -1608,9 +1608,7 @@ pub const Mux = struct {
             } else continue;
             const target = ws.tabById(tab_id) orelse return false;
             if (source == target) return false;
-            if (target.panes.items.len >= MAX_LAYOUT_LEAVES) return false;
-            const root = target.root_split orelse return false;
-            if (!canWrapSplit(root, @import("../session/layout.zig").max_depth - 1)) return false;
+            if (!canMovePaneToTabRoot(target)) return false;
             if (ws.session_controller) |controller| {
                 if (controller.taken or controller.detached or controller.connection.status().phase == .ended) return false;
             }
@@ -1632,6 +1630,11 @@ pub const Mux = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn canMovePaneToTabRoot(tab: *Tab) bool {
+        return tab.panes.items.len < MAX_LAYOUT_LEAVES and
+            canWrapSplit(tab.root_split orelse return false, @import("../session/layout.zig").max_depth - 1);
     }
 
     fn canWrapSplit(node: *const types.SplitNode, remaining: usize) bool {

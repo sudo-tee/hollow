@@ -5,6 +5,8 @@ return {
   ["hollow.action.context"] = "fun(): HollowActionContext? Snapshot of current invocation; nil outside an action",
   ["hollow.action.invoke"] = "fun(name: string, args?: table, ctx?: table): HollowActionResult Protected invocation with named arguments and separate caller metadata",
   ["hollow.action.list"] = "fun(): HollowPaletteEntry[] All registered actions",
+  ["hollow.action.move_pane_to_tab"] = "fun(pane_id?: integer) Open the destination tab picker for a pane in the active tab.",
+  ["hollow.action.move_pane_to_workspace"] = "fun(pane_id?: integer) Move the active pane or open the workspace picker for an explicit pane in the active tab.",
   ["hollow.action.override"] = "fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function",
   ["hollow.action.register"] = "fun(name: string, spec: HollowActionSpec)",
   ["hollow.activity.clear_history"] = "fun() Remove acknowledged history, preserving pending entries.",

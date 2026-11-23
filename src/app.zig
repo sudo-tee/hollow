@@ -2320,11 +2320,16 @@ pub const App = struct {
     }
 
     pub fn layoutContent(self: *App, content: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
+        const tab = if (self.mux) |*mux| mux.activeTab() else null;
+        return self.layoutContentForTab(content, tab, out);
+    }
+
+    pub fn layoutContentForTab(self: *App, content: PaneBounds, requested_tab: ?*@import("mux.zig").Tab, out: []LayoutLeaf) []LayoutLeaf {
         const mux = if (self.mux) |*m| m else return out[0..0];
         var bounds = content;
         var written: usize = 0;
         mux.layoutDocks(&bounds, out, &written, self.cell_width_px, self.cell_height_px);
-        const tab = mux.activeTab() orelse return out[0..written];
+        const tab = requested_tab orelse return out[0..written];
         const tab_leaves = tab.computeLayoutInBounds(bounds, out[written..], self.cell_width_px, self.cell_height_px);
         return out[0 .. written + tab_leaves.len];
     }

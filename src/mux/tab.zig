@@ -37,6 +37,30 @@ test "an explicit split targets an inactive pane and focuses only the new pane" 
     try std.testing.expect(created.restore_split_horizontal);
 }
 
+test "directional moves find a neighbor from the specified pane, not the active pane" {
+    const a = std.testing.allocator;
+    var tab = Tab.init(a, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(a);
+            a.destroy(root);
+        }
+        tab.panes.deinit(a);
+    }
+    var clicked = Pane.init(a);
+    clicked.id = 1;
+    var active = Pane.init(a);
+    active.id = 2;
+    try tab.appendPane(&clicked);
+    try tab.splitActivePane(&active, .vertical, 0.5);
+
+    try std.testing.expectEqual(&active, tab.activePane().?);
+    try std.testing.expectEqual(null, tab.adjacentMoveTarget(&clicked, .left, 800, 600));
+    try std.testing.expectEqual(&active, tab.adjacentMoveTarget(&clicked, .right, 800, 600).?);
+    try std.testing.expect(tab.movePane(&clicked, .right, 800, 600, 0.08));
+    try std.testing.expectEqual(&active, tab.adjacentMoveTarget(&clicked, .left, 800, 600).?);
+}
+
 pub const Tab = struct {
     allocator: std.mem.Allocator,
     id: usize,
@@ -567,12 +591,14 @@ pub const Tab = struct {
             return true;
         }
 
+        const target = self.adjacentMoveTarget(pane, direction, window_width, window_height) orelse return false;
+        return self.swapPanePositions(pane, target);
+    }
+
+    pub fn adjacentMoveTarget(self: *Tab, pane: *Pane, direction: FocusDirection, window_width: u32, window_height: u32) ?*Pane {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeLayout(window_width, window_height, &layout_buf);
-        if (leaves.len < 2) return false;
-
-        const target = layout.findAdjacentPane(leaves, pane, direction) orelse return false;
-        return self.swapPanePositions(pane, target);
+        return layout.findAdjacentPane(leaves, pane, direction);
     }
 
     pub fn swapPanePositions(self: *Tab, first_pane: *Pane, second_pane: *Pane) bool {

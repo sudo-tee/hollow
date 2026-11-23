@@ -181,6 +181,7 @@ function M.setup(hollow, state, term_helpers)
 
   local adapters = {
     ["term:tab_activated"] = adapt_tab_activated,
+    ["term:tab_reordered"] = adapt_tab_activated,
     ["workspace:new"] = adapt_workspace_new,
     ["workspace:changed"] = adapt_workspace_new,
     ["workspace:closed"] = adapt_workspace_closed,

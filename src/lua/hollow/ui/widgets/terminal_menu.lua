@@ -1,4 +1,5 @@
 local M = {}
+local actions = require("hollow.actions")
 local icons = require("hollow.ui.icons")
 local groups = {
   "copy",
@@ -11,6 +12,7 @@ local groups = {
   "hide",
   "zoom",
   "dock",
+  "move",
   "separator",
   "close",
 }
@@ -44,6 +46,55 @@ local dock_edges = {
   { label = "Bottom", action = "dock_bottom" },
 }
 
+local move_directions = {
+  { label = "Left", icon = icons.arrow_left, action = "move_left" },
+  { label = "Right", icon = icons.arrow_right, action = "move_right" },
+  { label = "Top", icon = icons.arrow_up, action = "move_top" },
+  { label = "Bottom", icon = icons.arrow_down, action = "move_bottom" },
+}
+
+local function move_item(hollow, host, id, pane)
+  local submenu = {}
+  local available = false
+  local function add(label, icon, enabled, action)
+    available = available or enabled
+    submenu[#submenu + 1] = { label = label, icon = icon, disabled = not enabled, action = action }
+  end
+  for _, direction in ipairs(move_directions) do
+    local action = direction.action
+    add(direction.label, direction.icon, host.menu_query(id, action) ~= nil, function()
+      host.menu_action(id, action, 1)
+    end)
+  end
+  local workspace = hollow.term.current_workspace()
+  local can_transfer = pane
+    and not pane.dock
+    and workspace
+    and (workspace.session_state == nil or workspace.session_state == "attached")
+  local tab = can_transfer and hollow.term.current_tab()
+  local has_other_tab = false
+  if tab then
+    for _, candidate in ipairs(hollow.term.tabs()) do
+      if candidate.id ~= tab.id then
+        has_other_tab = true
+        break
+      end
+    end
+  end
+  add("Tab", icons.tab, has_other_tab, function()
+    hollow.action.move_pane_to_tab(id)
+  end)
+  add(
+    "Workspace",
+    icons.folder,
+    tab and next(actions.workspace_move_destinations(hollow, workspace, "pane")) ~= nil,
+    function()
+      hollow.action.move_pane_to_workspace(id)
+    end
+  )
+  return { label = "Move", icon = icons.move, disabled = not available, submenu = submenu }
+end
+
 function M.open(hollow, host, event)
   local id = event.pane_id
   local pane = hollow.term.pane_by_id(id)
@@ -56,6 +107,8 @@ function M.open(hollow, host, event)
   for _, entry in ipairs(type(config) == "table" and config or groups) do
     if entry == "separator" then
       items[#items + 1] = { separator = true }
+    elseif entry == "move" then
+      items[#items + 1] = move_item(hollow, host, id, pane)
     elseif type(entry) == "string" and labels[entry] then
       local action = entry
       local value = host.menu_query(id, action)

@@ -86,6 +86,127 @@ describe("context menus", function()
     end
   )
 
+  describe("Move submenu", function()
+    local h, host, tabs, workspaces, picker, moved
+
+    before_each(function()
+      h = env.hollow
+      picker, moved = nil, nil
+      h.config.set({ terminal_menu_items = { "move" } })
+      tabs = {
+        { id = 201, panes = { { id = 101 }, { id = 102 } } },
+        { id = 202, index = 2, title = "Destination" },
+      }
+      workspaces = {
+        { id = 41, index = 1, name = "Source" },
+        { id = 42, index = 2, name = "Destination" },
+        { id = 43, index = 3, name = "Persistent", session_id = "session" },
+      }
+      h.term.current_tab = function()
+        return tabs[1]
+      end
+      h.term.tabs = function()
+        return tabs
+      end
+      h.term.current_workspace = function()
+        return workspaces[1]
+      end
+      h.term.workspaces = function()
+        return workspaces
+      end
+      h.term.pane_by_id = function(id)
+        return { id = id }
+      end
+      h.ui.command_palette.open = function(opts)
+        assert.equals(0, ui.overlay.depth())
+        picker = opts
+      end
+      env.host_api.move_pane_to_workspace = function(...)
+        moved = { ... }
+        return true
+      end
+      host = {
+        menu_query = function(id, action)
+          assert.equals(102, id)
+          return (action == "target" or action == "move_top") and 1 or nil
+        end,
+        menu_action = function(...)
+          moved = { ... }
+        end,
+      }
+    end)
+
+    local function choose(row)
+      require("hollow.ui.widgets.terminal_menu").open(h, host, { pane_id = 102, x = 30, y = 30 })
+      ui._layout_prepare(800, 300, 10, 20)
+      ui.dispatch_overlay_key("down", 0)
+      ui.dispatch_overlay_key("enter", 0)
+      ui._layout_prepare(800, 300, 10, 20)
+      local submenu = require("hollow.state").get().ui.overlay_stack[2]._layout_surface
+      assert.is_nil(submenu.callbacks[submenu.namespace .. "row-1"])
+      assert.is_nil(submenu.callbacks[submenu.namespace .. "row-2"])
+      assert.is_nil(submenu.callbacks[submenu.namespace .. "row-4"])
+      local id = submenu.namespace .. "row-" .. row
+      assert.is_not_nil(submenu.callbacks[id])
+      ui.dispatch_widget_event("overlay:click", { index = row, id = id })
+    end
+
+    it("moves the clicked pane in the chosen direction", function()
+      choose(3)
+      assert.same({ 102, "move_top", 1 }, moved)
+      assert.equals(101, h.term.current_pane().id)
+    end)
+
+    it("opens the tab and split pickers for the clicked pane", function()
+      choose(5)
+      assert.equals("Move pane to tab", picker.prompt)
+      assert.equals(1, #picker.entries)
+      picker.on_confirm(picker.entries[1])
+      assert.equals("Split destination tab", picker.prompt)
+      picker.on_confirm(picker.entries[2])
+      assert.same({
+        pane_id = 102,
+        tab_id = 202,
+        direction = "horizontal",
+        ratio = 0.5,
+      }, env.recorded.move_pane_to_tab)
+    end)
+
+    it("asks before moving the clicked pane even with one compatible workspace", function()
+      choose(6)
+      assert.equals("Target workspace", picker.prompt)
+      assert.equals(1, #picker.entries)
+      assert.is_nil(moved)
+      picker.on_confirm(picker.entries[1])
+      assert.same({ 102, 1 }, moved)
+    end)
+
+    it("does not transfer a pane that left the source tab while choosing a destination", function()
+      choose(5)
+      picker.on_confirm(picker.entries[1])
+      table.remove(tabs[1].panes, 2)
+      picker.on_confirm(picker.entries[1])
+      assert.is_nil(env.recorded.move_pane_to_tab)
+    end)
+
+    it("disables Workspace for an attached persistent pane but still offers Tab", function()
+      workspaces[1].session_state = "attached"
+      choose(5)
+      assert.equals("Move pane to tab", picker.prompt)
+      ui.menu = function(spec)
+        local move = spec.items[1]
+        assert.is_truthy(move.icon and move.icon ~= "")
+        local submenu = move.submenu
+        for _, item in ipairs(submenu) do
+          assert.is_truthy(item.icon and item.icon ~= "")
+        end
+        assert.is_false(submenu[5].disabled)
+        assert.is_true(submenu[6].disabled)
+      end
+      require("hollow.ui.widgets.terminal_menu").open(h, host, { pane_id = 102, x = 30, y = 30 })
+    end)
+  end)
+
   it("places anchors in content coordinates, flipping and clamping at the edges", function()
     local place = require("hollow.ui.widgets.menu").place
     local area = { x = 40, y = 20, width = 300, height = 160 }

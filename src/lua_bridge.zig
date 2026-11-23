@@ -597,6 +597,10 @@ pub const MenuAction = enum {
     dock_right,
     dock_top,
     dock_bottom,
+    move_left,
+    move_right,
+    move_top,
+    move_bottom,
     close,
 
     pub fn dockEdge(self: MenuAction) ?@import("mux/types.zig").PaneEdge {
@@ -605,6 +609,16 @@ pub const MenuAction = enum {
             .dock_right => .right,
             .dock_top => .top,
             .dock_bottom => .bottom,
+            else => null,
+        };
+    }
+
+    pub fn moveDirection(self: MenuAction) ?@import("mux/types.zig").FocusDirection {
+        return switch (self) {
+            .move_left => .left,
+            .move_right => .right,
+            .move_top => .up,
+            .move_bottom => .down,
             else => null,
         };
     }

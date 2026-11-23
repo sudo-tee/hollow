@@ -1,0 +1,13 @@
+From: Hollow local patches
+Subject: [PATCH] X11: use the not-allowed cursor theme name and a fallback
+
+diff --git a/sokol_app.h b/sokol_app.h
+--- a/sokol_app.h
++++ b/sokol_app.h
+@@ -12810,5 +12810,5 @@
+     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_RESIZE_NESW, "nesw-resize", cursor_theme, size, 0);
+     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_RESIZE_ALL, "all-scroll", cursor_theme, size, XC_fleur);
+-    _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_NOT_ALLOWED, "no-allowed", cursor_theme, size, 0);
++    _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_NOT_ALLOWED, "not-allowed", cursor_theme, size, XC_X_cursor);
+     _sapp_x11_create_hidden_cursor();
+ }

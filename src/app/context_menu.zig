@@ -55,6 +55,21 @@ fn query(app: *App, id: usize, action: Action) ?usize {
         },
         .dock_left, .dock_right, .dock_top, .dock_bottom => if (dock == null and
             (tab orelse return null).panes.items.len > 1 and mux.dockOccupant(.workspace, action.dockEdge().?) == null) 1 else null,
+        .move_left, .move_right, .move_top, .move_bottom => blk: {
+            if (dock != null or !can_write) break :blk null;
+            const direction = action.moveDirection().?;
+            if (pane.is_floating) {
+                const can_move = switch (direction) {
+                    .left => pane.floating_x > 0,
+                    .right => pane.floating_x < 1.0 - pane.floating_width,
+                    .up => pane.floating_y > 0,
+                    .down => pane.floating_y < 1.0 - pane.floating_height,
+                };
+                break :blk if (can_move) 1 else null;
+            }
+            const active_tab = tab orelse break :blk null;
+            break :blk if (active_tab.adjacentMoveTarget(pane, direction, app.config.window_width, app.config.window_height) != null) 1 else null;
+        },
     };
 }
 
@@ -95,6 +110,7 @@ pub fn dispatch(app: *App, request: Request) void {
         .zoom => mux_ops.togglePaneMaximizedById(app, id, false),
         .dock => if (value == 2) mux_ops.undockPaneById(app, id),
         .dock_left, .dock_right, .dock_top, .dock_bottom => mux_ops.dockPaneById(app, id, request.action.dockEdge().?, .workspace, 0.3),
+        .move_left, .move_right, .move_top, .move_bottom => mux_ops.movePaneById(app, id, request.action.moveDirection().?, 0.08),
         .close => mux_ops.closePaneById(app, id),
     }
 }

@@ -122,6 +122,7 @@ for an observational event does not change its host behavior.
 | `term:title_changed` | `{ pane, old_title, new_title }` |
 | `term:tab_activated` | `{ tab }` |
 | `term:tab_closed` | `{ tab_id }` |
+| `term:tab_reordered` | `{ tab }` |
 | `term:pane_focused` | `{ pane }` |
 | `term:pane_created` | `{ pane }` |
 | `term:pane_exited` | `{ pane, status }` |

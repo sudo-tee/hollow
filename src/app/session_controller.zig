@@ -700,6 +700,40 @@ pub fn movePaneToTab(self: *App, pane_id: usize, tab_id: usize, direction: Split
     self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
 }
 
+pub fn canArrangeWorkspace(workspace: *@import("../mux.zig").Workspace) bool {
+    const owner = workspace.session_controller orelse return true;
+    return !owner.taken and !owner.detached and owner.connection.status().phase != .ended;
+}
+
+pub fn dropTiledPane(self: *App, source_id: usize, pane_id: usize, tab_id: usize, target_id: usize, zone: @import("../mux/pane_drop.zig").Zone) void {
+    const mux = if (self.mux) |*value| value else return;
+    const runtime = if (self.ghostty) |*value| value else return;
+    const workspace = mux.activeWorkspace() orelse return;
+    if (!canArrangeWorkspace(workspace)) return;
+    const source = workspace.tabById(source_id) orelse return;
+    const dest = workspace.tabById(tab_id) orelse return;
+    const pane = self.findPaneById(pane_id) orelse return;
+    const target = self.findPaneById(target_id) orelse return;
+    const previous = mux.activePane();
+    if (!(@import("../mux/pane_drop.zig").place(source, pane, dest, target, zone) catch return)) return;
+    const emptied = source.panes.items.len == 0;
+    if (emptied) {
+        workspace.detachTab(source);
+        source.deinit(runtime);
+        self.allocator.destroy(source);
+    }
+    workspace.active_tab = dest;
+    mux.focused_dock = null;
+    self.syncActivePaneChange(previous, mux.activePane());
+    self.refreshActivePaneDisplay();
+    self.requestLayoutResize(true);
+    if (emptied) self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = source_id });
+    if (source_id != tab_id) self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab_id });
+    if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+    self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    if (zone == .swap) self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = target_id } });
+}
+
 pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
@@ -1277,7 +1311,13 @@ pub fn setFloatingPaneBoundsById(self: *App, pane_id: usize, x: f32, y: f32, wid
 pub fn movePaneById(self: *App, pane_id: usize, direction: FocusDirection, amount: f32) void {
     const pane = self.findPaneById(pane_id) orelse return;
     if (self.mux) |*mux| {
+        const previous = mux.activePane();
         if (!mux.movePane(pane, direction, self.config.window_width, self.config.window_height, amount)) return;
+        const current = mux.activePane();
+        if (previous != current) {
+            self.syncActivePaneChange(previous, current);
+            if (current) |focused| self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = focused.id });
+        }
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
     }

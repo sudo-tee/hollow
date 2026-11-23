@@ -179,6 +179,7 @@
 ---| "session:takeover"
 ---| "term:title_changed"
 ---| "term:tab_activated"
+---| "term:tab_reordered"
 ---| "term:tab_closed"
 ---| "term:pane_focused"
 ---| "term:pane_created"
@@ -236,6 +237,7 @@
 ---@field ["session:takeover"] { workspace_id: integer, phase: "none"|"idle"|"confirming"|"connecting"|"failed", reason?: string } The active workspace's session moved to another window (`phase` other than `"none"`) and its reclaim progressed; `reason` names a failure
 ---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
 ---@field ["term:tab_activated"] { tab: HollowTab }
+---@field ["term:tab_reordered"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
 ---@field ["term:pane_focused"] { pane: HollowPane }
 ---@field ["term:pane_created"] { pane: HollowPane }
@@ -518,7 +520,7 @@
 ---@field synchronized_output? boolean Hold terminal content during DEC synchronized output
 ---@field paste_protection? boolean Ask before pastes that could run commands, e.g. multiline text without bracketed paste (default true)
 ---@field terminal_menu? boolean Enable terminal context menus (default true)
----@field terminal_menu_items? (HollowTerminalMenuID|HollowTerminalMenuCallback)[] Replace the default flat terminal menu
+---@field terminal_menu_items? (HollowTerminalMenuID|HollowTerminalMenuCallback)[] Replace the default terminal menu
 ---@field hide_mouse_cursor_when_typing? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean
@@ -936,7 +938,7 @@
 ---@field shifted boolean
 ---@field bounds? HollowUiMenuAnchor Rendered bounds in window pixels, when available
 
----@alias HollowTerminalMenuID "copy"|"paste"|"split_right"|"split_down"|"float"|"hide"|"zoom"|"dock"|"close"|"separator"
+---@alias HollowTerminalMenuID "copy"|"paste"|"split_right"|"split_down"|"float"|"hide"|"zoom"|"dock"|"move"|"close"|"separator"
 
 ---@class HollowTerminalMenuCallback
 ---@field label string
@@ -1589,6 +1591,8 @@
 ---@field override fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function
 ---@field invoke fun(name: string, args?: table, ctx?: table): HollowActionResult Protected invocation with named arguments and separate caller metadata
 ---@field context fun(): HollowActionContext? Snapshot of current invocation; nil outside an action
+---@field move_pane_to_tab fun(pane_id?: integer) Open the destination tab picker for a pane in the active tab.
+---@field move_pane_to_workspace fun(pane_id?: integer) Move the active pane or open the workspace picker for an explicit pane in the active tab.
 ---@field [string] fun(opts?: table)
 
 ---@class HollowConfigNamespace

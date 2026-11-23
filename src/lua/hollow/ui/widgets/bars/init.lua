@@ -99,6 +99,7 @@ function ui._register_bar_invalidation_hooks()
     "copy_mode:changed",
     "quick_select:changed",
     "term:tab_activated",
+    "term:tab_reordered",
     "term:tab_closed",
     "term:pane_focused",
     "term:pane_created",
