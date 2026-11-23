@@ -27,6 +27,10 @@ Use absolute paths; relative paths resolve against Hollow's working directory.
 | `"always"` or `true` | Render every frame, for shaders that animate on their own       |
 | `"off"` or `false`   | Render only when the terminal changes                           |
 
+`"always"` bypasses `idle_max_fps` and renders at `max_fps` even when the screen is idle.
+It keeps the GPU busy and the fans spinning, so use it only for post-process shaders that animate on their own.
+A background shader with `animate = true` already wakes at its own `max_fps` and does not need `"always"`.
+
 Shader files are compiled when the config sets `custom_shader`.
 After editing a shader, run `hollow.config.reload()` to recompile it.
 If any pass fails to load, Hollow keeps the previous post-process chain intact.
