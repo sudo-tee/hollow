@@ -642,6 +642,9 @@ test {
     _ = @import("app/action_queue.zig");
     _ = @import("app/hyperlinks.zig");
     _ = @import("render/sokol_runtime.zig");
+    _ = @import("render/layout_drag.zig");
+    _ = @import("mux/pane_drop.zig");
+    _ = @import("mux/workspace.zig");
     if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");
     _ = @import("platform.zig");

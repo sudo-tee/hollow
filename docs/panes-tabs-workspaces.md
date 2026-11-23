@@ -273,7 +273,7 @@ hollow.term.resize_pane({ axis = "right", delta = -0.05 })
 
 ### Move between tabs
 
-Run `move_pane_to_tab` from the command palette.
+Run `move_pane_to_tab` from the command palette, or [drag the pane onto the destination tab](pane-drag-and-drop.md).
 Choose another tab in the current workspace.
 Then choose **Side by side** or **Top and bottom**.
 The moved pane keeps its ID, process, and scrollback; no shell is restarted.

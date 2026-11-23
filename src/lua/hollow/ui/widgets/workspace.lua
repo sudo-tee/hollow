@@ -503,6 +503,7 @@ function ui.workspace.open_switcher(opts)
     "term:cwd_changed",
     "term:foreground_process_changed",
     "term:tab_activated",
+    "term:tab_reordered",
     "term:tab_closed",
     "workspace:new",
     "workspace:changed",

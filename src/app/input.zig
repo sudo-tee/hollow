@@ -43,6 +43,7 @@ pub const PendingInputEvent = union(enum) {
         x: f32,
         y: f32,
         mods: u32,
+        pane_id: ?usize = null,
     },
     /// A mouse-motion event (button may be null for hover).
     motion: struct {
@@ -50,6 +51,7 @@ pub const PendingInputEvent = union(enum) {
         x: f32,
         y: f32,
         mods: u32,
+        pane_id: ?usize = null,
     },
     /// A scroll delta (raw float, accumulated in scrollFloat on frame thread).
     scroll: struct {
@@ -227,6 +229,7 @@ pub const PendingInputEvent = union(enum) {
     selection_end,
     clear_selection,
     copy_selection,
+    menu_action: @import("context_menu.zig").Request,
     clipboard_write: [:0]u8,
     paste_clipboard,
     paste: struct {
@@ -442,11 +445,11 @@ pub fn processInputQueue(self: *App) void {
             },
             .button => |b| {
                 recordPointerState(self, b.x, b.y, b.mods);
-                _ = sendMouse(self, b.action, b.button, b.x, b.y, b.mods) catch false;
+                _ = sendMouseTarget(self, b.pane_id, b.action, b.button, b.x, b.y, b.mods) catch false;
             },
             .motion => |m| {
                 recordPointerState(self, m.x, m.y, m.mods);
-                _ = sendMouse(self, .motion, m.held_button, m.x, m.y, m.mods) catch false;
+                _ = sendMouseTarget(self, m.pane_id, .motion, m.held_button, m.x, m.y, m.mods) catch false;
             },
             .scroll => |s| {
                 recordPointerState(self, s.x, s.y, s.mods);
@@ -659,6 +662,7 @@ pub fn processInputQueue(self: *App) void {
                     std.log.err("copy selection failed: {s}", .{@errorName(err)});
                 };
             },
+            .menu_action => |request| @import("context_menu.zig").dispatch(self, request),
             .clipboard_write => |text| c.sapp_set_clipboard_string(text.ptr),
             .paste_clipboard => {
                 self.pasteClipboard() catch |err| {
@@ -1058,21 +1062,25 @@ fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, butt
 }
 
 pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
-    const hit = self.hitTestPane(x, y) orelse return false;
+    return sendMouseTarget(self, null, action, button, x, y, mods);
+}
+
+fn sendMouseTarget(self: *App, pane_id: ?usize, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
+    const pane = if (pane_id) |id| self.findPaneById(id) orelse return false else (self.hitTestPane(x, y) orelse return false).pane;
     if (action == .press) {
         if (self.mux) |*mux| {
             const was_active = mux.activePane();
-            mux.setActivePane(hit.pane);
-            self.syncActivePaneChange(was_active, hit.pane);
+            mux.setActivePane(pane);
+            self.syncActivePaneChange(was_active, pane);
         }
     }
     return try encodeMouseForPane(
         self,
-        hit.pane,
+        pane,
         action,
         button,
-        x - @as(f32, @floatFromInt(hit.pane.x_px)),
-        y - @as(f32, @floatFromInt(hit.pane.y_px)),
+        x - @as(f32, @floatFromInt(pane.x_px)),
+        y - @as(f32, @floatFromInt(pane.y_px)),
         mods,
     );
 }

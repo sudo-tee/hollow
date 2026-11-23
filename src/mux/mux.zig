@@ -1301,9 +1301,11 @@ pub const Mux = struct {
     pub fn splitActivePanePlaced(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand, edge: ?types.PaneEdge) !*Pane {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
-        if (!floating and source_pane.is_floating) {
-            if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
-        }
+        return self.splitPanePlaced(source_pane, runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, direction, ratio, domain_name, cwd, floating, launch_command, edge);
+    }
+
+    pub fn splitPanePlaced(self: *Mux, source_pane: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand, edge: ?types.PaneEdge) !*Pane {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
         const resolved_domain = domain_name orelse if (source_pane.domainName().len > 0)
             source_pane.domainName()
         else
@@ -1328,13 +1330,14 @@ pub const Mux = struct {
         }
         if (edge) |placement| {
             if (floating) return error.FloatingPaneCannotUseEdge;
+            if (source_pane.is_floating and !tab.setPaneFloatingWithFocus(source_pane, false, false)) return error.ActivePaneMissingFromLayout;
             const edge_direction: SplitDirection = switch (placement) {
                 .left, .right => .vertical,
                 .top, .bottom => .horizontal,
             };
             try self.splitEdgeWith(new_pane, edge_direction, ratio, placement == .left or placement == .top);
         } else {
-            try self.splitActivePaneWith(new_pane, direction, ratio, floating);
+            try self.splitPaneWith(source_pane, new_pane, direction, ratio, floating);
         }
         return new_pane;
     }
@@ -1342,12 +1345,15 @@ pub const Mux = struct {
     /// Insert any content kind using the same split/floating layout path.
     /// Ownership transfers to the tab only on success.
     pub fn splitActivePaneWith(self: *Mux, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        return self.splitPaneWith(tab.activePane() orelse return error.NoActivePane, new_pane, direction, ratio, floating);
+    }
+
+    fn splitPaneWith(self: *Mux, source_pane: *Pane, new_pane: *Pane, direction: SplitDirection, ratio: f32, floating: bool) !void {
         if (self.activeWorkspace()) |ws| if (ws.session_controller != null) return error.UnsupportedSessionMutation;
         const tab = self.activeTab() orelse return error.NoActiveTab;
-        self.focused_dock = null;
-        const source_pane = tab.activePane() orelse return error.NoActivePane;
         if (!floating and source_pane.is_floating) {
-            if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
+            if (!tab.setPaneFloatingWithFocus(source_pane, false, false)) return error.ActivePaneMissingFromLayout;
         }
         if (floating) {
             try tab.appendPane(new_pane);
@@ -1365,10 +1371,12 @@ pub const Mux = struct {
             new_pane.restore_split_horizontal = direction == .horizontal;
             new_pane.restore_place_first = false;
             tab.active_pane = new_pane;
+            self.focused_dock = null;
             self.notifyCreated(new_pane);
             return;
         }
-        try tab.splitActivePane(new_pane, direction, ratio);
+        try tab.splitPane(source_pane, new_pane, direction, ratio);
+        self.focused_dock = null;
         self.notifyCreated(new_pane);
     }
 
@@ -1600,9 +1608,7 @@ pub const Mux = struct {
             } else continue;
             const target = ws.tabById(tab_id) orelse return false;
             if (source == target) return false;
-            if (target.panes.items.len >= MAX_LAYOUT_LEAVES) return false;
-            const root = target.root_split orelse return false;
-            if (!canWrapSplit(root, @import("../session/layout.zig").max_depth - 1)) return false;
+            if (!canMovePaneToTabRoot(target)) return false;
             if (ws.session_controller) |controller| {
                 if (controller.taken or controller.detached or controller.connection.status().phase == .ended) return false;
             }
@@ -1624,6 +1630,11 @@ pub const Mux = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn canMovePaneToTabRoot(tab: *Tab) bool {
+        return tab.panes.items.len < MAX_LAYOUT_LEAVES and
+            canWrapSplit(tab.root_split orelse return false, @import("../session/layout.zig").max_depth - 1);
     }
 
     fn canWrapSplit(node: *const types.SplitNode, remaining: usize) bool {

@@ -1346,6 +1346,8 @@ pub const App = struct {
             .pane_is_focused = lua_callbacks.luaPaneIsFocusedCallback,
             .pane_has_bell = lua_callbacks.luaPaneHasBellCallback,
             .pane_exists = lua_callbacks.luaPaneExistsCallback,
+            .menu_query = @import("app/context_menu.zig").queryCallback,
+            .menu_action = @import("app/context_menu.zig").actionCallback,
             .switch_tab_by_id = lua_callbacks.luaSwitchTabByIdCallback,
             .close_tab_by_id = lua_callbacks.luaCloseTabByIdCallback,
             .close_pane_by_id = lua_callbacks.luaClosePaneByIdCallback,
@@ -2082,6 +2084,11 @@ pub const App = struct {
     }
 
     pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
+        return self.hitTestVisiblePane(x, y) orelse if (self.activePane()) |pane| .{ .pane = pane, .x = x, .y = y } else null;
+    }
+
+    pub fn hitTestVisiblePane(self: *App, x: f32, y: f32) ?HitTestResult {
+        if (x < 0 or y < 0) return null;
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
         const ix = @as(u32, @intFromFloat(@max(0, x)));
@@ -2105,7 +2112,6 @@ pub const App = struct {
                 };
             }
         }
-        if (self.activePane()) |pane| return .{ .pane = pane, .x = x, .y = y };
         return null;
     }
 
@@ -2314,11 +2320,16 @@ pub const App = struct {
     }
 
     pub fn layoutContent(self: *App, content: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
+        const tab = if (self.mux) |*mux| mux.activeTab() else null;
+        return self.layoutContentForTab(content, tab, out);
+    }
+
+    pub fn layoutContentForTab(self: *App, content: PaneBounds, requested_tab: ?*@import("mux.zig").Tab, out: []LayoutLeaf) []LayoutLeaf {
         const mux = if (self.mux) |*m| m else return out[0..0];
         var bounds = content;
         var written: usize = 0;
         mux.layoutDocks(&bounds, out, &written, self.cell_width_px, self.cell_height_px);
-        const tab = mux.activeTab() orelse return out[0..written];
+        const tab = requested_tab orelse return out[0..written];
         const tab_leaves = tab.computeLayoutInBounds(bounds, out[written..], self.cell_width_px, self.cell_height_px);
         return out[0 .. written + tab_leaves.len];
     }

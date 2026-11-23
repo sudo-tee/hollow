@@ -32,6 +32,16 @@ end
 function ui._expire_overlays()
   local now = util.host_now_ms(state.host_api)
 
+  local menu = overlay_stack[#overlay_stack]
+  if
+    menu
+    and menu._layout_surface
+    and (menu._layout_surface.id == ui._menu_surface_id or menu._layout_surface.id == ui._submenu_surface_id)
+    and menu._layout_visible
+    and not menu._layout_visible()
+  then
+    require("hollow.ui.widgets.menu").close()
+  end
   for index = #overlay_stack, 1, -1 do
     local widget = overlay_stack[index]
     if type(widget and widget._expires_at) == "number" and widget._expires_at <= now then
@@ -61,7 +71,22 @@ function ui.overlay.push(widget)
   if not widget._layout_surface then
     widget._layout_surface = overlay_surface.create(widget)
   end
-  table.insert(overlay_stack, widget)
+  -- Passive overlays (toasts, previews) slide under an open menu so it keeps
+  -- keys and stays on top; modals close the menu before pushing.
+  local position = #overlay_stack + 1
+  if ui._menu_surface_id then
+    local id = widget._layout_surface.id
+    if id ~= ui._menu_surface_id and id ~= ui._submenu_surface_id then
+      for index, existing in ipairs(overlay_stack) do
+        local surface = existing._layout_surface
+        if surface and surface.id == ui._menu_surface_id then
+          position = index
+          break
+        end
+      end
+    end
+  end
+  table.insert(overlay_stack, position, widget)
   widget_core.mount_widget(widget)
 end
 

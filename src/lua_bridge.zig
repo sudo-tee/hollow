@@ -162,6 +162,8 @@ pub const PaneContentInfo = struct {
 };
 
 pub const AppCallbacks = struct {
+    menu_query: ?*const fn (*anyopaque, usize, MenuAction) ?usize = null,
+    menu_action: ?*const fn (*anyopaque, usize, MenuAction, ?usize) bool = null,
     app: *anyopaque,
     create_lua_pane: ?*const fn (*anyopaque, c_int, []const u8, f32, bool, []const u8) usize = null,
     get_pane_content: ?*const fn (*anyopaque, usize) ?PaneContentInfo = null,
@@ -578,10 +580,53 @@ pub const BarNode = struct {
     id: []const u8,
     mods: u32 = 0,
     shifted: bool = false,
+    bounds: ?@import("ui/semantics.zig").Bounds = null,
+};
+
+pub const MenuAction = enum {
+    target,
+    copy,
+    paste,
+    split_right,
+    split_down,
+    float,
+    hide,
+    zoom,
+    dock,
+    dock_left,
+    dock_right,
+    dock_top,
+    dock_bottom,
+    move_left,
+    move_right,
+    move_top,
+    move_bottom,
+    close,
+
+    pub fn dockEdge(self: MenuAction) ?@import("mux/types.zig").PaneEdge {
+        return switch (self) {
+            .dock_left => .left,
+            .dock_right => .right,
+            .dock_top => .top,
+            .dock_bottom => .bottom,
+            else => null,
+        };
+    }
+
+    pub fn moveDirection(self: MenuAction) ?@import("mux/types.zig").FocusDirection {
+        return switch (self) {
+            .move_left => .left,
+            .move_right => .right,
+            .move_top => .up,
+            .move_bottom => .down,
+            else => null,
+        };
+    }
 };
 
 pub const BuiltInPayload = union(enum) {
     none,
+    terminal_menu: struct { pane_id: usize, x: f32, y: f32 },
     tab_id: usize,
     pane_id: usize,
     pane_exited: struct {
@@ -944,6 +989,16 @@ pub const Runtime = struct {
         try runtime.exposeHollowTable();
         try runtime.preloadLuaModules();
         return runtime;
+    }
+
+    pub const MenuSurfaces = struct { root: f64, child: ?f64 };
+
+    /// Lock-free view of the open context menu, synced by `menu_surfaces`.
+    pub fn menuSurfaces(self: *const Runtime) ?MenuSurfaces {
+        const root = self.context.menu_surfaces[0].load(.acquire);
+        if (root == no_menu_surface) return null;
+        const child = self.context.menu_surfaces[1].load(.acquire);
+        return .{ .root = @bitCast(root), .child = if (child == no_menu_surface) null else @bitCast(child) };
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -2917,6 +2972,15 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_exists, 1);
         api.set_field(self.state, -2, "pane_exists");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_menu_query, 1);
+        api.set_field(self.state, -2, "menu_query");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_menu_action, 1);
+        api.set_field(self.state, -2, "menu_action");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_menu_surfaces, 1);
+        api.set_field(self.state, -2, "menu_surfaces");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab_by_id, 1);
@@ -3042,7 +3106,12 @@ pub const Runtime = struct {
 
 const TimedCallback = struct { ref: c_int, expires_at_ms: i64 };
 
+const no_menu_surface = std.math.maxInt(u64);
+
 const BridgeContext = struct {
+    /// Open menu surface ids as f64 bits, mirrored from Lua so mouse routing
+    /// can test for an open menu without taking the runtime lock.
+    menu_surfaces: [2]std.atomic.Value(u64) = .{ .init(no_menu_surface), .init(no_menu_surface) },
     cfg: *config.Config,
     state: *State,
     api: Api,
@@ -3330,6 +3399,15 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
                 api.set_field(state, -2, "reason");
             }
         },
+        .terminal_menu => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            api.push_number(state, value.x);
+            api.set_field(state, -2, "x");
+            api.push_number(state, value.y);
+            api.set_field(state, -2, "y");
+        },
         .topbar_node, .bottombar_node, .sidebar_node => |value| {
             api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
@@ -3338,6 +3416,14 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "mods");
             api.push_boolean(state, if (value.shifted) 1 else 0);
             api.set_field(state, -2, "shifted");
+            if (value.bounds) |bounds| {
+                api.create_table(state, 0, 4);
+                inline for (.{ "x", "y", "width", "height" }) |field| {
+                    api.push_number(state, @field(bounds, field));
+                    api.set_field(state, -2, field);
+                }
+                api.set_field(state, -2, "bounds");
+            }
         },
         .overlay_node => |value| {
             api.create_table(state, 0, 2);
@@ -5421,6 +5507,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "paste_protection")) {
         cfg.paste_protection = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "terminal_menu")) {
+        cfg.terminal_menu = value;
         return;
     }
     if (std.mem.eql(u8, key, "alternate_screen_resize_nudge")) {
@@ -7889,6 +7979,44 @@ fn l_pane_has_bell(state: *State) callconv(.c) c_int {
         0;
     api.push_boolean(state, if (cbs.pane_has_bell(cbs.app, pane_id)) 1 else 0);
     return 1;
+}
+
+fn l_menu_query(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const query = cbs.menu_query orelse return 0;
+    const pane = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    var len: usize = 0;
+    const ptr = ctx.api.to_lstring(state, 2, &len) orelse return 0;
+    const action = std.meta.stringToEnum(MenuAction, ptr[0..len]) orelse return 0;
+    const value = query(cbs.app, pane, action) orelse return 0;
+    ctx.api.push_number(state, @floatFromInt(value));
+    return 1;
+}
+
+fn l_menu_action(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse return 0;
+    const enqueue = cbs.menu_action orelse return 0;
+    const pane = luaPaneIdArg(ctx.api, state, 1) orelse return 0;
+    var len: usize = 0;
+    const ptr = ctx.api.to_lstring(state, 2, &len) orelse return 0;
+    const action = std.meta.stringToEnum(MenuAction, ptr[0..len]) orelse return 0;
+    ctx.api.push_boolean(state, @intFromBool(enqueue(cbs.app, pane, action, luaPaneIdArg(ctx.api, state, 3))));
+    return 1;
+}
+
+fn l_menu_surfaces(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    for (&ctx.menu_surfaces, 1..) |*slot, index| {
+        const arg: c_int = @intCast(index);
+        const bits: u64 = if (ctx.api.value_type(state, arg) == @backingInt(LuaType.number))
+            @bitCast(ctx.api.to_number(state, arg))
+        else
+            no_menu_surface;
+        slot.store(bits, .release);
+    }
+    return 0;
 }
 
 fn l_pane_exists(state: *State) callconv(.c) c_int {

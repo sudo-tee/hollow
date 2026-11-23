@@ -55,6 +55,8 @@ in the shipped base config.
 | `alternate_screen_resize_nudge`                                                   | boolean                        | Delayed resize cycle on alternate-screen entry (default `true`) |
 | `hide_mouse_cursor_when_typing`                                                   | boolean                        | Hide OS mouse cursor during keyboard input                      |
 | `paste_protection`                                                                | boolean                        | Confirm pastes that could run commands (default `true`)         |
+| `terminal_menu`                                                                   | boolean                        | Right-click terminal menu (default `true`)                      |
+| `terminal_menu_items`                                                             | table                          | Ordered terminal menu item IDs and callbacks                    |
 | `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                            |
 | `command_timing`                                                                  | boolean                        | On-screen command timing overlay                                |
 | `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                       |
@@ -437,6 +439,7 @@ that needs to read config without reflecting later writes.
 ## See also
 
 - [Configuration](../../configuration.md) — guide
+- [Context menus](../../context-menus.md) — `terminal_menu` and `terminal_menu_items`
 - [`types/hollow.lua`](../../../types/hollow.lua) — `HollowConfig`
 - [`hollow.theme`](theme.md) — theme specs
 - [`hollow.term`](term.md) — read term state

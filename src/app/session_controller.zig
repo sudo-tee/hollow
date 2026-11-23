@@ -418,6 +418,12 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
     return pasteActive(self, text, !self.config.paste_protection);
 }
 
+pub fn sendPasteToPane(self: *App, id: usize, text: []const u8) !void {
+    if (text.len == 0) return;
+    const pane = self.findPaneById(id) orelse return;
+    return pastePane(self, pane, text, !self.config.paste_protection);
+}
+
 /// Pastes a held blocked paste after the user confirmed it in `pane`.
 pub fn confirmBlockedPaste(self: *App, pane_id: usize, generation: usize, allow: bool) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
@@ -425,12 +431,18 @@ pub fn confirmBlockedPaste(self: *App, pane_id: usize, generation: usize, allow:
     const text = term.paste_confirm.take(generation) orelse return false;
     defer paste_confirm.free(self.allocator, text);
     if (!allow) return true;
-    if (!self.window_focused or self.activePane() != pane) return false;
-    pasteActive(self, text, true) catch |err| {
+    if (!self.window_focused or !paneVisible(self, pane)) return false;
+    pastePane(self, pane, text, true) catch |err| {
         std.log.err("confirmed paste failed: {s}", .{@errorName(err)});
         return false;
     };
     return true;
+}
+
+fn paneVisible(self: *App, pane: *Pane) bool {
+    if (pane.is_hidden) return false;
+    const mux = if (self.mux) |*value| value else return self.activePane() == pane;
+    return mux.activeTabContainsPane(pane) or mux.dockIsShown(pane);
 }
 
 fn holdBlockedPaste(self: *App, pane: *Pane, text: []const u8) !void {
@@ -454,12 +466,16 @@ fn holdBlockedPaste(self: *App, pane: *Pane, text: []const u8) !void {
 
 fn pasteActive(self: *App, text: []const u8, allow_unsafe: bool) !void {
     const pane = self.activePane() orelse return;
+    return pastePane(self, pane, text, allow_unsafe);
+}
+
+fn pastePane(self: *App, pane: *Pane, text: []const u8, allow_unsafe: bool) !void {
     const term = pane.asTerminal() orelse return error.NotATerminal;
     const rt = if (self.ghostty) |*r| r else {
         if (self.config.debug_terminal_trace) {
             std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ pane.id, text.len });
         }
-        sendText(self, text);
+        sendPasteOutput(self, pane, text);
         return;
     };
     var output: ghostty.PasteOutput = .{ .allocator = self.allocator };
@@ -476,7 +492,11 @@ fn pasteActive(self: *App, text: []const u8, allow_unsafe: bool) !void {
         return err;
     };
     if (output.failure) |err| return err;
-    if (output.bytes.items.len > 0) sendText(self, output.bytes.items);
+    if (output.bytes.items.len > 0) sendPasteOutput(self, pane, output.bytes.items);
+}
+
+fn sendPasteOutput(self: *App, pane: *Pane, bytes: []const u8) void {
+    if (self.activePane() == pane) sendText(self, bytes) else _ = sendTextToPane(self, pane.id, bytes);
 }
 
 // ============================================================
@@ -678,6 +698,40 @@ pub fn movePaneToTab(self: *App, pane_id: usize, tab_id: usize, direction: Split
         self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = source_tab_id });
     self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab_id });
     self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+}
+
+pub fn canArrangeWorkspace(workspace: *@import("../mux.zig").Workspace) bool {
+    const owner = workspace.session_controller orelse return true;
+    return !owner.taken and !owner.detached and owner.connection.status().phase != .ended;
+}
+
+pub fn dropTiledPane(self: *App, source_id: usize, pane_id: usize, tab_id: usize, target_id: usize, zone: @import("../mux/pane_drop.zig").Zone) void {
+    const mux = if (self.mux) |*value| value else return;
+    const runtime = if (self.ghostty) |*value| value else return;
+    const workspace = mux.activeWorkspace() orelse return;
+    if (!canArrangeWorkspace(workspace)) return;
+    const source = workspace.tabById(source_id) orelse return;
+    const dest = workspace.tabById(tab_id) orelse return;
+    const pane = self.findPaneById(pane_id) orelse return;
+    const target = self.findPaneById(target_id) orelse return;
+    const previous = mux.activePane();
+    if (!(@import("../mux/pane_drop.zig").place(source, pane, dest, target, zone) catch return)) return;
+    const emptied = source.panes.items.len == 0;
+    if (emptied) {
+        workspace.detachTab(source);
+        source.deinit(runtime);
+        self.allocator.destroy(source);
+    }
+    workspace.active_tab = dest;
+    mux.focused_dock = null;
+    self.syncActivePaneChange(previous, mux.activePane());
+    self.refreshActivePaneDisplay();
+    self.requestLayoutResize(true);
+    if (emptied) self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = source_id });
+    if (source_id != tab_id) self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab_id });
+    if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+    self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+    if (zone == .swap) self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = target_id } });
 }
 
 pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) void {
@@ -981,6 +1035,10 @@ pub fn switchWorkspace(self: *App, index: usize) void {
 // ============================================================
 
 pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge, dock: ?DockScope) void {
+    splitPaneTarget(self, null, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, callback_ref, edge, dock);
+}
+
+pub fn splitPaneTarget(self: *App, target: ?usize, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int, edge: ?PaneEdge, dock: ?DockScope) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     if (dock) |scope| {
@@ -994,13 +1052,16 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
+    const tab = mux.activeTab() orelse return;
+    const source = if (target) |id| self.findPaneById(id) orelse return else tab.activePane() orelse return;
+    if (target != null and !mux.activeTabContainsPane(source)) return;
     const effective_command = nonEmptyCommand(command);
     const launch_command: ?LaunchCommand = if (effective_command != null and command_mode == .spawn)
         .{ .command = effective_command.?, .close_on_exit = close_on_exit }
     else
         null;
     const split_bounds = blk: {
-        if (previous) |pane| {
+        if (if (target != null) source else previous) |pane| {
             var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
             const leaves = self.computeActiveLayout(&layout_buf);
             for (leaves) |leaf| {
@@ -1033,7 +1094,6 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
             };
             return;
         }
-        const source = mux.activeTab().?.activePane() orelse return;
         @import("session_spawn.zig").split(self, .{ .split = .{
             .tab_id = mux.activeTab().?.id,
             .source_id = source.id,
@@ -1060,13 +1120,13 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         self.cell_width_px,
         self.cell_height_px,
     });
-    const pane = mux.splitActivePanePlaced(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command, edge) catch |err| {
+    const pane = mux.splitPanePlaced(source, runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command, edge) catch |err| {
         std.log.err("app: splitPane failed: {s} domain={s}", .{ @errorName(err), domain_name orelse "" });
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
     };
     if (!floating and edge == null) {
-        if (previous) |prev| {
+        if (if (target != null) source else previous) |prev| {
             if (mux.splitContainingPane(prev, direction)) |node| {
                 self.pending_post_split_snap = .{
                     .node = node,
@@ -1251,7 +1311,13 @@ pub fn setFloatingPaneBoundsById(self: *App, pane_id: usize, x: f32, y: f32, wid
 pub fn movePaneById(self: *App, pane_id: usize, direction: FocusDirection, amount: f32) void {
     const pane = self.findPaneById(pane_id) orelse return;
     if (self.mux) |*mux| {
+        const previous = mux.activePane();
         if (!mux.movePane(pane, direction, self.config.window_width, self.config.window_height, amount)) return;
+        const current = mux.activePane();
+        if (previous != current) {
+            self.syncActivePaneChange(previous, current);
+            if (current) |focused| self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = focused.id });
+        }
         self.requestLayoutResize(false);
         self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
     }
@@ -1480,6 +1546,24 @@ test "paste capture clears borrowed output on success and unsafe rejection" {
     try std.testing.expectEqual(before, term.pending_startup_input.len);
     try std.testing.expect(confirmBlockedPaste(app, pane.id, try term.paste_confirm.hold(allocator, "ok\n"), true));
     try std.testing.expectEqualStrings("ok\r", term.pending_startup_input[before..]);
+
+    // A context-menu paste may target a visible pane that is not focused.
+    const other = try allocator.create(Pane);
+    other.* = Pane.init(allocator);
+    other.id = pane.id + 1;
+    try tab.appendPane(other);
+    const other_term = other.asTerminal().?;
+    other_term.terminal_runtime = runtime;
+    other_term.terminal = try runtime.createTerminal(80, 24, 0);
+    runtime.setTerminalUserdata(other_term.terminal, other);
+    runtime.registerCallbacks(other_term.terminal, terminal_callbacks.terminalCallbacks());
+    try other_term.queueStartupInput(allocator, "x");
+    try std.testing.expect(app.activePane() == pane);
+    try std.testing.expect(confirmBlockedPaste(app, other.id, try other_term.paste_confirm.hold(allocator, "other\n"), true));
+    try std.testing.expectEqualStrings("x\rother\r", other_term.pending_startup_input);
+    other.is_hidden = true;
+    try std.testing.expect(!confirmBlockedPaste(app, other.id, try other_term.paste_confirm.hold(allocator, "hidden\n"), true));
+    other.is_hidden = false;
 }
 
 fn mockAttachedSessionConnection(allocator: std.mem.Allocator) !*SessionConnection {

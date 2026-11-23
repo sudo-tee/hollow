@@ -1,4 +1,22 @@
 const std = @import("std");
+
+test "moving tabs to insertion slots does not change the active tab" {
+    const a = std.testing.allocator;
+    var workspace = Workspace.init(a, 1);
+    defer workspace.tabs.deinit(a);
+    var first = Tab.init(a, 2);
+    var middle = Tab.init(a, 3);
+    var last = Tab.init(a, 4);
+    try workspace.appendTab(&first);
+    try workspace.appendTab(&middle);
+    try workspace.appendTab(&last);
+    try std.testing.expect(workspace.reorderTab(first.id, last.id, true));
+    try std.testing.expectEqualSlices(*Tab, &.{ &middle, &last, &first }, workspace.tabs.items);
+    try std.testing.expectEqual(&first, workspace.active_tab.?);
+    try std.testing.expect(!workspace.reorderTab(last.id, first.id, false));
+    try std.testing.expect(workspace.reorderTab(first.id, middle.id, false));
+    try std.testing.expectEqualSlices(*Tab, &.{ &first, &middle, &last }, workspace.tabs.items);
+}
 const Pane = @import("../pane.zig").Pane;
 const GhosttyRuntime = @import("../term/ghostty.zig").Runtime;
 const types = @import("types.zig");
@@ -97,6 +115,22 @@ pub const Workspace = struct {
         const insert_at = if (self.active_tab) |_| self.activeTabIndex() + 1 else self.tabs.items.len;
         try self.tabs.insert(self.allocator, insert_at, tab);
         self.active_tab = tab;
+    }
+
+    pub fn reorderTab(self: *Workspace, source_id: usize, target_id: usize, after: bool) bool {
+        var source: ?usize = null;
+        var target: ?usize = null;
+        for (self.tabs.items, 0..) |tab, index| {
+            if (tab.id == source_id) source = index;
+            if (tab.id == target_id) target = index;
+        }
+        const from = source orelse return false;
+        const slot = (target orelse return false) + @intFromBool(after);
+        const to = slot - @intFromBool(from < slot);
+        if (from == to) return false;
+        const tab = self.tabs.orderedRemove(from);
+        self.tabs.insertAssumeCapacity(to, tab);
+        return true;
     }
 
     pub fn newTab(self: *Workspace, id: usize, insert_at_end: bool) !*Tab {

@@ -217,7 +217,7 @@ local function configured_topbar_new_tab(value)
       end,
       on_click = function(event)
         if event and event.shifted then
-          hollow.action.new_tab_in_domain({ insert_at_end = true })
+          ui._open_domain_menu(event.bounds, id)
         else
           hollow.action.new_tab({ insert_at_end = true })
         end

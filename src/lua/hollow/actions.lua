@@ -1,6 +1,39 @@
 local M = {}
 local shape = require("hollow.shape")
 
+local function is_persistent_workspace(workspace)
+  return workspace.session_id ~= nil or workspace.session_state ~= nil
+end
+
+local function supports_workspace_move(source, target, kind)
+  if not is_persistent_workspace(source) and not is_persistent_workspace(target) then
+    return true
+  end
+  return kind == "tab"
+    and is_persistent_workspace(source)
+    and is_persistent_workspace(target)
+    and source.session_state == "attached"
+    and target.session_state == "attached"
+    and source.domain ~= nil
+    and source.domain ~= ""
+    and source.domain == target.domain
+    and source.session_host ~= nil
+    and source.session_host ~= ""
+    and source.session_host == target.session_host
+end
+
+function M.workspace_move_destinations(hollow, source, kind)
+  local destinations = {}
+  if source then
+    for _, workspace in ipairs(hollow.term.workspaces()) do
+      if workspace.id ~= source.id and supports_workspace_move(source, workspace, kind) then
+        destinations[workspace.id] = true
+      end
+    end
+  end
+  return destinations
+end
+
 function M.setup(hollow, host_api)
   local registry = {}
   local overrides = {}
@@ -1017,28 +1050,7 @@ function M.setup(hollow, host_api)
 
   local palette = hollow.ui.command_palette
 
-  local function is_persistent_workspace(workspace)
-    return workspace.session_id ~= nil or workspace.session_state ~= nil
-  end
-
-  local function supports_workspace_move(source, target, kind)
-    if not is_persistent_workspace(source) and not is_persistent_workspace(target) then
-      return true
-    end
-    return kind == "tab"
-      and is_persistent_workspace(source)
-      and is_persistent_workspace(target)
-      and source.session_state == "attached"
-      and target.session_state == "attached"
-      and source.domain ~= nil
-      and source.domain ~= ""
-      and source.domain == target.domain
-      and source.session_host ~= nil
-      and source.session_host ~= ""
-      and source.session_host == target.session_host
-  end
-
-  local function pick_workspace_for_move(kind, fn)
+  local function pick_workspace_for_move(kind, fn, always_prompt)
     local source = hollow.term.current_workspace()
     if not source then
       return
@@ -1050,12 +1062,7 @@ function M.setup(hollow, host_api)
       hollow.ui.notify.warn(restriction)
       return
     end
-    local destinations = {}
-    for _, workspace in ipairs(hollow.term.workspaces()) do
-      if workspace.id ~= source.id and supports_workspace_move(source, workspace, kind) then
-        destinations[workspace.id] = true
-      end
-    end
+    local destinations = M.workspace_move_destinations(hollow, source, kind)
     local entries = {}
     for _, entry in ipairs(palette.build_workspace_entries()) do
       if destinations[entry.workspace_id] then
@@ -1087,7 +1094,7 @@ function M.setup(hollow, host_api)
       hollow.ui.notify.warn("No compatible destination workspace is available. " .. restriction)
       return
     end
-    if #entries == 1 then
+    if #entries == 1 and not always_prompt then
       move(entries[1])
       return
     end
@@ -1206,16 +1213,45 @@ function M.setup(hollow, host_api)
     category = "pane",
   })
 
-  register(hollow, "new_tab_in_domain", {
-    run = function(opts)
-      pick_domain_and_run(function(item)
+  local function open_domain_tab(opts)
+    return function(item)
+      if item then
         open_in_domain(item.domain_name, "right", function()
           host_api.new_tab({
             domain = item.domain_name,
             insert_at_end = opts and opts.insert_at_end,
           })
         end)
-      end)
+      end
+    end
+  end
+
+  hollow.ui._open_domain_menu = function(anchor, anchor_id)
+    local entries = palette.build_domain_entries()
+    local open = open_domain_tab({ insert_at_end = true })
+    if #entries == 1 then
+      open(entries[1])
+    elseif #entries > 1 and anchor then
+      local items = {}
+      for _, entry in ipairs(entries) do
+        local item = entry
+        items[#items + 1] = {
+          label = item.name,
+          action = function()
+            local domains = hollow.config.get("domains")
+            if domains and domains[item.domain_name] then
+              open(item)
+            end
+          end,
+        }
+      end
+      hollow.ui.menu({ anchor = anchor, items = items, anchor_id = anchor_id })
+    end
+  end
+
+  register(hollow, "new_tab_in_domain", {
+    run = function(opts)
+      pick_domain_and_run(open_domain_tab(opts))
     end,
     desc = "Create new tab with a domain",
     category = "tab",
@@ -1235,9 +1271,26 @@ function M.setup(hollow, host_api)
     category = "tab",
   })
 
+  local function pane_for_move(pane_id)
+    if pane_id ~= nil then
+      return hollow.term.pane_by_id(pane_id)
+    end
+    return hollow.term.current_pane()
+  end
+
+  local function pane_still_in_tab(pane_id, tab_id)
+    local tab = hollow.term.tab_by_id(tab_id)
+    for _, pane in ipairs(tab and tab.panes or {}) do
+      if pane.id == pane_id then
+        return true
+      end
+    end
+    return false
+  end
+
   register(hollow, "move_pane_to_tab", {
-    run = function()
-      local pane = hollow.term.current_pane()
+    run = function(pane_id)
+      local pane = pane_for_move(pane_id)
       local current_tab = hollow.term.current_tab()
       if not pane or not current_tab or pane.dock then
         return
@@ -1277,7 +1330,7 @@ function M.setup(hollow, host_api)
               { name = "Top and bottom", direction = "horizontal" },
             },
             on_confirm = function(split)
-              if split then
+              if split and (pane_id == nil or pane_still_in_tab(pane.id, current_tab.id)) then
                 hollow.term.move_pane_to_tab(pane.id, item.tab_id, {
                   direction = split.direction,
                 })
@@ -1292,8 +1345,8 @@ function M.setup(hollow, host_api)
   })
 
   register(hollow, "move_pane_to_workspace", {
-    run = function()
-      local pane = hollow.term.current_pane()
+    run = function(pane_id)
+      local pane = pane_for_move(pane_id)
       if not pane then
         return
       end
@@ -1301,9 +1354,13 @@ function M.setup(hollow, host_api)
         hollow.ui.notify.warn("Undock the pane before moving it to another workspace.")
         return
       end
+      local tab = pane_id ~= nil and hollow.term.current_tab()
       pick_workspace_for_move("pane", function(index)
-        return host_api.move_pane_to_workspace(pane.id, index - 1)
-      end)
+        if pane_id ~= nil and (not tab or not pane_still_in_tab(pane.id, tab.id)) then
+          return false
+        end
+        return hollow.term.move_pane_to_workspace(pane.id, index)
+      end, pane_id ~= nil)
     end,
     desc = "Move current pane to workspace",
     category = "pane",

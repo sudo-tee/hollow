@@ -27,6 +27,7 @@ function M.modal(spec)
     end
   end
 
+  require("hollow.ui.widgets.menu").close()
   -- An externally opened dialog supersedes an in-flight leader sequence.
   if hollow.keymap.cancel then
     hollow.keymap.cancel()

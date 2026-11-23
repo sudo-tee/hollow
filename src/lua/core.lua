@@ -80,6 +80,20 @@ keymap.setup(hollow, host_api, state)
 hollow.route = route.setup(hollow, host_api)
 state.config.values.load_default_keymaps = true
 local events_runtime = events.setup(hollow, state, term_helpers)
+hollow.events.on("term:context_menu", function(event)
+  require("hollow.ui.widgets.terminal_menu").open(hollow, host_api, event)
+end)
+for _, event in ipairs({
+  "window:blurred",
+  "config:reloaded",
+  "workspace:changed",
+  "term:tab_activated",
+  "term:pane_focused",
+}) do
+  hollow.events.on(event, function()
+    require("hollow.ui.widgets.menu").close()
+  end)
+end
 hollow.events.on("window:focused", function()
   state.ui.window_focused = true
 end)
