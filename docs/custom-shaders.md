@@ -24,8 +24,12 @@ Use absolute paths; relative paths resolve against Hollow's working directory.
 | Value                | Behaviour                                                       |
 | -------------------- | --------------------------------------------------------------- |
 | `"cursor"` (default) | Keep rendering for one second after the cursor or focus changes |
-| `"always"` or `true` | Render every frame, for shaders that animate on their own       |
+| `"always"` or `true` | Keep rendering when idle (at `idle_max_fps`), for self-animating shaders |
 | `"off"` or `false`   | Render only when the terminal changes                           |
+
+`"always"` keeps rendering while the screen is idle, paced by `idle_max_fps`.
+Raise `idle_max_fps` if a self-animating shader looks choppy when nothing else changes.
+A background shader with `animate = true` already wakes at its own `max_fps` and does not need `"always"`.
 
 Shader files are compiled when the config sets `custom_shader`.
 After editing a shader, run `hollow.config.reload()` to recompile it.
