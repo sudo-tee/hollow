@@ -128,7 +128,7 @@ Applications such as Neovim can temporarily choose their own cursor shape and bl
 It defaults to `0` (no timeout).
 Cursor thicknesses are in framebuffer pixels, limited to `1–16` and to the cell size.
 `bar_thickness = false` uses the automatic width (usually 2–3 px); underline and hollow outline thicknesses default to `4` and `2`.
-Only the focused pane can blink.
+Only the focused pane can blink, and the cursor stays steady while the window is unfocused.
 `rounded` controls rounding on bars, filled blocks, and hollow blocks, and defaults to `true`.
 `busy` selects the steady cursor shown during a foreground command reported by shell integration.
 It defaults to `"block"`; use `false` to keep the normal cursor behavior while a command runs.
@@ -180,6 +180,7 @@ hollow.config.set({
       animate = true,       -- request animation redraws
       max_fps = 30,         -- optional background-only refresh cap; default 0
       render_scale = 0.5,   -- optional background-only resolution scale; default 1
+      unfocused_max_fps = 0, -- optional cap while unfocused; 0 pauses
     },
   },
 })

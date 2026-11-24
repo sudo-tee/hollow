@@ -114,6 +114,7 @@ hollow.config.set({
       animate = true,  -- request redraws for animation
       max_fps = 30,   -- background refresh cap (default 60), independent of terminal FPS
       render_scale = 0.5, -- optional half-resolution background shader
+      unfocused_max_fps = 0, -- pause while the window is unfocused
     },
   },
 })
@@ -140,6 +141,9 @@ For a slow decorative background, `max_fps = 30` saves more GPU time; on one int
 Set `max_fps = 0` to remove the cap.
 An animated, full-resolution shader then draws directly on every rendered frame; static and scaled shaders still use the cache when supported.
 The cache adds one GPU texture and a composite draw per rendered frame, so very cheap shaders may run faster uncapped.
+Set `unfocused_max_fps` to slow the shader while the Hollow window is unfocused.
+`0` pauses the animation and keeps showing the last cached frame; values up to 240 cap the refresh rate.
+It never raises the focused cap, and leaving it unset keeps `max_fps`.
 Set `animate = false` for static shaders; Hollow renders them once into a cached layer and re-renders only on resize or a layer change, such as window opacity.
 
 Set `render_scale` below `1` to render the background shader at a lower resolution and upscale it with linear filtering.

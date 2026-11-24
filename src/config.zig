@@ -333,6 +333,9 @@ pub const Config = struct {
         shader_max_fps: u32 = default_shader_max_fps,
         /// Background shader target scale, range 0.25..1.
         shader_render_scale: f32 = 1.0,
+        /// Refresh cap while the window is unfocused. Zero pauses the
+        /// animation; null keeps `shader_max_fps`.
+        shader_unfocused_max_fps: ?u32 = null,
 
         pub fn deinit(self: *Background, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.image);
@@ -360,6 +363,21 @@ pub const Config = struct {
             freeOwned(allocator, &self.shader);
             self.shader_max_fps = default_shader_max_fps;
             self.shader_render_scale = 1.0;
+            self.shader_unfocused_max_fps = null;
+        }
+
+        /// Refresh policy for the current window focus. The unfocused cap
+        /// never raises the focused one.
+        pub fn forWindowFocus(self: Background, focused: bool) Background {
+            var result = self;
+            if (focused) return result;
+            const fps = self.shader_unfocused_max_fps orelse return result;
+            if (fps == 0) {
+                result.shader_animate = false;
+            } else {
+                result.shader_max_fps = if (self.shader_max_fps == 0) fps else @min(fps, self.shader_max_fps);
+            }
+            return result;
         }
 
         pub fn setImage(self: *Background, allocator: std.mem.Allocator, value: []const u8) !void {
@@ -862,6 +880,18 @@ fn freeOwned(allocator: std.mem.Allocator, slot: *?[]u8) void {
         allocator.free(owned);
         slot.* = null;
     }
+}
+
+test "an unfocused window pauses or caps the background shader" {
+    const focused: Config.Background = .{ .shader_max_fps = 12, .shader_unfocused_max_fps = 0 };
+    try std.testing.expect(focused.forWindowFocus(true).shader_animate);
+    try std.testing.expect(!focused.forWindowFocus(false).shader_animate);
+    const capped: Config.Background = .{ .shader_max_fps = 12, .shader_unfocused_max_fps = 30 };
+    try std.testing.expectEqual(@as(u32, 12), capped.forWindowFocus(false).shader_max_fps);
+    const uncapped: Config.Background = .{ .shader_max_fps = 0, .shader_unfocused_max_fps = 2 };
+    try std.testing.expectEqual(@as(u32, 2), uncapped.forWindowFocus(false).shader_max_fps);
+    const unset: Config.Background = .{ .shader_max_fps = 12 };
+    try std.testing.expectEqual(@as(u32, 12), unset.forWindowFocus(false).shader_max_fps);
 }
 
 test "backend parsing covers planned renderers" {

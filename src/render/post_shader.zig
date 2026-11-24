@@ -370,8 +370,9 @@ pub const Chain = struct {
             .shader_animate = bg.shader_animate,
             .shader_max_fps = bg.shader_max_fps,
             .shader_render_scale = bg.shader_render_scale,
+            .shader_unfocused_max_fps = bg.shader_unfocused_max_fps,
         };
-        if (!bg.shader_animate or bg.shader_max_fps > 0 or bg.shader_render_scale < 1) {
+        if (!bg.shader_animate or bg.shader_max_fps > 0 or bg.shader_render_scale < 1 or bg.shader_unfocused_max_fps != null) {
             self.initBackgroundCache(alloc, pass, swapchain, bg.shader_render_scale < 1);
         }
         return true;
