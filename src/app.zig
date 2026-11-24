@@ -45,6 +45,7 @@ const TerminalPane = @import("term/terminal_pane.zig").TerminalPane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
+const terminal_render_app = @import("render/terminal_render_app.zig");
 const bar = @import("ui/bar.zig");
 const ui_semantics = @import("ui/semantics.zig");
 const ConfigWatcher = @import("config_watcher.zig").ConfigWatcher;
@@ -451,6 +452,7 @@ pub const App = struct {
     bottombar_cache_dirty: bool = true,
     bottombar_cache_expires_at_ns: i128 = 0,
     next_idle_render_poll_ns: i128 = 0,
+    next_cursor_blink_ns: i128 = 0,
     wake_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     action_queue: ActionQueue = .{},
@@ -1407,6 +1409,7 @@ pub const App = struct {
         self.bottombar_cache_dirty = true;
         self.bottombar_cache_expires_at_ns = 0;
         self.next_idle_render_poll_ns = 0;
+        self.next_cursor_blink_ns = 0;
         var lua = LuaRuntime.init(self.allocator, &self.config) catch |err| {
             std.log.warn("LuaJIT unavailable, continuing without scripting: {s}", .{@errorName(err)});
             return;
@@ -1580,7 +1583,7 @@ pub const App = struct {
     }
 
     pub fn nextIdleWakeNs(self: *const App) i128 {
-        var next_wake_ns = self.next_idle_render_poll_ns;
+        var next_wake_ns = input.minWakeNs(self.next_idle_render_poll_ns, self.next_cursor_blink_ns);
         next_wake_ns = input.minWakeNs(next_wake_ns, session_spawn.nextLayoutWakeNs(self));
         if (self.session_transfer) |op| next_wake_ns = input.minWakeNs(next_wake_ns, op.deadline);
         if (self.leader_visual_active and self.leader_visual_expires_at_ns != 0) {
@@ -2648,6 +2651,7 @@ pub const App = struct {
         var has_dead = false;
         var automation_changed = false;
         var next_idle_render_poll_ns: i128 = 0;
+        var next_cursor_blink_ns: i128 = 0;
         if (self.mux) |*mux| {
             const active_pane = mux.activePane();
             var visible_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
@@ -2876,21 +2880,26 @@ pub const App = struct {
                 }
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
-                if (term.tickImageAnimation(runtime, now_ns)) pane.render_dirty = .full;
-                if (!term.synchronized_output_active and term.image_animation_deadline_ns != 0) {
-                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, term.image_animation_deadline_ns);
+                // Hidden panes still parse PTY output, but nobody sees their
+                // animations or idle state until they are shown again.
+                if (pane_is_visible) {
+                    if (term.tickImageAnimation(runtime, now_ns)) pane.render_dirty = .full;
+                    if (!term.synchronized_output_active and term.image_animation_deadline_ns != 0) {
+                        next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, term.image_animation_deadline_ns);
+                    }
                 }
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
                 const pane_idle_deadline_ns = term.last_render_state_update_ns + idle_poll_ns;
+                const idle_poll_due = pane_is_visible and now_ns - term.last_render_state_update_ns >= idle_poll_ns;
                 const needs_update = if (term.synchronized_output_active)
                     term.render_state_fresh
                 else
                     term.pty_received_data or
                         pane.render_dirty != .false_value or
-                        (now_ns - term.last_render_state_update_ns >= idle_poll_ns);
+                        idle_poll_due;
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     if (term.render_state_fresh) {
@@ -2943,10 +2952,13 @@ pub const App = struct {
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
-                } else if (!term.synchronized_output_active and term.last_render_state_update_ns != 0) {
+                } else if (pane_is_visible and !term.synchronized_output_active and term.last_render_state_update_ns != 0) {
                     if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
+                }
+                if (is_active) {
+                    next_cursor_blink_ns = terminal_render_app.nextCursorBlinkNs(runtime, term.render_state, pane, self, now_ns) orelse 0;
                 }
                 if (term.pending_alt_screen_nudge) {
                     if (term.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
@@ -3041,6 +3053,7 @@ pub const App = struct {
         if (automation_changed) self.markAutomationChanged();
         self.syncSessionTakeover();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
+        self.next_cursor_blink_ns = next_cursor_blink_ns;
     }
 
     pub fn sessionTakeoverView(self: *App) @import("session/takeover.zig").View {

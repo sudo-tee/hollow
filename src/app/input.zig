@@ -15,6 +15,7 @@ const cmd_ipc = @import("command_dispatcher.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
+const mux_mod = @import("../mux.zig");
 const SplitDirection = @import("../mux.zig").SplitDirection;
 const FocusDirection = @import("../mux.zig").FocusDirection;
 const SplitNode = @import("../mux.zig").SplitNode;
@@ -942,27 +943,29 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.next_idle_render_poll_ns != 0 and now_ns >= self.next_idle_render_poll_ns) {
+    if (self.next_cursor_blink_ns != 0 and now_ns >= self.next_cursor_blink_ns) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (check_panes) {
-        if (self.mux) |*mux| {
-            var panes = mux.paneIterator();
-            while (panes.next()) |pane| {
-                if (paneHasVisualDamage(pane)) {
-                    self.last_visual_activity_ns = now_ns;
-                    return true;
-                }
-            }
-        }
+    // Terminal poll deadlines wake app.tick(), not the renderer. A poll that
+    // changes visible content will mark its pane dirty during the tick.
+    if (check_panes and self.mux != null and visiblePanesHaveDamage(self)) {
+        self.last_visual_activity_ns = now_ns;
+        return true;
+    }
+    return false;
+}
+
+fn visiblePanesHaveDamage(self: *App) bool {
+    // Damage outside the active layout stays pending until the pane is shown.
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    for (self.computeActiveLayout(&layout_buf)) |leaf| {
+        if (paneHasVisualDamage(leaf.pane)) return true;
     }
     return false;
 }
 
 fn paneHasVisualDamage(pane: *const Pane) bool {
-    // Hidden PTYs still parse output, but their texture damage cannot require a frame.
-    if (pane.is_hidden) return false;
     if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) return true;
     if (pane.asTerminalConst()) |term| {
         // Synchronized output keeps terminal damage pending until the mode is
@@ -979,9 +982,6 @@ test "visual damage checks terminal hold policy without suppressing Lua damage" 
     try std.testing.expect(!paneHasVisualDamage(&pane));
     pane.content.terminal.pty_received_data = true;
     try std.testing.expect(paneHasVisualDamage(&pane));
-    pane.is_hidden = true;
-    try std.testing.expect(!paneHasVisualDamage(&pane));
-    pane.is_hidden = false;
     pane.content.terminal.synchronized_output_active = true;
     pane.render_dirty = .full;
     try std.testing.expect(!paneHasVisualDamage(&pane));
@@ -993,6 +993,75 @@ test "visual damage checks terminal hold policy without suppressing Lua damage" 
     try std.testing.expect(paneHasVisualDamage(&lua_pane));
     lua_pane.render_dirty = .false_value;
     try std.testing.expect(!paneHasVisualDamage(&lua_pane));
+}
+
+test "an idle terminal poll wakes the app without requesting a redraw" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    app.topbar_cache_dirty = false;
+    app.bottombar_cache_dirty = false;
+    const deadline_ns = 100 * std.time.ns_per_ms;
+    app.next_idle_render_poll_ns = deadline_ns;
+
+    try std.testing.expectEqual(@as(i128, deadline_ns), app.nextIdleWakeNs());
+    try std.testing.expect(!hasVisualActivityAt(app, deadline_ns, true));
+    try std.testing.expectEqual(@as(i128, 0), app.last_visual_activity_ns);
+}
+
+test "a cursor blink phase change requests an idle redraw" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    app.topbar_cache_dirty = false;
+    app.bottombar_cache_dirty = false;
+    const blink_ns = 600 * std.time.ns_per_ms;
+    app.next_idle_render_poll_ns = 100 * std.time.ns_per_ms;
+    app.next_cursor_blink_ns = blink_ns;
+
+    try std.testing.expect(!hasVisualActivityAt(app, blink_ns - 1, true));
+    try std.testing.expect(hasVisualActivityAt(app, blink_ns, true));
+}
+
+test "inactive tab damage does not redraw until the tab is shown" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    var foreground_pane = Pane.init(a);
+    var background_pane = Pane.init(a);
+    var foreground_root = SplitNode.initPane(&foreground_pane);
+    var background_root = SplitNode.initPane(&background_pane);
+    var foreground_panes = [_]*Pane{&foreground_pane};
+    var background_panes = [_]*Pane{&background_pane};
+    var foreground = mux_mod.Tab.init(a, 1);
+    var background = mux_mod.Tab.init(a, 2);
+    foreground.root_split = &foreground_root;
+    background.root_split = &background_root;
+    foreground.panes.items = &foreground_panes;
+    background.panes.items = &background_panes;
+    var tabs = [_]*mux_mod.Tab{ &foreground, &background };
+    var workspace = mux_mod.Workspace.init(a, 1);
+    workspace.tabs.items = &tabs;
+    app.mux = mux_mod.Mux.init(a);
+    defer app.mux = null;
+    app.mux.?.active_workspace = &workspace;
+    workspace.active_tab = &foreground;
+    foreground_pane.render_dirty = .false_value;
+    background_pane.render_dirty = .full;
+
+    try std.testing.expect(!visiblePanesHaveDamage(app));
+    try std.testing.expectEqual(.full, background_pane.render_dirty);
+    workspace.active_tab = &background;
+    try std.testing.expect(visiblePanesHaveDamage(app));
+    background_pane.is_hidden = true;
+    try std.testing.expect(!visiblePanesHaveDamage(app));
+    try std.testing.expectEqual(.full, background_pane.render_dirty);
 }
 
 fn leaderVisualActive(self: *App, now_ns: i128) bool {

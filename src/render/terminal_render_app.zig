@@ -54,7 +54,17 @@ pub fn cursorBlinkVisible(runtime: *ghostty.Runtime, render_state: ?*anyopaque, 
     return !runtime.cursorBlinking(render_state) or
         runtime.cursorPasswordInput(render_state) or
         (focused and busyShellCursor(pane, cursor) != null) or
-        color_math.blinkVisibleWithTimeout(now_ns, app.cursor_blink_start_ns, cursor.blink_rate, cursor.blink_timeout, focused);
+        color_math.blinkVisibleWithTimeout(now_ns, app.cursor_blink_start_ns, cursor.blink_rate, cursor.blink_timeout, focused and app.window_focused);
+}
+
+/// The renderer derives blink phase from the clock, so idle frames must wake
+/// at each phase change of the active pane's cursor. An unfocused window
+/// shows a steady cursor.
+pub fn nextCursorBlinkNs(runtime: *ghostty.Runtime, render_state: ?*anyopaque, pane: *const Pane, app: *const App, now_ns: i128) ?i128 {
+    const cursor = &app.config.cursor;
+    if (!app.window_focused or !runtime.cursorVisible(render_state) or !runtime.cursorBlinking(render_state) or
+        runtime.cursorPasswordInput(render_state) or busyShellCursor(pane, cursor) != null) return null;
+    return color_math.nextBlinkChangeNs(now_ns, app.cursor_blink_start_ns, cursor.blink_rate, cursor.blink_timeout);
 }
 
 fn appSearchHighlight(context: ?*anyopaque, row: usize) ?terminal_render.SearchHighlight {

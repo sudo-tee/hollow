@@ -89,6 +89,25 @@ pub fn blinkVisibleWithTimeout(now_ns: i128, start_ns: i128, interval_ms: u32, t
     return elapsed >= @as(i128, timeout_ms) * std.time.ns_per_ms or blinkVisibleNow(elapsed, interval_ms, focused);
 }
 
+/// When `blinkVisibleWithTimeout` next changes for a focused cursor, or null
+/// once the timeout has left it steadily visible.
+pub fn nextBlinkChangeNs(now_ns: i128, start_ns: i128, interval_ms: u32, timeout_ms: u32) ?i128 {
+    const interval_ns = @as(i128, @max(1, interval_ms)) * std.time.ns_per_ms;
+    if (timeout_ms == 0) return (@divFloor(now_ns, interval_ns) + 1) * interval_ns;
+    const elapsed = @max(0, now_ns - start_ns);
+    const timeout_ns = @as(i128, timeout_ms) * std.time.ns_per_ms;
+    if (elapsed >= timeout_ns) return null;
+    return start_ns + @min(timeout_ns, (@divFloor(elapsed, interval_ns) + 1) * interval_ns);
+}
+
+test "blink change deadlines follow the phase and stop after the timeout" {
+    const ms = std.time.ns_per_ms;
+    try std.testing.expectEqual(@as(?i128, 1200 * ms), nextBlinkChangeNs(1000 * ms, 0, 600, 0));
+    try std.testing.expectEqual(@as(?i128, 1500 * ms), nextBlinkChangeNs(1200 * ms, 1000 * ms, 500, 800));
+    try std.testing.expectEqual(@as(?i128, 1800 * ms), nextBlinkChangeNs(1700 * ms, 1000 * ms, 500, 800));
+    try std.testing.expectEqual(@as(?i128, null), nextBlinkChangeNs(1800 * ms, 1000 * ms, 500, 800));
+}
+
 test "idle timeout ends a hidden blink phase and typing restarts visible" {
     const ms = std.time.ns_per_ms;
     try std.testing.expect(!blinkVisibleWithTimeout(1700 * ms, 1000 * ms, 500, 800, true));
