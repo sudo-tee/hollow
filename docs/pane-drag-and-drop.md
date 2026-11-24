@@ -30,6 +30,12 @@ Click the scope to move the dock to the same edge in the other scope; the toolti
 Grab the strip anywhere outside its buttons to drag the dock.
 Moving a dock keeps its size and the size of the other docks.
 
+![Default dock strips: a global dock on the left with mirrored buttons, workspace docks on the right and bottom](assets/dock-ux/dock-strip-default.png)
+
+![Close-up of the left, right, and bottom dock strips](assets/dock-ux/dock-strip-closeup.png)
+
+The default layout:
+
 ```lua
 hollow.config.set({
   dock_header = {
@@ -54,15 +60,18 @@ hollow.config.set({
 })
 ```
 
+![Custom dock strips showing only the hide button, with the edge next to the scope](assets/dock-ux/dock-strip-custom.png)
+
 An empty slot shows nothing, so `center = {}` drops the title.
 
-To remove the strip entirely:
+To remove the strip entirely and give the row back to the pane:
 
 ```lua
 hollow.config.set({ dock_header = false })
 ```
 
-Set `dock_header = false` to give the row back to the pane.
+![Docks with the title strip removed](assets/dock-ux/dock-strip-off.png)
+
 Docks then use a hover handle at the top center, with a chip naming the dock, such as `Right dock · Global`.
 Narrow docks show only the scope in the chip.
 Drag a dock to another edge to move it; it keeps its scope and size, and Shift flips the scope.
