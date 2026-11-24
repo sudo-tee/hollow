@@ -683,11 +683,7 @@ pub fn processInputQueue(self: *App) void {
                 if (paths.len == 0) return;
 
                 const hit = self.hitTestPane(drop.x, drop.y) orelse return;
-                if (self.mux) |*mux| {
-                    const previous = mux.activePane();
-                    mux.setActivePane(hit.pane);
-                    self.syncActivePaneChange(previous, hit.pane);
-                }
+                self.focusVisiblePane(hit.pane);
 
                 const text = formatDroppedFiles(self.allocator, paths) catch |err| {
                     std.log.err("format dropped files failed: {s}", .{@errorName(err)});
@@ -1134,15 +1130,49 @@ pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.Mouse
     return sendMouseTarget(self, null, action, button, x, y, mods);
 }
 
+test "mouse press and selection notify Lua when pane focus changes" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    app.lua = try @import("../lua_bridge.zig").Runtime.initForTests(a, &app.config);
+
+    var first = Pane.init(a);
+    first.id = 1;
+    var second = Pane.init(a);
+    second.id = 2;
+    var panes = [_]*Pane{ &first, &second };
+    var tab = mux_mod.Tab.init(a, 1);
+    tab.panes.items = &panes;
+    tab.active_pane = &first;
+    var tabs = [_]*mux_mod.Tab{&tab};
+    var workspace = mux_mod.Workspace.init(a, 1);
+    workspace.tabs.items = &tabs;
+    workspace.active_tab = &tab;
+    var workspaces = [_]*mux_mod.Workspace{&workspace};
+    app.mux = mux_mod.Mux.init(a);
+    defer app.mux = null;
+    app.mux.?.workspaces.items = &workspaces;
+    app.mux.?.active_workspace = &workspace;
+
+    try app.lua.?.runString(
+        \\focused = {}
+        \\hollow = {_emit_builtin_event = function(name, payload)
+        \\  if name == 'term:pane_focused' then focused[#focused + 1] = payload.pane_id end
+        \\end}
+    );
+    _ = try sendMouseTarget(app, second.id, .press, null, 0, 0, 0);
+    try std.testing.expectEqual(&second, tab.activePane().?);
+    _ = try sendMouseTarget(app, second.id, .press, null, 0, 0, 0);
+    selection_mod.selectionBegin(app, &first, .{ .row = 0, .col = 0 }, false);
+    try std.testing.expectEqual(&first, tab.activePane().?);
+    try app.lua.?.runString("assert(#focused == 2 and focused[1] == 2 and focused[2] == 1)");
+}
+
 fn sendMouseTarget(self: *App, pane_id: ?usize, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
     const pane = if (pane_id) |id| self.findPaneById(id) orelse return false else (self.hitTestPane(x, y) orelse return false).pane;
-    if (action == .press) {
-        if (self.mux) |*mux| {
-            const was_active = mux.activePane();
-            mux.setActivePane(pane);
-            self.syncActivePaneChange(was_active, pane);
-        }
-    }
+    if (action == .press) self.focusVisiblePane(pane);
     return try encodeMouseForPane(
         self,
         pane,

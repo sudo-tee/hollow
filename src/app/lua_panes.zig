@@ -68,12 +68,7 @@ pub fn pointer(app: *App, event: Pointer) void {
         surface.hovered_id = owned;
     } else if (event.kind == .click) {
         if (!app.isPaneVisible(pane)) return;
-        if (app.mux) |*mux| {
-            const previous = mux.activePane();
-            mux.setActivePane(pane);
-            app.syncActivePaneChange(previous, pane);
-            if (previous != pane) app.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane.id });
-        }
+        app.focusVisiblePane(pane);
     }
     pane.invalidate();
     // Lua may consume the wheel; otherwise native Clay scroll containers move.

@@ -1765,6 +1765,17 @@ pub const App = struct {
         if (current) |pane| pane.invalidate();
     }
 
+    /// Focus a visible pane in the current layout without resetting its scrollback.
+    pub fn focusVisiblePane(self: *App, pane: *Pane) void {
+        const mux = if (self.mux) |*value| value else return;
+        const previous = mux.activePane();
+        mux.setActivePane(pane);
+        const current = mux.activePane();
+        if (previous == current) return;
+        self.syncActivePaneChange(previous, current);
+        if (current) |focused| self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = focused.id });
+    }
+
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
         if (previous != current) self.markActiveSessionLayoutDirty();
         if (previous != current) {

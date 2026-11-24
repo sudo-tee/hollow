@@ -205,6 +205,23 @@ describe("Clay selectable list", function()
     assert.equals(row(1).id, viewport().reveal)
   end)
 
+  it("requests a repaint on each repeated arrow press", function()
+    local host = require("hollow.state").get().host_api
+    local redraws = 0
+    host.request_redraw = function()
+      redraws = redraws + 1
+    end
+    ui.select.open({ items = items(10) })
+    prepare()
+    local before = redraws
+    for step, key in ipairs({ "arrow_down", "arrow_down", "arrow_up", "arrow_up" }) do
+      assert.is_true(ui.dispatch_overlay_key(key, 0))
+      assert.equals(before + step, redraws)
+      local index = step <= 2 and step + 1 or 5 - step
+      assert.equals(row(index).id, viewport().reveal)
+    end
+  end)
+
   it("fits short lists, reserves divider gaps, and leaves the filter unpainted", function()
     ui.select.open({ items = { "one" }, max_height = 24 })
     local tree = prepare()

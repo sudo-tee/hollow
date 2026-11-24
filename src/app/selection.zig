@@ -98,11 +98,7 @@ pub fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Ran
 pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, extend: bool) void {
     if (!self.hasPane(pane)) return;
     if (!pane.isTerminal()) return;
-    if (self.mux) |*mux| {
-        const previous = mux.activePane();
-        mux.setActivePane(pane);
-        self.syncActivePaneChange(previous, pane);
-    }
+    self.focusVisiblePane(pane);
     const history_point = selectionPointToHistory(self, pane, point);
     const had_selection = hasSelection(self);
     const previous_selection_pane = self.selection_pane;
@@ -151,11 +147,7 @@ pub fn selectionBeginLine(self: *App, pane: *Pane, point: selection.CellPoint) v
 fn selectionBeginNative(self: *App, pane: *Pane, point: selection.CellPoint, line: bool) void {
     if (!self.hasPane(pane)) return;
     const term = pane.asTerminal() orelse return;
-    if (self.mux) |*mux| {
-        const previous = mux.activePane();
-        mux.setActivePane(pane);
-        self.syncActivePaneChange(previous, pane);
-    }
+    self.focusVisiblePane(pane);
     const runtime = if (self.ghostty) |*rt| rt else return;
     const selected = runtime.selectAt(term.terminal, .{
         .tag = .viewport,

@@ -204,6 +204,7 @@ function ui.dispatch_overlay_key(key, mods)
     if type(widget.on_key) == "function" then
       local ok, consumed = pcall(widget.on_key, key, canonical_mods)
       if ok and consumed then
+        redraw()
         return true
       end
     end
