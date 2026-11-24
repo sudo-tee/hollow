@@ -55,6 +55,14 @@ hollow.config.set({
   unfocused_pane = {
     dim = 0.2,
   },
+  -- Title strip above docked panes; the strip is also the dock's drag handle.
+  -- Items: "hide", "undock", "title", "scope", "edge". Click "scope" to switch it.
+  dock_header = {
+    enabled = true,
+    left = { "hide", "undock" },
+    center = { "title" },
+    right = { "scope" },
+  },
   window_titlebar_show = true,
   scrollbar = {
     enabled = false,

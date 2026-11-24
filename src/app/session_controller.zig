@@ -25,6 +25,7 @@ const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const SplitCommandMode = app_mod.SplitCommandMode;
 const Pane = @import("../pane.zig").Pane;
 const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
+const dock_drop = @import("../mux/dock_drop.zig");
 const pane_lifecycle = @import("pane_lifecycle.zig");
 const paste_confirm = @import("../term/paste_confirm.zig");
 const SessionController = @import("../session/controller.zig").Controller;
@@ -710,17 +711,25 @@ pub fn dropTiledPane(self: *App, source_id: usize, pane_id: usize, tab_id: usize
     const runtime = if (self.ghostty) |*value| value else return;
     const workspace = mux.activeWorkspace() orelse return;
     if (!canArrangeWorkspace(workspace)) return;
-    const source = workspace.tabById(source_id) orelse return;
     const dest = workspace.tabById(tab_id) orelse return;
     const pane = self.findPaneById(pane_id) orelse return;
     const target = self.findPaneById(target_id) orelse return;
+    const docked = mux.paneDock(pane) != null;
+    if (docked and !mux.canUndockToTab(pane)) return;
+    const source = if (docked) null else workspace.tabById(source_id) orelse return;
     const previous = mux.activePane();
     if (!(@import("../mux/pane_drop.zig").place(source, pane, dest, target, zone) catch return)) return;
-    const emptied = source.panes.items.len == 0;
+    if (docked) {
+        mux.releaseDock(pane);
+        pane.invalidate();
+        self.markSessionLayoutsDirty();
+    }
+    const emptied = if (source) |tab| tab.panes.items.len == 0 else false;
     if (emptied) {
-        workspace.detachTab(source);
-        source.deinit(runtime);
-        self.allocator.destroy(source);
+        const source_tab = source.?;
+        workspace.detachTab(source_tab);
+        source_tab.deinit(runtime);
+        self.allocator.destroy(source_tab);
     }
     workspace.active_tab = dest;
     mux.focused_dock = null;
@@ -1252,14 +1261,21 @@ pub fn setPaneVisibleById(self: *App, pane_id: usize, visible: bool) void {
 }
 
 /// Move a pane into a window-edge dock; it then survives tab switches.
-pub fn dockPaneById(self: *App, pane_id: usize, edge: PaneEdge, scope: DockScope, ratio: f32) void {
+/// Dock a pane at `ratio`, or with null keep its size. Other shown docks
+/// keep their sizes either way.
+pub fn dockPaneById(self: *App, pane_id: usize, edge: PaneEdge, scope: DockScope, ratio: ?f32) void {
     const pane = self.findPaneById(pane_id) orelse return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
-        mux.dockPane(pane, edge, scope, ratio) catch |err| {
+        const content = self.contentBounds();
+        var buf: [dock_drop.max_docks]@import("../mux/dock.zig").Thickness = undefined;
+        const ws = mux.activeWorkspace();
+        const kept = if (ws) |w| dock_drop.measure(&mux.global_docks, &w.docks, if (ratio != null) pane else null, content, self.cell_width_px, self.cell_height_px, &buf) else buf[0..0];
+        mux.dockPane(pane, edge, scope, ratio orelse dock_drop.shareFor(mux, pane)) catch |err| {
             std.log.warn("app: dockPane failed: {s} pane={d} edge={s} scope={s}", .{ @errorName(err), pane_id, @tagName(edge), @tagName(scope) });
             return;
         };
+        if (ws) |w| dock_drop.keepSizes(&mux.global_docks, &w.docks, kept, content, self.cell_width_px, self.cell_height_px);
         pane.invalidate();
         self.markSessionLayoutsDirty();
         self.syncActivePaneChange(previous, mux.activePane());

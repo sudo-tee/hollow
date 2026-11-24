@@ -879,6 +879,20 @@ pub const Mux = struct {
         if (self.focused_dock == pane) self.focused_dock = null;
     }
 
+    /// A docked pane may join an active-workspace tab only within one session.
+    pub fn canUndockToTab(self: *Mux, pane: *const Pane) bool {
+        _ = self.paneDock(pane) orelse return false;
+        const workspace = self.activeWorkspace() orelse return false;
+        return self.controllerForPane(pane.id) == workspace.session_controller;
+    }
+
+    /// Free the dock slot of a pane that a drop already placed in a tab.
+    pub fn releaseDock(self: *Mux, pane: *Pane) void {
+        const location = self.paneDock(pane) orelse return;
+        _ = self.docksFor(location).remove(pane);
+        if (self.focused_dock == pane) self.focused_dock = null;
+    }
+
     fn destroyDockPane(self: *Mux, runtime: *GhosttyRuntime, pane: *Pane) void {
         const location = self.paneDock(pane) orelse return;
         self.notifyClosing(pane);

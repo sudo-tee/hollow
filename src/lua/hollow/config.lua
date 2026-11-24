@@ -121,6 +121,13 @@ function M.setup(hollow, host_api, state)
     if opts.terminal_menu_items ~= nil then
       state.config.values.terminal_menu_items = hollow.util.clone_value(opts.terminal_menu_items)
     end
+    if type(opts.dock_header) == "table" then
+      for _, slot in ipairs({ "left", "center", "right" }) do
+        if opts.dock_header[slot] ~= nil then
+          state.config.values.dock_header[slot] = hollow.util.clone_value(opts.dock_header[slot])
+        end
+      end
+    end
     local legacy_unfocused = type(opts.unfocused_pane) == "table" and opts.unfocused_pane.cursor
     local has_canonical_unfocused = type(opts.cursor) == "table" and opts.cursor.unfocused ~= nil
     if

@@ -2332,9 +2332,16 @@ pub const App = struct {
         var bounds = content;
         var written: usize = 0;
         mux.layoutDocks(&bounds, out, &written, self.cell_width_px, self.cell_height_px);
+        const header = self.dockHeaderHeight();
+        for (out[0..written]) |*leaf| mux_mod.reserveDockHeader(leaf, header);
         const tab = requested_tab orelse return out[0..written];
         const tab_leaves = tab.computeLayoutInBounds(bounds, out[written..], self.cell_width_px, self.cell_height_px);
         return out[0 .. written + tab_leaves.len];
+    }
+
+    /// Height of the title strip above each docked pane; 0 when disabled.
+    pub fn dockHeaderHeight(self: *const App) u32 {
+        return if (self.config.dock_header.enabled) self.cell_height_px else 0;
     }
 
     /// The active tab's region: the content area minus the visible docks.

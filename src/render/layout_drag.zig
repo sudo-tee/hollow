@@ -1,7 +1,8 @@
 const std = @import("std");
 const bounds = @import("../ui/semantics.zig").Bounds;
 const pane_drop = @import("../mux/pane_drop.zig");
-const PaneBounds = @import("../mux.zig").PaneBounds;
+const mux = @import("../mux.zig");
+const PaneBounds = mux.PaneBounds;
 
 pub const Drag = struct {
     workspace: usize,
@@ -16,6 +17,10 @@ pub const Drag = struct {
     hover_since: i128 = 0,
     preview_tab: ?usize = null,
     drop: ?Drop = null,
+    /// Shift flips the scope of a dock drop.
+    shift: bool = false,
+    /// Occupied dock band under the pointer; drawn as a refused target.
+    blocked: ?Blocked = null,
 
     pub fn track(self: *Drag, x: f32, y: f32, scale: f32) bool {
         self.started = self.started or @abs(x - self.x) >= 5 * scale or @abs(y - self.y) >= 5 * scale;
@@ -27,7 +32,23 @@ pub const Drop = union(enum) {
     tab: struct { id: usize, marker: bounds },
     reorder: struct { id: usize, after: bool, marker: bounds },
     pane: struct { id: usize, tab: usize, zone: pane_drop.Zone, marker: bounds },
+    dock: struct { edge: mux.PaneEdge, scope: mux.DockScope, marker: bounds },
 };
+
+pub const Blocked = struct { edge: mux.PaneEdge, marker: bounds };
+
+/// The strip along `content`'s `edge` that is `depth` pixels deep.
+pub fn edgeBand(content: PaneBounds, edge: mux.PaneEdge, depth: f32) bounds {
+    const r = rect(content);
+    const w = @min(depth, r.width);
+    const h = @min(depth, r.height);
+    return switch (edge) {
+        .left => .{ .x = r.x, .y = r.y, .width = w, .height = r.height },
+        .right => .{ .x = r.x + r.width - w, .y = r.y, .width = w, .height = r.height },
+        .top => .{ .x = r.x, .y = r.y, .width = r.width, .height = h },
+        .bottom => .{ .x = r.x, .y = r.y + r.height - h, .width = r.width, .height = h },
+    };
+}
 
 pub fn rect(b: PaneBounds) bounds {
     return .{ .x = @floatFromInt(b.x), .y = @floatFromInt(b.y), .width = @floatFromInt(b.width), .height = @floatFromInt(b.height) };

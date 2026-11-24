@@ -644,6 +644,8 @@ test {
     _ = @import("render/sokol_runtime.zig");
     _ = @import("render/layout_drag.zig");
     _ = @import("mux/pane_drop.zig");
+    _ = @import("mux/dock_drop.zig");
+    _ = @import("mux/dock.zig");
     _ = @import("mux/workspace.zig");
     if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");

@@ -942,6 +942,8 @@ var g_drag_node: ?*SplitNode = null;
 var g_floating_drag: ?FloatingDrag = null;
 const layout_drag = @import("layout_drag.zig");
 const pane_drop = @import("../mux/pane_drop.zig");
+const dock_drop = @import("../mux/dock_drop.zig");
+const color_math = @import("color_math.zig");
 var g_layout_drag: ?layout_drag.Drag = null;
 var g_layout_drag_escape_up = false;
 const TiledDragHover = struct { pane: usize, tab: usize, hot: bool };
@@ -1098,6 +1100,7 @@ fn topBarTabBounds(index: usize) ?ui_semantics.Bounds {
 
 fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i128) void {
     drag.drop = null;
+    drag.blocked = null;
     if (!drag.track(x, y, @max(1, c.sapp_dpi_scale()))) return;
     defer setMouseCursor(if (drag.canceled) c.SAPP_MOUSECURSOR_ARROW else if (drag.drop == null) c.SAPP_MOUSECURSOR_NOT_ALLOWED else c.SAPP_MOUSECURSOR_POINTING_HAND);
     const ws = layoutDragWorkspace(app, drag.*) orelse {
@@ -1141,8 +1144,10 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
         } };
         return;
     }
+    const mux = &app.mux.?;
     const pane = app.findPaneById(drag.pane.?) orelse return;
-    if (!pane_drop.eligible(source, pane)) return;
+    const docked = mux.paneDock(pane) != null;
+    if (!docked and !pane_drop.eligible(source, pane)) return;
     if (hit.surface == .top) {
         if (drag.hover_tab != hovered_id) {
             drag.hover_tab = hovered_id;
@@ -1152,7 +1157,7 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
             const dest = ws.tabById(id) orelse return;
             if (dest.maximized_pane != null or dest.root_split == null) return;
             if (now - drag.hover_since >= 350 * std.time.ns_per_ms) drag.preview_tab = if (id == drag.tab) null else id;
-            if (id != source.id and @import("../mux.zig").Mux.canMovePaneToTabRoot(dest)) {
+            if (!docked and id != source.id and @import("../mux.zig").Mux.canMovePaneToTabRoot(dest)) {
                 const marker = topBarTabBounds(hit.tab_index.?) orelse return;
                 drag.drop = .{ .tab = .{ .id = id, .marker = marker } };
             }
@@ -1160,6 +1165,23 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
         return;
     }
     drag.hover_tab = null;
+    if (drag.preview_tab == null) {
+        const content = app.contentBounds();
+        const scale = @max(1, c.sapp_dpi_scale());
+        if (dock_drop.edgeAt(content, x, y, 32 * scale)) |edge| {
+            const target: dock_drop.Target = .{ .edge = edge, .scope = dock_drop.scopeFor(mux, pane, drag.shift) };
+            switch (dock_drop.status(mux, pane, target)) {
+                .ok => if (dock_drop.preview(mux, pane, target, content, app.cell_width_px, app.cell_height_px)) |b| {
+                    drag.drop = .{ .dock = .{ .edge = edge, .scope = target.scope, .marker = layout_drag.rect(b) } };
+                },
+                .occupied => drag.blocked = .{ .edge = edge, .marker = layout_drag.edgeBand(content, edge, 32 * scale) },
+                .none => {},
+            }
+            if (drag.drop != null or drag.blocked != null) return;
+        }
+    }
+    if (docked and !mux.canUndockToTab(pane)) return;
+    const from: ?*@import("../mux.zig").Tab = if (docked) null else source;
     const dest = ws.tabById(drag.preview_tab orelse drag.tab) orelse return;
     var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.layoutContentForTab(app.contentBounds(), dest, &buffer);
@@ -1170,7 +1192,7 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
         if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
         if (app.mux.?.paneDock(leaf.pane) != null) return;
         const zone = pane_drop.zoneAt(leaf.bounds, x, y);
-        _ = pane_drop.preview(source, pane, dest, leaf.pane, zone, app.activeLayoutBounds(), app.cell_width_px, app.cell_height_px) orelse return;
+        _ = pane_drop.preview(from, pane, dest, leaf.pane, zone, app.activeLayoutBounds(), app.cell_width_px, app.cell_height_px) orelse return;
         drag.drop = .{ .pane = .{ .id = leaf.pane.id, .tab = dest.id, .zone = zone, .marker = layout_drag.paneMarker(leaf.bounds, zone) } };
         return;
     }
@@ -1187,6 +1209,7 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
         c.SAPP_EVENTTYPE_MOUSE_MOVE => {
             g_mouse_x = event.mouse_x;
             g_mouse_y = event.mouse_y;
+            drag.shift = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0;
             setMouseCursorHidden(false);
             updateLayoutDrag(app, drag, event.mouse_x, event.mouse_y, io.nanoTimestamp());
             app.requestRedraw();
@@ -1195,6 +1218,7 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
             if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
                 g_mouse_x = event.mouse_x;
                 g_mouse_y = event.mouse_y;
+                drag.shift = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0;
                 updateLayoutDrag(app, drag, event.mouse_x, event.mouse_y, io.nanoTimestamp());
                 const result = drag.*;
                 stopLayoutDrag(app);
@@ -1203,6 +1227,7 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
                         switch (drop) {
                             .tab => |item| mux_ops.movePaneToTab(app, result.pane.?, item.id, .vertical, 0.5),
                             .pane => |item| mux_ops.dropTiledPane(app, result.tab, result.pane.?, item.tab, item.id, item.zone),
+                            .dock => |item| mux_ops.dockPaneById(app, result.pane.?, item.edge, item.scope, null),
                             .reorder => |item| if (layoutDragWorkspace(app, result)) |ws| {
                                 if (ws.reorderTab(result.tab, item.id, item.after)) {
                                     app.requestLayoutRefresh();
@@ -1232,11 +1257,16 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
                 }
             }
         },
-        c.SAPP_EVENTTYPE_KEY_DOWN => {
-            if (event.key_code != c.SAPP_KEYCODE_ESCAPE) return false;
-            drag.canceled = true;
-            setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
-            g_layout_drag_escape_up = true;
+        c.SAPP_EVENTTYPE_KEY_DOWN, c.SAPP_EVENTTYPE_KEY_UP => {
+            if (event.key_code == c.SAPP_KEYCODE_LEFT_SHIFT or event.key_code == c.SAPP_KEYCODE_RIGHT_SHIFT) {
+                drag.shift = event.type == c.SAPP_EVENTTYPE_KEY_DOWN;
+                updateLayoutDrag(app, drag, g_mouse_x, g_mouse_y, io.nanoTimestamp());
+            } else {
+                if (event.type != c.SAPP_EVENTTYPE_KEY_DOWN or event.key_code != c.SAPP_KEYCODE_ESCAPE) return false;
+                drag.canceled = true;
+                setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+                g_layout_drag_escape_up = true;
+            }
             app.requestRedraw();
         },
         c.SAPP_EVENTTYPE_UNFOCUSED, c.SAPP_EVENTTYPE_ICONIFIED => {
@@ -1266,7 +1296,10 @@ fn tiledDragHoverAt(app: *App, x: f32, y: f32) ?TiledDragHover {
         i -= 1;
         const leaf = leaves[i];
         if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
-        if (leaf.bounds.width < 20 or !pane_drop.eligible(tab, leaf.pane) or !layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), x, y)) return null;
+        // A dock title strip is its drag handle.
+        if (leaf.header > 0) return null;
+        const draggable = pane_drop.eligible(tab, leaf.pane) or mux.dockIsShown(leaf.pane);
+        if (leaf.bounds.width < 20 or !draggable or !layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), x, y)) return null;
         const h = layout_drag.handle(leaf.bounds, scale);
         if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) return null;
         return .{ .pane = leaf.pane.id, .tab = tab.id, .hot = layout_drag.contains(h, x, y) };
@@ -1278,6 +1311,322 @@ fn setTiledDragHover(app: *App, hover: ?TiledDragHover) void {
     if (std.meta.eql(g_tiled_drag_hover, hover)) return;
     g_tiled_drag_hover = hover;
     app.requestRedraw();
+}
+
+fn chipWidth(renderer: *FtRenderer, label: []const u8) f32 {
+    const cells = std.unicode.utf8CountCodepoints(label) catch label.len;
+    return renderer.cell_w * @as(f32, @floatFromInt(cells + 2));
+}
+
+/// A chip centered in `m`, or null when the label does not fit.
+fn centeredChip(renderer: *FtRenderer, m: ui_semantics.Bounds, label: []const u8) ?ui_semantics.Bounds {
+    const w = chipWidth(renderer, label);
+    if (w >= m.width or renderer.cell_h >= m.height) return null;
+    return .{ .x = m.x + (m.width - w) / 2, .y = m.y + (m.height - renderer.cell_h) / 2, .width = w, .height = renderer.cell_h };
+}
+
+fn drawDropChip(renderer: *FtRenderer, chip: ?ui_semantics.Bounds, label: []const u8, scale: f32, bg: ghostty.ColorRgb, fg: ghostty.ColorRgb) void {
+    const b = chip orelse return;
+    drawRoundedRect(b.x, b.y, b.width, b.height, 4 * scale, bg.r, bg.g, bg.b, 245);
+    renderer.drawLabel(b.x + renderer.cell_w, b.y, label, fg.r, fg.g, fg.b);
+    c.sgl_load_default_pipeline();
+}
+
+/// Docks are colored by scope so global and workspace docks read apart.
+fn dockColor(app: *const App, scope: @import("../mux.zig").DockScope, focused: bool) ghostty.ColorRgb {
+    const cfg = &app.config;
+    return switch (scope) {
+        .global => if (focused) cfg.dock_global_active_color else cfg.dock_global_inactive_color,
+        .workspace => if (focused) cfg.dock_active_color else cfg.dock_inactive_color,
+    };
+}
+
+const DockHeaderItem = Config.DockHeader.Item;
+const DockHeaderPart = struct { item: DockHeaderItem, x: f32, width: f32, cells: usize };
+
+const DockHeader = struct {
+    pane: *Pane,
+    location: @import("../mux/mux.zig").Mux.DockLocation,
+    rect: ui_semantics.Bounds,
+    parts: [3 * Config.DockHeader.max_items]DockHeaderPart = undefined,
+    len: usize = 0,
+
+    fn add(self: *DockHeader, item: DockHeaderItem, x: f32, width: f32, cells: usize) void {
+        self.parts[self.len] = .{ .item = item, .x = x, .width = width, .cells = cells };
+        self.len += 1;
+    }
+
+    fn buttonAt(self: *const DockHeader, x: f32) ?DockHeaderItem {
+        for (self.parts[0..self.len]) |part| {
+            if (dockHeaderIsClickable(part.item) and x >= part.x and x < part.x + part.width) return part.item;
+        }
+        return null;
+    }
+};
+
+const DockHeaderHover = struct { pane: usize, item: ?DockHeaderItem };
+var g_dock_header_hover: ?DockHeaderHover = null;
+
+fn dockHeaderIsButton(item: DockHeaderItem) bool {
+    return switch (item) {
+        .hide, .undock => true,
+        .title, .scope, .edge => false,
+    };
+}
+
+/// Clicking the scope label moves the dock to the other scope.
+fn dockHeaderIsClickable(item: DockHeaderItem) bool {
+    return dockHeaderIsButton(item) or item == .scope;
+}
+
+/// A pane's label, by the default tab label rules: its title, then its
+/// foreground process, then the last part of its cwd.
+fn paneLabel(pane: *const Pane, buf: []u8) []const u8 {
+    if (pane.title.len > 0) return pane.title;
+    if (pane.foreground_process) |process| if (process.len > 0) return process;
+    const cwd = std.mem.trimEnd(u8, pane.cwd, "/\\");
+    const base = cwd[if (std.mem.lastIndexOfAny(u8, cwd, "/\\")) |i| i + 1 else 0..];
+    if (base.len > 0) return base;
+    return std.fmt.bufPrint(buf, "Pane {d}", .{pane.id}) catch "Pane";
+}
+
+fn dockHeaderText(item: DockHeaderItem, header: *const DockHeader, buf: []u8) []const u8 {
+    return switch (item) {
+        .hide => "\u{f0209}",
+        .undock => "\u{f0404}",
+        .title => paneLabel(header.pane, buf),
+        .scope => dock_drop.scopeLabel(header.location.scope),
+        .edge => dock_drop.label(header.location.edge),
+    };
+}
+
+fn textCells(text: []const u8) usize {
+    return std.unicode.utf8CountCodepoints(text) catch text.len;
+}
+
+/// `text` cut to `cells` codepoints, ending in an ellipsis when shortened.
+fn truncateCells(text: []const u8, cells: usize, buf: []u8) []const u8 {
+    if (textCells(text) <= cells) return text;
+    if (cells == 0) return "";
+    var view = std.unicode.Utf8View.init(text) catch return text[0..@min(text.len, cells)];
+    var it = view.iterator();
+    var n: usize = 0;
+    while (n + 1 < cells) : (n += 1) _ = it.nextCodepointSlice() orelse break;
+    const head = text[0..it.i];
+    if (head.len + 3 > buf.len) return head;
+    @memcpy(buf[0..head.len], head);
+    @memcpy(buf[head.len..][0..3], "…");
+    return buf[0 .. head.len + 3];
+}
+
+/// Lay out the configured items of a dock's title strip. Each item gets half
+/// a cell of padding per side. Left items win, then right items; the center
+/// shrinks its titles to fit what is left. Left docks mirror the side items
+/// so their buttons sit next to the tab area.
+fn dockHeaderLayout(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf) ?DockHeader {
+    const mux = if (app.mux) |*m| m else return null;
+    const location = mux.paneDock(leaf.pane) orelse return null;
+    const strip = @import("../mux.zig").dockHeaderBounds(leaf) orelse return null;
+    var header: DockHeader = .{ .pane = leaf.pane, .location = location, .rect = layout_drag.rect(strip) };
+    const cw = renderer.cell_w;
+    if (cw <= 0) return header;
+    const total: usize = @intFromFloat(@floor(header.rect.width / cw));
+    const config = &app.config.dock_header;
+    var buf: [32]u8 = undefined;
+    const cellsOf = struct {
+        fn get(item: DockHeaderItem, h: *const DockHeader, b: []u8) usize {
+            // Nerd Font icons draw wider than one cell, so buttons get two.
+            return if (dockHeaderIsButton(item)) 2 else textCells(dockHeaderText(item, h, b));
+        }
+    }.get;
+    const at = struct {
+        fn x(h: *const DockHeader, w: f32, cell: usize) f32 {
+            return h.rect.x + w * @as(f32, @floatFromInt(cell));
+        }
+    }.x;
+    const mirror = location.edge == .left;
+    // Side items are placed in strip cells counted from the leading edge.
+    const side = struct {
+        fn x(h: *const DockHeader, w: f32, cell: usize, cells: usize, flip: bool) f32 {
+            if (!flip) return h.rect.x + w * @as(f32, @floatFromInt(cell));
+            return h.rect.x + h.rect.width - w * @as(f32, @floatFromInt(cell + cells + 1));
+        }
+    }.x;
+    var left: usize = 0;
+    var right: usize = total;
+    for (config.left.slice()) |item| {
+        const cells = cellsOf(item, &header, &buf);
+        if (left + cells + 1 > right) break;
+        header.add(item, side(&header, cw, left, cells, mirror), cw * @as(f32, @floatFromInt(cells + 1)), cells);
+        left += cells + 1;
+    }
+    left += 1;
+    var i = config.right.len;
+    while (i > 0) {
+        i -= 1;
+        const item = config.right.buf[i];
+        const cells = cellsOf(item, &header, &buf);
+        if (right < left + cells + 1) continue;
+        right -= cells + 1;
+        header.add(item, side(&header, cw, right, cells, mirror), cw * @as(f32, @floatFromInt(cells + 1)), cells);
+    }
+    if (right <= left) return header;
+    // Fixed center items keep their size; titles share what remains.
+    var fixed: usize = 0;
+    var titles: usize = 0;
+    var wanted: usize = 0;
+    for (config.center.slice()) |item| {
+        const cells = cellsOf(item, &header, &buf) + 1;
+        wanted += cells;
+        if (item == .title) titles += 1 else fixed += cells;
+    }
+    const room = right - left;
+    if (fixed > room) return header;
+    const title_room = if (titles == 0) 0 else (room - fixed) / titles;
+    const width = @min(wanted, room);
+    const lo = if (mirror) total - right else left;
+    var cursor = std.math.clamp(total / 2 -| width / 2, lo, lo + room - width);
+    for (config.center.slice()) |item| {
+        var cells = cellsOf(item, &header, &buf);
+        if (item == .title) cells = @min(cells, title_room -| 1);
+        if (cells == 0) continue;
+        header.add(item, at(&header, cw, cursor), cw * @as(f32, @floatFromInt(cells + 1)), cells);
+        cursor += cells + 1;
+    }
+    return header;
+}
+
+/// The dock title strip under the pointer, unless a floating pane or a
+/// dock seam is there first.
+fn dockHeaderAt(app: *App, x: f32, y: f32) ?DockHeader {
+    const renderer = if (g_ft_renderer) |*r| r else return null;
+    if (layoutDragBlocked(x, y) or app.hitTestDividerAt(x, y, 6.0) != null) return null;
+    var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&buffer);
+    var i = leaves.len;
+    while (i > 0) {
+        i -= 1;
+        const leaf = leaves[i];
+        if (layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) return null;
+        const strip = @import("../mux.zig").dockHeaderBounds(leaf) orelse continue;
+        if (!layout_drag.contains(layout_drag.rect(strip), x, y)) continue;
+        return dockHeaderLayout(app, renderer, leaf);
+    }
+    return null;
+}
+
+fn runDockHeaderAction(app: *App, header: *const DockHeader, item: DockHeaderItem) void {
+    const id = header.pane.id;
+    switch (item) {
+        .hide => mux_ops.setPaneVisibleById(app, id, false),
+        .undock => mux_ops.undockPaneById(app, id),
+        .scope => {
+            const mux = if (app.mux) |*m| m else return;
+            const target: dock_drop.Target = .{ .edge = header.location.edge, .scope = dock_drop.scopeFor(mux, header.pane, true) };
+            if (dock_drop.status(mux, header.pane, target) != .ok) {
+                std.log.info("dock header: {s} {s} dock is taken", .{ dock_drop.scopeLabel(target.scope), dock_drop.label(target.edge) });
+                return;
+            }
+            mux_ops.dockPaneById(app, id, target.edge, target.scope, null);
+        },
+        .title, .edge => {},
+    }
+}
+
+fn setDockHeaderHover(app: *App, hover: ?DockHeaderHover) void {
+    if (std.meta.eql(g_dock_header_hover, hover)) return;
+    g_dock_header_hover = hover;
+    app.requestRedraw();
+}
+
+/// Draw a dock's title strip, or with `draw` false only rasterize its glyphs.
+fn renderDockHeader(app: *App, renderer: *FtRenderer, leaf: LayoutLeaf, draw: bool) void {
+    const header = dockHeaderLayout(app, renderer, leaf) orelse return;
+    const focused = if (app.mux) |*m| m.activePane() == leaf.pane else false;
+    const theme = app.config.terminal_theme;
+    const accent = dockColor(app, header.location.scope, focused);
+    // A faint wash of the scope color keeps the bar quiet but tells the
+    // scopes apart.
+    const bg = color_math.mixColor(theme.background, accent, if (focused) 0.18 else 0.08);
+    const fg = if (focused) theme.foreground else color_math.mixColor(theme.background, theme.foreground, 0.7);
+    const r = header.rect;
+    const scale = @max(1, c.sapp_dpi_scale());
+    if (draw) drawBorderRect(r.x, r.y, r.width, r.height, bg.r, bg.g, bg.b, 255);
+    const hover = g_dock_header_hover;
+    const text_y = r.y + (r.height - renderer.cell_h) / 2;
+    for (header.parts[0..header.len]) |part| {
+        var buf: [32]u8 = undefined;
+        var cut: [256]u8 = undefined;
+        const text = truncateCells(dockHeaderText(part.item, &header, &buf), part.cells, &cut);
+        if (!draw) {
+            renderer.preRasterizeLabel(text);
+            continue;
+        }
+        if (hover != null and hover.?.pane == leaf.pane.id and hover.?.item == part.item) {
+            drawRoundedRect(part.x + scale, r.y + scale, part.width - 2 * scale, r.height - 2 * scale, 3 * scale, fg.r, fg.g, fg.b, 40);
+        }
+        if (!dockHeaderIsButton(part.item)) {
+            const color = if (part.item == .scope) accent else fg;
+            renderer.drawLabel(part.x + renderer.cell_w / 2, text_y, text, color.r, color.g, color.b);
+            continue;
+        }
+        // Center the icon's ink, not its advance or baseline, on the button.
+        const ink = renderer.labelInk(text, 0) orelse FtRenderer.LabelInk{ .left = 0, .right = renderer.cell_w, .bottom = renderer.cell_h };
+        const x = @round(part.x + part.width / 2 - (ink.left + ink.right) / 2);
+        const y = @round(r.y + r.height / 2 - (ink.top + ink.bottom) / 2);
+        renderer.drawLabel(x, y, text, fg.r, fg.g, fg.b);
+    }
+    if (draw) c.sgl_load_default_pipeline();
+}
+
+fn dockHeaderTooltipText(app: *App, header: *const DockHeader, item: DockHeaderItem, buf: []u8) ?[]const u8 {
+    return switch (item) {
+        .hide => "Hide",
+        .undock => "Undock to tab",
+        .scope => {
+            const mux = if (app.mux) |*m| m else return null;
+            const target: dock_drop.Target = .{ .edge = header.location.edge, .scope = dock_drop.scopeFor(mux, header.pane, true) };
+            const taken = dock_drop.status(mux, header.pane, target) != .ok;
+            return std.fmt.bufPrint(buf, "{s} {s} dock{s}", .{
+                if (taken) dock_drop.scopeLabel(target.scope) else "Move to",
+                if (taken) dock_drop.label(target.edge) else dock_drop.scopeLabel(target.scope),
+                if (taken) " is taken" else "",
+            }) catch null;
+        },
+        .title, .edge => null,
+    };
+}
+
+/// Draw the tooltip of the hovered strip button below the strip, or with
+/// `draw` false only rasterize its glyphs.
+fn renderDockHeaderTooltip(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf, draw: bool) void {
+    const hover = g_dock_header_hover orelse return;
+    const item = hover.item orelse return;
+    const leaf = for (leaves) |leaf| {
+        if (leaf.header > 0 and leaf.pane.id == hover.pane) break leaf;
+    } else return;
+    const header = dockHeaderLayout(app, renderer, leaf) orelse return;
+    const part = for (header.parts[0..header.len]) |part| {
+        if (part.item == item) break part;
+    } else return;
+    var buf: [64]u8 = undefined;
+    const text = dockHeaderTooltipText(app, &header, item, &buf) orelse return;
+    if (!draw) return renderer.preRasterizeLabel(text);
+    const scale = @max(1, c.sapp_dpi_scale());
+    const w = chipWidth(renderer, text);
+    const max_x = @max(0, c.sapp_widthf() - w);
+    const chip: ui_semantics.Bounds = .{
+        .x = std.math.clamp(part.x + part.width / 2 - w / 2, 0, max_x),
+        .y = header.rect.y + header.rect.height + 2 * scale,
+        .width = w,
+        .height = renderer.cell_h,
+    };
+    const theme = app.config.terminal_theme;
+    const accent = dockColor(app, header.location.scope, true);
+    drawRoundedRect(chip.x, chip.y, chip.width, chip.height, 4 * scale, theme.background.r, theme.background.g, theme.background.b, 245);
+    drawRoundedRectOutline(chip.x, chip.y, chip.width, chip.height, 4 * scale, scale, accent.r, accent.g, accent.b, 200);
+    renderer.drawLabel(chip.x + renderer.cell_w, chip.y, text, theme.foreground.r, theme.foreground.g, theme.foreground.b);
+    c.sgl_load_default_pipeline();
 }
 
 fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) void {
@@ -1305,7 +1654,7 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
                 if (box.width > 7 * renderer.cell_w and box.height > renderer.cell_h * 2) {
                     var text: [48]u8 = undefined;
                     var fit_buf: [256]u8 = undefined;
-                    const title = if (leaf.pane.title.len > 0) leaf.pane.title else std.fmt.bufPrint(&text, "Pane {d}", .{leaf.pane.id}) catch "Pane";
+                    const title = paneLabel(leaf.pane, &text);
                     const len: usize = @intFromFloat(box.width / renderer.cell_w - 2);
                     const label = fitTabLabel(title, len, &fit_buf);
                     renderer.drawLabel(box.x + renderer.cell_w, box.y + renderer.cell_h / 2, label, fg.r, fg.g, fg.b);
@@ -1313,7 +1662,24 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
                 }
             }
         };
-        if (drag.drop) |drop| {
+        if (drag.blocked) |blocked| {
+            const red = app.config.terminal_theme.palette[1];
+            const m = blocked.marker;
+            drawBorderRect(m.x, m.y, m.width, m.height, red.r, red.g, red.b, 40);
+            drawRectOutline(m.x, m.y, m.width, m.height, 2 * scale, red.r, red.g, red.b, 255);
+            var text: [48]u8 = undefined;
+            const label = std.fmt.bufPrint(&text, "{s} dock occupied", .{dock_drop.label(blocked.edge)}) catch "";
+            drawDropChip(renderer, centeredChip(renderer, m, label), label, scale, bg, fg);
+        }
+        if (drag.drop) |drop| if (drop == .dock) {
+            const dock = dockColor(app, drop.dock.scope, true);
+            const m = drop.dock.marker;
+            drawBorderRect(m.x, m.y, m.width, m.height, dock.r, dock.g, dock.b, 76);
+            drawRectOutline(m.x, m.y, m.width, m.height, 2 * scale, dock.r, dock.g, dock.b, 255);
+            var text: [48]u8 = undefined;
+            const label = std.fmt.bufPrint(&text, "Dock {s} · {s}", .{ dock_drop.label(drop.dock.edge), dock_drop.scopeLabel(drop.dock.scope) }) catch "";
+            drawDropChip(renderer, centeredChip(renderer, m, label), label, scale, bg, fg);
+        } else {
             const marker = switch (drop) {
                 inline else => |item| item.marker,
             };
@@ -1331,7 +1697,7 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
                     c.sgl_load_default_pipeline();
                 }
             }
-        }
+        };
         // Draw last so the dragged item stays visible even over a drop preview.
         const size = 16 * scale;
         const offset = 12 * scale;
@@ -1344,11 +1710,26 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
     const hover = g_tiled_drag_hover orelse return;
     if (!g_mouse_over_window or tab.id != hover.tab or tab.maximized_pane != null) return;
     for (leaves) |leaf| {
-        if (leaf.pane.id != hover.pane or leaf.pane.is_floating or mux.paneDock(leaf.pane) != null or leaf.bounds.width < 20) continue;
+        if (leaf.pane.id != hover.pane or leaf.pane.is_floating or leaf.header > 0 or leaf.bounds.width < 20) continue;
         if (!layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), g_mouse_x, g_mouse_y)) break;
         const h = layout_drag.handle(leaf.bounds, scale);
         if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) break;
         drawRoundedRect(h.x + h.width / 4, h.y + 3 * scale, h.width / 2, 3 * scale, 1.5 * scale, fg.r, fg.g, fg.b, if (hover.hot) 220 else 145);
+        // Name the dock so it does not read as another split.
+        if (mux.paneDock(leaf.pane)) |location| {
+            var text: [48]u8 = undefined;
+            const full = std.fmt.bufPrint(&text, "{s} dock · {s}", .{ dock_drop.label(location.edge), dock_drop.scopeLabel(location.scope) }) catch break;
+            const box = layout_drag.rect(leaf.bounds);
+            // Beside the handle when there is room, else below it; narrow
+            // docks fall back to the scope alone.
+            const spots = [_][2]f32{ .{ h.x + h.width + 4 * scale, box.y + 1 * scale }, .{ box.x + 2 * scale, h.y + h.height + 2 * scale } };
+            place: for (spots) |spot| for ([_][]const u8{ full, dock_drop.scopeLabel(location.scope) }) |label| {
+                const w = chipWidth(renderer, label);
+                if (spot[0] + w > box.x + box.width or spot[1] + renderer.cell_h > box.y + box.height) continue;
+                drawDropChip(renderer, .{ .x = spot[0], .y = spot[1], .width = w, .height = renderer.cell_h }, label, scale, bg, dockColor(app, location.scope, true));
+                break :place;
+            };
+        }
         break;
     }
 }
@@ -3160,7 +3541,7 @@ fn topbarButtonInk(renderer: *FtRenderer, view: *const BarSegmentView) ?FtRender
     var pen: f32 = 0;
     for (view.segments[0..view.segments_len]) |seg| {
         if (renderer.labelInk(seg.text, if (seg.bold) 1 else 0)) |ink| {
-            FtRenderer.LabelInk.include(&bounds, pen + ink.left, pen + ink.right);
+            FtRenderer.LabelInk.include(&bounds, .{ .left = pen + ink.left, .right = pen + ink.right, .top = ink.top, .bottom = ink.bottom });
         }
         pen += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
     }
@@ -4193,6 +4574,7 @@ pub fn run(app: *App) !void {
     g_layout_drag = null;
     g_layout_drag_escape_up = false;
     g_tiled_drag_hover = null;
+    g_dock_header_hover = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
     g_transparent_surface = app.config.background.opacity < 1.0;
@@ -4610,6 +4992,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         if (g_ft_renderer) |*renderer| {
             for (notice_text.lines[0..notice_text.count]) |line| renderer.preRasterizeLabel(line);
         }
+    }
+    if (g_ft_renderer) |*renderer| {
+        for (leaves) |leaf| if (leaf.header > 0) renderDockHeader(app, renderer, leaf, false);
+        renderDockHeaderTooltip(app, renderer, leaves, false);
     }
     if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
         if (leaves.len > 0) {
@@ -5503,6 +5889,32 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             }
 
+            // Docks belong to the window frame: tint them and color the seam
+            // facing the tab region so they do not read as another split.
+            if (app.mux) |*mux| for (leaves) |leaf| {
+                const location = mux.paneDock(leaf.pane) orelse continue;
+                const color = dockColor(app, location.scope, leaf.pane == active);
+                if (app.config.dock_tint > 0 and !seamCoveredByFloating(leaves, leaf.bounds)) {
+                    const b = layout_drag.rect(leaf.bounds);
+                    drawBorderRect(b.x, b.y, b.width, b.height, color.r, color.g, color.b, app.config.dock_tint);
+                }
+                // The seam bounds the whole dock, title strip included.
+                const frame = @import("../mux.zig").dockFrameBounds(leaf);
+                const x0: f32 = @floatFromInt(frame.x);
+                const y0: f32 = @floatFromInt(frame.y);
+                const lw: f32 = @floatFromInt(frame.width);
+                const lh: f32 = @floatFromInt(frame.height);
+                const seam: [4]f32 = switch (location.edge) {
+                    .left => .{ x0 + lw, y0, split_border_px, lh },
+                    .right => .{ x0 - 1, y0, split_border_px, lh },
+                    .top => .{ x0, y0 + lh, lw, split_border_px },
+                    .bottom => .{ x0, y0 - 1, lw, split_border_px },
+                };
+                if (seam[0] < 0 or seam[1] < 0 or seam[0] >= width or seam[1] >= height) continue;
+                const bounds: PaneBounds = .{ .x = @intFromFloat(seam[0]), .y = @intFromFloat(seam[1]), .width = @max(1, @as(u32, @intFromFloat(seam[2]))), .height = @max(1, @as(u32, @intFromFloat(seam[3]))) };
+                if (!seamCoveredByFloating(leaves, bounds)) drawBorderRect(seam[0], seam[1], seam[2], seam[3], color.r, color.g, color.b, 255);
+            };
+
             for (leaves) |leaf| {
                 if (!leaf.pane.is_floating) continue;
 
@@ -5619,8 +6031,17 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 break;
             };
         };
-        if (notice_value != null or any_dead) c.sgl_layer(1);
+        const any_header = for (leaves) |leaf| {
+            if (leaf.header > 0) break true;
+        } else false;
+        if (notice_value != null or any_dead or any_header) c.sgl_layer(1);
         defer c.sgl_layer(0);
+        if (any_header) {
+            for (leaves) |leaf| {
+                if (leaf.header > 0 and !seamCoveredByFloating(leaves, @import("../mux.zig").dockHeaderBounds(leaf).?)) renderDockHeader(app, renderer, leaf, true);
+            }
+            renderDockHeaderTooltip(app, renderer, leaves, true);
+        }
         if (any_dead) for (leaves) |leaf| {
             if (dead_pane.state(leaf.pane)) |value| drawDeadPaneFooter(app, renderer, leaf, value);
             if (takenGlobalDock(app, leaf.pane)) drawTakenDockBadge(app, renderer, leaf);
@@ -6574,6 +6995,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
         setTiledDragHover(app, null);
+        setDockHeaderHover(app, null);
         app.emitLuaBuiltInEvent("topbar:leave", .none);
         g_terminal_pointer_mods = null;
         updateLuaPaneHover(app);
@@ -7451,6 +7873,21 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             c.sapp_consume_event();
             return;
         }
+        if (dockHeaderAt(app, event.mouse_x, event.mouse_y)) |header| {
+            c.sapp_consume_event();
+            g_mouse_button_down = null;
+            if (header.buttonAt(event.mouse_x)) |item| {
+                g_block_left_mouse_until_up = true;
+                g_skip_mouse_release = .left;
+                setDockHeaderHover(app, null);
+                runDockHeaderAction(app, &header, item);
+                return;
+            }
+            mux_ops.focusPaneById(app, header.pane.id);
+            if (app.mux.?.activeTab()) |tab| beginLayoutDrag(app, event, tab.id, header.pane.id);
+            if (g_layout_drag == null) g_block_left_mouse_until_up = true;
+            return;
+        }
         if (ghosttyMods(event.modifiers) == 0) {
             if (tiledDragHoverAt(app, event.mouse_x, event.mouse_y)) |hit| {
                 if (hit.hot) {
@@ -7798,6 +8235,14 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             setMouseCursor(hit.grip.cursor());
             return;
         }
+        if (dockHeaderAt(app, event.mouse_x, event.mouse_y)) |header| {
+            const item = header.buttonAt(event.mouse_x);
+            setDockHeaderHover(app, .{ .pane = header.pane.id, .item = item });
+            g_scrollbar_hover_pane = null;
+            setMouseCursor(if (item != null) c.SAPP_MOUSECURSOR_POINTING_HAND else c.SAPP_MOUSECURSOR_RESIZE_ALL);
+            return;
+        }
+        setDockHeaderHover(app, null);
         if (ghosttyMods(event.modifiers) == 0) {
             tiled_hover = tiledDragHoverAt(app, event.mouse_x, event.mouse_y);
             if (tiled_hover) |hover| if (hover.hot) {

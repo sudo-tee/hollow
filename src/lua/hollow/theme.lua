@@ -219,6 +219,13 @@ local function create_ui(spec, palette)
   ui.floating_active = color_or(ui.floating_active, palette.magenta)
   ui.floating_inactive =
     color_or(ui.floating_inactive, color.brighten_hex_color(palette.black, 0.08, palette.black))
+  ui.dock_active = color_or(ui.dock_active, palette.cyan)
+  ui.dock_inactive =
+    color.darken_hex_color(color_or(ui.dock_inactive, palette.cyan), 0.4, palette.cyan)
+  ui.dock_global_active = color_or(ui.dock_global_active, palette.green)
+  ui.dock_global_inactive =
+    color.darken_hex_color(color_or(ui.dock_global_inactive, palette.green), 0.4, palette.green)
+  ui.dock_tint = math.max(0, math.min(255, math.floor(tonumber(ui.dock_tint) or 12)))
   ui.accent = color_or(ui.accent, palette.magenta)
   ui.warm = color_or(ui.warm, palette.bright_yellow)
   ui.status.bg = color_or(ui.status.bg, palette.black)

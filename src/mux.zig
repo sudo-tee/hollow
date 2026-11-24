@@ -27,6 +27,9 @@ pub const Workspace = workspace_mod.Workspace;
 pub const Mux = mux_mod.Mux;
 pub const Docks = dock_mod.Docks;
 pub const DockScope = dock_mod.DockScope;
+pub const dockHeaderBounds = dock_mod.headerBounds;
+pub const dockFrameBounds = dock_mod.frameBounds;
+pub const reserveDockHeader = dock_mod.reserveHeader;
 
 pub const layoutSplitTree = layout.layoutSplitTree;
 pub const splitChildBounds = layout.splitChildBounds;

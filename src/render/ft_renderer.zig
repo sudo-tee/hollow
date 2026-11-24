@@ -687,15 +687,20 @@ pub const FtRenderer = struct {
         }
     }
 
+    /// Ink extents relative to the label's draw position.
     pub const LabelInk = struct {
         left: f32,
         right: f32,
+        top: f32 = 0,
+        bottom: f32 = 0,
 
-        pub fn include(bounds: *?LabelInk, left: f32, right: f32) void {
-            bounds.* = if (bounds.*) |ink|
-                .{ .left = @min(ink.left, left), .right = @max(ink.right, right) }
-            else
-                .{ .left = left, .right = right };
+        pub fn include(bounds: *?LabelInk, ink: LabelInk) void {
+            bounds.* = if (bounds.*) |b| .{
+                .left = @min(b.left, ink.left),
+                .right = @max(b.right, ink.right),
+                .top = @min(b.top, ink.top),
+                .bottom = @max(b.bottom, ink.bottom),
+            } else ink;
         }
     };
 
@@ -718,7 +723,8 @@ pub const FtRenderer = struct {
                     if (glyph) |bitmap| {
                         if (bitmap.bw > 0 and bitmap.bh > 0) {
                             const left = @round(pen + @as(f32, @floatFromInt(bitmap.bear_x)));
-                            LabelInk.include(&bounds, left, left + @as(f32, @floatFromInt(bitmap.bw)));
+                            const top = @round(self.ascender - @as(f32, @floatFromInt(bitmap.bear_y)));
+                            LabelInk.include(&bounds, .{ .left = left, .right = left + @as(f32, @floatFromInt(bitmap.bw)), .top = top, .bottom = top + @as(f32, @floatFromInt(bitmap.bh)) });
                         }
                         continue;
                     }
@@ -735,7 +741,8 @@ pub const FtRenderer = struct {
                 }) orelse return null;
                 if (glyph.bw == 0 or glyph.bh == 0) continue;
                 const left = @round(pen + offset + inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
-                LabelInk.include(&bounds, left, left + @as(f32, @floatFromInt(glyph.bw)));
+                const top = @round(self.ascender - inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
+                LabelInk.include(&bounds, .{ .left = left, .right = left + @as(f32, @floatFromInt(glyph.bw)), .top = top, .bottom = top + @as(f32, @floatFromInt(glyph.bh)) });
             }
         }
         return bounds;
