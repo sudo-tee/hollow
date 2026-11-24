@@ -18,6 +18,7 @@ return {
   window_float = "",
   window_zoom = "",
   pin = "",
+  pin_off = "󰐄", -- Matches the native dock header's Undock glyph.
   move = "",
   arrow_left = "",
   arrow_right = "",
