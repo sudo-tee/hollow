@@ -1062,6 +1062,8 @@ fn layoutDragWorkspace(app: *App, drag: layout_drag.Drag) ?*@import("../mux.zig"
     return ws;
 }
 
+const pane_drag_cursor = c.SAPP_MOUSECURSOR_RESIZE_ALL;
+
 fn beginLayoutDrag(app: *App, event: c.sapp_event, tab_id: usize, pane_id: ?usize) void {
     const mux = if (app.mux) |*m| m else return;
     const ws = mux.activeWorkspace() orelse return;
@@ -1071,7 +1073,7 @@ fn beginLayoutDrag(app: *App, event: c.sapp_event, tab_id: usize, pane_id: ?usiz
     g_mouse_button_down = null;
     g_terminal_pointer_mods = null;
     g_scrollbar_hover_pane = null;
-    if (pane_id != null) setMouseCursor(c.SAPP_MOUSECURSOR_POINTING_HAND);
+    if (pane_id != null) setMouseCursor(pane_drag_cursor);
     if (builtin.os.tag == .windows) {
         if (c.sapp_win32_get_hwnd()) |hwnd| _ = win32.SetCapture(@ptrCast(@constCast(hwnd)));
     }
@@ -1102,7 +1104,14 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
     drag.drop = null;
     drag.blocked = null;
     if (!drag.track(x, y, @max(1, c.sapp_dpi_scale()))) return;
-    defer setMouseCursor(if (drag.canceled) c.SAPP_MOUSECURSOR_ARROW else if (drag.drop == null) c.SAPP_MOUSECURSOR_NOT_ALLOWED else c.SAPP_MOUSECURSOR_POINTING_HAND);
+    defer setMouseCursor(if (drag.canceled)
+        c.SAPP_MOUSECURSOR_ARROW
+    else if (drag.drop == null)
+        c.SAPP_MOUSECURSOR_NOT_ALLOWED
+    else if (drag.pane != null)
+        pane_drag_cursor
+    else
+        c.SAPP_MOUSECURSOR_POINTING_HAND);
     const ws = layoutDragWorkspace(app, drag.*) orelse {
         drag.canceled = true;
         return;
@@ -8239,7 +8248,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             const item = header.buttonAt(event.mouse_x);
             setDockHeaderHover(app, .{ .pane = header.pane.id, .item = item });
             g_scrollbar_hover_pane = null;
-            setMouseCursor(if (item != null) c.SAPP_MOUSECURSOR_POINTING_HAND else c.SAPP_MOUSECURSOR_RESIZE_ALL);
+            setMouseCursor(if (item != null) c.SAPP_MOUSECURSOR_POINTING_HAND else pane_drag_cursor);
             return;
         }
         setDockHeaderHover(app, null);
@@ -8247,7 +8256,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             tiled_hover = tiledDragHoverAt(app, event.mouse_x, event.mouse_y);
             if (tiled_hover) |hover| if (hover.hot) {
                 g_scrollbar_hover_pane = null;
-                setMouseCursor(c.SAPP_MOUSECURSOR_POINTING_HAND);
+                setMouseCursor(pane_drag_cursor);
                 return;
             };
         }
