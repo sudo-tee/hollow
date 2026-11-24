@@ -109,7 +109,7 @@ pub fn dispatch(app: *App, request: Request) void {
         .hide => mux_ops.setPaneVisibleById(app, id, false),
         .zoom => mux_ops.togglePaneMaximizedById(app, id, false),
         .dock => if (value == 2) mux_ops.undockPaneById(app, id),
-        .dock_left, .dock_right, .dock_top, .dock_bottom => mux_ops.dockPaneById(app, id, request.action.dockEdge().?, .workspace, 0.3),
+        .dock_left, .dock_right, .dock_top, .dock_bottom => mux_ops.dockPaneById(app, id, request.action.dockEdge().?, .workspace, null),
         .move_left, .move_right, .move_top, .move_bottom => mux_ops.movePaneById(app, id, request.action.moveDirection().?, 0.08),
         .close => mux_ops.closePaneById(app, id),
     }

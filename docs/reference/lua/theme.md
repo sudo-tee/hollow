@@ -85,6 +85,9 @@ HollowAppTheme = {
   scrollbar = HollowScrollbarConfig,
   split_active, split_inactive,
   floating_active, floating_inactive,
+  dock_active, dock_inactive,               -- workspace docks
+  dock_global_active, dock_global_inactive, -- global docks
+  dock_tint,                -- 0-255 tint alpha over docks, 0 disables
   accent, warm,
   status = { bg, fg },
 }

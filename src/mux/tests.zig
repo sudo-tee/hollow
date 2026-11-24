@@ -1120,3 +1120,103 @@ test "dock panes iterate, close, and undock back into the active tab" {
     try std.testing.expect(!mux.closeActivePane(&fixture.runtime));
     try std.testing.expect(mux.global_docks.isEmpty());
 }
+
+test "dock drop previews match the carved dock and refuse occupied edges" {
+    const dock_drop = @import("dock_drop.zig");
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const first = mux.activePane().?;
+    const moving = try fixture.split();
+    const blocker = try fixture.split();
+    try mux.dockPane(blocker, .left, .workspace, 0.25);
+
+    const content = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 400 };
+    try std.testing.expectEqual(dock_drop.Status.occupied, dock_drop.status(mux, moving, .{ .edge = .left, .scope = .workspace }));
+    try std.testing.expectEqual(dock_drop.Status.ok, dock_drop.status(mux, moving, .{ .edge = .left, .scope = .global }));
+    try std.testing.expectEqual(dock_drop.Status.none, dock_drop.status(mux, blocker, .{ .edge = .left, .scope = .workspace }));
+    try std.testing.expectEqual(@import("dock.zig").DockScope.global, dock_drop.scopeFor(mux, blocker, true));
+    try std.testing.expectEqual(@import("dock.zig").DockScope.workspace, dock_drop.scopeFor(mux, moving, false));
+
+    const target: dock_drop.Target = .{ .edge = .right, .scope = .workspace };
+    const expected = dock_drop.preview(mux, moving, target, content, 0, 0).?;
+    try mux.dockPane(moving, target.edge, target.scope, dock_drop.shareFor(mux, moving));
+    var bounds = content;
+    var leaves: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    var written: usize = 0;
+    mux.layoutDocks(&bounds, &leaves, &written, 0, 0);
+    const actual = for (leaves[0..written]) |leaf| {
+        if (leaf.pane == moving) break leaf.bounds;
+    } else return error.TestUnexpectedResult;
+    try std.testing.expectEqual(expected, actual);
+
+    // The last pane of a tab can't be docked.
+    try std.testing.expectEqual(dock_drop.Status.none, dock_drop.status(mux, first, .{ .edge = .top, .scope = .workspace }));
+}
+
+test "switching a dock's scope keeps every dock's size" {
+    const dock_drop = @import("dock_drop.zig");
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const left = try fixture.split();
+    const right = try fixture.split();
+    try mux.dockPane(left, .left, .workspace, 0.25);
+    try mux.dockPane(right, .right, .workspace, 0.3);
+    const content = PaneBounds{ .x = 0, .y = 0, .width = 1001, .height = 400 };
+    const widths = struct {
+        fn of(m: *Mux, a: *Pane, b: *Pane, c: PaneBounds) [2]u32 {
+            var bounds = c;
+            var leaves: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            var written: usize = 0;
+            m.layoutDocks(&bounds, &leaves, &written, 10, 20);
+            var out: [2]u32 = .{ 0, 0 };
+            for (leaves[0..written]) |leaf| {
+                if (leaf.pane == a) out[0] = leaf.bounds.width;
+                if (leaf.pane == b) out[1] = leaf.bounds.width;
+            }
+            return out;
+        }
+    }.of;
+    const before = widths(mux, left, right, content);
+
+    // Global docks carve first, so the right dock's region grows from the
+    // space beside the left dock to the whole window.
+    const target: dock_drop.Target = .{ .edge = .right, .scope = .global };
+    const preview = dock_drop.preview(mux, right, target, content, 10, 20).?;
+    var buf: [dock_drop.max_docks]@import("dock.zig").Thickness = undefined;
+    const kept = dock_drop.measure(&mux.global_docks, &mux.activeWorkspace().?.docks, null, content, 10, 20, &buf);
+    try mux.dockPane(right, target.edge, target.scope, dock_drop.shareFor(mux, right));
+    dock_drop.keepSizes(&mux.global_docks, &mux.activeWorkspace().?.docks, kept, content, 10, 20);
+
+    // Right docks take the span left over by cell snapping, so they may
+    // differ by a pixel; keeping only the share would grow it by about 70px.
+    const after = widths(mux, left, right, content);
+    try std.testing.expectEqual(before[0], after[0]);
+    try std.testing.expect(@abs(@as(i64, after[1]) - before[1]) <= 1);
+    try std.testing.expectEqual(after[1], preview.width);
+}
+
+test "a docked pane drops into a tab split and frees its dock slot" {
+    const pane_drop = @import("pane_drop.zig");
+    var fixture = try DockFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const mux = &fixture.mux;
+    const first = mux.activePane().?;
+    const docked = try fixture.split();
+    try mux.dockPane(docked, .right, .global, 0.3);
+    const tab = mux.activeTab().?;
+
+    try std.testing.expect(!pane_drop.canDrop(null, docked, tab, first, .swap));
+    try std.testing.expect(mux.canUndockToTab(docked));
+    try std.testing.expect(try pane_drop.place(null, docked, tab, first, .left));
+    mux.releaseDock(docked);
+    try std.testing.expect(mux.paneDock(docked) == null);
+    try std.testing.expect(mux.global_docks.isEmpty());
+    try std.testing.expectEqual(@as(usize, 2), tab.panes.items.len);
+    var leaves: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const laid = tab.computeLayoutInBounds(.{ .x = 0, .y = 0, .width = 1000, .height = 400 }, &leaves, 0, 0);
+    try std.testing.expectEqual(@as(usize, 2), laid.len);
+    try std.testing.expectEqual(docked, laid[0].pane);
+    try std.testing.expect(laid[0].bounds.x < laid[1].bounds.x);
+}

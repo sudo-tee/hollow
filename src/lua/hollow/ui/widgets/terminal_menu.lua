@@ -118,7 +118,7 @@ function M.open(hollow, host, event)
       end
       local item = {
         label = label,
-        icon = action_icons[action],
+        icon = label == toggled.dock and icons.pin_off or action_icons[action],
         disabled = value == nil,
         action = function()
           host.menu_action(id, action, value)

@@ -20,6 +20,9 @@ pub const DockScope = enum { global, workspace };
 /// Carve order: side docks span the full height, top/bottom fit between them.
 const EDGE_ORDER = [_]PaneEdge{ .left, .right, .top, .bottom };
 
+/// A shown dock's size across its edge, in pixels.
+pub const Thickness = struct { pane: *const Pane, edge: PaneEdge, size: u32 };
+
 pub const Docks = struct {
     slots: [4]Slot = @splat(.{}),
 
@@ -125,6 +128,33 @@ pub const Docks = struct {
         }
     }
 
+    /// Re-share the shown slots so each pane in `kept` docked on the same
+    /// axis keeps its thickness, narrowing `bounds` like `carve`.
+    pub fn keepThickness(self: *Docks, bounds: *PaneBounds, kept: []const Thickness, cell_w: u32, cell_h: u32) void {
+        for (EDGE_ORDER) |edge| {
+            const entry = self.slot(edge);
+            const pane = entry.pane orelse continue;
+            if (pane.is_hidden) continue;
+            for (kept) |item| {
+                if (item.pane != pane or directionFor(item.edge) != directionFor(edge)) continue;
+                const vertical = directionFor(edge) == .vertical;
+                const cell = if (vertical) cell_w else cell_h;
+                // splitChildBounds keeps a 1px divider out of the shared span.
+                const usable = (if (vertical) bounds.width else bounds.height) -| 1;
+                // The split snaps its first child to cells; right and bottom
+                // docks are the second child and get the rest.
+                const first: f32 = @floatFromInt(if (placesFirst(edge)) item.size else usable -| item.size);
+                const ratio = if (cell > 0)
+                    @round(first / @as(f32, @floatFromInt(cell))) / @as(f32, @floatFromInt(@max(1, usable / cell)))
+                else
+                    (first + 0.5) / @as(f32, @floatFromInt(@max(1, usable)));
+                self.place(edge, pane, if (placesFirst(edge)) ratio else 1.0 - ratio) catch unreachable;
+                break;
+            }
+            _, bounds.* = splitFor(entry, edge, bounds.*, cell_w, cell_h);
+        }
+    }
+
     /// Hit-test dock seams in carve order; `bounds` is narrowed like `carve`.
     pub fn hitTestDivider(self: *Docks, bounds: *PaneBounds, mx: f32, my: f32, radius: f32, cell_w: u32, cell_h: u32) ?DividerHit {
         for (EDGE_ORDER) |edge| {
@@ -176,4 +206,37 @@ pub fn directionFor(edge: PaneEdge) types.SplitDirection {
 
 pub fn placesFirst(edge: PaneEdge) bool {
     return edge == .left or edge == .top;
+}
+
+/// Reserve a `height`-pixel title strip at the top of a dock leaf. Docks too
+/// short to keep a content row of the same height get no strip.
+pub fn reserveHeader(leaf: *LayoutLeaf, height: u32) void {
+    if (height == 0 or leaf.bounds.height < height * 2) return;
+    leaf.header = height;
+    leaf.bounds.y += height;
+    leaf.bounds.height -= height;
+}
+
+/// The title strip above a dock leaf, or null when none is reserved.
+pub fn headerBounds(leaf: LayoutLeaf) ?PaneBounds {
+    if (leaf.header == 0) return null;
+    return .{ .x = leaf.bounds.x, .y = leaf.bounds.y - leaf.header, .width = leaf.bounds.width, .height = leaf.header };
+}
+
+/// The whole dock region: the title strip plus the pane.
+pub fn frameBounds(leaf: LayoutLeaf) PaneBounds {
+    return .{ .x = leaf.bounds.x, .y = leaf.bounds.y - leaf.header, .width = leaf.bounds.width, .height = leaf.bounds.height + leaf.header };
+}
+
+test "dock headers push the pane down and skip docks that are too short" {
+    var leaf: LayoutLeaf = .{ .pane = undefined, .bounds = .{ .x = 0, .y = 10, .width = 200, .height = 100 } };
+    reserveHeader(&leaf, 20);
+    try std.testing.expectEqual(PaneBounds{ .x = 0, .y = 30, .width = 200, .height = 80 }, leaf.bounds);
+    try std.testing.expectEqual(PaneBounds{ .x = 0, .y = 10, .width = 200, .height = 20 }, headerBounds(leaf).?);
+    try std.testing.expectEqual(PaneBounds{ .x = 0, .y = 10, .width = 200, .height = 100 }, frameBounds(leaf));
+
+    var short: LayoutLeaf = .{ .pane = undefined, .bounds = .{ .x = 0, .y = 0, .width = 200, .height = 30 } };
+    reserveHeader(&short, 20);
+    try std.testing.expectEqual(@as(u32, 0), short.header);
+    try std.testing.expectEqual(@as(?PaneBounds, null), headerBounds(short));
 }

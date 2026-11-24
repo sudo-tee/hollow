@@ -56,14 +56,19 @@ fn depth(node: *Node, pane: *Pane, level: usize) ?usize {
     return depth(node.first.?, pane, level + 1) orelse depth(node.second.?, pane, level + 1);
 }
 
-pub fn canDrop(source: *Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) bool {
-    if (pane == target or !eligible(source, pane) or !eligible(dest, target)) return false;
-    if (zone == .swap) return true;
+/// A null `source` means the pane comes from a dock: it can split beside
+/// `target` but not swap, and the caller releases its dock slot after `place`.
+pub fn canDrop(source: ?*Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) bool {
+    if (pane == target or !eligible(dest, target)) return false;
+    if (source) |tab| {
+        if (!eligible(tab, pane)) return false;
+        if (zone == .swap) return true;
+    } else if (zone == .swap) return false;
     if (source != dest and dest.panes.items.len >= types.MAX_LAYOUT_LEAVES) return false;
     return depth(dest.root_split.?, target, 1).? < @import("../session/layout.zig").max_depth;
 }
 
-pub fn preview(source: *Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone, bounds: Bounds, cell_w: u32, cell_h: u32) ?Bounds {
+pub fn preview(source: ?*Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone, bounds: Bounds, cell_w: u32, cell_h: u32) ?Bounds {
     if (!canDrop(source, pane, dest, target, zone)) return null;
     var leaves: [types.MAX_LAYOUT_LEAVES]types.LayoutLeaf = undefined;
     var count: usize = 0;
@@ -81,9 +86,10 @@ pub fn preview(source: *Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone,
 
 /// All allocations precede detaching the live pane. The target leaf is looked
 /// up again afterwards because collapsing the old split can relocate it.
-pub fn place(source: *Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) !bool {
-    if (!canDrop(source, pane, dest, target, zone)) return false;
+pub fn place(source_tab: ?*Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) !bool {
+    if (!canDrop(source_tab, pane, dest, target, zone)) return false;
     if (zone == .swap) {
+        const source = source_tab.?;
         const a = layout.findPaneLeafNode(source.root_split.?, pane).?;
         const b = layout.findPaneLeafNode(dest.root_split.?, target).?;
         a.pane = target;
@@ -112,11 +118,11 @@ pub fn place(source: *Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) !
             };
         }
     } else {
-        if (source != dest) try dest.panes.ensureUnusedCapacity(dest.allocator, 1);
+        if (source_tab != dest) try dest.panes.ensureUnusedCapacity(dest.allocator, 1);
         const existing = try dest.allocator.create(Node);
         errdefer dest.allocator.destroy(existing);
         const moved = try dest.allocator.create(Node);
-        source.detachPane(pane);
+        if (source_tab) |source| source.detachPane(pane);
         const leaf = layout.findPaneLeafNode(dest.root_split.?, target).?;
         existing.* = leaf.*;
         moved.* = Node.initPane(pane);

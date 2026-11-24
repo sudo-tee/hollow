@@ -44,6 +44,7 @@ in the shipped base config.
 | `hyperlinks`                                                                      | table                          | OSC 8 hyperlink config                                          |
 | `cursor`                                                                          | table                          | Cursor style, blink                                             |
 | `unfocused_pane`                                                                  | table                          | Cursor and dim style for unfocused panes                        |
+| `dock_header`                                                                     | table or boolean               | Dock title strip; see [Drag panes](../../pane-drag-and-drop.md) |
 | `shell`                                                                           | string or string[]             | Default shell (when no domain is set)                           |
 | `default_domain`                                                                  | string                         | Domain used for new tabs / panes                                |
 | `domains`                                                                         | table<string, string or table> | Domain table                                                    |

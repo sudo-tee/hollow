@@ -4682,6 +4682,16 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "dock_header") and (value_type == .table or value_type == .boolean)) {
+            if (value_type == .boolean) {
+                ctx.cfg.dock_header.enabled = api.to_boolean(state, -1) != 0;
+            } else {
+                applyDockHeaderTable(ctx.cfg, api, state, absoluteIndex(api, state, -1));
+            }
+            refresh_live_config = true;
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "unfocused_pane") and value_type == .table) {
             const unfocused_pane_idx = absoluteIndex(api, state, -1);
             applyUnfocusedPaneTable(ctx.cfg, api, state, unfocused_pane_idx);
@@ -4860,6 +4870,38 @@ fn applyUiThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_
                     if (parseHexColor(ptr[0..val_len])) |color| cfg.floating_inactive_color = color;
                 }
             }
+        } else if (std.mem.eql(u8, key, "dock_active")) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.dock_active_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "dock_inactive")) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.dock_inactive_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "dock_global_active")) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.dock_global_active_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "dock_global_inactive")) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.dock_global_inactive_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "dock_tint")) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.number)) {
+                cfg.dock_tint = @intFromFloat(std.math.clamp(api.to_number(state, -1), 0, 255));
+            }
         }
     }
 }
@@ -4967,6 +5009,47 @@ fn applyCursorTrailTable(trail: *config.Config.Cursor.Trail, api: Api, state: *S
             if (!std.math.isFinite(value) or value < 0) continue;
             if (std.mem.eql(u8, key, "min_distance")) trail.min_distance = @floatCast(@min(65535, value));
             if (std.mem.eql(u8, key, "decay") and @trunc(value) == value) trail.decay = @intFromFloat(@min(10_000, value));
+        }
+    }
+}
+
+fn applyDockHeaderTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) void {
+    const Header = config.Config.DockHeader;
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
+
+        if (std.mem.eql(u8, key, "enabled") and value_type == .boolean) {
+            cfg.dock_header.enabled = api.to_boolean(state, -1) != 0;
+            continue;
+        }
+        const items: *Header.Items = if (std.mem.eql(u8, key, "left"))
+            &cfg.dock_header.left
+        else if (std.mem.eql(u8, key, "center"))
+            &cfg.dock_header.center
+        else if (std.mem.eql(u8, key, "right"))
+            &cfg.dock_header.right
+        else
+            continue;
+        if (value_type != .table) continue;
+        const list_idx = absoluteIndex(api, state, -1);
+        items.* = .{};
+        var n: c_int = 1;
+        while (true) : (n += 1) {
+            api.rawgeti(state, list_idx, n);
+            defer pop(api, state, 1);
+            var len: usize = 0;
+            const ptr = api.to_lstring(state, -1, &len) orelse break;
+            const item = std.meta.stringToEnum(Header.Item, ptr[0..len]) orelse {
+                std.log.warn("config dock_header.{s}: unknown item '{s}'", .{ key, ptr[0..len] });
+                continue;
+            };
+            items.append(item);
         }
     }
 }
@@ -9364,6 +9447,23 @@ test "set_config parses cursor defaults and preserves partial updates" {
     try std.testing.expectEqual(config.Config.Cursor{ .style = .bar, .blink = true, .blink_rate = 500 }, cfg.cursor);
     try runtime.runString("host_api.set_config({ cursor = { blink = false, blink_rate = 0 } })");
     try std.testing.expectEqual(config.Config.Cursor{ .style = .bar, .blink = false, .blink_rate = 500 }, cfg.cursor);
+}
+
+test "set_config parses dock header items and keeps unset slots" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    const Item = config.Config.DockHeader.Item;
+    try runtime.runString("host_api.set_config({ dock_header = { left = { 'title' }, right = { 'bogus', 'edge', 'scope' } } })");
+    try std.testing.expect(cfg.dock_header.enabled);
+    try std.testing.expectEqualSlices(Item, &.{.title}, cfg.dock_header.left.slice());
+    try std.testing.expectEqualSlices(Item, &.{.title}, cfg.dock_header.center.slice());
+    try std.testing.expectEqualSlices(Item, &.{ .edge, .scope }, cfg.dock_header.right.slice());
+    try runtime.runString("host_api.set_config({ dock_header = false })");
+    try std.testing.expect(!cfg.dock_header.enabled);
+    try std.testing.expectEqualSlices(Item, &.{.title}, cfg.dock_header.left.slice());
 }
 
 test "set_config accepts legacy and canonical unfocused cursors" {

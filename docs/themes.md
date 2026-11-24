@@ -132,6 +132,11 @@ hollow.config.set({
       split_inactive = "#2a2a40",
       floating_active   = "#3a3a52",
       floating_inactive = "#2a2a40",
+      dock_active   = "#6a9589",
+      dock_inactive = "#3d5550",
+      dock_global_active   = "#98bb6c",
+      dock_global_inactive = "#4f6138",
+      dock_tint     = 12, -- 0 disables the dock tint
       accent = "#7e9cd8",
       warm   = "#ffa066",
       status = { bg = "#1f1f28", fg = "#dcd7ba" },

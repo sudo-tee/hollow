@@ -27,6 +27,8 @@ pub const PaneBounds = struct {
 pub const LayoutLeaf = struct {
     pane: *Pane,
     bounds: PaneBounds,
+    /// Height of the dock title strip reserved directly above `bounds`.
+    header: u32 = 0,
 };
 
 /// Maximum number of panes that layout supports in one pass.

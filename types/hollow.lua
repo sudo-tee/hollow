@@ -62,6 +62,11 @@
 ---@field split_inactive HollowColor
 ---@field floating_active HollowColor
 ---@field floating_inactive HollowColor
+---@field dock_active HollowColor Focused workspace dock: seam, tint, and title strip accent.
+---@field dock_inactive HollowColor Unfocused workspace docks.
+---@field dock_global_active HollowColor Focused global dock: seam, tint, and title strip accent.
+---@field dock_global_inactive HollowColor Unfocused global docks.
+---@field dock_tint integer Alpha (0-255) of the dock-colored tint over docks; 0 disables it.
 ---@field accent HollowColor
 ---@field warm HollowColor
 ---@field status { bg: HollowColor, fg: HollowColor }
@@ -85,6 +90,11 @@
 ---@field split_inactive? HollowColor
 ---@field floating_active? HollowColor
 ---@field floating_inactive? HollowColor
+---@field dock_active? HollowColor Focused workspace dock: seam, tint, and title strip accent.
+---@field dock_inactive? HollowColor Unfocused workspace docks.
+---@field dock_global_active? HollowColor Focused global dock: seam, tint, and title strip accent.
+---@field dock_global_inactive? HollowColor Unfocused global docks.
+---@field dock_tint? integer Alpha (0-255) of the dock-colored tint over docks; 0 disables it.
 ---@field accent? HollowColor
 ---@field warm? HollowColor
 ---@field status? { bg?: HollowColor, fg?: HollowColor }
@@ -423,6 +433,14 @@
 ---@field dim? boolean|number
 ---@field dim_opacity? number
 
+---@alias HollowDockHeaderItem "hide"|"undock"|"title"|"scope"|"edge"
+
+---@class HollowDockHeaderConfig
+---@field enabled? boolean Reserve a title strip above docked panes (default true)
+---@field left? HollowDockHeaderItem[] Items from the left edge (default hide, undock; mirrored on left docks)
+---@field center? HollowDockHeaderItem[] Centered items; titles shrink to fit (default title)
+---@field right? HollowDockHeaderItem[] Items from the right edge (default scope; mirrored on left docks)
+
 ---@alias HollowBackgroundImageFit "cover"|"contain"|"stretch"|"tile"|"center"
 
 ---@class HollowBackgroundImageConfig
@@ -557,6 +575,7 @@
 ---@field quick_select? HollowQuickSelectConfig
 ---@field cursor? HollowCursorConfig
 ---@field unfocused_pane? HollowUnfocusedPaneConfig
+---@field dock_header? HollowDockHeaderConfig|boolean Dock title strip; false hides it
 ---@field background? HollowBackgroundConfig
 ---@field custom_shader? string|string[]|false Ghostty-compatible post-process GLSL shaders, applied in order (max 8)
 ---@field shader_animation? HollowShaderAnimation|boolean "cursor" (default) animates briefly after cursor or focus changes; "always" every frame; false/"off" never

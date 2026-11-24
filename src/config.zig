@@ -296,6 +296,38 @@ pub const Config = struct {
         }
     };
 
+    /// The title strip reserved above each docked pane.
+    pub const DockHeader = struct {
+        pub const Item = enum { hide, undock, title, scope, edge };
+        pub const max_items = 8;
+
+        pub const Items = struct {
+            buf: [max_items]Item = undefined,
+            len: u8 = 0,
+
+            pub fn of(items: []const Item) Items {
+                var out: Items = .{};
+                for (items) |item| out.append(item);
+                return out;
+            }
+
+            pub fn append(self: *Items, item: Item) void {
+                if (self.len == max_items) return;
+                self.buf[self.len] = item;
+                self.len += 1;
+            }
+
+            pub fn slice(self: *const Items) []const Item {
+                return self.buf[0..self.len];
+            }
+        };
+
+        enabled: bool = true,
+        left: Items = .of(&.{ .hide, .undock }),
+        center: Items = .of(&.{.title}),
+        right: Items = .of(&.{.scope}),
+    };
+
     pub const Background = struct {
         pub const Fit = enum { cover, contain, stretch, tile, center };
         pub const default_shader_max_fps: u32 = 60;
@@ -468,6 +500,7 @@ pub const Config = struct {
     hyperlinks: Hyperlinks = .{},
     cursor: Cursor = .{},
     unfocused_pane: UnfocusedPane = .{},
+    dock_header: DockHeader = .{},
     bell: Bell = .{},
     background: Background = .{},
     custom_shader: CustomShader = .{},
@@ -485,6 +518,12 @@ pub const Config = struct {
     split_inactive_color: ghostty.ColorRgb = .{ .r = 60, .g = 65, .b = 75 },
     floating_active_color: ghostty.ColorRgb = .{ .r = 120, .g = 150, .b = 220 },
     floating_inactive_color: ghostty.ColorRgb = .{ .r = 72, .g = 90, .b = 110 },
+    dock_active_color: ghostty.ColorRgb = .{ .r = 110, .g = 190, .b = 200 },
+    dock_inactive_color: ghostty.ColorRgb = .{ .r = 70, .g = 110, .b = 120 },
+    dock_global_active_color: ghostty.ColorRgb = .{ .r = 150, .g = 200, .b = 120 },
+    dock_global_inactive_color: ghostty.ColorRgb = .{ .r = 90, .g = 120, .b = 72 },
+    /// Alpha of the dock-colored tint over docked panes; 0 disables it.
+    dock_tint: u8 = 12,
     debug_overlay: bool = false,
     debug_terminal_trace: bool = false,
     /// Reject pastes that could run commands: newlines when the program has
