@@ -4506,7 +4506,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.hollow_toggle_maximize_window();
     }
 
-    const current_shader_bg = g_post_chain.background_options orelse app.config.background;
+    const current_shader_bg = (g_post_chain.background_options orelse app.config.background).forWindowFocus(app.window_focused);
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
@@ -5279,7 +5279,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     g_background_image.sync(app.allocator, app.config.background.image);
     var shader_notice: @import("shaders/shadertoy.zig").Log = .{};
     g_post_chain.sync(app.allocator, app.config.custom_shader.paths.items, app.config.background, app.config.custom_shader.generation, &shader_notice);
-    const shader_bg = g_post_chain.background_options orelse app.config.background;
+    const shader_bg = (g_post_chain.background_options orelse app.config.background).forWindowFocus(app.window_focused);
     const shader_now_ns = io.nanoTimestamp();
     if (g_post_chain.anyActive()) {
         g_post_chain.noteFocus(shader_now_ns, app.window_focused);

@@ -5101,6 +5101,7 @@ fn applyBackgroundTable(cfg: *config.Config, api: Api, state: *State, table_idx:
                     if (value_len == 0) background.clearShader(cfg.allocator) else try background.setShader(cfg.allocator, value_ptr[0..value_len]);
                     background.shader_max_fps = config.Config.Background.default_shader_max_fps;
                     background.shader_render_scale = 1.0;
+                    background.shader_unfocused_max_fps = null;
                 },
                 .table => try applyBackgroundShaderTable(cfg, api, state, absoluteIndex(api, state, -1)),
                 else => {},
@@ -5130,6 +5131,9 @@ fn applyBackgroundShaderTable(cfg: *config.Config, api: Api, state: *State, tabl
         } else if (std.mem.eql(u8, key, "max_fps") and value_type == .number) {
             const fps = api.to_number(state, -1);
             if (std.math.isFinite(fps)) background.shader_max_fps = @intFromFloat(std.math.clamp(fps, 0, 240));
+        } else if (std.mem.eql(u8, key, "unfocused_max_fps") and value_type == .number) {
+            const fps = api.to_number(state, -1);
+            if (std.math.isFinite(fps)) background.shader_unfocused_max_fps = @intFromFloat(std.math.clamp(fps, 0, 240));
         } else if (std.mem.eql(u8, key, "render_scale") and value_type == .number) {
             const scale = api.to_number(state, -1);
             if (std.math.isFinite(scale)) background.shader_render_scale = @floatCast(std.math.clamp(scale, 0.25, 1.0));
@@ -9465,6 +9469,21 @@ test "set_config parses background shader render scale" {
     try std.testing.expectEqual(@as(f32, 0.25), cfg.background.shader_render_scale);
     try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
     try std.testing.expectEqual(@as(f32, 1), cfg.background.shader_render_scale);
+}
+
+test "set_config parses background shader unfocused refresh cap" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(?u32, null), cfg.background.shader_unfocused_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { path = '/tmp/waves.glsl', unfocused_max_fps = 0 } } })");
+    try std.testing.expectEqual(@as(?u32, 0), cfg.background.shader_unfocused_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = { unfocused_max_fps = 500 } } })");
+    try std.testing.expectEqual(@as(?u32, 240), cfg.background.shader_unfocused_max_fps);
+    try runtime.runString("host_api.set_config({ background = { shader = '/tmp/waves.glsl' } })");
+    try std.testing.expectEqual(@as(?u32, null), cfg.background.shader_unfocused_max_fps);
 }
 
 test "set_config parses custom shaders in order" {

@@ -451,6 +451,7 @@
 ---@field animate? boolean Request redraws to animate the background (default true); false renders a static cached layer
 ---@field max_fps? integer Background shader refresh cap, 1..240 (default 60); 0 imposes no cap
 ---@field render_scale? number Background shader resolution per axis, clamped to 0.25..1 (default 1)
+---@field unfocused_max_fps? integer Refresh cap while the window is unfocused, 0..240; 0 pauses the animation. Unset keeps `max_fps`; never raises it
 
 ---@alias HollowShaderAnimation "cursor"|"always"|"off"
 
