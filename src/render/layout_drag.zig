@@ -32,6 +32,7 @@ pub const Drop = union(enum) {
     tab: struct { id: usize, marker: bounds },
     reorder: struct { id: usize, after: bool, marker: bounds },
     pane: struct { id: usize, tab: usize, zone: pane_drop.Zone, marker: bounds },
+    tile: struct { marker: bounds },
     dock: struct { edge: mux.PaneEdge, scope: mux.DockScope, marker: bounds },
 };
 
@@ -62,6 +63,14 @@ pub fn handle(b: PaneBounds, scale: f32) bounds {
     const r = rect(b);
     const w = @min(r.width, 42 * scale);
     return .{ .x = r.x + (r.width - w) / 2, .y = r.y, .width = w, .height = @min(r.height, 12 * scale) };
+}
+
+pub fn floatingHandle(b: PaneBounds, scale: f32) bounds {
+    const r = rect(b);
+    var h = handle(b, scale);
+    h.width = @min(h.width, r.width / 2);
+    h.x = r.x + (r.width - h.width) / 2;
+    return h;
 }
 
 pub fn handleReveal(b: PaneBounds, scale: f32) bounds {
@@ -102,6 +111,14 @@ test "the reveal strip surrounds the handle without extending into the pane body
     try std.testing.expect(contains(r, 25, 65));
     try std.testing.expect(!contains(h, 25, 65));
     try std.testing.expect(!contains(r, 120, 68));
+}
+
+test "the floating handle leaves room for move and resize even on narrow panes" {
+    const b: PaneBounds = .{ .x = 20, .y = 40, .width = 24, .height = 120 };
+    const h = floatingHandle(b, 2);
+    try std.testing.expect(contains(h, 32, 41));
+    try std.testing.expect(!contains(h, 25, 41));
+    try std.testing.expect(!contains(h, 39, 41));
 }
 
 test "layout drag waits for a threshold before arming and cancellation is sticky" {

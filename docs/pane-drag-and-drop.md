@@ -14,11 +14,23 @@ To reorder tabs without moving panes between them, drag a tab label to the left 
 An insertion line shows where the tab will go.
 Tab dragging only reorders tabs in the current workspace.
 
+## Floating panes
+
+Hover near the top of a floating pane to reveal its top-center handle.
+Drag the handle to the edge of a tiled pane to turn it into a split.
+Drop it on another tab's label to tile it there.
+Drop it on a window edge to dock it.
+If the tab has no visible tiles, drop where the `Tile` preview appears.
+Floating panes can't swap with tiles.
+Drag the rest of the top edge to move the floating pane.
+Drag its sides, bottom edge, or corners to resize it.
+
 ## Docks
 
 Drag a pane to a window edge to dock it there.
 The preview shows the exact area the dock will take, in the dock color, with a label such as `Dock Right · Workspace`.
-A tiled pane becomes a workspace dock by default; hold Shift while dragging to make it a global dock instead.
+Tiled and floating panes become workspace docks by default.
+Hold Shift while dragging to make a global dock instead.
 If that edge already has a dock in the chosen scope, the edge turns red and the drop is refused.
 
 Each dock has a title strip: a faint wash of the dock color, stronger while the dock has focus.
@@ -87,5 +99,5 @@ Set `ui.dock_active` and `ui.dock_inactive` for workspace docks, `ui.dock_global
 Press Escape or release outside a valid target to cancel.
 A small square follows the pointer while dragging a pane or tab, even when there is no valid drop target.
 The cursor shows a not-allowed icon when you can't drop at the current location.
-Floating panes keep their existing edge gestures; pane drops require tiled panes in unzoomed tabs.
+Pane drops target unzoomed tabs.
 The context menu's Move commands are unchanged.

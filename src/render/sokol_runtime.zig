@@ -946,8 +946,8 @@ const dock_drop = @import("../mux/dock_drop.zig");
 const color_math = @import("color_math.zig");
 var g_layout_drag: ?layout_drag.Drag = null;
 var g_layout_drag_escape_up = false;
-const TiledDragHover = struct { pane: usize, tab: usize, hot: bool };
-var g_tiled_drag_hover: ?TiledDragHover = null;
+const PaneDragHover = struct { pane: usize, tab: usize, hot: bool };
+var g_pane_drag_hover: ?PaneDragHover = null;
 
 const FloatingDrag = struct {
     const Grip = enum {
@@ -1156,7 +1156,8 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
     const mux = &app.mux.?;
     const pane = app.findPaneById(drag.pane.?) orelse return;
     const docked = mux.paneDock(pane) != null;
-    if (!docked and !pane_drop.eligible(source, pane)) return;
+    const floating = pane_drop.floatingSource(source, pane);
+    if (!docked and !floating and !pane_drop.eligible(source, pane)) return;
     if (hit.surface == .top) {
         if (drag.hover_tab != hovered_id) {
             drag.hover_tab = hovered_id;
@@ -1192,18 +1193,25 @@ fn updateLayoutDrag(app: *App, drag: *layout_drag.Drag, x: f32, y: f32, now: i12
     if (docked and !mux.canUndockToTab(pane)) return;
     const from: ?*@import("../mux.zig").Tab = if (docked) null else source;
     const dest = ws.tabById(drag.preview_tab orelse drag.tab) orelse return;
+    const bounds = app.activeLayoutBounds();
     var buffer: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.layoutContentForTab(app.contentBounds(), dest, &buffer);
     var i = leaves.len;
     while (i > 0) {
         i -= 1;
         const leaf = leaves[i];
+        // Target the tiled layout underneath floating panes, not the overlays.
+        if (floating and leaf.pane.is_floating) continue;
         if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
         if (app.mux.?.paneDock(leaf.pane) != null) return;
         const zone = pane_drop.zoneAt(leaf.bounds, x, y);
-        _ = pane_drop.preview(from, pane, dest, leaf.pane, zone, app.activeLayoutBounds(), app.cell_width_px, app.cell_height_px) orelse return;
+        _ = pane_drop.preview(from, pane, dest, leaf.pane, zone, bounds, app.cell_width_px, app.cell_height_px) orelse return;
         drag.drop = .{ .pane = .{ .id = leaf.pane.id, .tab = dest.id, .zone = zone, .marker = layout_drag.paneMarker(leaf.bounds, zone) } };
         return;
+    }
+    const marker = layout_drag.rect(bounds);
+    if (floating and source == dest and layout_drag.contains(marker, x, y) and pane_drop.canTileWithoutTarget(source, pane)) {
+        drag.drop = .{ .tile = .{ .marker = marker } };
     }
 }
 
@@ -1236,6 +1244,7 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
                         switch (drop) {
                             .tab => |item| mux_ops.movePaneToTab(app, result.pane.?, item.id, .vertical, 0.5),
                             .pane => |item| mux_ops.dropTiledPane(app, result.tab, result.pane.?, item.tab, item.id, item.zone),
+                            .tile => mux_ops.setPaneFloatingById(app, result.pane.?, false),
                             .dock => |item| mux_ops.dockPaneById(app, result.pane.?, item.edge, item.scope, null),
                             .reorder => |item| if (layoutDragWorkspace(app, result)) |ws| {
                                 if (ws.reorderTab(result.tab, item.id, item.after)) {
@@ -1291,7 +1300,7 @@ fn layoutDragEvent(app: *App, event: c.sapp_event) bool {
     return true;
 }
 
-fn tiledDragHoverAt(app: *App, x: f32, y: f32) ?TiledDragHover {
+fn paneDragHoverAt(app: *App, x: f32, y: f32) ?PaneDragHover {
     if (layoutDragBlocked(x, y)) return null;
     const mux = if (app.mux) |*m| m else return null;
     const ws = mux.activeWorkspace() orelse return null;
@@ -1307,18 +1316,18 @@ fn tiledDragHoverAt(app: *App, x: f32, y: f32) ?TiledDragHover {
         if (!layout_drag.contains(layout_drag.rect(leaf.bounds), x, y)) continue;
         // A dock title strip is its drag handle.
         if (leaf.header > 0) return null;
-        const draggable = pane_drop.eligible(tab, leaf.pane) or mux.dockIsShown(leaf.pane);
+        const draggable = pane_drop.eligible(tab, leaf.pane) or pane_drop.floatingSource(tab, leaf.pane) or mux.dockIsShown(leaf.pane);
         if (leaf.bounds.width < 20 or !draggable or !layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), x, y)) return null;
-        const h = layout_drag.handle(leaf.bounds, scale);
+        const h = if (leaf.pane.is_floating) layout_drag.floatingHandle(leaf.bounds, scale) else layout_drag.handle(leaf.bounds, scale);
         if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) return null;
         return .{ .pane = leaf.pane.id, .tab = tab.id, .hot = layout_drag.contains(h, x, y) };
     }
     return null;
 }
 
-fn setTiledDragHover(app: *App, hover: ?TiledDragHover) void {
-    if (std.meta.eql(g_tiled_drag_hover, hover)) return;
-    g_tiled_drag_hover = hover;
+fn setPaneDragHover(app: *App, hover: ?PaneDragHover) void {
+    if (std.meta.eql(g_pane_drag_hover, hover)) return;
+    g_pane_drag_hover = hover;
     app.requestRedraw();
 }
 
@@ -1695,8 +1704,8 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
             const reorder = drop == .reorder;
             drawBorderRect(marker.x, marker.y, marker.width, marker.height, accent.r, accent.g, accent.b, if (reorder) 255 else 76);
             if (!reorder) drawRectOutline(marker.x, marker.y, marker.width, marker.height, 2 * scale, accent.r, accent.g, accent.b, 255);
-            if (drop == .pane) {
-                const label = drop.pane.zone.label();
+            if (drop == .pane or drop == .tile) {
+                const label = if (drop == .pane) drop.pane.zone.label() else "Tile";
                 const w = renderer.cell_w * @as(f32, @floatFromInt(label.len + 2));
                 if (w < marker.width and renderer.cell_h < marker.height) {
                     const x = marker.x + (marker.width - w) / 2;
@@ -1716,12 +1725,12 @@ fn drawLayoutDrag(app: *App, renderer: *FtRenderer, leaves: []const LayoutLeaf) 
         drawRoundedRectOutline(x, y, size, size, 3 * scale, scale, fg.r, fg.g, fg.b, 215);
         return;
     }
-    const hover = g_tiled_drag_hover orelse return;
+    const hover = g_pane_drag_hover orelse return;
     if (!g_mouse_over_window or tab.id != hover.tab or tab.maximized_pane != null) return;
     for (leaves) |leaf| {
-        if (leaf.pane.id != hover.pane or leaf.pane.is_floating or leaf.header > 0 or leaf.bounds.width < 20) continue;
+        if (leaf.pane.id != hover.pane or leaf.header > 0 or leaf.bounds.width < 20) continue;
         if (!layout_drag.contains(layout_drag.handleReveal(leaf.bounds, scale), g_mouse_x, g_mouse_y)) break;
-        const h = layout_drag.handle(leaf.bounds, scale);
+        const h = if (leaf.pane.is_floating) layout_drag.floatingHandle(leaf.bounds, scale) else layout_drag.handle(leaf.bounds, scale);
         if (layoutDragBlocked(h.x + h.width / 2, h.y + h.height / 2)) break;
         drawRoundedRect(h.x + h.width / 4, h.y + 3 * scale, h.width / 2, 3 * scale, 1.5 * scale, fg.r, fg.g, fg.b, if (hover.hot) 220 else 145);
         // Name the dock so it does not read as another split.
@@ -4582,7 +4591,7 @@ pub fn run(app: *App) !void {
     g_floating_drag = null;
     g_layout_drag = null;
     g_layout_drag_escape_up = false;
-    g_tiled_drag_hover = null;
+    g_pane_drag_hover = null;
     g_dock_header_hover = null;
     g_mouse_button_down = null;
     g_lua_pane_button = null;
@@ -7003,7 +7012,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
         g_mouse_over_window = false;
-        setTiledDragHover(app, null);
+        setPaneDragHover(app, null);
         setDockHeaderHover(app, null);
         app.emitLuaBuiltInEvent("topbar:leave", .none);
         g_terminal_pointer_mods = null;
@@ -7863,6 +7872,14 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button press, check for a divider hit before forwarding to the terminal.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (ghosttyMods(event.modifiers) == 0) {
+            if (paneDragHoverAt(app, event.mouse_x, event.mouse_y)) |hit| {
+                if (hit.hot) {
+                    beginLayoutDrag(app, event, hit.tab, hit.pane);
+                    if (g_layout_drag != null) return;
+                }
+            }
+        }
         if (floatingGrip(app, event.mouse_x, event.mouse_y)) |hit| {
             const pane = hit.pane;
             g_floating_drag = .{
@@ -7896,14 +7913,6 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             if (app.mux.?.activeTab()) |tab| beginLayoutDrag(app, event, tab.id, header.pane.id);
             if (g_layout_drag == null) g_block_left_mouse_until_up = true;
             return;
-        }
-        if (ghosttyMods(event.modifiers) == 0) {
-            if (tiledDragHoverAt(app, event.mouse_x, event.mouse_y)) |hit| {
-                if (hit.hot) {
-                    beginLayoutDrag(app, event, hit.tab, hit.pane);
-                    if (g_layout_drag != null) return;
-                }
-            }
         }
         const mods = ghosttyMods(event.modifiers);
         if (app.hitTestPane(event.mouse_x, event.mouse_y)) |_| {
@@ -8052,8 +8061,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
-    var tiled_hover: ?TiledDragHover = null;
-    defer setTiledDragHover(app, tiled_hover);
+    var pane_hover: ?PaneDragHover = null;
+    defer setPaneDragHover(app, pane_hover);
     g_mouse_over_window = true;
     g_mouse_x = event.mouse_x;
     g_mouse_y = event.mouse_y;
@@ -8239,6 +8248,15 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     if (g_mouse_button_down == null) {
+        if (ghosttyMods(event.modifiers) == 0) {
+            pane_hover = paneDragHoverAt(app, event.mouse_x, event.mouse_y);
+            if (pane_hover) |hover| if (hover.hot) {
+                g_scrollbar_hover_pane = null;
+                setDockHeaderHover(app, null);
+                setMouseCursor(pane_drag_cursor);
+                return;
+            };
+        }
         if (floatingGrip(app, event.mouse_x, event.mouse_y)) |hit| {
             g_scrollbar_hover_pane = null;
             setMouseCursor(hit.grip.cursor());
@@ -8252,14 +8270,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             return;
         }
         setDockHeaderHover(app, null);
-        if (ghosttyMods(event.modifiers) == 0) {
-            tiled_hover = tiledDragHoverAt(app, event.mouse_x, event.mouse_y);
-            if (tiled_hover) |hover| if (hover.hot) {
-                g_scrollbar_hover_pane = null;
-                setMouseCursor(pane_drag_cursor);
-                return;
-            };
-        }
     }
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
         g_scrollbar_hover_pane = scrollbar_hit.pane;

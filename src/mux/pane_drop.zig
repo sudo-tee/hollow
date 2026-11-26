@@ -51,6 +51,23 @@ pub fn eligible(tab: *Tab, pane: *Pane) bool {
         layout.findPaneLeafNode(tab.root_split orelse return false, pane) != null;
 }
 
+pub fn floatingSource(tab: *Tab, pane: *Pane) bool {
+    return tab.maximized_pane == null and pane.is_floating and !pane.is_hidden and
+        std.mem.indexOfScalar(*Pane, tab.panes.items, pane) != null;
+}
+
+/// A floating pane can become the first visible tile if it has a retained
+/// leaf or the tab has no split tree yet.
+pub fn canTileWithoutTarget(tab: *Tab, pane: *Pane) bool {
+    if (!floatingSource(tab, pane)) return false;
+    const root = tab.root_split orelse return true;
+    if (layout.findPaneLeafNode(root, pane) == null) return false;
+    for (tab.panes.items) |other| {
+        if (eligible(tab, other)) return false;
+    }
+    return true;
+}
+
 fn depth(node: *Node, pane: *Pane, level: usize) ?usize {
     if (node.kind == .pane) return if (node.pane == pane) level else null;
     return depth(node.first.?, pane, level + 1) orelse depth(node.second.?, pane, level + 1);
@@ -61,8 +78,8 @@ fn depth(node: *Node, pane: *Pane, level: usize) ?usize {
 pub fn canDrop(source: ?*Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zone) bool {
     if (pane == target or !eligible(dest, target)) return false;
     if (source) |tab| {
-        if (!eligible(tab, pane)) return false;
-        if (zone == .swap) return true;
+        if (zone == .swap) return eligible(tab, pane);
+        if (!eligible(tab, pane) and !floatingSource(tab, pane)) return false;
     } else if (zone == .swap) return false;
     if (source != dest and dest.panes.items.len >= types.MAX_LAYOUT_LEAVES) return false;
     return depth(dest.root_split.?, target, 1).? < @import("../session/layout.zig").max_depth;
@@ -133,6 +150,7 @@ pub fn place(source_tab: ?*Tab, pane: *Pane, dest: *Tab, target: *Pane, zone: Zo
         pane.restore_place_first = zone.first();
         pane.placed_edge = null;
         dest.panes.appendAssumeCapacity(pane);
+        if (pane.is_floating) _ = dest.setPaneFloating(pane, false);
     }
     dest.active_pane = pane;
     return true;
@@ -166,6 +184,53 @@ test "edge drop projects the collapsed split and preserves the dragged pane" {
     try std.testing.expectEqual(expected, leaves[0].bounds);
     try std.testing.expectEqual(&target, leaves[1].pane);
     try std.testing.expectEqual(@as(usize, 2), tab.panes.items.len);
+}
+
+test "edge drop tiles a floating pane without duplicating its retained leaf" {
+    const a = std.testing.allocator;
+    var tab = Tab.init(a, 1);
+    defer freeTestTab(&tab);
+    var pane = Pane.init(a);
+    var target = Pane.init(a);
+    target.id = 12;
+    try tab.appendPane(&target);
+    try tab.splitPane(&target, &pane, .vertical, 0.5);
+    try std.testing.expect(tab.setPaneFloating(&pane, true));
+    try std.testing.expect(!canDrop(&tab, &pane, &tab, &target, .swap));
+    try std.testing.expect(!canTileWithoutTarget(&tab, &pane));
+
+    const b: Bounds = .{ .x = 0, .y = 0, .width = 800, .height = 400 };
+    const expected = preview(&tab, &pane, &tab, &target, .top, b, 8, 20).?;
+    try std.testing.expect(try place(&tab, &pane, &tab, &target, .top));
+    try std.testing.expect(!pane.is_floating);
+    try std.testing.expectEqual(&pane, tab.activePane().?);
+    try std.testing.expectEqual(target.id, pane.restore_anchor_id);
+    try std.testing.expectEqual(@as(usize, 2), tab.panes.items.len);
+    var leaves: [3]types.LayoutLeaf = undefined;
+    const placed = tab.computeLayoutInBounds(b, &leaves, 8, 20);
+    try std.testing.expectEqual(@as(usize, 2), placed.len);
+    try std.testing.expectEqual(&pane, placed[0].pane);
+    try std.testing.expectEqual(expected, placed[0].bounds);
+    try std.testing.expectEqual(&target, placed[1].pane);
+}
+
+test "a restored floating pane without a retained leaf can tile or move to a split" {
+    const a = std.testing.allocator;
+    var source = Tab.init(a, 1);
+    defer freeTestTab(&source);
+    var dest = Tab.init(a, 2);
+    defer freeTestTab(&dest);
+    var pane = Pane.init(a);
+    pane.is_floating = true;
+    try source.panes.append(a, &pane);
+    var target = Pane.init(a);
+    try dest.appendPane(&target);
+    try std.testing.expect(canTileWithoutTarget(&source, &pane));
+    try std.testing.expect(!canDrop(&dest, &pane, &dest, &target, .left));
+    try std.testing.expect(try place(&source, &pane, &dest, &target, .left));
+    try std.testing.expect(!pane.is_floating);
+    try std.testing.expectEqual(@as(usize, 0), source.panes.items.len);
+    try std.testing.expectEqual(&pane, dest.activePane().?);
 }
 
 test "cross-tab swap exchanges live panes without leaving duplicate membership" {
